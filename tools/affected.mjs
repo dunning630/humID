@@ -29,6 +29,8 @@ const RULES = [
   [/^shell\//, ALL],
   [/^modules\//, ALL], // the web layer is bundled into every app
   [/^package(-lock)?\.json$/, ALL],
+  // Changing how apps are built must rebuild them all.
+  [/^\.github\/workflows\/|^tools\/ci-cargo\.sh$|^tools\/android-signing\.py$/, ALL],
   [/^(tests|tools|docs)\/|\.md$|^\.changeset\//, []],
   [/^\.github\//, []],
 ];

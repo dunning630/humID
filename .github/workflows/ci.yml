@@ -7,6 +7,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch: # manual run: compiles all five platforms
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -31,7 +32,7 @@ jobs:
       - name: Work out affected platforms
         id: affected
         run: |
-          BASE=${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+          BASE=${{ github.event_name == 'workflow_dispatch' && 'none' || github.event.pull_request.base.sha || 'HEAD~1' }}
           OUT=$(node tools/affected.mjs "$BASE")
           echo "$OUT"
           echo "matrix=$(echo "$OUT" | jq -c .matrix)" >> "$GITHUB_OUTPUT"
@@ -69,15 +70,16 @@ jobs:
       - name: Compile (desktop)
         if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
         working-directory: shell/src-tauri
-        run: cargo build --locked || cargo build
+        shell: bash
+        run: ../../tools/ci-cargo.sh build
       - name: Compile (iOS library)
         if: matrix.platform == 'ios'
         working-directory: shell/src-tauri
-        run: cargo build --target aarch64-apple-ios --lib
+        run: ../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
       - name: Compile (Android library)
         if: matrix.platform == 'android'
         working-directory: shell/src-tauri
         env:
           CC_aarch64_linux_android: aarch64-linux-android24-clang
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
-        run: cargo build --target aarch64-linux-android --lib
+        run: ../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
