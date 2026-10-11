@@ -1,0 +1,21 @@
+{
+  "name": "humid-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "modules/*",
+    "shell"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build:web": "npm run build -w shell",
+    "dev": "npm run dev -w shell",
+    "tauri": "npm run tauri -w shell --",
+    "changeset": "changeset",
+    "version-modules": "changeset version",
+    "affected": "node tools/affected.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.3"
+  }
+}

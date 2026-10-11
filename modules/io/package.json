@@ -1,0 +1,11 @@
+{
+  "name": "@humid/io",
+  "version": "1.0.0",
+  "description": "Save and read files: native save dialog in the apps, download link in browsers.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": {
+    "requires": { "shell-command": "save_bytes@1" }
+  },
+  "license": "UNLICENSED"
+}

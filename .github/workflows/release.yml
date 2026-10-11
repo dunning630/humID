@@ -1,0 +1,204 @@
+name: Release apps
+
+# Build installable apps. Choose the platforms to ship; each platform builds,
+# signs and uploads on its own, so shipping a Windows fix never rebuilds iOS.
+#
+#   Actions > Release apps > Run workflow > platforms: "windows"   (or "all", or "ios,android")
+#
+# A pushed tag app-vX.Y.Z builds all five and attaches them to a GitHub release.
+#
+# Signing is picked up from repository secrets when present; without them the
+# job still produces unsigned builds (Linux, Windows, Android APK) or a
+# compile-only check (macOS needs signing for Touch ID; iOS needs it to build).
+#   macOS + iOS:  APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#                 APPLE_TEAM_ID, APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_KEY_P8 (base64)
+#   Android:      ANDROID_KEYSTORE (base64 .jks), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS
+#   Windows:      WINDOWS_CERTIFICATE (base64 .pfx), WINDOWS_CERTIFICATE_PASSWORD
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Comma-separated: ios,android,macos,windows,linux — or all"
+        default: all
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          WANT="${{ github.event.inputs.platforms || 'all' }}"
+          [ "$WANT" = "all" ] && WANT="ios,android,macos,windows,linux"
+          python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, sys
+          runners = {"ios": "macos-14", "macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
+          want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
+          bad = [p for p in want if p not in runners]
+          if bad: sys.exit(f"Unknown platform(s): {bad}")
+          print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in want]}))
+          EOF
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_APPLE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_ANDROID_KEY: ${{ secrets.ANDROID_KEYSTORE != '' }}
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin'
+             || matrix.platform == 'ios' && 'aarch64-apple-ios,aarch64-apple-ios-sim'
+             || matrix.platform == 'android' && 'aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android'
+             || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: shell/src-tauri }
+
+      # ---------------- Linux ----------------
+      - name: Linux · system libraries
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev rpm
+      - name: Linux · build .deb .rpm .AppImage
+        if: matrix.platform == 'linux'
+        run: npm run tauri -- build
+
+      # ---------------- Windows ----------------
+      - name: Windows · import signing certificate
+        if: matrix.platform == 'windows' && env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        run: |
+          $pfx = "$env:RUNNER_TEMP\sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WINDOWS_CERTIFICATE }}"))
+          $pw = ConvertTo-SecureString "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+          $conf = Get-Content shell/src-tauri/tauri.conf.json | ConvertFrom-Json
+          $conf.bundle.windows | Add-Member certificateThumbprint $cert.Thumbprint -Force
+          $conf.bundle.windows | Add-Member digestAlgorithm "sha256" -Force
+          $conf.bundle.windows | Add-Member timestampUrl "http://timestamp.digicert.com" -Force
+          $conf | ConvertTo-Json -Depth 20 | Set-Content shell/src-tauri/tauri.conf.json
+      - name: Windows · build .msi and setup .exe
+        if: matrix.platform == 'windows'
+        run: npm run tauri -- build
+
+      # ---------------- macOS & iOS (signing) ----------------
+      - name: Apple · keychain entitlement team id
+        if: (matrix.platform == 'macos' || matrix.platform == 'ios') && env.HAS_APPLE == 'true'
+        run: sed -i '' "s/TEAMID/${{ secrets.APPLE_TEAM_ID }}/" shell/src-tauri/Entitlements.plist
+      - name: Apple · API key file
+        if: (matrix.platform == 'macos' || matrix.platform == 'ios') && env.HAS_APPLE == 'true'
+        run: |
+          mkdir -p ~/private_keys
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 --decode > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> "$GITHUB_ENV"
+
+      - name: macOS · universal signed + notarised .app/.dmg
+        if: matrix.platform == 'macos' && env.HAS_APPLE == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: npm run tauri -- build --target universal-apple-darwin
+      - name: macOS · compile check (no signing secrets; Touch ID needs a signed build)
+        if: matrix.platform == 'macos' && env.HAS_APPLE != 'true'
+        run: npm run tauri -- build --target aarch64-apple-darwin --bundles app --no-sign
+
+      - name: iOS · generate Xcode project
+        if: matrix.platform == 'ios'
+        run: npm run tauri -- ios init --ci
+      - name: iOS · signed .ipa for App Store Connect / TestFlight
+        if: matrix.platform == 'ios' && env.HAS_APPLE == 'true'
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: npm run tauri -- ios build --export-method app-store-connect
+      - name: iOS · compile check (no signing secrets)
+        if: matrix.platform == 'ios' && env.HAS_APPLE != 'true'
+        working-directory: shell/src-tauri
+        run: cargo build --release --target aarch64-apple-ios --lib
+
+      # ---------------- Android ----------------
+      - name: Android · Java 17
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Android · SDK + NDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+      - name: Android · NDK
+        if: matrix.platform == 'android'
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Android · generate Gradle project
+        if: matrix.platform == 'android'
+        run: npm run tauri -- android init --ci
+      - name: Android · release signing config
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
+        run: |
+          APP=shell/src-tauri/gen/android/app
+          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > $APP/release.jks
+          cat > shell/src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=release.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          EOF
+          python3 tools/android-signing.py $APP/build.gradle.kts
+      - name: Android · build .apk and .aab
+        if: matrix.platform == 'android'
+        run: npm run tauri -- android build --apk --aab
+
+      # ---------------- collect ----------------
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          find shell/src-tauri/target shell/src-tauri/gen -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' \
+               -o -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.aab' \) \
+            -not -path '*/deps/*' -exec cp {} out/ \; 2>/dev/null || true
+          if [ -z "$(ls -A out)" ] && [ "${{ matrix.platform }}" = "macos" ]; then
+            ( cd shell/src-tauri/target && find . -name 'HumID.app' -maxdepth 6 -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
+          fi
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: humid-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*
