@@ -12,7 +12,7 @@ import UIKit
 import WebKit
 
 private let service = "app.humid.gate"
-private let method = "ios-keychain-biometry"
+private let gateMethod = "ios-keychain-biometry"
 
 class EnrollArgs: Decodable {
   var prompt: String?
@@ -64,7 +64,7 @@ class HumidGatePlugin: Plugin {
     var err: NSError?
     let ok = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
     var out: [String: Any] = [
-      "available": ok, "method": method, "assurance": "hardware", "label": biometryLabel(ctx),
+      "available": ok, "method": gateMethod, "assurance": "hardware", "label": biometryLabel(ctx),
     ]
     if !ok {
       out["reason"] = "Face ID or Touch ID is not set up on this device, or HumID is not allowed to use it."
@@ -87,7 +87,7 @@ class HumidGatePlugin: Plugin {
         invoke.resolve([
           "handle": ["id": id],
           "secret": released.base64EncodedString(),
-          "method": method,
+          "method": gateMethod,
           "assurance": "hardware",
           "detail": ["factor": "biometric"],
         ])
@@ -104,7 +104,7 @@ class HumidGatePlugin: Plugin {
         let secret = try Self.read(id: args.handle.id, prompt: args.prompt ?? "Confirm it's you")
         invoke.resolve([
           "secret": secret.base64EncodedString(),
-          "method": method,
+          "method": gateMethod,
           "assurance": "hardware",
           "detail": ["factor": "biometric"],
         ])
