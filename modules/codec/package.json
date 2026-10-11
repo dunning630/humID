@@ -1,0 +1,11 @@
+{
+  "name": "@humid/codec",
+  "version": "1.0.0",
+  "description": "HumID envelope container: binary framing only, no crypto. Envelope format v1.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": {
+    "provides": { "envelope-format": 1 }
+  },
+  "license": "UNLICENSED"
+}

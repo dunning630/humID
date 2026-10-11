@@ -1,0 +1,29 @@
+// Identity record migrations. Each step upgrades one schema number.
+// Add a step, bump IDENTITY_SCHEMA, ship. Never edit a released step.
+
+export const IDENTITY_SCHEMA = 2;
+
+const steps = {
+  // 1 -> 2: original single-file app stored WebAuthn/demo fields at the top
+  // level; gates are now pluggable, so move them under `gate`.
+  1(r) {
+    const { credId, prfSalt, demoSecret, mode, ...rest } = r;
+    const gate = mode === "demo"
+      ? { adapter: "demo", handle: { id: credId, demoSecret } }
+      : { adapter: "webauthn-prf", handle: { credId, prfSalt } };
+    return { ...rest, mode, bindingId: credId, gate, schema: 2 };
+  },
+};
+
+export function migrateIdentity(raw) {
+  let record = raw;
+  let changed = false;
+  let v = record.schema || 1;
+  if (v > IDENTITY_SCHEMA) throw new Error("This identity was saved by a newer HumID. Update the app to open it.");
+  while (v < IDENTITY_SCHEMA) {
+    record = steps[v](record);
+    v = record.schema;
+    changed = true;
+  }
+  return { record, changed };
+}

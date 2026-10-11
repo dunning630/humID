@@ -1,0 +1,83 @@
+name: CI
+
+# Every push / PR: test the modules, then compile only the platforms the
+# change actually touches (tools/affected.mjs decides).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  modules:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.affected.outputs.matrix }}
+      any: ${{ steps.affected.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Module tests (incl. compatibility with the original web app)
+        run: npm test
+      - name: Bundle web layer + module contract check
+        run: npm run build:web
+      - name: Work out affected platforms
+        id: affected
+        run: |
+          BASE=${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+          OUT=$(node tools/affected.mjs "$BASE")
+          echo "$OUT"
+          echo "matrix=$(echo "$OUT" | jq -c .matrix)" >> "$GITHUB_OUTPUT"
+          echo "any=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
+
+  compile:
+    needs: modules
+    if: needs.modules.outputs.any == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.modules.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || matrix.platform == 'android' && 'aarch64-linux-android' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: shell/src-tauri }
+      - name: Linux system libraries
+        if: matrix.platform == 'linux' || matrix.platform == 'android'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev
+      - name: Android NDK
+        if: matrix.platform == 'android'
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with: { ndk-version: r27c }
+      - name: Android NDK toolchain on PATH
+        if: matrix.platform == 'android'
+        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+      - run: npm run build:web
+      - name: Compile (desktop)
+        if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
+        working-directory: shell/src-tauri
+        run: cargo build --locked || cargo build
+      - name: Compile (iOS library)
+        if: matrix.platform == 'ios'
+        working-directory: shell/src-tauri
+        run: cargo build --target aarch64-apple-ios --lib
+      - name: Compile (Android library)
+        if: matrix.platform == 'android'
+        working-directory: shell/src-tauri
+        env:
+          CC_aarch64_linux_android: aarch64-linux-android24-clang
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
+        run: cargo build --target aarch64-linux-android --lib

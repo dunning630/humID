@@ -1,0 +1,11 @@
+{
+  "name": "@humid/store",
+  "version": "1.0.0",
+  "description": "Identity and vault persistence with per-record schema migrations.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": {
+    "provides": { "identity-schema": 2, "db": "humid@1" }
+  },
+  "license": "UNLICENSED"
+}

@@ -1,0 +1,9 @@
+node_modules/
+shell/dist/
+shell/src-tauri/target/
+shell/src-tauri/gen/
+plugins/humid-gate/target/
+plugins/humid-gate/ios/.build/
+plugins/humid-gate/android/.tauri/
+plugins/humid-gate/ios/.tauri/
+.DS_Store
