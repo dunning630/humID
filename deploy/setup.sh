@@ -20,10 +20,16 @@ fi
 docker compose up -d --build
 echo "Waiting for the gateway…"
 for _ in $(seq 1 30); do
-  fp="$(docker compose logs gateway 2>/dev/null | grep -o '"fingerprint":"[^"]*"' | tail -1 | cut -d'"' -f4)"
-  [ -n "$fp" ] && break; sleep 2
+  line="$(docker compose logs gateway 2>/dev/null | grep '"server identity"' | tail -1)"
+  [ -n "$line" ] && break; sleep 2
 done
+fp="$(echo "$line" | grep -o '"fingerprint":"[^"]*"' | cut -d'"' -f4)"
+kid="$(echo "$line" | grep -o '"kid":"[^"]*"' | cut -d'"' -f4)"
 echo
 echo "HumID is running at https://$domain"
 echo "Server fingerprint: ${fp:-see 'docker compose logs gateway'}"
-echo "Pin this fingerprint in the app build (HUMID_SERVER_KID) for production."
+echo
+echo "To build apps that trust only this server, set these repository variables on GitHub"
+echo "(Settings > Secrets and variables > Actions > Variables), then run Actions > Release apps:"
+echo "  HUMID_SERVER_URL = https://$domain"
+echo "  HUMID_SERVER_KID = ${kid:-<64-hex kid from 'docker compose logs gateway'>}"

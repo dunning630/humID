@@ -51,15 +51,16 @@ device safely. There are three.
 
 ```
 New device N                         Server (recovery)               Your device E (signed in)
-link keys L <- ephemeral ML-KEM + X25519
+biometric bind; D_N and link seed L
+  wrapped under N's gate
 POST /links {L.pk}           ----->  code = base32(SHA3("HUMID-LINK-v1" ‖ L.pk))[0:12]
 shows XXXX-XXXX-XXXX                                         <-----  user types the code
                                      GET /links/:code        ----->  recompute code from L.pk; must match
                                                                      biometric: seal A to L.pk, signed by account key
                                      <-----  POST /links/:code/approve + step-up proof
-poll, open envelope with L.sk -> A
+poll; biometric: open envelope with L.sk -> A
 check: envelope signer == account key derived from A
-biometric bind; wrap A ‖ D_N; join with deviceMessage signatures
+wrap A ‖ D_N; join with deviceMessage signatures
 ```
 
 The code is a hash of N's public keys, so a server that swapped in its own
@@ -115,6 +116,19 @@ cancel as a card. Then the device opens the shares, rebuilds `A`, checks that
 `A` derives the expected account id, and joins.
 
 The contacts never see `A`, and neither does the server.
+
+## In the app
+
+| Where | What |
+|---|---|
+| Setup | The first device makes a recovery card under the same biometric check and asks you to store it before opening the vault. |
+| Welcome → I already have HumID | Choose another device, your card or your contacts. This device binds its biometric first, so a 72-hour wait survives closing the app. |
+| Security → Devices | Add a device (type its code), remove a lost one. |
+| Security → Recovery | Make or replace your card, choose 2–5 contacts, be someone's contact, help someone recover. |
+| Vault and Security | An alert while any recovery of your HumID is in progress, with a cancel button. |
+
+`npm run dev` shortens the wait to 2 minutes (`RECOVERY_DELAY_MS`) so you can
+try every path on one machine.
 
 ## Losing a device
 
