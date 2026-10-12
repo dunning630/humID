@@ -4,11 +4,13 @@
 import * as esbuild from "esbuild";
 import { copyFile, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const uiDir = path.dirname(require.resolve("@humid/ui"));
-const out = new URL("./dist/", import.meta.url).pathname;
+// fileURLToPath, not .pathname: on Windows .pathname yields "/D:/..." which is not a valid path.
+const out = fileURLToPath(new URL("./dist/", import.meta.url));
 const watch = process.argv.includes("--watch");
 
 // Each module's version is stamped into the bundle so the running app (and a
