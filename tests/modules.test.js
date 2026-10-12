@@ -1,7 +1,7 @@
 // Module-boundary tests: migrations, gate contract, suite registry, codec.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { migrateIdentity, IDENTITY_SCHEMA } from "../modules/store/src/migrations.js";
+import { migrateIdentity, IDENTITY_SCHEMA } from "../packages/store/src/migrations.js";
 import { suite, supportedSuites, suiteForEnvelope } from "@humid/crypto";
 import { adapter, GATE_CONTRACT, assertAdapter } from "@humid/gate";
 import { unpack, isEnvelope } from "@humid/codec";
@@ -13,6 +13,7 @@ test("legacy hardware identity migrates to the gate layout", () => {
   assert.equal(record.schema, IDENTITY_SCHEMA);
   assert.deepEqual(record.gate, { adapter: "webauthn-prf", handle: { credId: "Q1JFRA==", prfSalt: "U0FMVA==" } });
   assert.equal(record.bindingId, "Q1JFRA==");
+  assert.equal(record.server, null); // schema 3: not yet registered with a vault server
 });
 
 test("legacy demo identity keeps its secret", () => {

@@ -1,49 +1,58 @@
 name: CI
 
-# Every push / PR: test the modules, then compile only the platforms the
-# change actually touches (tools/affected.mjs decides).
+# Every push / PR:
+#   1. unit, protocol and end-to-end tests (all services in-process)
+#   2. compile only the app platforms the change touches
+#   3. build only the service images the change touches, then boot the whole
+#      stack with docker compose and run the smoke test against it over TLS
+# tools/affected.mjs decides what "touches" means.
 
 on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch: # manual run: compiles all five platforms
+  workflow_dispatch: # manual run: everything
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  modules:
+  test:
     runs-on: ubuntu-22.04
     outputs:
-      matrix: ${{ steps.affected.outputs.matrix }}
-      any: ${{ steps.affected.outputs.any }}
+      apps: ${{ steps.affected.outputs.apps }}
+      services: ${{ steps.affected.outputs.services }}
+      anyApps: ${{ steps.affected.outputs.anyApps }}
+      anyServices: ${{ steps.affected.outputs.anyServices }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Module tests (incl. compatibility with the original web app)
-        run: npm test
-      - name: Bundle web layer + module contract check
-        run: npm run build:web
-      - name: Work out affected platforms
+      - name: Tests (crypto compatibility, HTP/1 protocol, services end to end)
+        run: npm test && npm run test:e2e
+        env: { NODE_NO_WARNINGS: "1" }
+      - name: Build the app bundle (module contract check included)
+        run: npm run build:app
+      - name: Work out what this change affects
         id: affected
         run: |
           BASE=${{ github.event_name == 'workflow_dispatch' && 'none' || github.event.pull_request.base.sha || 'HEAD~1' }}
           OUT=$(node tools/affected.mjs "$BASE")
-          echo "$OUT"
-          echo "matrix=$(echo "$OUT" | jq -c .matrix)" >> "$GITHUB_OUTPUT"
-          echo "any=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
+          echo "$OUT" | jq .
+          echo "apps=$(echo "$OUT" | jq -c .appMatrix)" >> "$GITHUB_OUTPUT"
+          echo "services=$(echo "$OUT" | jq -c .serviceMatrix)" >> "$GITHUB_OUTPUT"
+          echo "anyApps=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
+          echo "anyServices=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
 
-  compile:
-    needs: modules
-    if: needs.modules.outputs.any == 'true'
+  app:
+    needs: test
+    if: needs.test.outputs.anyApps == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.modules.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.test.outputs.apps) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +63,7 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || matrix.platform == 'android' && 'aarch64-linux-android' || '' }}
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: shell/src-tauri }
+        with: { workspaces: apps/mobile/src-tauri }
       - name: Linux system libraries
         if: matrix.platform == 'linux' || matrix.platform == 'android'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev
@@ -66,20 +75,84 @@ jobs:
       - name: Android NDK toolchain on PATH
         if: matrix.platform == 'android'
         run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - run: npm run build:web
+      - run: npm run build:app
       - name: Compile (desktop)
         if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
-        working-directory: shell/src-tauri
+        working-directory: apps/mobile/src-tauri
         shell: bash
-        run: ../../tools/ci-cargo.sh build
+        run: ../../../tools/ci-cargo.sh build
       - name: Compile (iOS library)
         if: matrix.platform == 'ios'
-        working-directory: shell/src-tauri
-        run: ../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
+        working-directory: apps/mobile/src-tauri
+        run: ../../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
       - name: Compile (Android library)
         if: matrix.platform == 'android'
-        working-directory: shell/src-tauri
+        working-directory: apps/mobile/src-tauri
         env:
           CC_aarch64_linux_android: aarch64-linux-android24-clang
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
-        run: ../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
+        run: ../../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
+
+  images:
+    needs: test
+    if: needs.test.outputs.anyServices == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.test.outputs.services) }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build humid-${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service == 'edge' && 'services/edge/Dockerfile' || 'services/Dockerfile' }}
+          build-args: SERVICE=${{ matrix.service }}
+          tags: humid-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          outputs: type=docker,dest=/tmp/humid-${{ matrix.service }}.tar
+      - uses: actions/upload-artifact@v4
+        with: { name: "image-${{ matrix.service }}", path: "/tmp/humid-${{ matrix.service }}.tar", retention-days: 1 }
+
+  stack:
+    needs: [test, images]
+    if: needs.test.outputs.anyServices == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with: { pattern: "image-*", path: /tmp/images, merge-multiple: true }
+      - name: Load images built in this run; build the rest
+        working-directory: deploy
+        run: |
+          for t in /tmp/images/*.tar; do docker load -i "$t"; done
+          for s in gateway identity vault ledger edge; do
+            if docker image inspect "humid-$s:ci" >/dev/null 2>&1; then docker tag "humid-$s:ci" "local/humid-$s:ci"; fi
+          done
+          node ../services/gateway/src/server.js keygen 2>/dev/null > .env || true
+          echo "HUMID_DOMAIN=localhost" >> .env
+          export HUMID_REGISTRY=local HUMID_VERSION=ci
+          missing=$(for s in gateway identity vault ledger edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
+          if [ -n "$missing" ]; then docker compose build --pull $missing; fi
+      - name: Boot the stack (docker compose)
+        working-directory: deploy
+        env: { HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: |
+          docker compose up -d
+          for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
+          docker compose ps
+      - name: Smoke test over TLS + HTP/1
+        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1" } # Caddy's local CA in CI only
+        run: |
+          curl -sk https://localhost/ | grep -q '<div id="app">'
+          node tests/smoke.mjs https://localhost
+      - name: Logs on failure
+        if: failure()
+        working-directory: deploy
+        env: { HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: docker compose logs --no-color | tail -200

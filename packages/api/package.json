@@ -1,0 +1,10 @@
+{
+  "name": "@humid/api",
+  "version": "1.0.0",
+  "description": "App-side client for HumID services over HTP/1: enrolment, sign-in, vault, ledger.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": { "requires": { "htp": 1 } },
+  "dependencies": { "@humid/htp": "^1.0.0", "@humid/audit": "^1.0.0" },
+  "license": "UNLICENSED"
+}
