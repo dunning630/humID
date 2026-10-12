@@ -14,6 +14,8 @@ test("legacy hardware identity migrates to the gate layout", () => {
   assert.deepEqual(record.gate, { adapter: "webauthn-prf", handle: { credId: "Q1JFRA==", prfSalt: "U0FMVA==" } });
   assert.equal(record.bindingId, "Q1JFRA==");
   assert.equal(record.server, null); // schema 3: not yet registered with a vault server
+  assert.equal(record.device, null);  // schema 4: no device key yet, so it must be set up again
+  assert.equal(record.pending, null);
 });
 
 test("legacy demo identity keeps its secret", () => {

@@ -20,6 +20,13 @@ export function Vault() {
         <button class="icon-btn" aria-label="Lock now" onClick={lockNow}><Icon name="lock" /></button>
       </div>
 
+      {S.alerts.value.length > 0 && (
+        <button class="banner bad alert-banner" onClick={() => { S.tab.value = "security"; window.scrollTo({ top: 0 }); }}>
+          <span class="b-ico"><Icon name="alert" /></span>
+          <div><strong>Someone is recovering your HumID</strong><span>From {S.alerts.value[0].platform}. If this isn't you, cancel it in Security.</span></div>
+        </button>
+      )}
+
       {all.length > 0 && (
         <>
           <label class="search">

@@ -1,16 +1,21 @@
 // App state as signals. Screens read these; only core/controller.js writes them.
 import { signal, computed } from "@preact/signals";
 
-export const view = signal("boot");          // boot | welcome | enroll | locked | app
+export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
 export const tab = signal("vault");          // vault | activity | security
-export const enrollStep = signal(0);         // 0 connect · 1 bind · 2 done
+export const enrollStep = signal(0);         // 0 connect · 1 bind · 2 done + recovery card
 
-export const identity = signal(null);        // local identity record (public parts + wrapped seed)
+// A new device joining an existing account (another device, a recovery card, or recovery contacts).
+export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
+export const joinMethod = signal(null);      // link | card | contacts
+export const joinStatus = signal(null);      // last polled status from the server
+
+export const identity = signal(null);        // local identity record (public parts + wrapped seeds)
 export const hwGate = signal(null);          // { adapter, probe } strongest hardware gate on this device
-export const server = signal(null);          // { url, kid, fingerprint }
+export const server = signal(null);          // { url, kid, fingerprint, policy }
 export const serverError = signal(null);
-export const session = signal(null);
-export const lockIssue = signal(null);      // e.g. "unknown_identity" after a server reset         // { id, assurance, gateMethod, expiresAt, idleTimeoutMs }
+export const session = signal(null);         // { id, device, assurance, gateMethod, expiresAt, idleTimeoutMs }
+export const lockIssue = signal(null);       // unknown_identity | server_identity_changed | device_removed
 
 export const items = signal([]);             // decrypted index entries
 export const usage = signal(null);
@@ -20,12 +25,19 @@ export const query = signal("");
 export const ledger = signal(null);          // verified ledger page
 export const ledgerLoading = signal(false);
 
+export const devices = signal(null);         // this account's devices (from the identity service)
+export const recovery = signal(null);        // { card, contacts: { n, threshold, names[] } }
+export const alerts = signal([]);            // recoveries in progress for this account
+export const cardCode = signal(null);        // a recovery card to show once, then forget
+
 export const interrupt = signal(null);       // overlay state
 export const sheet = signal(null);           // { type, ... }
 export const viewer = signal(null);          // decrypted preview
 export const toasts = signal([]);
-export const idleDeadline = signal(0);    // when the app auto-locks
+export const idleDeadline = signal(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);
+
+export const demoAllowed = computed(() => (server.value?.policy?.minAssurance ?? "none") === "none");
 
 export const visibleItems = computed(() => {
   const q = query.value.trim().toLowerCase();

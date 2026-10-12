@@ -129,3 +129,42 @@ export function AssurancePill({ assurance }) {
   if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />OS biometric</span>;
   return <span class="pill amber"><Icon name="info" />Demo · no sensor</span>;
 }
+
+/* ---------------- codes, cards, countdowns ---------------- */
+
+/** Re-render every second; returns now. */
+export function useNow(ms = 1000) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), ms); return () => clearInterval(t); }, [ms]);
+  return now;
+}
+
+/** "2 d 4 h", "3 h 12 min", "4:05" */
+export function fmtLeft(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return `${d} d ${h} h`;
+  if (h) return `${h} h ${m} min`;
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** A 12-character code to read from one screen and type on another. */
+export function CodeBox({ code, label }) {
+  const groups = (code || "").replace(/-/g, "").match(/.{1,4}/g) || [];
+  return (
+    <div class="codebox" aria-label={label || "Code"} role="group">
+      {groups.map((g, i) => <span key={i}>{g}</span>)}
+    </div>
+  );
+}
+
+/** The recovery card, as it should be written down. */
+export function CardBox({ code }) {
+  const [prefix, ...groups] = (code || "").split("-");
+  return (
+    <div class="cardbox" role="group" aria-label="Recovery card">
+      <div class="eyebrow">Recovery card</div>
+      <div class="cardcode"><b>{prefix}</b>{groups.map((g, i) => <span key={i}>{g}</span>)}</div>
+    </div>
+  );
+}

@@ -1,6 +1,6 @@
 // Local development: the whole HumID stack on your machine, no Docker.
 //   npm run dev        → http://localhost:5173
-// Runs identity, vault, ledger and gateway in-process (fresh data each run
+// Runs identity, vault, ledger, recovery and gateway in-process (fresh data each run
 // unless HUMID_DEV_DATA is set), serves the built app, and proxies /htp/* to
 // the gateway exactly as the Caddy edge does in production.
 import http from "node:http";
@@ -11,7 +11,8 @@ import { startStack } from "../tests/e2e/stack.js";
 
 const PORT = Number(process.env.PORT || 5173);
 const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
-const stack = await startStack();
+// Recovery normally waits 72 hours; locally it's 2 minutes so you can try it (RECOVERY_DELAY_MS to change).
+const stack = await startStack({ recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), minAssurance: process.env.HUMID_MIN_ASSURANCE || "none" });
 const gw = new URL(stack.baseUrl);
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json" };

@@ -5,7 +5,7 @@ import { render } from "preact";
 import * as S from "./core/state.js";
 import { boot } from "./core/controller.js";
 import { InterruptOverlay, Toasts, TabBar } from "./ui.jsx";
-import { Welcome, Enroll, Lock } from "./screens/onboarding.jsx";
+import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
 import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
 import { Activity } from "./screens/activity.jsx";
 import { Security } from "./screens/security.jsx";
@@ -19,6 +19,7 @@ function App() {
       {v === "boot" && <main class="screen"><div class="hero"><Mark state="scanning" /></div></main>}
       {v === "welcome" && <Welcome />}
       {v === "enroll" && <Enroll />}
+      {v === "join" && <Join />}
       {v === "locked" && <Lock />}
       {v === "app" && (
         <>
