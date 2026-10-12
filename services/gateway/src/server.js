@@ -1,7 +1,7 @@
 // gateway — the only HumID service reachable from the internet (behind the
-// TLS edge). It terminates HTP/1, binds sessions to identities with
-// biometric-signed proofs, checks step-up proofs, and forwards whitelisted
-// calls to internal services with a short-lived signed assertion.
+// TLS edge). It terminates HTP/1, binds sessions to an account and one of its
+// devices with biometric-signed proofs, checks step-up proofs, and forwards
+// whitelisted calls to internal services with a short-lived signed assertion.
 //
 // Invariant: no document ciphertext leaves the vault without a matching
 // ledger record. If the ledger cannot record the access, the gateway refuses.
@@ -13,22 +13,62 @@ import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics 
 import { MEDIA_TYPE, loginMessage, stepUpMessage, verify, proofHash, STEP_UP_MAX_AGE_MS, random, utf8 } from "@humid/htp";
 
 const ID_RE = "hid_[0-9a-f]{40}";
+const DEV_RE = "dev_[0-9a-f]{24}";
 const OBJ_RE = "[0-9a-f-]{36}";
+const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
+const REQ_RE = "[A-Za-z0-9_-]{22}";
+const REF_RE = "[0-9a-f]{16}";
+/** Biometric gate strength, weakest first. "none" = demo mode (press-and-hold, no sensor). */
+const RANK = { none: 0, os: 1, hardware: 2 };
+const re = (s) => new RegExp(`^${s}$`);
 
-/** Inner routes the app may call. Anything else is a 404 — internal routes are unreachable from outside. */
+/**
+ * Inner routes the app may call. Anything else is a 404, so internal routes
+ * are unreachable from outside. auth = needs a signed-in session; anon = open
+ * to a session that has not signed in (a new device that has no keys yet).
+ */
 const ROUTES = [
-  { m: "POST", p: /^\/auth\/register$/, h: "register" },
-  { m: "POST", p: /^\/auth\/challenge$/, h: "challenge" },
-  { m: "POST", p: /^\/auth\/login$/, h: "login" },
-  { m: "POST", p: /^\/auth\/logout$/, h: "logout" },
-  { m: "GET", p: /^\/identity\/me$/, to: "identity", path: "/me", auth: true },
-  { m: "DELETE", p: /^\/identity\/me$/, h: "closeIdentity", auth: true },
-  { m: "GET", p: /^\/vault\/objects$/, to: "vault", path: "/objects", auth: true },
-  { m: "POST", p: /^\/vault\/objects$/, to: "vault", path: "/objects", auth: true, event: "object.sealed" },
-  { m: "GET", p: new RegExp(`^/vault/objects/(${OBJ_RE})$`), to: "vault", path: "/objects/$1", auth: true, event: "object.opened", audited: true },
-  { m: "PATCH", p: new RegExp(`^/vault/objects/(${OBJ_RE})$`), to: "vault", path: "/objects/$1", auth: true, event: "object.updated" },
-  { m: "DELETE", p: new RegExp(`^/vault/objects/(${OBJ_RE})$`), to: "vault", path: "/objects/$1", auth: true, event: "object.deleted", audited: true },
-  { m: "GET", p: /^\/ledger\/events$/, to: "ledger", path: "/events", auth: true },
+  { m: "POST", p: re("/auth/register"), h: "register" },
+  { m: "POST", p: re("/auth/device"), h: "enrollDevice" },
+  { m: "POST", p: re("/auth/challenge"), h: "challenge" },
+  { m: "POST", p: re("/auth/login"), h: "login" },
+  { m: "POST", p: re("/auth/logout"), h: "logout" },
+
+  { m: "GET", p: re("/identity/me"), to: "identity", path: "/me", auth: true },
+  { m: "DELETE", p: re("/identity/me"), h: "closeIdentity", auth: true },
+  { m: "DELETE", p: re(`/identity/devices/(${DEV_RE})`), h: "removeDevice", auth: true },
+
+  { m: "GET", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true },
+  { m: "POST", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true, event: "object.sealed" },
+  { m: "GET", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.opened", audited: true },
+  { m: "PATCH", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.updated" },
+  { m: "DELETE", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.deleted", audited: true },
+
+  { m: "GET", p: re("/ledger/events"), to: "ledger", path: "/events", auth: true },
+
+  // add a device you still have
+  { m: "POST", p: re("/recovery/links"), to: "recovery", path: "/links", anon: true },
+  { m: "GET", p: re(`/recovery/links/(${CODE_RE})`), to: "recovery", path: "/links/$1", auth: true },
+  { m: "POST", p: re(`/recovery/links/(${CODE_RE})/approve`), to: "recovery", path: "/links/$1/approve", auth: true, event: "device.link_approved", audited: true, detail: (r, su) => ({ platform: r?.platform, proof: su?.proof }) },
+  { m: "GET", p: re(`/recovery/links/(${CODE_RE})/result`), to: "recovery", path: "/links/$1/result", anon: true },
+  // recovery card
+  { m: "GET", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true },
+  { m: "PUT", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, event: "recovery.card_set", detail: (r, su) => ({ proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, event: "recovery.card_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  // recovery contacts
+  { m: "POST", p: re("/recovery/offers"), to: "recovery", path: "/offers", auth: true },
+  { m: "GET", p: re(`/recovery/offers/(${CODE_RE})`), to: "recovery", path: "/offers/$1", auth: true },
+  { m: "GET", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true },
+  { m: "PUT", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, event: "recovery.contacts_set", detail: (r, su) => ({ n: r?.n, threshold: r?.threshold, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, event: "recovery.contacts_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  { m: "GET", p: re("/recovery/protecting"), to: "recovery", path: "/protecting", auth: true },
+  // recovering on a new device
+  { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
+  { m: "GET", p: re(`/recovery/requests/(${REQ_RE})`), to: "recovery", path: "/requests/$1", anon: true },
+  { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
+  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true },
+  { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
+  { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
 ];
 
 const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
@@ -56,12 +96,25 @@ export function createGateway({
     identity: env("IDENTITY_URL", "http://identity:8081"),
     vault: env("VAULT_URL", "http://vault:8082"),
     ledger: env("LEDGER_URL", "http://ledger:8083"),
+    recovery: env("RECOVERY_URL", "http://recovery:8084"),
   },
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
+  // Weakest biometric gate this server accepts: "none" (demo mode allowed, the POC default),
+  // "os" (OS-enforced, e.g. Linux fprintd) or "hardware" (Secure Enclave / Keystore / TPM).
+  minAssurance = env("HUMID_MIN_ASSURANCE", "none"),
 } = {}) {
   const log = logger("gateway");
+  if (!Object.hasOwn(RANK, minAssurance)) throw new Error(`HUMID_MIN_ASSURANCE must be one of ${Object.keys(RANK).join(", ")}`);
+  const levelOf = (a) => (Object.hasOwn(RANK, a) ? a : "none");
+  const requireAssurance = (a) => {
+    if (RANK[levelOf(a)] < RANK[minAssurance]) {
+      throw new HttpError(403, "assurance_too_low", minAssurance === "hardware"
+        ? "This server needs a hardware-backed biometric (Face ID, Touch ID or a strong fingerprint sensor)."
+        : "This server does not accept demo identities.");
+    }
+  };
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
@@ -70,12 +123,13 @@ export function createGateway({
   if (existsSync(keyFile)) statics = importStatics(JSON.parse(readFileSync(keyFile, "utf8")));
   else { statics = createStatics(); writeFileSync(keyFile, JSON.stringify(exportStatics(statics)), { mode: 0o600 }); }
   const htp = new HtpServer(statics);
-  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint });
+  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, minAssurance });
   setInterval(() => htp.sweep(), 60_000).unref();
 
   const helloLimit = new Buckets(30, 60_000);   // per client IP
   const callLimit = new Buckets(600, 60_000);   // per session
   const loginLimit = new Buckets(10, 300_000);  // per identity
+  const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
 
   const clientIp = (req) => (trustProxy && req.headers["x-forwarded-for"]?.split(",")[0].trim()) || req.socket.remoteAddress;
 
@@ -90,7 +144,7 @@ export function createGateway({
         headers: { "x-humid-assertion": assertion, ...headers },
         body: body && body.length ? body : undefined,
       });
-    } catch (e) {
+    } catch {
       throw new HttpError(503, `${service}_unavailable`, `${service} service is unavailable`);
     }
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -102,6 +156,7 @@ export function createGateway({
     const r = await internal(service, method, path, { ...opts, body: opts.json ? utf8(JSON.stringify(opts.json)) : opts.body, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
     return { status: r.status, data: r.body.length ? JSON.parse(Buffer.from(r.body).toString()) : null };
   };
+  const fail = (r) => { throw new HttpError(r.status, r.data?.error || "error", r.data?.message || "Request failed"); };
 
   async function record(sub, type, detail) {
     let r;
@@ -112,39 +167,62 @@ export function createGateway({
   }
   const recordQuietly = (sub, type, detail) => record(sub, type, detail).catch((e) => log.warn("ledger write failed", { type, err: e.message }));
 
-  const claimsFor = (s, extra = {}) => ({ sub: s.subject, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance, ...extra });
+  const claimsFor = (s, extra = {}) => ({ sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance, ...extra });
 
-  function bindSession(s, identity, interrupt, platform) {
-    s.subject = identity.id;
-    s.dsaPk = unb64u(identity.dsaPk);
-    s.dsaFp = identity.dsaFp;
-    s.kemFp = identity.kemFp;
-    s.assurance = ["hardware", "os", "none"].includes(interrupt?.assurance) ? interrupt.assurance : "none";
-    s.gateMethod = String(interrupt?.method || "unknown").slice(0, 64);
-    s.platform = String(platform || "unknown").slice(0, 32);
+  /** Bind a session to an account and the device that proved itself. */
+  function bindSession(s, view, interrupt) {
+    s.subject = view.id;
+    s.deviceId = view.device.id;
+    s.dsaPk = unb64u(view.deviceDsaPk); // device key: verifies step-up proofs
+    s.dsaFp = view.dsaFp;               // account key: signs envelopes
+    s.kemFp = view.kemFp;
+    s.assurance = levelOf(interrupt?.assurance);
+    s.gateMethod = String(interrupt?.method || view.device.gateMethod || "unknown").slice(0, 64);
+    s.platform = String(view.device.platform || "unknown").slice(0, 40);
     s.authAt = Date.now();
   }
-  const sessionView = (s) => ({ id: s.subject, assurance: s.assurance, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs });
+  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, ...extra });
+  const dropWhere = (pred) => { for (const x of [...htp.sessions.values()]) if (pred(x)) htp.drop(x); };
 
-  /* ---------- auth handlers (run inside the encrypted channel) ---------- */
+  /* ---------- handlers (run inside the encrypted channel) ---------- */
 
   const handlers = {
+    // First device: create the account and enrol this device.
     async register(s, body) {
-      const r = parseJson(body);
+      const r = parseJson(body) || {};
+      requireAssurance(r.device?.assurance);
       const reg = await internalJson("identity", "POST", "/internal/register", {
         json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device },
       });
-      if (reg.status >= 300) return { status: reg.status, json: reg.data };
-      bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance }, r.device?.platform);
+      if (reg.status >= 300) fail(reg);
+      bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
-      await recordQuietly(s.subject, "session.opened", { platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
-      return { status: reg.status, json: { ...sessionView(s), created: reg.status === 201 } };
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
+      return { status: reg.status, json: sessionView(s, { created: reg.status === 201 }) };
+    },
+
+    // Another device joins an account it now holds the seed of (device link or recovery).
+    async enrollDevice(s, body) {
+      const r = parseJson(body) || {};
+      if (!re(ID_RE).test(String(r.account))) throw new HttpError(400, "bad_identity", "Unknown identity format");
+      requireAssurance(r.device?.assurance);
+      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), via: r.via, device: r.device } });
+      if (add.status >= 300) fail(add);
+      bindSession(s, add.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: String(r.via), method: s.gateMethod, assurance: s.assurance });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
+      if (r.recoveryId && re(REQ_RE).test(String(r.recoveryId))) {
+        const done = await internalJson("recovery", "POST", `/requests/${r.recoveryId}/complete`, { json: { account: s.subject } });
+        if (done.status === 200) await recordQuietly(s.subject, "recovery.completed", { method: done.data.method, ref: done.data.ref, device: s.deviceId, platform: s.platform });
+      }
+      return { status: 201, json: sessionView(s, { created: add.status === 201 }) };
     },
 
     async challenge(s, body) {
-      const { id } = parseJson(body) || {};
-      if (!new RegExp(`^${ID_RE}$`).test(String(id))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      s.challenge = { id, nonce: random(32), exp: Date.now() + 120_000 };
+      const { id, device } = parseJson(body) || {};
+      if (!re(ID_RE).test(String(id)) || !re(DEV_RE).test(String(device))) throw new HttpError(400, "bad_identity", "Unknown identity format");
+      s.challenge = { id, device, nonce: random(32), exp: Date.now() + 120_000 };
       return { status: 200, json: { challenge: b64u(s.challenge.nonce), expiresAt: s.challenge.exp } };
     },
 
@@ -152,24 +230,39 @@ export function createGateway({
       const r = parseJson(body) || {};
       const c = s.challenge;
       s.challenge = null; // one attempt per challenge
-      if (!c || c.id !== r.id || Date.now() > c.exp) throw new HttpError(400, "challenge_invalid", "Request a new challenge");
+      if (!c || c.id !== r.id || c.device !== r.device || Date.now() > c.exp) throw new HttpError(400, "challenge_invalid", "Request a new challenge");
       if (!loginLimit.take(r.id)) throw new HttpError(429, "rate_limited", "Too many sign-in attempts. Wait a few minutes.");
+      requireAssurance(r.interrupt?.assurance);
       const v = await internalJson("identity", "POST", "/internal/verify", {
-        json: { id: r.id, sig: r.sig, message: b64u(loginMessage(s.th, r.id, c.nonce)) },
+        json: { account: r.id, device: r.device, sig: r.sig, message: b64u(loginMessage(s.th, `${r.id}/${r.device}`, c.nonce)) },
       });
-      if (v.status !== 200 || !v.data?.ok) {
-        if (v.status === 401) await recordQuietly(r.id, "access.denied", { reason: "bad_login_proof" });
-        throw new HttpError(v.status === 404 ? 404 : 401, v.status === 404 ? "unknown_identity" : "bad_proof", v.status === 404 ? "This identity is not registered on this server." : "Sign-in proof was rejected.");
+      if (v.status === 401) {
+        await recordQuietly(r.id, "access.denied", { reason: "bad_login_proof", device: r.device });
+        throw new HttpError(401, "bad_proof", "Sign-in proof was rejected.");
       }
-      bindSession(s, v.data, r.interrupt, r.device?.platform);
-      await recordQuietly(s.subject, "session.opened", { platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
+      if (v.status === 403 && v.data?.error === "device_removed") {
+        await recordQuietly(r.id, "access.denied", { reason: "device_removed", device: r.device });
+      }
+      if (v.status !== 200) fail(v);
+      bindSession(s, v.data, r.interrupt);
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
       return { status: 200, json: sessionView(s) };
     },
 
     async logout(s) {
-      if (s.subject) await recordQuietly(s.subject, "session.closed", {});
+      if (s.subject) await recordQuietly(s.subject, "session.closed", { device: s.deviceId });
       s.closeAfterReply = true;
       return { status: 200, json: { closed: true } };
+    },
+
+    async removeDevice(s, body, stepUp, m) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Removing a device needs a fresh biometric check.");
+      const id = m[1];
+      const r = await internalJson("identity", "DELETE", `/devices/${id}`, { claims: claimsFor(s, { stepUp }) });
+      if (r.status !== 200) fail(r);
+      dropWhere((x) => x.subject === s.subject && x.deviceId === id); // its open sessions end now
+      await recordQuietly(s.subject, "device.removed", { device: id, platform: r.data.device?.platform, proof: stepUp.proof });
+      return { status: 200, json: r.data };
     },
 
     async closeIdentity(s, body, stepUp) {
@@ -178,10 +271,36 @@ export function createGateway({
       const wiped = await internalJson("vault", "DELETE", "/objects", { claims });
       if (wiped.status !== 200) return { status: wiped.status, json: wiped.data };
       await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
+      await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
+      await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
+      const subject = s.subject;
       s.closeAfterReply = true;
+      dropWhere((x) => x !== s && x.subject === subject);
       return { status: closed.status, json: { closed: closed.status === 200, erasedItems: wiped.data.deleted } };
+    },
+
+    // A new device asks to recover. For a card the account is known now, so its devices are alerted now.
+    async startRecovery(s, body) {
+      const r = await internalJson("recovery", "POST", "/requests", { body });
+      if (r.status >= 300) fail(r);
+      if (r.data.account) {
+        await recordQuietly(r.data.account, "recovery.requested", { method: r.data.method, ref: r.data.ref, platform: r.data.platform, releaseAt: r.data.releaseAt });
+      }
+      return { status: 201, json: r.data };
+    },
+
+    // A recovery contact releases their share. Recorded in both people's ledgers.
+    async helpRecover(s, body, stepUp, m) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Releasing your piece needs a fresh biometric check.");
+      const r = await internalJson("recovery", "POST", `/help/${m[1]}`, { claims: claimsFor(s, { stepUp }), body });
+      if (r.status !== 200) fail(r);
+      const d = r.data;
+      if (d.first) await recordQuietly(d.owner, "recovery.requested", { method: "contacts", ref: d.ref, platform: d.platform });
+      await recordQuietly(d.owner, "recovery.approved", { ref: d.ref, contact: s.subject, approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt });
+      await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, proof: stepUp.proof });
+      return { status: 200, json: { approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt } };
     },
   };
 
@@ -192,8 +311,9 @@ export function createGateway({
     const route = ROUTES.find((r) => r.m === meta.m && r.p.test(url.pathname));
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
+    if (!s.subject && meta.m !== "GET" && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
-    // Step-up: a fresh biometric signature over exactly this request.
+    // Step-up: a fresh biometric signature over exactly this request, by this session's device key.
     let stepUp = null;
     if (meta.proof) {
       if (!s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
@@ -205,20 +325,25 @@ export function createGateway({
         throw new HttpError(401, "bad_proof", "Biometric proof was rejected.");
       }
       const i = meta.proof.interrupt || {};
-      stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: ["hardware", "os", "none"].includes(i.assurance) ? i.assurance : s.assurance };
+      stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: Object.hasOwn(RANK, i.assurance) ? i.assurance : s.assurance };
+      requireAssurance(stepUp.assurance);
     }
 
-    if (route.h) return handlers[route.h](s, body, stepUp);
+    if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p));
 
     const headers = {};
     for (const k of FORWARD_REQ_HEADERS) if (meta.h?.[k]) headers[k] = String(meta.h[k]);
     const path = url.pathname.replace(route.p, route.path) + url.search;
-    const res = await internal(route.to, meta.m, path, { claims: claimsFor(s, stepUp ? { stepUp } : {}), body, headers });
+    const claims = s.subject ? claimsFor(s, stepUp ? { stepUp } : {}) : { sid: s.sidText.slice(0, 8) };
+    const res = await internal(route.to, meta.m, path, { claims, body, headers });
 
     if (route.event) {
       const objectId = url.pathname.match(new RegExp(OBJ_RE))?.[0];
       if (res.status >= 200 && res.status < 300) {
-        const detail = { id: objectId || safeJson(res.body)?.id, size: route.event === "object.sealed" ? body.length : undefined, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) };
+        const out = safeJson(res.body);
+        const detail = route.detail
+          ? route.detail(out, stepUp)
+          : { id: objectId || out?.id, size: route.event === "object.sealed" ? body.length : undefined, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) };
         if (route.audited) await record(s.subject, route.event, detail); // fail closed: no record, no release
         else await recordQuietly(s.subject, route.event, detail);
       } else if (res.status === 403) {
@@ -230,7 +355,7 @@ export function createGateway({
 
   const safeJson = (b) => { try { return JSON.parse(Buffer.from(b).toString()); } catch { return null; } };
 
-  async function call({ req, body }) {
+  async function call({ body }) {
     let opened;
     try { opened = await htp.open(body); }
     catch (e) {
@@ -261,7 +386,9 @@ export function createGateway({
   };
 
   const routes = [
-    ["GET", "/htp/v1/keys", () => json(200, htp.publicKeys()), { public: true }], // never cached: a stale key bundle would hide a server change
+    // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
+    // UI; the gateway enforces it on every sign-in and step-up.
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { minAssurance } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

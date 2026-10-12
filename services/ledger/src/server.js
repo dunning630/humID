@@ -17,6 +17,10 @@ const EVENT_TYPES = new Set([
   "identity.created", "identity.closed", "session.opened", "session.closed",
   "object.sealed", "object.opened", "object.updated", "object.deleted", "vault.erased",
   "access.denied",
+  // devices and recovery (ledger 1.1)
+  "device.added", "device.removed", "device.link_approved",
+  "recovery.card_set", "recovery.card_removed", "recovery.contacts_set", "recovery.contacts_removed",
+  "recovery.requested", "recovery.approved", "recovery.helped", "recovery.cancelled", "recovery.completed",
 ]);
 
 export function createLedger({ port = Number(env("PORT", "8083")), dataDir = env("DATA_DIR", "/data"), internalPk = env("HUMID_INTERNAL_PK") } = {}) {
