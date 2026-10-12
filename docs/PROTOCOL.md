@@ -130,31 +130,55 @@ response meta       { s: status, h?: headers }
 
 ## Binding a person to the session
 
-The holder's identity keys are derived from a 64-byte seed that the device
-releases only after a live biometric check (Secure Enclave or Keystore on
-mobile; see `README.md` for each platform). Every proof below is an
-ML-DSA-87 signature made with that key during that check.
+A HumID account has an **account key** and one **device key** per device
+(see [RECOVERY.md](RECOVERY.md)). Both are ML-DSA-87 keys derived from seeds
+that a device releases only after a live biometric check (Secure Enclave or
+Keystore on mobile). Every proof below is made during that check.
 
 ```
-identity id   = "hid_" || hex(SHA3-256(dsaPk))[0:40]
+account id    = "hid_" || hex(SHA3-256(account dsaPk))[0:40]
+device id     = "dev_" || hex(SHA3-256(device dsaPk))[0:24]
 
-register      sig over "HTP/1 register" || lp(th, SHA3-256(kemPk), SHA3-256(dsaPk), xPk, commit)
-login         sig over "HTP/1 login"    || lp(th, id, challenge)          challenge: 32 random bytes, single use
-step-up       sig over "HTP/1 step-up"  || lp(th, u64 seq, METHOD, path, SHA3-256(body), u64 at)
+register      account key over "HTP/1 register" || lp(th, SHA3-256(kemPk), SHA3-256(dsaPk), xPk, commit)
+device        account key AND device key over "HTP/1 device" || lp(th, account id, SHA3-256(device dsaPk))
+login         device key over "HTP/1 login"   || lp(th, "<account id>/<device id>", challenge)   challenge: 32 random bytes, single use
+step-up       device key over "HTP/1 step-up" || lp(th, u64 seq, METHOD, path, SHA3-256(body), u64 at)
 ```
 
-- **Register** is proof of possession: the server stores public keys only if
-  the holder can sign with them, in this session.
-- **Login** answers a fresh single-use server challenge. Sign-in attempts are
-  rate-limited per identity.
-- **Step-up** is required for opening a document, deleting one, and closing
-  the identity. It names the exact request (sequence number, method, path,
-  body hash), is at most 60 seconds old, and is bound to this session through
-  `th`. A captured proof cannot be reused for another request, another
-  session, or later.
+- **Register** creates the account. It is proof of possession: the server
+  stores the account's public keys only if the holder can sign with them, in
+  this session. The first device is added in the same call with a `device`
+  statement.
+- **Device** adds a device. It needs two signatures over the same bytes: the
+  account key's (only a holder of the account seed can authorise a device)
+  and the new device key's (proof of possession). How a new device gets the
+  account seed is in [RECOVERY.md](RECOVERY.md).
+- **Login** answers a fresh single-use server challenge, signed by one device
+  key. A removed device's key is refused. Sign-in attempts are rate-limited
+  per account.
+- **Step-up** is required for opening, deleting or exporting a document,
+  approving a new device, removing one, changing recovery settings, helping
+  someone recover, cancelling a recovery, and closing the account. It names
+  the exact request (sequence number, method, path, body hash), is at most 60
+  seconds old, and is bound to this session through `th`. A captured proof
+  cannot be reused for another request, another session, or later.
 
 The gateway records `SHA3-256(sig)[0:16]` of each proof in the ledger as
 evidence that a biometric check preceded the action.
+
+## Key codes
+
+When one screen must tell another about public keys (a new device, a
+recovery contact, a recovery request), it shows a 12-character code:
+
+```
+code = Crockford-base32( SHA3-256(label || lp(public keys…)) )[0:12]      60 bits
+```
+
+The device that types the code recomputes it from the keys the server
+returns and refuses to continue on a mismatch (`code_mismatch`), so a server
+that substitutes its own keys is caught before anything is sealed. Labels:
+`HUMID-LINK-v1`, `HUMID-CONTACT-v1`, `HUMID-RECOVER-v1`.
 
 ## Errors
 
@@ -169,6 +193,9 @@ The client surfaces these codes:
 | `step_up_required` / `step_up_stale` / `bad_proof` | Sensitive request without a valid, fresh proof. Rejected proofs are logged as `access.denied`. |
 | `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, 10 sign-ins per 5 minutes per identity. |
 | `audit_unavailable` | The ledger could not record an access, so the access was refused (fail closed). |
+| `device_removed` | This device was removed from the account. |
+| `assurance_too_low` | The server requires a stronger biometric gate (`HUMID_MIN_ASSURANCE`). |
+| `code_mismatch` | A typed code doesn't match the keys the server returned. Hard stop. |
 
 ## Versioning
 

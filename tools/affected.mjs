@@ -9,16 +9,17 @@
 import { execFileSync } from "node:child_process";
 
 const APPS = ["ios", "android", "macos", "windows", "linux"];
-const NODE_SERVICES = ["gateway", "identity", "vault", "ledger"];
+const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery"];
 const SERVICES = [...NODE_SERVICES, "edge"];
 
 // Which shared package feeds which service image. Every package also feeds the app.
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
   htp: NODE_SERVICES,
-  crypto: ["vault"],
-  codec: ["vault"],
+  crypto: ["vault", "recovery"],
+  codec: ["vault", "recovery"],
   audit: ["ledger"],
+  recovery: ["recovery"],
   api: [], gate: [], store: [], io: [],
 };
 

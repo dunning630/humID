@@ -1,108 +1,84 @@
-# HumID Vault — native apps
+# HumID — safe, secure, simple personal-data vault (POC v2)
 
-One codebase, five apps: **iOS, Android, macOS, Windows, Linux**. HumID seals
-files with ML-KEM-1024 + X25519 and signs them with ML-DSA-87. Every key use
-is a *biological interrupt*: the keys exist in memory only after a live
-biometric check on the device, and only for the length of that operation.
+Your documents are sealed on your phone with post-quantum encryption, stored
+on a vault server that can't read them, and opened again only after a live
+face or fingerprint check. Three parts:
 
-Built on [Tauri 2](https://tauri.app): a thin native shell around the system
-webview (WKWebView, WebView2, WebKitGTK, Android WebView). Typical installers
-are 3–10 MB. The whole web layer is about 300 KB, fonts included, and the app
-makes no network calls.
+| Part | Where | What |
+|---|---|---|
+| **App** | `apps/mobile` | iOS and Android (Tauri 2), plus an installable web app. Brand: humidsecure.ai. |
+| **Transit** | `packages/htp` | HTP/1: hybrid ML-KEM-1024 + X25519 handshake, AES-256-GCM frames, biometric step-up proofs, inside TLS 1.3. |
+| **Server** | `services/` | Six small services: edge, gateway, identity, vault, ledger, recovery. Docker compose. |
 
-## Architecture
+Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
+[docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
+[docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
+[docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
+doesn't yet), and [deploy/README.md](deploy/README.md) (running a server).
 
-```
-modules/                     independently versioned JS packages
-  codec/   @humid/codec      .humid envelope framing (format v1)
-  crypto/  @humid/crypto     sealing-suite registry; ships HUMID-PQ1
-  gate/    @humid/gate       biometric gate contract + adapters (native, WebAuthn, demo)
-  store/   @humid/store      identity + vault storage, per-record migrations
-  io/      @humid/io         save dialog / download
-  ui/      @humid/ui         screens; talks to the others only via their interfaces
-plugins/
-  humid-gate/                Rust crate + Swift + Kotlin: the native biometric gate
-shell/                       the app shell (Tauri); bundles modules into dist/
-tools/affected.mjs           maps a change to the modules and platforms it touches
-tests/                       module tests + compatibility test against the original app
-```
+## Try it on your machine
 
-Each module declares what it **provides** and **requires** in its
-`package.json` (`"humid": {...}`). The shell build refuses to bundle an
-incompatible combination, so modules can ship on their own schedule.
-
-### The biometric gate on each platform
-
-| Platform | How the key is protected | Biometric only? | Assurance |
-|---|---|---|---|
-| iOS | Keychain item, `.biometryCurrentSet`, Secure Enclave policy | Yes (no passcode fallback) | hardware |
-| Android | Keystore AES-256 key (StrongBox if present), auth-per-use `BIOMETRIC_STRONG` | Yes | hardware |
-| macOS | Data-protection keychain, `.biometryCurrentSet` (Touch ID) | Yes | hardware |
-| Windows | Windows Hello KeyCredential (TPM-backed where present) | **No**: Hello also accepts the PIN | hardware |
-| Linux | fprintd fingerprint match, secret in Secret Service keyring | Fingerprint, but enforced by HumID, not hardware | os |
-| Browser | WebAuthn platform authenticator + PRF (the original web app) | Depends on the authenticator | hardware |
-
-Every envelope's signed manifest records the gate `method` and `assurance`,
-and the UI labels envelopes by assurance, so a weaker gate is never presented
-as a stronger one.
-
-**Biometric changes are destructive by design.** On iOS, macOS and Android,
-adding or removing a face or fingerprint invalidates the gate key, and the
-identity on that device can no longer be unlocked. Envelopes not exported
-before that point cannot be recovered. See *Open decisions* below.
-
-## Develop
-
-Prerequisites: Node 22, Rust (stable), plus the
-[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+Needs Node 22.
 
 ```bash
 npm install
-npm test                      # module + compatibility tests
-npm run tauri -- dev          # desktop app on this machine
-npm run tauri -- android dev  # needs Android Studio, SDK, NDK
-npm run tauri -- ios dev      # needs a Mac with Xcode
+npm test && npm run test:e2e   # crypto, protocol, every service end to end
+npm run build:app
+npm run dev                    # whole stack, no Docker → http://localhost:5173
 ```
 
-The first run on a phone needs the mobile project generated once:
-`npm run tauri -- android init` / `npm run tauri -- ios init`.
+Open http://localhost:5173 in a normal and a private window to try two
+devices: create a HumID in one, then choose *I already have HumID* in the
+other. (Browsers allow the app's encryption only on `localhost` or HTTPS, so
+to use a phone, deploy a server or put the dev server behind an HTTPS tunnel.)
+Without a fingerprint sensor, use demo mode (press and hold). Locally, card
+and contact recovery waits 2 minutes instead of 72 hours.
 
-## Build installers
+## What you can do in the app
 
-Locally: `npm run tauri -- build` builds for the machine you are on.
+- **Create** a HumID: bind it to your face or fingerprint, get a recovery card.
+- **Seal** photos, PDFs and files; search and sort them by category. The
+  server never learns their names.
+- **Open** a document with a fresh biometric check each time. Every access is
+  in your **Activity** log, which your phone verifies for itself.
+- **Add devices** with a 12-character code; **remove** a lost one.
+- **Recover** on a new phone with another device, your recovery card, or your
+  recovery contacts (any majority of 2–5 people). Card and contact recoveries
+  wait 72 hours and alert your devices, which can cancel.
 
-In CI: **Actions → Release apps → Run workflow**, then choose the platforms
-(`all`, or e.g. `windows`). Each platform builds on its own runner and uploads
-its installers. Pushing a tag `app-vX.Y.Z` builds all five into a draft GitHub
-release. See `RELEASING.md`.
+## Layout
 
-| Platform | Output | Signing needed for |
-|---|---|---|
-| Linux | `.deb`, `.rpm`, `.AppImage` | nothing |
-| Windows | `.msi`, `-setup.exe` | SmartScreen reputation (optional) |
-| Android | `.apk`, `.aab` | Play Store upload (unsigned APK sideloads) |
-| macOS | `.dmg` | **Touch ID**: the keychain entitlement only works in a signed build |
-| iOS | `.ipa` | **any device install**: App Store / TestFlight |
+```
+apps/mobile/         the app (Preact) + Tauri project for iOS/Android/desktop
+packages/            independently versioned modules
+  codec crypto gate store io       envelope format, HUMID-PQ1, biometric gates, storage, files
+  htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger checks, service kit
+plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
+services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
+deploy/              docker compose + setup.sh for a real server
+tests/               unit, protocol, end-to-end and smoke tests
+tools/               dev server, change detection for CI
+```
 
-Apple builds need an Apple Developer account (Team ID, a Developer ID or
-distribution certificate, and an App Store Connect API key). The secrets the
-workflow expects are listed at the top of `.github/workflows/release.yml`.
+## Builds and releases
 
-## Compatibility with the original web app
+- **Every push:** tests, then only the apps and service images the change
+  touches (`node tools/affected.mjs` shows what it decided). CI also boots the
+  full stack with docker compose and runs the smoke test over TLS.
+- **Server images:** published to `ghcr.io/dunning630/humid-<service>` on merge
+  to `main`, again only the ones that changed.
+- **Apps:** Actions → *Release apps* → choose platforms. Set
+  `HUMID_SERVER_URL` and `HUMID_SERVER_KID` repository variables first so the
+  apps pin your server. Without signing secrets you still get an installable
+  Android APK and a Linux build; iOS needs an Apple Developer account.
 
-`tests/compat.test.js` runs the crypto from the original single-file
-HumID Vault next to `@humid/crypto` and proves that both derive identical
-keys, wrap seeds identically, and open each other's envelopes. Identities
-created in the web version migrate automatically (`@humid/store`, schema 1 → 2).
+Details: [RELEASING.md](RELEASING.md).
 
-## Open decisions
+## Status
 
-- **Recovery.** A lost device or a biometric change means a lost identity.
-  Options: an exportable recovery kit (seed under a passphrase), multi-device
-  enrolment (seal to several identities), or accept it as the security model.
-- **Windows PIN.** Windows Hello cannot be restricted to biometrics through
-  its public API. The alternative is the Windows Biometric Framework
-  (fingerprint only, but no TPM-bound key).
-- **Linux hardware binding.** A FIDO2 security key with a built-in fingerprint
-  reader (e.g. YubiKey Bio) would give Linux a hardware-assurance gate. It
-  slots in as one more gate adapter.
+A working proof of concept, not a product yet. The cryptography uses
+standard, audited primitives, but HumID's protocol and recovery design need an
+independent review before real customer data goes in.
+[docs/SECURITY.md](docs/SECURITY.md) lists what's left.
+
+Private and patent pending. Not for redistribution.
