@@ -1,0 +1,9 @@
+{
+  "name": "@humid/audit",
+  "version": "1.0.0",
+  "description": "Ledger entry format and chain verification, shared by the ledger service and the app.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "dependencies": { "@humid/htp": "^1.0.0" },
+  "license": "UNLICENSED"
+}

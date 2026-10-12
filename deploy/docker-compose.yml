@@ -1,0 +1,97 @@
+# HumID server stack.  cd deploy && ./setup.sh   (first time)
+#                      docker compose up -d      (afterwards)
+#
+# Only the edge is reachable from outside. Every other service sits on an
+# internal network with no route to the internet, runs read-only, as non-root,
+# with all Linux capabilities dropped, and owns its own data volume.
+
+name: humid
+
+x-service: &service
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [internal]
+  environment: &env
+    HUMID_INTERNAL_PK: ${HUMID_INTERNAL_PK:?run ./setup.sh first}
+  healthcheck: &health
+    interval: 10s
+    timeout: 3s
+    retries: 5
+
+services:
+  edge:
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-edge:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/edge/Dockerfile }
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      HUMID_DOMAIN: ${HUMID_DOMAIN:?set HUMID_DOMAIN in deploy/.env}
+    volumes: [caddy-data:/data, caddy-config:/config]
+    networks: [public, internal]
+    depends_on:
+      gateway: { condition: service_healthy }
+
+  gateway:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-gateway:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: gateway } }
+    environment:
+      HUMID_INTERNAL_SK: ${HUMID_INTERNAL_SK:?run ./setup.sh first}
+      PORT: "8080"
+      IDENTITY_URL: http://identity:8081
+      VAULT_URL: http://vault:8082
+      LEDGER_URL: http://ledger:8083
+      TRUST_PROXY: "1"
+      HUMID_ALLOWED_ORIGINS: ${HUMID_ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
+    volumes: [gateway-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    depends_on:
+      identity: { condition: service_healthy }
+      vault: { condition: service_healthy }
+      ledger: { condition: service_healthy }
+
+  identity:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-identity:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: identity } }
+    environment: { <<: *env, PORT: "8081" }
+    volumes: [identity-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+  vault:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-vault:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: vault } }
+    environment: { <<: *env, PORT: "8082", VAULT_QUOTA_BYTES: "${VAULT_QUOTA_BYTES:-262144000}" }
+    volumes: [vault-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+  ledger:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-ledger:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: ledger } }
+    environment: { <<: *env, PORT: "8083" }
+    volumes: [ledger-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8083/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+networks:
+  public: {}
+  internal: { internal: true }
+
+volumes:
+  caddy-data: {}
+  caddy-config: {}
+  gateway-data: {}
+  identity-data: {}
+  vault-data: {}
+  ledger-data: {}

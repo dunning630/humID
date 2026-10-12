@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/target
+**/gen
+apps/mobile/src-tauri
+plugins
+.git
+tests/fixtures

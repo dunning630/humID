@@ -1,9 +1,11 @@
 node_modules/
-shell/dist/
-shell/src-tauri/target/
-shell/src-tauri/gen/
+apps/mobile/dist/
+apps/mobile/src-tauri/target/
+apps/mobile/src-tauri/gen/
+services/*/dist/
 plugins/humid-gate/target/
 plugins/humid-gate/ios/.build/
 plugins/humid-gate/android/.tauri/
 plugins/humid-gate/ios/.tauri/
+.data/
 .DS_Store

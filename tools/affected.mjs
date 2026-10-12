@@ -1,81 +1,91 @@
 #!/usr/bin/env node
-// Which modules and which platform apps does a change touch?
+// What does a change touch? Decides which apps to rebuild and which service
+// images to rebuild, so a fix ships as the smallest possible release.
 //
-//   node tools/affected.mjs [baseRef]        (default base: origin/main)
+//   node tools/affected.mjs [baseRef|none]      (default base: origin/main; "none" = everything)
 //
-// Prints JSON: { modules: [...], platforms: [...], matrix: {include: [...]} }.
-// CI feeds `matrix` to the build job, so a fix in the Windows gate rebuilds
-// and ships only the Windows app, and a docs change ships nothing.
+// Prints JSON: { modules, platforms, services, appMatrix, serviceMatrix }.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
 
-const ALL = ["ios", "android", "macos", "windows", "linux"];
+const APPS = ["ios", "android", "macos", "windows", "linux"];
+const NODE_SERVICES = ["gateway", "identity", "vault", "ledger"];
+const SERVICES = [...NODE_SERVICES, "edge"];
 
-// Most specific rule wins; first match in this list.
-const RULES = [
-  [/^plugins\/humid-gate\/src\/desktop\/windows\.rs$/, ["windows"]],
-  [/^plugins\/humid-gate\/src\/desktop\/macos\.rs$/, ["macos"]],
-  [/^plugins\/humid-gate\/src\/desktop\/linux\.rs$/, ["linux"]],
-  [/^plugins\/humid-gate\/src\/desktop\//, ["macos", "windows", "linux"]],
-  [/^plugins\/humid-gate\/src\/mobile\.rs$/, ["ios", "android"]],
-  [/^plugins\/humid-gate\/ios\//, ["ios"]],
-  [/^plugins\/humid-gate\/android\//, ["android"]],
-  [/^plugins\/humid-gate\//, ALL],
-  [/^shell\/src-tauri\/Entitlements\.plist$/, ["macos"]],
-  [/^shell\/src-tauri\/Info\.ios\.plist$/, ["ios"]],
-  [/^shell\/src-tauri\/icons\/android\//, ["android"]],
-  [/^shell\/src-tauri\/icons\/ios\//, ["ios"]],
-  [/^shell\//, ALL],
-  [/^modules\//, ALL], // the web layer is bundled into every app
-  [/^package(-lock)?\.json$/, ALL],
-  // Changing how apps are built must rebuild them all.
-  [/^\.github\/workflows\/|^tools\/ci-cargo\.sh$|^tools\/android-signing\.py$/, ALL],
-  [/^(tests|tools|docs)\/|\.md$|^\.changeset\//, []],
-  [/^\.github\//, []],
-];
-
-const RUNNERS = {
-  ios: "macos-14", macos: "macos-14", windows: "windows-latest", linux: "ubuntu-22.04", android: "ubuntu-22.04",
+// Which shared package feeds which service image. Every package also feeds the app.
+const PKG_SERVICES = {
+  svc: NODE_SERVICES,
+  htp: NODE_SERVICES,
+  crypto: ["vault"],
+  codec: ["vault"],
+  audit: ["ledger"],
+  api: [], gate: [], store: [], io: [],
 };
 
+// [pattern, apps, services] — first match wins.
+const RULES = [
+  [/^plugins\/humid-gate\/src\/desktop\/windows\.rs$/, ["windows"], []],
+  [/^plugins\/humid-gate\/src\/desktop\/macos\.rs$/, ["macos"], []],
+  [/^plugins\/humid-gate\/src\/desktop\/linux\.rs$/, ["linux"], []],
+  [/^plugins\/humid-gate\/src\/desktop\//, ["macos", "windows", "linux"], []],
+  [/^plugins\/humid-gate\/src\/mobile\.rs$/, ["ios", "android"], []],
+  [/^plugins\/humid-gate\/ios\//, ["ios"], []],
+  [/^plugins\/humid-gate\/android\//, ["android"], []],
+  [/^plugins\/humid-gate\//, APPS, []],
+  [/^apps\/mobile\/src-tauri\/Entitlements\.plist$/, ["macos"], []],
+  [/^apps\/mobile\/src-tauri\/Info\.ios\.plist$/, ["ios"], []],
+  [/^apps\/mobile\/src-tauri\/icons\/android\//, ["android"], []],
+  [/^apps\/mobile\/src-tauri\/icons\/ios\//, ["ios"], []],
+  [/^apps\/mobile\/src-tauri\//, APPS, []],
+  [/^apps\/mobile\//, APPS, ["edge"]], // the web app also ships inside the edge image
+  [/^services\/(Dockerfile|build-service\.mjs)$/, [], NODE_SERVICES],
+  [/^services\/edge\//, [], ["edge"]],
+  [/^services\/([a-z]+)\//, [], (m) => [m[1]]],
+  [/^package(-lock)?\.json$/, APPS, SERVICES],
+  [/^\.github\/workflows\/|^tools\/ci-cargo\.sh$|^tools\/android-signing\.py$/, APPS, SERVICES],
+  [/^deploy\//, [], SERVICES],
+  [/^(tests|tools|docs)\/|\.md$|^\.changeset\/|^\.dockerignore$|^\.gitignore$/, [], []],
+  [/^\.github\//, [], []],
+];
+
+const RUNNERS = { ios: "macos-14", macos: "macos-14", windows: "windows-latest", linux: "ubuntu-22.04", android: "ubuntu-22.04" };
+
 const base = process.argv[2] || "origin/main";
-let files;
-try {
-  files = execFileSync("git", ["diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean);
-} catch {
-  files = null; // no git history (first commit, shallow clone): build everything
+let files = null;
+if (base !== "none") {
+  try {
+    files = execFileSync("git", ["diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean);
+  } catch { files = null; } // no usable history: rebuild everything
 }
 
-const platforms = new Set(files ? [] : ALL);
+const apps = new Set(files ? [] : APPS);
+const services = new Set(files ? [] : SERVICES);
 const modules = new Set();
 for (const f of files || []) {
-  const m = f.match(/^modules\/([^/]+)\//);
-  if (m) modules.add(`@humid/${m[1]}`);
-  if (f.startsWith("plugins/humid-gate/")) modules.add("tauri-plugin-humid-gate");
-  if (f.startsWith("shell/")) modules.add("@humid/shell");
-  const rule = RULES.find(([re]) => re.test(f));
-  for (const p of rule ? rule[1] : ALL) platforms.add(p);
-}
-
-// A module change also affects every module that depends on it.
-const pkgs = Object.fromEntries(
-  readdirSync("modules").map((d) => {
-    const p = JSON.parse(readFileSync(`modules/${d}/package.json`, "utf8"));
-    return [p.name, Object.keys(p.dependencies || {})];
-  }),
-);
-let grew = true;
-while (grew) {
-  grew = false;
-  for (const [name, deps] of Object.entries(pkgs)) {
-    if (!modules.has(name) && deps.some((d) => modules.has(d))) { modules.add(name); grew = true; }
+  const pkg = f.match(/^packages\/([^/]+)\//);
+  if (pkg) {
+    modules.add(`@humid/${pkg[1]}`);
+    APPS.forEach((a) => apps.add(a));
+    services.add("edge");
+    (PKG_SERVICES[pkg[1]] ?? NODE_SERVICES).forEach((s) => services.add(s));
+    continue;
   }
+  if (f.startsWith("plugins/humid-gate/")) modules.add("tauri-plugin-humid-gate");
+  if (f.startsWith("apps/mobile/")) modules.add("@humid/mobile");
+  const svc = f.match(/^services\/([a-z]+)\//);
+  if (svc && SERVICES.includes(svc[1])) modules.add(`@humid/${svc[1]}-service`);
+  const rule = RULES.find(([re]) => re.test(f));
+  if (!rule) { APPS.forEach((a) => apps.add(a)); SERVICES.forEach((s) => services.add(s)); continue; }
+  rule[1].forEach((a) => apps.add(a));
+  (typeof rule[2] === "function" ? rule[2](f.match(rule[0])) : rule[2]).filter((s) => SERVICES.includes(s)).forEach((s) => services.add(s));
 }
 
-const list = ALL.filter((p) => platforms.has(p));
+const platforms = APPS.filter((p) => apps.has(p));
+const svcList = SERVICES.filter((s) => services.has(s));
 console.log(JSON.stringify({
   modules: [...modules].sort(),
-  platforms: list,
-  matrix: { include: list.map((platform) => ({ platform, runner: RUNNERS[platform] })) },
+  platforms,
+  services: svcList,
+  appMatrix: { include: platforms.map((platform) => ({ platform, runner: RUNNERS[platform] })) },
+  serviceMatrix: { include: svcList.map((service) => ({ service })) },
 }));
