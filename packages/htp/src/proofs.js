@@ -14,6 +14,18 @@ export const identityId = (dsaPk) => "hid_" + toHex(sha3_256(dsaPk)).slice(0, 40
 export const registerMessage = (th, keys, commit) =>
   concat(utf8("HTP/1 register"), lp(th, sha3_256(keys.kemPk), sha3_256(keys.dsaPk), keys.xPk, utf8(commit)));
 
+/** Device id, derived from the device's own ML-DSA-87 key (not the account key). */
+export const deviceId = (dsaPk) => "dev_" + toHex(sha3_256(dsaPk)).slice(0, 24);
+
+/**
+ * A device joins an account. Signed twice over the same bytes: by the account
+ * key (only a holder of the account seed can authorise a device) and by the
+ * device key (proof of possession). Bound to this session's transcript.
+ */
+export const deviceMessage = (th, accountId, deviceDsaPk) =>
+  concat(utf8("HTP/1 device"), lp(th, utf8(accountId), sha3_256(deviceDsaPk)));
+
+/** Sign-in proof. `id` is "<account id>/<device id>"; the device key signs it. */
 export const loginMessage = (th, id, challenge) =>
   concat(utf8("HTP/1 login"), lp(th, utf8(id), challenge));
 

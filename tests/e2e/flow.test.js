@@ -4,37 +4,11 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startStack } from "./stack.js";
 import { HumidApi } from "@humid/api";
-import { suite } from "@humid/crypto";
-import { ml_dsa87, toHex, sha3_256, random } from "@humid/htp";
+import { makeHolder, register, sealFor } from "./holder.js";
 
 let stack;
 before(async () => { stack = await startStack(); });
 after(async () => { await stack?.stop(); });
-
-/** A simulated phone: identity seed + the biometric gate as a callback. */
-function makeHolder(label) {
-  const S = suite();
-  const seed = random(64);
-  const keys = S.deriveKeys(seed);
-  const pub = S.publicOf(keys);
-  const commit = toHex(S.identityCommit(pub, sha3_256(new TextEncoder().encode(label))));
-  const interrupt = { method: "test-gate", assurance: "hardware" };
-  const signRaw = (m) => ml_dsa87.sign(m, keys.dsaSk);
-  return {
-    label, S, keys, pub, commit, interrupt,
-    sign: async (m) => ({ sig: signRaw(m), interrupt }),
-    stepUp: async ({ message }) => ({ sig: signRaw(message), interrupt }),
-    indexKey: S.indexKey(seed),
-    device: { platform: "test", gateMethod: "test-gate", assurance: "hardware" },
-  };
-}
-
-async function sealFor(h, name, text) {
-  const bytes = new TextEncoder().encode(text);
-  const { envelope } = await h.S.seal({ bytes, name, type: "text/plain" }, h.keys, h.pub, { identityCommit: h.commit, interrupt: { ...h.interrupt, purpose: "seal", at: new Date().toISOString() } });
-  const index = await h.S.sealIndex(h.indexKey, { name, type: "text/plain", size: bytes.length, category: "personal" });
-  return { envelope, index };
-}
 
 let alice, aliceApi, aliceId, docId;
 
@@ -49,25 +23,29 @@ test("server presents a stable identity the app can pin", async () => {
 test("enrol: register proves key possession and opens a session", async () => {
   alice = makeHolder("alice-device");
   aliceApi = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
-  const session = await aliceApi.register({ pub: alice.pub, commit: alice.commit, device: alice.device, sign: (m) => ml_dsa87.sign(m, alice.keys.dsaSk) });
+  const session = await aliceApi.register({ pub: alice.pub, commit: alice.commit, device: alice.device, sign: alice.registerSign });
   assert.equal(session.created, true);
   assert.match(session.id, /^hid_[0-9a-f]{40}$/);
   aliceId = session.id;
   const me = await aliceApi.me();
   assert.equal(me.id, aliceId);
+  assert.equal(me.devices.length, 1);
   assert.equal(me.devices[0].assurance, "hardware");
+  assert.equal(me.devices[0].id, alice.deviceId);
+  assert.equal(me.devices[0].current, true);
+  assert.equal(session.device, alice.deviceId);
 });
 
 test("registering with someone else's public key fails proof of possession", async () => {
   const mallory = makeHolder("mallory");
   const api = new HumidApi({ baseUrl: stack.baseUrl });
-  await assert.rejects(api.register({ pub: alice.pub, commit: alice.commit, device: {}, sign: (m) => ml_dsa87.sign(m, mallory.keys.dsaSk) }), /Proof of possession/);
+  await assert.rejects(api.register({ pub: alice.pub, commit: alice.commit, device: mallory.device, sign: mallory.registerSign }), /Proof of possession/);
 });
 
 test("sign out, then sign back in with a biometric-signed challenge", async () => {
   await aliceApi.logout();
   assert.equal(aliceApi.signedIn, false);
-  const s = await aliceApi.login({ id: aliceId, device: alice.device, sign: alice.sign });
+  const s = await aliceApi.login({ id: aliceId, device: alice.deviceId, sign: alice.sign });
   assert.equal(s.id, aliceId);
   assert.equal(s.assurance, "hardware");
 });
@@ -75,7 +53,9 @@ test("sign out, then sign back in with a biometric-signed challenge", async () =
 test("a login signed by the wrong key is refused", async () => {
   const mallory = makeHolder("mallory");
   const api = new HumidApi({ baseUrl: stack.baseUrl });
-  await assert.rejects(api.login({ id: aliceId, device: {}, sign: mallory.sign }), /rejected/);
+  await assert.rejects(api.login({ id: aliceId, device: alice.deviceId, sign: mallory.sign }), /rejected/);
+  // and an account key alone is not a device key
+  await assert.rejects(api.login({ id: aliceId, device: alice.deviceId, sign: async (m) => ({ sig: (await import("@humid/htp")).ml_dsa87.sign(m, alice.keys.dsaSk), interrupt: alice.interrupt }) }), /rejected/);
 });
 
 test("seal on device, upload, list without the server learning the name", async () => {
@@ -118,8 +98,7 @@ test("a step-up proof signed by another key is rejected", async () => {
 
 test("another identity cannot see or fetch Alice's items", async () => {
   const bob = makeHolder("bob2");
-  const bobApi = new HumidApi({ baseUrl: stack.baseUrl });
-  await bobApi.register({ pub: bob.pub, commit: bob.commit, device: bob.device, sign: (m) => ml_dsa87.sign(m, bob.keys.dsaSk) });
+  const bobApi = await register(bob, stack.baseUrl);
   assert.equal((await bobApi.list()).items.length, 0);
   await assert.rejects(bobApi.download(docId, bob.stepUp), (e) => e.status === 404);
 });
@@ -128,7 +107,7 @@ test("the access ledger verifies on the device and records every access", async 
   const l = await aliceApi.ledger();
   assert.equal(l.ok, true, l.reason);
   const types = l.entries.map((e) => e.type);
-  for (const t of ["identity.created", "session.opened", "session.closed", "object.sealed", "access.denied", "object.opened"]) {
+  for (const t of ["identity.created", "device.added", "session.opened", "session.closed", "object.sealed", "access.denied", "object.opened"]) {
     assert.ok(types.includes(t), `ledger has ${t}`);
   }
   const opened = l.entries.find((e) => e.type === "object.opened");
@@ -141,7 +120,9 @@ test("a tampered ledger page fails verification on the device", async () => {
   const res = await aliceApi.htp.call("GET", "/ledger/events");
   const page = res.json();
   const forged = structuredClone(page);
-  forged.entries[1].body = forged.entries[1].body.replace("session.opened", "session.closed");
+  const target = forged.entries.findIndex((e) => e.body.includes("session.opened"));
+  assert.ok(target >= 0, "ledger has a session.opened entry to tamper with");
+  forged.entries[target].body = forged.entries[target].body.replace("session.opened", "session.closed");
   assert.equal(verifyLedger(page).ok, true);
   assert.equal(verifyLedger(forged).ok, false);
   const dropped = structuredClone(page);
@@ -179,5 +160,5 @@ test("closing the identity erases the vault and ends the session", async () => {
   assert.equal(r.closed, true);
   assert.equal(aliceApi.signedIn, false);
   const api = new HumidApi({ baseUrl: stack.baseUrl });
-  await assert.rejects(api.login({ id: aliceId, device: {}, sign: alice.sign }), /not registered|rejected/);
+  await assert.rejects(api.login({ id: aliceId, device: alice.deviceId, sign: alice.sign }), (e) => e.code === "unknown_identity");
 });

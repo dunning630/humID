@@ -43,7 +43,9 @@ export class HtpClient {
     if (this.pinnedKid && kid !== this.pinnedKid) {
       throw new HtpError("server_identity_changed", "This server's identity does not match the one this app trusts. Refusing to connect.");
     }
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)) };
+    // policy is a UI hint (e.g. whether demo identities are accepted); the server enforces it.
+    const minAssurance = ["none", "os", "hardware"].includes(j.policy?.minAssurance) ? j.policy.minAssurance : "none";
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { minAssurance } };
     return this.server;
   }
 
