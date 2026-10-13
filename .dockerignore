@@ -4,5 +4,6 @@
 **/gen
 apps/mobile/src-tauri
 plugins
+!plugins/humid-gate/Cargo.toml
 .git
 tests/fixtures
