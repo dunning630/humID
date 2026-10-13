@@ -19,6 +19,21 @@ export class ApiError extends Error {
 
 const ENVELOPE_TYPE = "application/vnd.humid.envelope";
 
+/** The request each step-up approves, by API method name. */
+const STEP_UP = {
+  download: (id) => ["GET", `/vault/objects/${id}`],
+  remove: (id) => ["DELETE", `/vault/objects/${id}`],
+  removeDevice: (id) => ["DELETE", `/identity/devices/${id}`],
+  closeIdentity: () => ["DELETE", "/identity/me"],
+  approveLink: (code) => ["POST", `/recovery/links/${codeOf(code)}/approve`],
+  setCard: () => ["PUT", "/recovery/card"],
+  removeCard: () => ["DELETE", "/recovery/card"],
+  setContacts: () => ["PUT", "/recovery/contacts"],
+  removeContacts: () => ["DELETE", "/recovery/contacts"],
+  help: (code) => ["POST", `/recovery/help/${codeOf(code)}`],
+  cancelAlert: (ref) => ["POST", `/recovery/alerts/${ref}/cancel`],
+};
+
 /**
  * A code a person typed commits to public keys. Recompute it from the keys the
  * server returned: a server that swapped in its own keys is caught here.
@@ -40,6 +55,20 @@ export class HumidApi {
     this.session = null;
     this.onSignedOut = null;
     this.htp.onSessionLost = () => { this.session = null; this.onSignedOut?.("expired"); };
+  }
+
+  /**
+   * Reserve the request slot for a step-up BEFORE the biometric check, so the
+   * device's liveness key can sign exactly that request during the check:
+   *   const t = await api.ticket("download", id);   // t.live: bytes to sign in hardware
+   *   …biometric check signs t.live…
+   *   await api.download(id, { ticket: t, sign: (message) => ({ sig, interrupt, live }) });
+   */
+  ticket(name, ...args) {
+    const route = STEP_UP[name];
+    if (!route) throw new Error(`No step-up for ${name}`);
+    const [method, path] = route(...args);
+    return this.htp.ticket(method, path);
   }
 
   /** Server identity, for display ("Connected to … · 7A3F-91C2-…") and pinning, plus its policy hint. */
@@ -65,16 +94,17 @@ export class HumidApi {
 
   /**
    * Create an account and enrol this device, in a fresh session.
-   * `sign({ register, device })` runs inside ONE biometric interrupt and returns
-   * { registerSig, sigAccount, sigDevice }: the account key signs both messages,
-   * the device key signs `device`.
+   * `sign({ register, device, th })` runs inside ONE biometric interrupt and returns
+   * { registerSig, sigAccount, sigDevice, live?, gateMethod?, assurance? }: the account
+   * key signs both messages, the device key signs `device`, and the device's hardware
+   * liveness key (made and attested for `th`) signs `device` too.
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
   async register({ pub, commit, device, sign }) {
     await this.htp.connect();
     const th = this.htp.transcript;
-    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk) });
+    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
     this.session = await this.#json("POST", "/auth/register", {
       body: {
         kemPk: b64u(pub.kemPk), dsaPk: b64u(pub.dsaPk), xPk: b64u(pub.xPk), commit, sig: b64u(sigs.registerSig),
@@ -86,21 +116,24 @@ export class HumidApi {
 
   /**
    * Join an existing account (after a device link or a recovery), in a fresh session.
-   * `sign(message)` returns { sigAccount, sigDevice } over the same message.
+   * `sign(message, th)` returns { sigAccount, sigDevice, live?, gateMethod?, assurance? } over the same message.
    */
   async enrollDevice({ account, device, via, recoveryId, sign }) {
     await this.htp.connect();
-    const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk));
+    const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
     this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, device: deviceBody(device, sigs) } });
     return this.session;
   }
 
-  /** Sign in. `sign(message)` runs the biometric interrupt and returns { sig, interrupt } (device key). */
+  /**
+   * Sign in. `sign(message)` runs the biometric interrupt and returns
+   * { sig (device key), interrupt, live? (liveness key, same message) }.
+   */
   async login({ id, device, sign }) {
     await this.htp.connect();
     const { challenge } = await this.#json("POST", "/auth/challenge", { body: { id, device } });
-    const { sig, interrupt } = await sign(loginMessage(this.htp.transcript, `${id}/${device}`, unb64u(challenge)));
-    this.session = await this.#json("POST", "/auth/login", { body: { id, device, sig: b64u(sig), interrupt } });
+    const { sig, interrupt, live } = await sign(loginMessage(this.htp.transcript, `${id}/${device}`, unb64u(challenge)));
+    this.session = await this.#json("POST", "/auth/login", { body: { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}) } });
     return this.session;
   }
 
@@ -233,7 +266,17 @@ export class HumidApi {
 function deviceBody(device, sigs) {
   return {
     dsaPk: b64u(device.dsaPk), sigAccount: b64u(sigs.sigAccount), sigDevice: b64u(sigs.sigDevice),
-    platform: device.platform, gateMethod: device.gateMethod, assurance: device.assurance,
+    platform: device.platform, gateMethod: sigs.gateMethod ?? device.gateMethod, assurance: sigs.assurance ?? device.assurance,
+    ...(sigs.live ? { live: liveBody(sigs.live) } : {}),
+  };
+}
+
+/** live: { pub, sig, attestation?: { kind: "android-key", chain: [DER] } | { kind: "apple-app-attest", object } } (bytes) */
+function liveBody(l) {
+  const a = l.attestation;
+  return {
+    pub: b64u(l.pub), sig: b64u(l.sig),
+    ...(a ? { attestation: a.kind === "android-key" ? { kind: a.kind, chain: a.chain.map((c) => b64u(c)) } : { kind: a.kind, object: b64u(a.object) } } : {}),
   };
 }
 

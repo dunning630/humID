@@ -1,6 +1,6 @@
 {
   "name": "@humid/vault-service",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Zero-knowledge store for sealed HumID envelopes.",
   "type": "module",
@@ -14,9 +14,10 @@
   },
   "dependencies": {
     "@humid/svc": "^1.0.0",
-    "@humid/htp": "^1.0.0",
+    "@humid/htp": "^1.1.0",
     "@humid/crypto": "^1.0.0",
-    "@humid/codec": "^1.0.0"
+    "@humid/codec": "^1.0.0",
+    "@humid/attest": "^1.0.0"
   },
   "license": "UNLICENSED"
 }

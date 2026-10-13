@@ -4,7 +4,7 @@
 // Every proof is bound to this session's transcript hash, so it cannot be
 // replayed into another session; step-up proofs are also bound to one request.
 
-import { ml_dsa87, sha3_256, concat, lp, u64, utf8, toHex } from "./primitives.js";
+import { ml_dsa87, sha3_256, concat, lp, u64, utf8, toHex, fromHex } from "./primitives.js";
 
 export const STEP_UP_MAX_AGE_MS = 60 * 1000;
 
@@ -31,6 +31,17 @@ export const loginMessage = (th, id, challenge) =>
 
 export const stepUpMessage = (th, seq, method, path, body, at) =>
   concat(utf8("HTP/1 step-up"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), sha3_256(body || new Uint8Array(0)), u64(at)));
+
+/**
+ * What a device's hardware liveness key signs for a step-up: this session,
+ * this request slot, the method, the path and the time. The body is covered
+ * by the ML-DSA-87 step-up signature made with the same biometric check.
+ */
+export const liveMessage = (th, seq, method, path, at) =>
+  concat(utf8("HTP/1 live"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), u64(at)));
+
+/** What the liveness key signs when a document is sealed: the ciphertext's SHA3-512 (hex in the manifest). */
+export const sealLiveMessage = (ciphertextSha3Hex) => concat(utf8("HUMID-SEAL-v1"), fromHex(ciphertextSha3Hex));
 
 export const sign = (msg, dsaSk) => ml_dsa87.sign(msg, dsaSk);
 

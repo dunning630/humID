@@ -87,7 +87,17 @@ const signedManifest = (mBytes) => concat(utf8("HUMID-MANIFEST-v1"), mBytes);
  * @param recipient {kemPk, xPk}
  * @param ctx {identityCommit, interrupt} — the interrupt record is signed into the manifest
  */
-export async function seal({ bytes, name, type }, signer, recipient, ctx) {
+export async function seal(file, signer, recipient, ctx) {
+  return finishSeal(await prepareSeal(file, recipient), signer, ctx);
+}
+
+/**
+ * Seal in two steps (added in @humid/crypto 1.2.0; same envelope format).
+ * prepareSeal encrypts with the recipient's PUBLIC keys only, so it needs no
+ * biometric check. Its ciphertextHash is what the device's liveness key signs
+ * during the check that then releases the signing key for finishSeal.
+ */
+export async function prepareSeal({ bytes, name, type }, recipient) {
   const plainHash = sha3_512(bytes);
   const meta = encodeJSON({ name, type: type || "application/octet-stream", size: bytes.length, sha3_512: toHex(plainHash) });
   const framed = concat(u32(meta.length), meta, bytes);
@@ -100,20 +110,24 @@ export async function seal({ bytes, name, type }, signer, recipient, ctx) {
   const nonce = random(12);
   const ct = await aesEncrypt(key, nonce, framed, aeadAad(kemCt, xEph, nonce));
   wipe(kemSs, xSs, xEphSk, key, framed);
+  return { kemCt, xEph, nonce, ct, recipient, plainHash: toHex(plainHash), ciphertextHash: toHex(sha3_512(ct)) };
+}
 
+/** Sign the manifest. ctx: { identityCommit, interrupt } (the interrupt may carry the liveness signature). */
+export function finishSeal(p, signer, ctx) {
   const manifest = {
     format: "humid-envelope", v: 1, suite: ID, suiteDesc: DESCRIPTION,
     created: new Date().toISOString(),
-    kem: { mlkem1024Ct: toB64(kemCt), x25519Eph: toB64(xEph) },
-    nonce: toB64(nonce),
-    ciphertext: { bytes: ct.length, sha3_512: toHex(sha3_512(ct)) },
-    recipient: { kemPkFp: toHex(sha3_256(recipient.kemPk)) },
+    kem: { mlkem1024Ct: toB64(p.kemCt), x25519Eph: toB64(p.xEph) },
+    nonce: toB64(p.nonce),
+    ciphertext: { bytes: p.ct.length, sha3_512: p.ciphertextHash },
+    recipient: { kemPkFp: toHex(sha3_256(p.recipient.kemPk)) },
     signer: { mldsa87Pk: toB64(signer.dsaPk), identityCommit: ctx.identityCommit },
     interrupt: ctx.interrupt,
   };
   const mBytes = encodeJSON(manifest);
   const sig = ml_dsa87.sign(signedManifest(mBytes), signer.dsaSk);
-  return { envelope: pack(mBytes, sig, ct), manifest, plainHash: toHex(plainHash) };
+  return { envelope: pack(mBytes, sig, p.ct), manifest, plainHash: p.plainHash };
 }
 
 /** Check signature and ciphertext hash. Needs no keys. */

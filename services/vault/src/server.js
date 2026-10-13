@@ -15,7 +15,8 @@ import { randomUUID } from "node:crypto";
 import { createService, openDb, env, json, bytes, verifyAssertion, unb64u, HttpError } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
-import { sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
+import { verifyLiveSig } from "@humid/attest";
 
 export function createVault({
   port = Number(env("PORT", "8082")),
@@ -96,6 +97,16 @@ export function createVault({
       const signerFp = toHex(sha3_256(new Uint8Array(Buffer.from(v.manifest.signer.mldsa87Pk, "base64"))));
       if (signerFp !== claims.dsaFp) throw new HttpError(403, "not_signer", "Envelope was not signed by your identity");
       if (v.manifest.recipient?.kemPkFp !== claims.kemFp) throw new HttpError(403, "not_recipient", "Envelope is not sealed to your identity");
+      // A device with a hardware liveness key must have sealed this with a live biometric check:
+      // its secure chip signs the ciphertext hash inside the same check that releases the signing key.
+      if (claims.livePub) {
+        const live = v.manifest.interrupt?.live;
+        let sig = null;
+        try { sig = live ? unb64u(String(live)) : null; } catch {}
+        if (!verifyLiveSig(unb64u(claims.livePub), sealLiveMessage(v.manifest.ciphertext.sha3_512), sig)) {
+          throw new HttpError(403, "no_live_seal", "This document wasn't sealed with a live face or fingerprint check on this device.");
+        }
+      }
       const idx = readIndex(headers);
       const u = usage(owner);
       if (u.b + body.length > quotaBytes) throw new HttpError(507, "quota_exceeded", "Your vault is full");

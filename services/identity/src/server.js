@@ -7,14 +7,41 @@
 // its own ML-DSA-87 key, so one device can be removed without the others.
 // A device joins only with two signatures over deviceMessage: the account key
 // (authorises) and the device key (proof of possession).
+//
+// Liveness. Phones also present a hardware liveness key: an ECDSA P-256 key
+// in the Secure Enclave / Android Keystore that signs only right after a live
+// Face ID, Touch ID or Class 3 biometric match. At enrolment its attestation
+// (Android key attestation, Apple App Attest) is checked and it must sign the
+// device statement; every sign-in must then carry its signature too. Policy
+// (from the gateway): "attested" accepts only such devices, "biometric" also
+// accepts desktop biometric-only gates without hardware proof, "demo" accepts
+// anything (local development only).
 
 import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { verifyLiveKey, verifyLiveSig, AttestationError } from "@humid/attest";
 
 const SIZES = { kemPk: 1568, dsaPk: 2592, xPk: 32 };
 const VIA = new Set(["register", "link", "card", "contacts"]);
+const POLICIES = new Set(["attested", "biometric", "demo"]);
+/** Desktop gates that only ever accept a biometric, enforced by the OS (no hardware proof). */
+export const DESKTOP_BIOMETRIC = new Set(["macos-keychain-biometry", "windows-winbio-fingerprint", "linux-fprintd-keyring"]);
+const attested = (proof) => /^(android|apple)-/.test(proof || "");
 
-export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = env("DATA_DIR", "/data"), internalPk = env("HUMID_INTERNAL_PK") } = {}) {
+const list = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+
+export function createIdentity({
+  port = Number(env("PORT", "8081")),
+  dataDir = env("DATA_DIR", "/data"),
+  internalPk = env("HUMID_INTERNAL_PK"),
+  attest = {
+    androidPackages: list(env("HUMID_ANDROID_PACKAGES", "app.humid.vault")),
+    androidDigests: list(env("HUMID_ANDROID_CERT_DIGESTS", "")).map((d) => d.toLowerCase().replace(/:/g, "")),
+    iosAppId: env("HUMID_IOS_APP_ID", "") || undefined,             // "<Apple Team ID>.app.humid.vault"
+    appAttestEnvironment: env("HUMID_APP_ATTEST_ENV", "production"),  // or "development" for Xcode builds
+    requireLockedBoot: env("HUMID_REQUIRE_LOCKED_BOOT", "1") !== "0",
+  },
+} = {}) {
   const db = openDb(dataDir, "identity.db", [
     `CREATE TABLE identities (
        id TEXT PRIMARY KEY,
@@ -35,6 +62,10 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
        via TEXT NOT NULL,
        enrolled_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT)`,
     `CREATE INDEX device_keys_account ON device_keys(account_id, enrolled_at)`,
+    // Hardware liveness key and what proved it (android-strongbox | android-tee | apple-secure-enclave | none).
+    `ALTER TABLE device_keys ADD COLUMN live_pub BLOB;
+     ALTER TABLE device_keys ADD COLUMN proof TEXT NOT NULL DEFAULT 'none';
+     ALTER TABLE device_keys ADD COLUMN proof_detail TEXT`,
   ]);
 
   const getAccount = db.prepare("SELECT * FROM identities WHERE id = ?");
@@ -43,9 +74,41 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
 
   const fp = (b) => toHex(sha3_256(b));
   const deviceView = (d, current) => ({
-    id: d.id, platform: d.platform, gateMethod: d.gate_method, assurance: d.assurance, via: d.via,
+    id: d.id, platform: d.platform, gateMethod: d.gate_method, assurance: d.assurance, via: d.via, proof: d.proof,
     enrolledAt: d.enrolled_at, lastSeenAt: d.last_seen_at, current: d.id === current,
   });
+
+  /** Which devices the server's policy accepts. Server-derived proof, never the device's claim. */
+  function allowed(policy, proof, gateMethod) {
+    if (!POLICIES.has(policy)) throw new HttpError(500, "bad_policy", "Unknown device policy");
+    if (policy === "demo" || attested(proof)) return;
+    if (policy === "biometric" && proof === "none" && DESKTOP_BIOMETRIC.has(gateMethod)) return;
+    throw new HttpError(403, "device_not_proven", policy === "attested"
+      ? "This vault accepts only iPhones and Android phones whose secure chip proves a live face or fingerprint."
+      : "This device can't prove a live face or fingerprint check.");
+  }
+
+  /** Check the liveness key: its attestation, and its signature over this enrolment. */
+  function liveness(live, th, message) {
+    if (!live) return { proof: "none", livePub: null, detail: null };
+    const livePub = unb64u(String(live.pub || ""));
+    if (!verifyLiveSig(livePub, message, unb64u(String(live.sig || "")))) {
+      throw new HttpError(401, "bad_live_proof", "The device's secure chip did not sign this enrolment.");
+    }
+    if (!live.attestation) return { proof: "unattested-key", livePub, detail: null };
+    const a = live.attestation;
+    const att = a.kind === "android-key"
+      ? { kind: a.kind, chain: (Array.isArray(a.chain) ? a.chain : []).slice(0, 10).map((c) => unb64u(String(c))) }
+      : { kind: a.kind, object: unb64u(String(a.object || "")) };
+    try {
+      const { proof, detail } = verifyLiveKey({ pub: livePub, attestation: att }, th, attest);
+      return { proof, livePub, detail };
+    } catch (e) {
+      if (e instanceof AttestationError) throw new HttpError(403, e.code, e.message);
+      throw e;
+    }
+  }
+  const assuranceOf = (proof, gateMethod) => (attested(proof) ? "hardware" : DESKTOP_BIOMETRIC.has(gateMethod) ? "os" : "none");
   const accountView = (r, current) => ({
     id: r.id, status: r.status, createdAt: r.created_at, commit: r.commit_hex,
     dsaFp: fp(r.dsa_pk), kemFp: fp(r.kem_pk),
@@ -63,8 +126,8 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
     return b;
   };
 
-  /** Add a device after checking both signatures over deviceMessage. */
-  function addDevice(account, th, d, via) {
+  /** Add a device after checking both signatures over deviceMessage, its liveness key and the policy. */
+  function addDevice(account, th, d, via, policy) {
     if (!VIA.has(via)) throw new HttpError(400, "bad_via", "Unknown enrolment route");
     const dsaPk = key(d?.dsaPk, "device dsaPk", SIZES.dsaPk);
     const msg = deviceMessage(th, account.id, dsaPk);
@@ -74,6 +137,9 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
     if (!verify(unb64u(String(d.sigDevice || "")), msg, dsaPk)) {
       throw new HttpError(401, "bad_proof", "Proof of possession failed for the device key.");
     }
+    const gateMethod = String(d.gateMethod || "unknown").slice(0, 64);
+    const live = liveness(d.live, th, msg);
+    allowed(policy, live.proof, gateMethod);
     const id = deviceId(dsaPk);
     const existing = getDevice.get(id);
     if (existing) {
@@ -82,15 +148,15 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
       return { device: existing, created: false };
     }
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO device_keys (id, account_id, dsa_pk, platform, gate_method, assurance, via, enrolled_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, account.id, dsaPk, String(d.platform || "unknown").slice(0, 40), String(d.gateMethod || "unknown").slice(0, 64),
-        ["hardware", "os", "none"].includes(d.assurance) ? d.assurance : "none", via, now, now);
+    db.prepare(`INSERT INTO device_keys (id, account_id, dsa_pk, platform, gate_method, assurance, via, enrolled_at, last_seen_at, live_pub, proof, proof_detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, account.id, dsaPk, String(d.platform || "unknown").slice(0, 40), gateMethod, assuranceOf(live.proof, gateMethod), via, now, now,
+        live.livePub, live.proof, live.detail ? JSON.stringify(live.detail) : null);
     return { device: getDevice.get(id), created: true };
   }
 
-  const respondWithDevice = (status, account, device) =>
-    json(status, { ...accountView(account, device.id), device: deviceView(device, device.id), deviceDsaPk: b64u(device.dsa_pk) });
+  const internalDevice = (device) => ({ device: deviceView(device, device.id), deviceDsaPk: b64u(device.dsa_pk), deviceLivePub: device.live_pub ? b64u(device.live_pub) : null });
+  const respondWithDevice = (status, account, device) => json(status, { ...accountView(account, device.id), ...internalDevice(device) });
 
   const routes = [
     // First device: creates the account (proof of possession of the account keys) and enrols the device.
@@ -114,7 +180,7 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
           db.prepare("INSERT INTO identities (id, kem_pk, dsa_pk, x_pk, commit_hex, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .run(id, keys.kemPk, keys.dsaPk, keys.xPk, commit, new Date().toISOString());
         }
-        const { device } = addDevice(getAccount.get(id), th, r.device, "register");
+        const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy);
         db.exec("COMMIT");
         return respondWithDevice(existing ? 200 : 201, getAccount.get(id), device);
       } catch (e) { db.exec("ROLLBACK"); throw e; }
@@ -125,7 +191,7 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
       gatewayOnly(claims);
       const r = parseJson(body);
       const account = active(String(r.account));
-      const { device, created } = addDevice(account, unb64u(String(r.th)), r.device, String(r.via));
+      const { device, created } = addDevice(account, unb64u(String(r.th)), r.device, String(r.via), r.policy);
       return respondWithDevice(created ? 201 : 200, account, device);
     }],
 
@@ -137,9 +203,15 @@ export function createIdentity({ port = Number(env("PORT", "8081")), dataDir = e
       const device = getDevice.get(String(r.device));
       if (!device || device.account_id !== account.id) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
       if (device.revoked_at) throw new HttpError(403, "device_removed", "This device was removed from your HumID.");
-      if (!verify(unb64u(String(r.sig)), unb64u(String(r.message)), new Uint8Array(device.dsa_pk))) return json(401, { ok: false, error: "bad_signature" });
+      const message = unb64u(String(r.message));
+      if (!verify(unb64u(String(r.sig)), message, new Uint8Array(device.dsa_pk))) return json(401, { ok: false, error: "bad_signature" });
+      // A device with a liveness key must prove a live biometric on every sign-in.
+      if (device.live_pub && !verifyLiveSig(device.live_pub, message, r.live ? unb64u(String(r.live)) : null)) {
+        return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
+      }
+      allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
       db.prepare("UPDATE device_keys SET last_seen_at = ? WHERE id = ?").run(new Date().toISOString(), device.id);
-      return json(200, { ok: true, ...accountView(account, device.id), device: deviceView(device, device.id), deviceDsaPk: b64u(device.dsa_pk) });
+      return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });
     }],
 
     // The holder's own profile and devices.

@@ -4,7 +4,7 @@
 
 import { clientHello, clientFinish, keyId, fingerprint } from "./handshake.js";
 import { sealFrame, openFrame, parseHeader, DIR, MEDIA_TYPE } from "./frame.js";
-import { stepUpMessage } from "./proofs.js";
+import { stepUpMessage, liveMessage } from "./proofs.js";
 import { unb64u, toHex, equal, wipe, utf8, fromUtf8 } from "./primitives.js";
 
 export class HtpError extends Error {
@@ -44,8 +44,9 @@ export class HtpClient {
       throw new HtpError("server_identity_changed", "This server's identity does not match the one this app trusts. Refusing to connect.");
     }
     // policy is a UI hint (e.g. whether demo identities are accepted); the server enforces it.
-    const minAssurance = ["none", "os", "hardware"].includes(j.policy?.minAssurance) ? j.policy.minAssurance : "none";
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { minAssurance } };
+    // A hint for the app's UI only; the gateway enforces the policy on every sign-in.
+    const devicePolicy = ["attested", "biometric", "demo"].includes(j.policy?.devicePolicy) ? j.policy.devicePolicy : "attested";
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy } };
     return this.server;
   }
 
@@ -76,24 +77,50 @@ export class HtpClient {
   get transcript() { return this.session?.th; }
 
   /**
+   * Reserve the next request slot for a step-up, before the biometric check.
+   * `live` is what the device's liveness key signs during that check: it names
+   * this session, this sequence number, the method, the path and the time, so
+   * the hardware signature can only ever approve this one request.
+   */
+  async ticket(method, path) {
+    if (!this.connected) await this.connect();
+    const s = this.session;
+    const m = method.toUpperCase();
+    const seq = ++this.seq;
+    const at = Date.now();
+    return { sid: s.sidText, seq, at, method: m, path, live: liveMessage(s.th, seq, m, path, at) };
+  }
+
+  /**
    * Make one encrypted call.
    * @param opts.body     Uint8Array | object (sent as JSON) | undefined
-   * @param opts.stepUp   async ({ message }) => { sig: Uint8Array, interrupt } — biometric step-up
+   * @param opts.stepUp   biometric step-up, either
+   *   { ticket, sign }    ticket from ticket(); sign(message) => { sig, interrupt, live? }
+   *   async ({ message, live, seq, at }) => { sig, interrupt, live? }   (slot reserved now)
+   * `sig` is the device key's ML-DSA-87 signature over the full step-up message
+   * (including the body); `live` is the liveness key's signature over `live`.
    */
   async call(method, path, { body, headers = {}, stepUp } = {}) {
     if (!this.connected) await this.connect();
     let bytes = body;
     const h = { ...headers };
     if (body && !(body instanceof Uint8Array)) { bytes = utf8(JSON.stringify(body)); h["content-type"] = "application/json"; }
-    const s = this.session;
-    const seq = ++this.seq;
     const meta = { m: method.toUpperCase(), p: path, h };
+    let seq;
     if (stepUp) {
-      const at = Date.now();
-      const message = stepUpMessage(s.th, seq, meta.m, path, bytes, at);
-      const { sig, interrupt } = await stepUp({ message });
-      meta.proof = { at, sig: b64(sig), interrupt };
+      let t, sign;
+      if (typeof stepUp === "function") { t = await this.ticket(meta.m, path); sign = (message) => stepUp({ message, live: t.live, seq: t.seq, at: t.at }); }
+      else ({ ticket: t, sign } = stepUp);
+      if (!this.session || t.sid !== this.session.sidText) throw new HtpError("session_changed", "The session ended before this request was approved. Try again.");
+      if (t.method !== meta.m || t.path !== path) throw new HtpError("ticket_mismatch", "This approval was for a different request.");
+      seq = t.seq;
+      const message = stepUpMessage(this.session.th, seq, meta.m, path, bytes, t.at);
+      const { sig, interrupt, live } = await sign(message);
+      meta.proof = { at: t.at, sig: b64(sig), interrupt, ...(live ? { live: b64(live) } : {}) };
+    } else {
+      seq = ++this.seq;
     }
+    const s = this.session;
     const frame = await sealFrame(s.c2s, DIR.request, s.sid, seq, meta, bytes);
     const res = await this.fetch(`${this.base}/htp/v1/call`, {
       method: "POST",
