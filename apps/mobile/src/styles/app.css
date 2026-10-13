@@ -435,3 +435,6 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .chip-read .bar i { display: block; height: 100%; background: var(--amber); transition: width .3s var(--ease); }
 .chip-access .split { gap: 10px; }
 .chip-access input[type="date"] { color-scheme: dark; }
+
+.boot-error { padding: 32px 20px; }
+.boot-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--f-mono); color: var(--amber-hi); background: var(--abyss); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 12px; margin: 14px 0 20px; }
