@@ -390,3 +390,61 @@ export function ChipReadOverlay() {
     </div>
   );
 }
+
+/* ---------------- simulation build ---------------- */
+
+/** A strip across the top: this is a simulation, and what the server last checked. */
+export function SimStrip() {
+  const last = S.simLog.value[0];
+  return (
+    <button class="sim-strip" onClick={() => (S.simShow.value = last || { title: "Simulation", checks: [], empty: true })}>
+      <span class="dot" aria-hidden="true" />
+      <span><b>Simulation</b> · vault server runs on this phone</span>
+      {last && <span class="sim-last">{last.checks.filter((c) => c.ok).length} checks ✓</span>}
+    </button>
+  );
+}
+
+const MARK = { true: "check", false: "x", null: "info" };
+
+/** What the simulated server checked for one action, one line per check. */
+export function ChecksSheet() {
+  const r = S.simShow.value;
+  if (!r) return null;
+  const close = () => (S.simShow.value = null);
+  const okCount = r.checks.filter((c) => c.ok === true).length;
+  return (
+    <Sheet onClose={close} label="Server checks">
+      <div class="eyebrow">Simulated vault server · {fmtTime(r.at || Date.now())}</div>
+      <h2 style={{ marginTop: 6 }}>{r.title}</h2>
+      {r.empty ? (
+        <p class="lede" style={{ marginTop: 10 }}>This build runs HumID's vault server inside the app. Your phone connects to it over the real post-quantum channel (HTP/1: ML-KEM-1024 + X25519), and it checks every sign-in and sensitive action the way a real server does. Create your HumID or unlock to see the checks.</p>
+      ) : (
+        <>
+          <p class="small muted" style={{ marginTop: 6 }}>{okCount} of {r.checks.length} checks passed{r.checks.some((c) => c.ok === null) ? " · notes marked ⓘ" : ""}</p>
+          <div class="checks">
+            {r.checks.map((c) => (
+              <div class="check-row" data-ok={String(c.ok)}>
+                <span class="c-ico"><Icon name={MARK[String(c.ok)]} /></span>
+                <div><strong>{c.label}</strong>{c.detail && <span>{c.detail}</span>}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {S.simLog.value.length > 1 && (
+        <>
+          <div class="eyebrow" style={{ marginTop: 18 }}>Earlier</div>
+          <div class="rows">
+            {S.simLog.value.slice(0, 12).filter((x) => x !== r).map((x) => (
+              <button class="row linkrow" onClick={() => (S.simShow.value = x)}>
+                <span class="k">{x.title}</span><span class="v">{x.checks.filter((c) => c.ok).length} ✓ · {fmtTime(x.at)}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <div class="actions"><button class="btn secure block" onClick={close}>Done</button></div>
+    </Sheet>
+  );
+}

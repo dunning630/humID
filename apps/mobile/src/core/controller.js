@@ -31,7 +31,7 @@ import {
 import { readDocument } from "@humid/emrtd";
 import { probeNfc, openChip } from "./nfc.js";
 import * as S from "./state.js";
-import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
+import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024;
@@ -154,6 +154,31 @@ async function withStepUp(op, args, purpose, label, fn) {
   }), { challenge: ticket.live });
 }
 
+/* ---------------- simulation build: the server inside the app ---------------- */
+
+let sim = null;
+async function startSim() {
+  const { createSimServer } = await import("../sim/server.js");
+  sim = await createSimServer({
+    platformPolicy: DEMO_BUILD ? "demo" : "biometric",
+    onCheck: (report) => {
+      S.simLog.value = [report, ...S.simLog.value].slice(0, 40);
+      if (!report.quiet) setTimeout(() => { S.simShow.value = report; }, report.kind === "enrol" ? 1600 : 900);
+    },
+  });
+  return sim;
+}
+
+/** Wipe the simulated server and this phone's HumID, and start over. */
+export async function resetSimulation() {
+  const id = S.identity.value;
+  try { if (id?.gate) await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
+  await store.clearIdentity();
+  await store.clearVault();
+  await sim?.reset();
+  location.reload();
+}
+
 /* ---------------- boot ---------------- */
 
 export async function boot() {
@@ -162,7 +187,7 @@ export async function boot() {
   probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
   const id = S.identity.value;
-  api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID });
+  api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, ...(SIM ? { fetch: (await startSim()).fetch } : {}) });
   api.onSignedOut = (why) => { if (S.view.value === "app") lock(why === "expired" ? "Your session ended. Unlock to continue." : null); };
   connectServer();
   if (id?.pending) { S.joinMethod.value = id.pending.method; S.joinStep.value = 3; S.view.value = "join"; pollJoin(); }
@@ -174,7 +199,7 @@ export async function connectServer() {
   S.serverError.value = null;
   try {
     const s = await api.server();
-    S.server.value = { ...s, url: SERVER_URL || location.origin };
+    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: SIM };
   } catch (e) {
     S.server.value = null;
     S.serverError.value = friendly(e);

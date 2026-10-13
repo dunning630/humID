@@ -438,3 +438,19 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 
 .boot-error { padding: 32px 20px; }
 .boot-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--f-mono); color: var(--amber-hi); background: var(--abyss); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 12px; margin: 14px 0 20px; }
+
+/* ---------- simulation build ---------- */
+.sim-strip { position: sticky; top: 0; z-index: 40; width: 100%; display: flex; align-items: center; gap: 8px; padding: calc(var(--safe-t) + 6px) 16px 6px; border: 0; border-bottom: 1px solid rgba(255,107,0,.35); background: #1d1206; color: #ffd2ad; font: 500 var(--t-xs)/1.3 var(--f-body); text-align: left; cursor: pointer; }
+.sim-strip b { color: var(--signal); letter-spacing: .04em; text-transform: uppercase; }
+.sim-strip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 8px var(--signal); flex: none; }
+.sim-strip .sim-last { margin-left: auto; color: var(--mint); white-space: nowrap; }
+body:has(.sim-strip) .screen { padding-top: 12px; min-height: calc(100dvh - 32px); }
+.checks { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.check-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.check-row .c-ico { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--mint-wash); color: var(--mint); }
+.check-row .c-ico svg { width: 16px; height: 16px; }
+.check-row[data-ok="false"] .c-ico { background: var(--danger-wash); color: var(--danger); }
+.check-row[data-ok="null"] .c-ico { background: var(--surface-3); color: var(--sage); }
+.check-row strong { display: block; font-weight: 600; font-size: var(--t-sm); }
+.check-row span span, .check-row div span { display: block; color: var(--sage); font-size: var(--t-xs); margin-top: 2px; }
+button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px solid var(--line); color: var(--text); cursor: pointer; font: inherit; text-align: left; }

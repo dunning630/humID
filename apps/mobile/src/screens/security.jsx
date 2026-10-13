@@ -15,7 +15,8 @@ import {
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
   stationLookup, stationVerify, markPicking, DURESS_HOLD_MS, readChip,
 } from "../core/controller.js";
-import { serverHost, VERSION, PLATFORM, DEMO_BUILD } from "../core/config.js";
+import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
+import { resetSimulation } from "../core/controller.js";
 
 const GATE = {
   "ios-keychain-biometry": "Face ID / Touch ID · Secure Enclave policy",
@@ -143,6 +144,17 @@ export function Security() {
         </div>
       )}
 
+      {SIM && (
+        <div class="card">
+          <div class="c-head"><h3>Simulation</h3><span class="pill amber">No real server</span></div>
+          <p class="small muted" style={{ marginTop: 4 }}>The vault server runs inside this app. The connection is the real post-quantum channel and the biometric checks are real; adding devices, witnesses, ID chips and stations need other people or servers, so they're off here. Nothing leaves this phone.</p>
+          <div class="split" style={{ marginTop: 10 }}>
+            <button class="btn quiet sm" onClick={() => (S.simShow.value = S.simLog.value[0] || { title: "Simulation", checks: [], empty: true })}><Icon name="shield" />Server checks</button>
+            <button class="btn danger sm" onClick={() => open("simReset")}>Reset simulation</button>
+          </div>
+        </div>
+      )}
+
       <div class="card">
         <h3>Your identity</h3>
         <div class="rows" style={{ marginTop: 6 }}>
@@ -205,6 +217,9 @@ export function Security() {
       {sheet?.type === "offer" && <OfferSheet code={sheet.code} expiresAt={sheet.expiresAt} />}
       {sheet?.type === "help" && <HelpSheet />}
       {sheet?.type === "anchor" && <AnchorSheet />}
+      {sheet?.type === "simReset" && <ConfirmSheet label="Reset simulation" eyebrow="Simulation" title="Start the simulation over?"
+        text="The simulated server, your test HumID and every test document on this phone are erased. Then you can set up from the beginning."
+        action="Reset" onConfirm={resetSimulation} />}
       {sheet?.type === "duress" && <DuressSheet />}
       {sheet?.type === "station" && <StationSheet />}
     </main>
