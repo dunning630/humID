@@ -100,7 +100,7 @@ jobs:
   # virtual reader (vsmartcard vpcd). Then the server's own checks verify what was read.
   chip-reader:
     needs: test
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04 # pcsc-lite 2 (--disable-polkit) and vsmartcard 0.9
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -120,9 +120,13 @@ jobs:
         run: |
           sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
           sudo pcscd --foreground --disable-polkit > pcscd.log 2>&1 &
-          for i in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/35963) 2>/dev/null && break; sleep 0.5; done
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/35963) 2>/dev/null && exit 0; sleep 0.5; done
+          echo "::error::pcscd / vpcd didn't start: $(tail -20 pcscd.log | tr '\n' ' ')"; exit 1
       - name: Read a chip through the native transport
-        run: node --test tests/e2e/pcsc.test.js
+        run: |
+          node --test tests/e2e/pcsc.test.js > pcsc-test.log 2>&1 && exit 0
+          cat pcsc-test.log
+          echo "::error::$(grep -E 'error:|Error|expected|actual' pcsc-test.log | head -12 | tr '\n' ' ') pcscd: $(tail -8 pcscd.log | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", HUMID_REQUIRE_PCSC: "1" }
 
   images:
