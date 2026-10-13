@@ -74,6 +74,7 @@ services:
       HUMID_IOS_APP_ID: ${HUMID_IOS_APP_ID:-}                       # "<Apple Team ID>.app.humid.vault"; empty = no iPhones
       HUMID_APP_ATTEST_ENV: ${HUMID_APP_ATTEST_ENV:-production}     # "development" for Xcode debug builds
       HUMID_REQUIRE_LOCKED_BOOT: ${HUMID_REQUIRE_LOCKED_BOOT:-1}    # refuse rooted / unlocked-bootloader Android phones
+      HUMID_DURESS_COOLOFF_MS: ${HUMID_DURESS_COOLOFF_MS:-86400000}  # calm period before the owner can lift a duress lockdown
     volumes: [identity-data:/data]
     healthcheck:
       <<: *health
@@ -93,19 +94,25 @@ services:
     <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-ledger:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: ledger } }
-    environment: { <<: *env, PORT: "8083" }
+    environment: { <<: *env, PORT: "8083", HUMID_TLOG_COSIGNERS: "${HUMID_TLOG_COSIGNERS:-}" }
     volumes: [ledger-data:/data]
     healthcheck:
       <<: *health
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8083/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
-  # Device links, recovery cards and recovery contacts. Holds only ciphertext and public keys.
+  # Device links, two-proof recovery (seal card, witnesses, ID anchor), stations, duress.
+  # Holds ciphertext and public keys; the anchor part is encrypted under the holder's ID.
   recovery:
     <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-recovery:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: recovery } }
-    environment: { <<: *env, PORT: "8084", RECOVERY_DELAY_MS: "${RECOVERY_DELAY_MS:-259200000}" }
-    volumes: [recovery-data:/data]
+    environment:
+      <<: *env
+      PORT: "8084"
+      RECOVERY_DELAY_MS: "${RECOVERY_DELAY_MS:-259200000}"
+      HUMID_CSCA_DIR: /csca                                          # country signing certificates for ID chips (deploy/csca)
+      HUMID_STATION_ACCOUNTS: "${HUMID_STATION_ACCOUNTS:-}"          # hid_… accounts that run verification stations
+    volumes: [recovery-data:/data, ./csca:/csca:ro]
     healthcheck:
       <<: *health
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8084/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

@@ -9,6 +9,7 @@ import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { startStack } from "../tests/e2e/stack.js";
+import { testCsca, testPassport } from "../tests/support/passport.js";
 
 // Local development build: includes demo mode (no sensor) so you can try HumID on a
 // laptop. Release builds never contain it, and real servers refuse it.
@@ -17,14 +18,41 @@ execFileSync(process.execPath, [fileURLToPath(new URL("../apps/mobile/build.mjs"
 const PORT = Number(process.env.PORT || 5173);
 const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
 // Recovery normally waits 72 hours; locally it's 2 minutes so you can try it (RECOVERY_DELAY_MS to change).
-const stack = await startStack({ recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), devicePolicy: process.env.HUMID_DEVICE_POLICY || "demo" });
+// Demo passports: a throwaway country signing CA the dev server trusts, and one chip per holder name,
+// so "Use a demo passport" works for anchoring, recovering and station checks. Every account can act
+// as a verification station here, so you can try the operator side too.
+const devCsca = testCsca("HumID Dev Country");
+const passports = new Map();
+const passportFor = (name) => {
+  const key = String(name || "Demo Person").toUpperCase().replace(/[^A-Z ]/g, "").trim().slice(0, 30) || "DEMO PERSON";
+  if (!passports.has(key)) {
+    const [given, ...rest] = key.split(" ");
+    passports.set(key, testPassport({ csca: devCsca, mrz: { issuer: "UTO", nationality: "UTO", surname: rest.join(" ") || "PERSON", given, number: `D${String(passports.size + 1).padStart(8, "0")}` } }));
+  }
+  return passports.get(key);
+};
+const stack = await startStack({
+  recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), devicePolicy: process.env.HUMID_DEVICE_POLICY || "demo",
+  cscas: [devCsca.pem], stations: ["*"], duressCoolOffMs: Number(process.env.HUMID_DURESS_COOLOFF_MS || 60_000),
+});
 const gw = new URL(stack.baseUrl);
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
-  if (url.pathname.startsWith("/htp/")) {
+  if (url.pathname === "/dev/passport" && req.method === "POST") {
+    const p = passportFor(url.searchParams.get("name"));
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ dg1: p.dg1.toString("base64"), sod: p.sod.toString("base64"), dg15: p.dg15?.toString("base64") }));
+  }
+  if (url.pathname === "/dev/passport/answer" && req.method === "POST") {
+    const p = passportFor(url.searchParams.get("name"));
+    const nonce = Buffer.from(String(url.searchParams.get("nonce") || ""), "hex");
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ signature: p.answer(nonce).toString("base64") }));
+  }
+  if (url.pathname.startsWith("/htp/") || url.pathname.startsWith("/tlog/")) {
     const p = http.request({ host: gw.hostname, port: gw.port, path: req.url, method: req.method, headers: { ...req.headers, "x-forwarded-for": req.socket.remoteAddress } }, (r) => {
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);

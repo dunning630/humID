@@ -52,7 +52,7 @@ export function explicit(n, inner) {
 const SIG = { "P-256": ["1.2.840.10045.4.3.2", "sha256"], "P-384": ["1.2.840.10045.4.3.3", "sha384"] };
 export const ecKeys = (curve = "P-256") => generateKeyPairSync("ec", { namedCurve: curve });
 const curveOf = (k) => (k.asymmetricKeyDetails.namedCurve === "secp384r1" ? "P-384" : "P-256");
-const name = (cn) => seq(set(seq(oid("2.5.4.3"), utf8s(cn))));
+export const name = (cn) => seq(set(seq(oid("2.5.4.3"), utf8s(cn))));
 export const extension = (id, value, critical = false) => seq(oid(id), ...(critical ? [bool(true)] : []), octet(value));
 
 let serial = 1000;

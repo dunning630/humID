@@ -28,6 +28,14 @@
 		reverse_proxy gateway:8080
 	}
 
+	# The public transparency log: checkpoints, consistency proofs, cosignatures.
+	handle /tlog/* {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy gateway:8080
+	}
+
 	handle /healthz {
 		respond "ok" 200
 	}

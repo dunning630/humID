@@ -1,6 +1,6 @@
 {
   "name": "@humid/recovery-service",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Device links, recovery cards and recovery contacts. Holds only ciphertext and public keys; enforces the release delay.",
   "type": "module",
@@ -17,7 +17,8 @@
     "@humid/htp": "^1.1.0",
     "@humid/crypto": "^1.1.0",
     "@humid/codec": "^1.0.0",
-    "@humid/recovery": "^1.0.0"
+    "@humid/recovery": "^1.0.0",
+    "@humid/anchor": "^1.0.0"
   },
   "license": "UNLICENSED"
 }

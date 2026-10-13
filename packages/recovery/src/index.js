@@ -226,3 +226,138 @@ export function decodeShare(bytes) {
   if (j?.kind !== "humid-recovery-share" || j.v !== 1) throw new Error("Not a HumID recovery share");
   return { owner: String(j.owner), label: String(j.label || ""), x: j.x, t: j.t, n: j.n, y: unb64(j.y) };
 }
+
+/* ---------------- two-proof recovery (quorum, v2) ----------------
+ * The account seed A is split 2-of-3. Each part is protected by a different
+ * KIND of evidence, so getting A back always takes two independent proofs that
+ * you are the person who set it up:
+ *
+ *   x = 1  witness   further split among recovery contacts (any majority)
+ *   x = 2  anchor    held by the server, encrypted under the identity anchor
+ *                    (your passport or ID chip); released only when that chip
+ *                    is proven again, in person at a station or live remotely
+ *   x = 3  card      encrypted under the seal card you keep offline
+ *
+ * The split is deterministic (coefficients come from A and an epoch), so any
+ * device holding A can make any part at any time and they always fit together.
+ */
+
+export const QUORUM = Object.freeze({ witness: 1, anchor: 2, card: 3 });
+export const QUORUM_KINDS = Object.freeze(Object.keys(QUORUM));
+export const QUORUM_THRESHOLD = 2;
+const QUORUM_PART_BYTES = 65; // x ‖ y(64)
+
+/** The three 2-of-3 parts of `seed` for `epoch`. Returns { witness, anchor, card }: { x, y }. */
+export function quorumParts(seed, epoch = 1) {
+  if (!(seed instanceof Uint8Array) || seed.length !== 64) throw new Error("Account seed must be 64 bytes");
+  const coeff = hkdf(sha3_256, seed, undefined, utf8(`HUMID-QUORUM-v1 coefficient epoch ${epoch}`), seed.length);
+  const out = {};
+  for (const [kind, x] of Object.entries(QUORUM)) {
+    const y = new Uint8Array(seed.length);
+    for (let k = 0; k < seed.length; k++) y[k] = mul(coeff[k], x) ^ seed[k]; // degree 1: A + c·x
+    out[kind] = { x, y };
+  }
+  wipe(coeff);
+  return out;
+}
+
+export function encodeQuorumPart({ x, y }) {
+  if (!QUORUM_KINDS.some((k) => QUORUM[k] === x) || y.length !== 64) throw new Error("Not a recovery part");
+  return concat(new Uint8Array([x]), y);
+}
+
+export function decodeQuorumPart(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length !== QUORUM_PART_BYTES) throw new Error("A recovery part has 65 bytes");
+  const x = bytes[0];
+  if (!QUORUM_KINDS.some((k) => QUORUM[k] === x)) throw new Error("Unknown recovery part");
+  return { x, y: bytes.slice(1) };
+}
+
+export const kindOfPart = (x) => QUORUM_KINDS.find((k) => QUORUM[k] === x);
+
+/** Rebuild the seed from any two different parts. */
+export function combineQuorum(parts) {
+  const distinct = [...new Map(parts.map((p) => [p.x, p])).values()];
+  if (distinct.length < QUORUM_THRESHOLD) throw new Error("Recovery needs two different kinds of proof");
+  return combine(distinct.slice(0, QUORUM_THRESHOLD));
+}
+
+/* Seal card (v2): the card part, encrypted under the card. Same card code format. */
+const aad2 = (accountId) => utf8(`HUMID-CARD-v2|${accountId}`);
+
+export async function sealCardPart(secret, part, accountId) {
+  const raw = cardKdf(secret, "key", 32);
+  const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
+  wipe(raw);
+  const nonce = random(12);
+  const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad2(accountId) }, key, encodeQuorumPart(part)));
+  return concat(nonce, ct);
+}
+
+export async function openCardPart(secret, blob, accountId) {
+  const raw = cardKdf(secret, "key", 32);
+  const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+  wipe(raw);
+  try {
+    return decodeQuorumPart(new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aad2(accountId) }, key, blob.subarray(12))));
+  } catch {
+    throw new Error("This seal card does not open this vault.");
+  }
+}
+export const CARD_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
+export const CARD_FULL_BLOB_BYTES = 12 + 64 + 16;
+
+/* ---------------- how long a recovery waits ----------------
+ * The stronger the evidence, the shorter the wait. `base` is the server's
+ * RECOVERY_DELAY_MS (72 hours in production). Kinds: witness | card | anchor;
+ * anchorMode: "station" (in person, operator-verified) | "remote" (live chip).
+ *
+ *   station + anything                   base / 3     (24 h)
+ *   witnesses + card, witnesses + chip   base         (72 h)
+ *   card + chip (no people involved)     base × 7/3   (7 days)
+ *   a duress signal in the last 14 days  × 2
+ */
+export const DURESS_WINDOW_MS = 14 * 24 * 3600_000;
+
+export function quorumDelay(kinds, { base, anchorMode = null, duress = false } = {}) {
+  const set = new Set(kinds);
+  if (set.size < QUORUM_THRESHOLD) return null;
+  let ms;
+  if (set.has("anchor") && anchorMode === "station") ms = base / 3;
+  else if (set.has("witness")) ms = base;
+  else ms = (base * 7) / 3;
+  return Math.round(duress ? ms * 2 : ms);
+}
+
+/** Words for the evidence behind a recovery, for alerts and the continuity record. */
+export function evidenceLabel(kinds, anchorMode) {
+  const words = { witness: "witnesses", card: "seal card", anchor: anchorMode === "station" ? "ID chip at a station" : "live ID chip" };
+  return [...kinds].sort((a, b) => QUORUM_KINDS.indexOf(a) - QUORUM_KINDS.indexOf(b)).map((k) => words[k] || k).join(" + ");
+}
+
+/* ---------------- QR payloads ----------------
+ * A QR carries the same 12-character code you could type; the code is what
+ * commits to the keys, so scanning is a convenience, never a shortcut.
+ */
+const QR_PREFIX = "HUMID:";
+export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT" });
+
+export function qrPayload(kind, code) {
+  const k = QR_KINDS[kind];
+  const c = parseCode(code);
+  if (!k || !c) throw new Error("Nothing to put in a QR code");
+  return `${QR_PREFIX}${k}:${c}`;
+}
+
+/** { kind, code } from scanned text, or null. Accepts a bare 12-character code too. */
+export function parseQr(text) {
+  const t = String(text || "").trim().toUpperCase();
+  const m = /^HUMID:(LINK|RECOVER|CONTACT):([0-9A-Z-]+)$/.exec(t);
+  if (m) {
+    const code = parseCode(m[2]);
+    const kind = Object.keys(QR_KINDS).find((k) => QR_KINDS[k] === m[1]);
+    return code ? { kind, code } : null;
+  }
+  const code = parseCode(t);
+  return code ? { kind: null, code } : null;
+}

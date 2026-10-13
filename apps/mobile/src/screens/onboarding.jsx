@@ -2,15 +2,15 @@
 // Welcome → Join (connect · choose · details · wait) for a new device of an existing HumID.
 import { Mark, Wordmark, Stars } from "../brand.jsx";
 import { Icon } from "../icons.jsx";
-import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft } from "../ui.jsx";
+import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft, QrCode, ProofMeter, tierText } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
   startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard, copyCard,
-  startJoin, beginJoin, pollJoin, cancelJoin,
+  startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoPassport, DURESS_HOLD_MS,
 } from "../core/controller.js";
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { parseCard } from "@humid/recovery";
-import { serverHost, SERVER_URL } from "../core/config.js";
+import { serverHost, SERVER_URL, DEMO_BUILD } from "../core/config.js";
 
 export function Welcome() {
   return (
@@ -75,6 +75,20 @@ function ConnectStep({ eyebrow, onNext }) {
   );
 }
 
+/**
+ * HumID can't see whose faces or fingers the phone has enrolled, only that a live match
+ * happened. So it asks, once, and records the answer with this device in your ledger.
+ * Adding anyone later destroys this device's keys (they're tied to the enrolled set).
+ */
+function SoleBiometric({ checked, onChange }) {
+  return (
+    <label class="check" style={{ marginBottom: 14 }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.currentTarget.checked)} />
+      <span>Only my own face or fingerprints are set up on this device. If anyone else's are added later, this device's HumID keys are destroyed.</span>
+    </label>
+  );
+}
+
 /** Bind buttons: hardware gate if present; demo only when the server accepts it. */
 function BindButtons({ onBind, label, disabled = false }) {
   const hw = S.hwGate.value;
@@ -97,6 +111,7 @@ function BindButtons({ onBind, label, disabled = false }) {
 export function Enroll() {
   const step = S.enrollStep.value;
   const hw = S.hwGate.value;
+  const [sole, setSole] = useState(false);
   const back = step < 2 ? () => (step === 0 ? (S.view.value = "welcome") : (S.enrollStep.value = step - 1)) : null;
   return (
     <main class="screen">
@@ -111,7 +126,10 @@ export function Enroll() {
           <p class="lede" style={{ marginTop: 10 }}>Your keys are generated on this phone and locked behind {hw?.probe.available ? hw.probe.label : "your biometric"}. They never leave it, and HumID never sees your biometric.</p>
           <div class="hero" style={{ flex: "0 0 auto", margin: "26px 0 10px" }}><Mark size={170} /></div>
           <div style={{ flex: 1 }} />
-          <div class="foot"><BindButtons onBind={enroll} label="Bind" /></div>
+          <div class="foot">
+            <SoleBiometric checked={sole} onChange={setSole} />
+            <BindButtons onBind={(demo) => enroll(demo, { soleBiometric: sole })} label="Bind" disabled={!sole} />
+          </div>
         </>
       )}
 
@@ -131,8 +149,8 @@ function EnrollDone() {
 
       {code ? (
         <div class="card" style={{ marginTop: 18 }}>
-          <h3>Save your recovery card</h3>
-          <p class="small muted" style={{ marginTop: 6 }}>If you lose every device, this card brings your vault back on a new one. Recovery waits 72 hours and alerts your devices, so a stolen card alone isn't enough.</p>
+          <h3>Save your seal card</h3>
+          <p class="small muted" style={{ marginTop: 6 }}>One of two proofs that bring your vault back if you lose every device. On its own it opens nothing: recovery also needs your witnesses or your ID, then waits while your devices can veto.</p>
           <CardBox code={code} />
           <div class="split" style={{ marginTop: 12 }}>
             <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
@@ -143,8 +161,12 @@ function EnrollDone() {
             <span>I've stored my card somewhere safe and offline</span>
           </label>
         </div>
+      ) : null}
+
+      {code ? (
+        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: a second proof and a second device</strong><span>In Security, choose witnesses or anchor your ID, so recovery always needs two proofs that it's you. Adding another phone or laptop means you'll rarely need recovery at all.</span></div></div>
       ) : (
-        <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No recovery card yet</strong><span>Make one in Security, or add a second device, so losing this phone doesn't lose your vault.</span></div></div>
+        <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No recovery set up yet</strong><span>In Security, set up two proofs (witnesses, your ID, a seal card), or add a second device, so losing this phone doesn't lose your vault.</span></div></div>
       )}
 
       <div style={{ flex: 1 }} />
@@ -156,14 +178,18 @@ function EnrollDone() {
 /* ---------------- joining an existing HumID ---------------- */
 
 const ROUTES = [
-  { id: "link", icon: "key", title: "From another device", desc: "A phone or tablet that already has your HumID approves this one. Takes a minute." },
-  { id: "card", icon: "idcard", title: "With my recovery card", desc: "Type the HUMID-… code. Opens after 72 hours, and your devices are alerted." },
-  { id: "contacts", icon: "user", title: "With my recovery contacts", desc: "People you chose approve with their own biometric. Then 72 hours." },
+  { id: "link", icon: "key", title: "From another device", desc: "A phone or laptop that already has your HumID approves this one. Takes a minute." },
+  { id: "quorum", icon: "shield", title: "Prove it's me", desc: "Any two of: your witnesses, your ID chip, your seal card. Opens after a wait your devices can veto." },
+];
+const OLD_ROUTES = [
+  { id: "card", icon: "idcard", title: "Older recovery card", desc: "A card made before two-proof recovery. Opens after 72 hours." },
+  { id: "contacts", icon: "user", title: "Older recovery contacts", desc: "Contacts chosen before two-proof recovery. Then 72 hours." },
 ];
 
 export function Join() {
   const step = S.joinStep.value;
   const method = S.joinMethod.value;
+  const [old, setOld] = useState(false);
   const back = step === 0 ? () => (S.view.value = "welcome") : step < 3 ? () => (S.joinStep.value = step - 1) : null;
   return (
     <main class="screen">
@@ -176,7 +202,7 @@ export function Join() {
           <h1 style={{ marginTop: 8 }}>How do you want to get in?</h1>
           <p class="lede" style={{ marginTop: 10 }}>Your vault key never passes through the server in a form it can read, whichever you choose.</p>
           <div class="options" style={{ marginTop: 20 }}>
-            {ROUTES.map((r) => (
+            {(old ? [...ROUTES, ...OLD_ROUTES] : ROUTES).map((r) => (
               <button class="option" onClick={() => { S.joinMethod.value = r.id; S.joinStep.value = 2; }}>
                 <span class="o-ico"><Icon name={r.icon} /></span>
                 <span><strong>{r.title}</strong><span>{r.desc}</span></span>
@@ -184,17 +210,19 @@ export function Join() {
               </button>
             ))}
           </div>
+          {!old && <button class="link" style={{ marginTop: 14 }} onClick={() => setOld(true)}>I have an older recovery card or contacts</button>}
         </>
       )}
 
       {step === 2 && method === "link" && (
-        <JoinDetails title="Approve from your other device" lede="First, bind this device to your biometric. Then it shows a code. Enter that code on your other device in Security → Add a device."
-          bindLabel="Bind" onBind={(demo) => beginJoin("link", { useDemo: demo })} />
+        <JoinDetails title="Approve from your other device" lede="First, bind this device to your biometric. Then it shows a code and a QR code. On your other device: Security → Add a device."
+          bindLabel="Bind" onBind={(demo, sole) => beginJoin("link", { useDemo: demo, soleBiometric: sole })} />
       )}
+      {step === 2 && method === "quorum" && <QuorumEntry />}
       {step === 2 && method === "card" && <CardEntry />}
       {step === 2 && method === "contacts" && (
         <JoinDetails title="Ask your recovery contacts" lede="Bind this device, then send the code it shows to your recovery contacts. When enough of them approve, your vault opens here after 72 hours, unless you cancel from a device you still have."
-          bindLabel="Bind" onBind={(demo) => beginJoin("contacts", { useDemo: demo })} />
+          bindLabel="Bind" onBind={(demo, sole) => beginJoin("contacts", { useDemo: demo, soleBiometric: sole })} />
       )}
 
       {step === 3 && <JoinWait />}
@@ -203,6 +231,7 @@ export function Join() {
 }
 
 function JoinDetails({ title, lede, bindLabel, onBind, disabled, children }) {
+  const [sole, setSole] = useState(false);
   return (
     <>
       <div class="eyebrow">Step 3 · Bind this device</div>
@@ -210,8 +239,30 @@ function JoinDetails({ title, lede, bindLabel, onBind, disabled, children }) {
       <p class="lede" style={{ marginTop: 10 }}>{lede}</p>
       {children}
       <div style={{ flex: 1 }} />
-      <div class="foot"><BindButtons onBind={onBind} label={bindLabel} disabled={disabled} /></div>
+      <div class="foot">
+        <SoleBiometric checked={sole} onChange={setSole} />
+        <BindButtons onBind={(demo) => onBind(demo, sole)} label={bindLabel} disabled={disabled || !sole} />
+      </div>
     </>
+  );
+}
+
+function QuorumEntry() {
+  const [text, setText] = useState("");
+  let state = null;
+  try { if (text.replace(/[^0-9a-z]/gi, "").length >= 30) { parseCard(text); state = "ok"; } } catch (e) { state = e.message; }
+  return (
+    <JoinDetails title="Prove it's you" lede="Recovery needs two different proofs that you're the person who set up this HumID: your witnesses, your ID chip, your seal card. Bind this device first. Your other devices are alerted and can veto during the wait."
+      bindLabel="Bind" disabled={!!text.trim() && state !== "ok"} onBind={(demo, sole) => beginJoin("quorum", { useDemo: demo, cardInput: state === "ok" ? text : "", soleBiometric: sole })}>
+      <div class="field">
+        <label for="qcard">Seal card (if you have it)</label>
+        <input id="qcard" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+          value={text} onInput={(e) => setText(e.currentTarget.value)} />
+        {state === "ok" && <span class="hint ok"><Icon name="check" />Card code looks right</span>}
+        {state && state !== "ok" && <span class="hint warn">{state}</span>}
+        {!text && <span class="hint">You can also add it later, or use witnesses and your ID instead.</span>}
+      </div>
+    </JoinDetails>
   );
 }
 
@@ -221,7 +272,7 @@ function CardEntry() {
   try { if (text.replace(/[^0-9a-z]/gi, "").length >= 30) { parseCard(text); state = "ok"; } } catch (e) { state = e.message; }
   return (
     <JoinDetails title="Use your recovery card" lede="Type the code from your card. Then bind this device. Your vault opens here after 72 hours, and every device you still have is alerted and can cancel."
-      bindLabel="Bind" disabled={state !== "ok"} onBind={(demo) => beginJoin("card", { useDemo: demo, cardInput: text })}>
+      bindLabel="Bind" disabled={state !== "ok"} onBind={(demo, sole) => beginJoin("card", { useDemo: demo, cardInput: text, soleBiometric: sole })}>
       <div class="field">
         <label for="card">Recovery card</label>
         <input id="card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
@@ -250,7 +301,8 @@ function JoinWait() {
           <h1 style={{ marginTop: 8 }}>Enter this code on your other device</h1>
           <p class="lede" style={{ marginTop: 10 }}>On the device that has your HumID: <b>Security → Add a device</b>. It checks that this code matches this device's keys, then asks for your biometric.</p>
           <CodeBox code={p.code} label="Device code" />
-          {!ended && <p class="fine" style={{ textAlign: "center" }}>Code expires in {fmtLeft(p.expiresAt - now)}</p>}
+          <QrCode kind="link" code={p.code} />
+          {!ended && <p class="fine" style={{ textAlign: "center" }}>Scan it from your other device, or type it. Expires in {fmtLeft(p.expiresAt - now)}</p>}
         </>
       )}
 
@@ -261,6 +313,8 @@ function JoinWait() {
           <div class="hero" style={{ flex: "0 0 auto", margin: "18px 0" }}><Mark state="scanning" size={140} /></div>
         </>
       )}
+
+      {p.method === "quorum" && <QuorumWait p={p} st={st} now={now} />}
 
       {p.method === "contacts" && (
         <>
@@ -290,6 +344,65 @@ function JoinWait() {
   );
 }
 
+function QuorumWait({ p, st, now }) {
+  const kinds = [...new Set([...(st?.kinds || []), ...(p.hasCard ? ["card"] : [])])];
+  const releaseAt = st?.releaseAt;
+  const [card, setCard] = useState("");
+  const [name, setName] = useState("Demo Person");
+  const [busy, setBusy] = useState(false);
+  const ended = st && ["expired", "cancelled"].includes(st.status);
+  const tier = tierText(kinds, st?.anchorMode);
+  const cardOk = (() => { try { parseCard(card); return true; } catch { return false; } })();
+  const chip = async () => { setBusy(true); const c = await demoPassport(name); if (c) await addChipToJoin(c); setBusy(false); };
+  return (
+    <>
+      <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
+      <p class="lede" style={{ marginTop: 10 }}>{releaseAt
+        ? <>Two proofs matched ({st.evidence}). Every device that still has your HumID was alerted and can veto. {st.duress && <b>The wait is doubled because of a recent duress signal.</b>}</>
+        : <>Any two different proofs. Witnesses open HumID → <b>Security → Help recover</b>; a HumID station operator scans this code with your ID in hand.</>}</p>
+      <ProofMeter have={kinds} />
+      {tier && <p class="tier" style={{ marginTop: 10 }}><Icon name="clock" />Wait with these proofs: {tier}</p>}
+
+      {!releaseAt && !ended && (
+        <>
+          <CodeBox code={p.code} label="Recovery code" />
+          <QrCode kind="recover" code={p.code} />
+          <div class="card" style={{ marginTop: 14 }}>
+            <div class="proof-row" data-done={kinds.includes("witness") ? "1" : "0"}>
+              <span class="p-ico"><Icon name="users" /></span>
+              <span><strong>Witnesses</strong><span>{st?.threshold ? `${st.approvals ?? 0} of ${st.threshold} have approved` : st?.approvals ? `${st.approvals} approved so far` : "Send them the code above and call them, so they know it's you."}</span></span>
+              {kinds.includes("witness") ? <Icon name="check" /> : <span />}
+            </div>
+            <div class="proof-row" data-done={kinds.includes("card") ? "1" : "0"}>
+              <span class="p-ico"><Icon name="idcard" /></span>
+              <span><strong>Seal card</strong><span>{kinds.includes("card") ? "Added" : "Type it below if you have it."}</span></span>
+              {kinds.includes("card") ? <Icon name="check" /> : <span />}
+            </div>
+            {!kinds.includes("card") && (
+              <div class="field" style={{ marginTop: 0 }}>
+                <input aria-label="Seal card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-…" value={card} onInput={(e) => setCard(e.currentTarget.value)} />
+                <button class="btn quiet sm" style={{ marginTop: 8 }} disabled={!cardOk} onClick={async () => { if (await addCardToJoin(card)) setCard(""); }}><Icon name="fingerprint" />Add seal card</button>
+              </div>
+            )}
+            <div class="proof-row" data-done={kinds.includes("anchor") ? "1" : "0"}>
+              <span class="p-ico"><Icon name="passport" /></span>
+              <span><strong>ID chip</strong><span>{kinds.includes("anchor") ? (st?.anchorMode === "station" ? "Verified in person at a station" : "Verified live") : DEMO_BUILD ? "Development build: use a demo passport." : "At a HumID station: show the operator this code and your passport or ID. Reading the chip with this phone comes in the next update."}</span></span>
+              {kinds.includes("anchor") ? <Icon name="check" /> : <span />}
+            </div>
+            {DEMO_BUILD && !kinds.includes("anchor") && (
+              <div class="field" style={{ marginTop: 0 }}>
+                <input aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+                <button class="btn quiet sm" style={{ marginTop: 8 }} disabled={busy} onClick={chip}><Icon name="passport" />Tap demo passport</button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+      {releaseAt && <div class="hero" style={{ flex: "0 0 auto", margin: "18px 0" }}><Mark state="scanning" size={140} /></div>}
+    </>
+  );
+}
+
 /* ---------------- lock ---------------- */
 
 const ISSUES = {
@@ -303,10 +416,39 @@ const ISSUES = {
   device_removed: () => ({ title: "This device was removed from your HumID", text: "Someone removed it from another of your devices. It can no longer open your vault. If that was you, set this device up again with I already have HumID." }),
 };
 
+/**
+ * The unlock controls, with the duress gesture if it's on. Both gestures look like
+ * ordinary unlocking: hold the Unlock button a little longer, or tap the mark a few
+ * times. Nothing on screen changes to show which one happened.
+ */
+function useUnlockGestures(duress) {
+  const taps = useRef({ n: 0, t: null });
+  const press = useRef(0);
+  const gesture = duress?.enabled ? duress.gesture : null;
+  const onMark = () => {
+    if (gesture !== "taps") return unlock(false);
+    const st = taps.current;
+    st.n += 1;
+    clearTimeout(st.t);
+    st.t = setTimeout(() => { const n = st.n; st.n = 0; unlock(n >= 3); }, 650);
+  };
+  const button = gesture === "hold"
+    ? {
+      onPointerDown: () => { press.current = Date.now(); },
+      onPointerUp: () => { const held = press.current && Date.now() - press.current; press.current = 0; unlock(held >= DURESS_HOLD_MS); },
+      onPointerLeave: () => { press.current = 0; },
+      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); unlock(false); } },
+      onContextMenu: (e) => e.preventDefault(),
+    }
+    : { onClick: () => unlock(false) };
+  return { onMark, button };
+}
+
 export function Lock() {
   const id = S.identity.value;
   const [confirm, setConfirm] = useState(false);
   const issue = S.lockIssue.value;
+  const g = useUnlockGestures(id?.duress);
   if (issue) {
     const x = (ISSUES[issue] || ISSUES.unknown_identity)(serverHost(id?.server?.url));
     return (
@@ -329,12 +471,12 @@ export function Lock() {
     <main class="screen">
       <Stars count={60} />
       <div class="hero">
-        <button class="lockmark" aria-label="Unlock HumID" onClick={unlock}><Mark size={230} /></button>
+        <button class="lockmark" aria-label="Unlock HumID" onClick={g.onMark}><Mark size={230} /></button>
         <Wordmark />
         <div class="tagline">Safe.&nbsp; Secure.&nbsp; Simple.</div>
       </div>
       <div class="foot">
-        <button class="btn primary block" onClick={unlock}><Icon name="fingerprint" />Unlock</button>
+        <button class="btn primary block" {...g.button}><Icon name="fingerprint" />Unlock</button>
         <p class="fine">{id?.mode === "demo" ? "Demo identity · no hardware sensor" : "Keys stay sealed until a live biometric check"}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>
     </main>

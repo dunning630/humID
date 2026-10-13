@@ -83,9 +83,22 @@ builds from the checked-out source instead.
 | `vault-data` | sealed documents | Documents are gone (they stay unreadable to anyone either way). |
 | `identity-data` | accounts and device public keys | Nobody can sign in. |
 | `ledger-data` | access history and the ledger signing key | History is gone; new history starts. |
-| `recovery-data` | card backups, contacts' pieces | Recovery cards and contacts stop working; devices still do. |
+| `recovery-data` | seal-card pieces, witnesses' pieces, ID-anchor parts and `anchor-secret.bin` | Recovery stops working; devices still do. Without `anchor-secret.bin` no ID anchor opens. |
 
 Back up all five volumes together, encrypted, and test a restore.
+
+## Two-proof recovery, stations, the public log
+
+| Setting | What it does |
+|---|---|
+| `deploy/csca/` (mounted at `/csca`) | Country signing certificates (CSCA) for passport and ID chips. Empty = ID anchors off. See [csca/README.md](csca/README.md). |
+| `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. |
+| `HUMID_DURESS_COOLOFF_MS` | How long it must be calm after a duress signal before the owner can lift the lockdown (default 24 h). |
+| `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. |
+| `RECOVERY_DELAY_MS` | The base wait (72 h). Station = ⅓, witnesses = 1×, card + chip = 7⁄3; doubled after a duress signal. |
+
+The edge serves the public log at `/tlog/v1/checkpoint`, `/tlog/v1/consistency`
+and `/tlog/v1/cosign`. See [../docs/CONTINUITY.md](../docs/CONTINUITY.md).
 
 ## Checking it
 

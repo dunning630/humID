@@ -4,5 +4,7 @@
 <dict>
   <key>NSFaceIDUsageDescription</key>
   <string>HumID uses Face ID for the biological interrupt that unlocks your keys each time you open, seal or decrypt.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>HumID uses the camera only to scan HumID QR codes, such as a new device's code or a recovery code. Nothing is recorded.</string>
 </dict>
 </plist>

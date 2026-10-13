@@ -69,6 +69,15 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
 The service code, the device policy, the attestation checks and the data
 formats are the same, so a backup can move between the two deployments.
 
+## Two-proof recovery and the public log
+
+Put country signing certificates (CSCA, PEM or DER) for the passports you want
+to accept in `C:\ProgramData\HumID\csca` and restart (`humid restart`). Make
+an account a verification station with
+`humid set HUMID_STATION_ACCOUNTS=hid_…`. The public log is at
+`https://<your tunnel>/tlog/v1/checkpoint`. Every setting is in `humid.env`
+with an explanation; see [../../docs/CONTINUITY.md](../../docs/CONTINUITY.md).
+
 ## Limits
 
 - The laptop has to be on, awake and online. The installer offers to keep it

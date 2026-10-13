@@ -115,7 +115,8 @@ async function run({ service }) {
   const identity = createIdentity({ port: 0, dataDir: data("identity"), internalPk: pk });
   const vault = createVault({ port: 0, dataDir: data("vault"), internalPk: pk });
   const ledger = createLedger({ port: 0, dataDir: data("ledger"), internalPk: pk });
-  const recovery = createRecovery({ port: 0, dataDir: data("recovery"), internalPk: pk });
+  // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
+  const recovery = createRecovery({ port: 0, dataDir: data("recovery"), internalPk: pk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
   await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start()]);
   const url = (s) => `http://${host.includes(":") ? `[${host}]` : host}:${s.server.address().port}`;
   const local = (s) => `http://127.0.0.1:${s.server.address().port}`;

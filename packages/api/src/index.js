@@ -4,10 +4,10 @@
 
 import { HtpClient, HtpError } from "@humid/htp/client";
 import { registerMessage, deviceMessage, loginMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
-import { verifyLedger } from "@humid/audit";
+import { verifyLedger, verifyCheckpoint } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 
-export { HtpError, verifyLedger };
+export { HtpError, verifyLedger, verifyCheckpoint };
 
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -32,7 +32,16 @@ const STEP_UP = {
   removeContacts: () => ["DELETE", "/recovery/contacts"],
   help: (code) => ["POST", `/recovery/help/${codeOf(code)}`],
   cancelAlert: (ref) => ["POST", `/recovery/alerts/${ref}/cancel`],
+  setAnchor: () => ["PUT", "/recovery/anchor"],
+  removeAnchor: () => ["DELETE", "/recovery/anchor"],
+  setSettings: () => ["PUT", "/recovery/settings"],
+  stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
+  clearDuress: () => ["POST", "/auth/duress/clear"],
 };
+
+/** Chip data for the wire: { dg1, sod, dg15? } bytes → base64url. */
+const chipBody = (c) => ({ dg1: b64u(c.dg1), sod: b64u(c.sod), ...(c.dg15 ? { dg15: b64u(c.dg15) } : {}) });
+const PRESENCE_PAD = "x".repeat(96);
 
 /**
  * A code a person typed commits to public keys. Recompute it from the keys the
@@ -101,7 +110,7 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign, card }) {
+  async register({ pub, commit, device, sign, card, soleBiometric }) {
     await this.htp.connect();
     const th = this.htp.transcript;
     const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
@@ -111,6 +120,7 @@ export class HumidApi {
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
         ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        ...(soleBiometric ? { soleBiometric: true } : {}),
       },
     });
     return this.session;
@@ -120,10 +130,10 @@ export class HumidApi {
    * Join an existing account (after a device link or a recovery), in a fresh session.
    * `sign(message, th)` returns { sigAccount, sigDevice, live?, gateMethod?, assurance? } over the same message.
    */
-  async enrollDevice({ account, device, via, recoveryId, sign }) {
+  async enrollDevice({ account, device, via, recoveryId, sign, soleBiometric }) {
     await this.htp.connect();
     const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
-    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, device: deviceBody(device, sigs) } });
+    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
     return this.session;
   }
 
@@ -147,6 +157,17 @@ export class HumidApi {
   }
 
   me() { return this.#json("GET", "/identity/me"); }
+
+  /* ---------------- duress ---------------- */
+
+  /**
+   * Sent after EVERY unlock. duress = true only when the person used their duress
+   * gesture. The request is the same size and shape either way.
+   */
+  presence(duress = false) { return this.#json("POST", "/auth/presence", { body: { d: duress ? 1 : 0, pad: PRESENCE_PAD } }); }
+  /** { lockdown, since, lastDuressAt, clearableAt } — a decoy session always sees { lockdown: false }. */
+  duressStatus() { return this.#json("GET", "/auth/duress"); }
+  clearDuress(stepUp) { return this.#json("POST", "/auth/duress/clear", { stepUp }); }
   removeDevice(id, stepUp) { return this.#json("DELETE", `/identity/devices/${id}`, { stepUp }); }
 
   /** Close the identity and erase the vault on the server. Needs a step-up. */
@@ -172,6 +193,22 @@ export class HumidApi {
   async download(id, stepUp) { return (await this.#call("GET", `/vault/objects/${id}`, { stepUp })).body; }
 
   remove(id, stepUp) { return this.#json("DELETE", `/vault/objects/${id}`, { stepUp }); }
+
+  /**
+   * Check this account's place in the public transparency log: the latest ledger
+   * entry is in the published tree, and the tree extends `previous` ({ size, root }),
+   * the checkpoint this device verified last time. Returns verifyCheckpoint's result.
+   */
+  async continuity({ previous, trustedKeyFp } = {}) {
+    const inc = await this.#json("GET", "/ledger/tlog/inclusion");
+    let consistency = null;
+    if (previous?.size > 0 && previous.size <= inc.checkpoint.size) {
+      consistency = (await this.#json("GET", `/ledger/tlog/consistency?from=${previous.size}&to=${inc.checkpoint.size}`)).proof;
+    }
+    const r = verifyCheckpoint(inc, { trustedKeyFp, previous, consistency, inclusion: { owner: inc.owner, seq: inc.seq, hash: inc.hash, index: inc.index, proof: inc.proof } });
+    if (r.ok && this.session?.id && inc.owner !== this.session.id) return { ok: false, reason: "The log answered for someone else" };
+    return { ...r, seq: inc.seq };
+  }
 
   /** Read and VERIFY the access ledger. Returns the verification result with parsed entries. */
   async ledger({ limit = 200, trustedKeyFp } = {}) {
@@ -224,9 +261,9 @@ export class HumidApi {
     return { ...r, guardians: (r.guardians || []).map((g) => ({ ...g, label: g.label ? unb64u(g.label) : null })) };
   }
   /** guardians: [{ contact, offer (code), envelope (bytes), label (bytes) }] */
-  setContacts({ threshold, guardians }, stepUp) {
+  setContacts({ threshold, guardians, scheme }, stepUp) {
     return this.#json("PUT", "/recovery/contacts", {
-      body: { threshold, guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
+      body: { threshold, scheme, guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
       stepUp,
     });
   }
@@ -237,17 +274,54 @@ export class HumidApi {
     return r.shares.map((s) => ({ ...s, envelope: unb64u(s.envelope) }));
   }
 
+  /* ---------------- identity anchor, settings, witness alerts ---------------- */
+
+  /** { available, exists, document?, country?, createdAt? } */
+  anchor() { return this.#json("GET", "/recovery/anchor"); }
+  /** Bind a passport or ID chip ({ dg1, sod, dg15? }) and store the anchor part under it. */
+  setAnchor({ chip, part }, stepUp) { return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), part: b64u(part) }, stepUp }); }
+  removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
+  settings() { return this.#json("GET", "/recovery/settings"); }
+  setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
+  /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
+  protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
+
+  /* ---------------- verification stations ---------------- */
+
+  station() { return this.#json("GET", "/recovery/station"); }
+  stationRequest(code) { return this.#json("GET", `/recovery/station/requests/${codeOf(code)}`); }
+  /** checks: { document, face, present } — what the operator confirmed in person. */
+  stationVerify(code, { chip, checks }, stepUp) {
+    return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body: { chip: chipBody(chip), checks }, stepUp });
+  }
+
   /* ---------------- recovering ---------------- */
 
-  /** New device. body: { method: "card", tag, platform } | { method: "contacts", kemPk, xPk, platform } */
+  /**
+   * New device. body:
+   *   { method: "quorum", kemPk, xPk, platform, tag? }   two proofs (witnesses, ID chip, seal card)
+   *   { method: "card", tag, platform }                   a v1 card on its own
+   *   { method: "contacts", kemPk, xPk, platform }        v1 contacts on their own
+   */
   startRecovery(body) {
-    const b = body.method === "contacts" ? { ...body, kemPk: b64u(body.kemPk), xPk: b64u(body.xPk) } : body;
+    const b = body.kemPk ? { ...body, kemPk: b64u(body.kemPk), xPk: b64u(body.xPk) } : body;
     return this.#json("POST", "/recovery/requests", { body: b });
   }
-  /** New device: poll. When released: { status: "released", blob } (card) or { shares: [envelope] } (contacts). */
+  /** Two proofs: add the seal card. */
+  recoveryAddCard(id, tag) { return this.#json("POST", `/recovery/requests/${id}/card`, { body: { tag } }); }
+  /** Two proofs: a fresh challenge for the ID chip to sign (Active Authentication). Returns bytes. */
+  async recoveryChallenge(id) { return unb64u((await this.#json("POST", `/recovery/requests/${id}/challenge`)).nonce); }
+  /** Two proofs: the ID chip's data and its answer to the challenge. */
+  recoveryAddAnchor(id, { chip, signature, hash }) {
+    return this.#json("POST", `/recovery/requests/${id}/anchor`, { body: { chip: chipBody(chip), signature: b64u(signature), ...(hash ? { hash } : {}) } });
+  }
+  /**
+   * New device: poll. When released: { status: "released", blob?, shares?, anchorPart? }:
+   * the card blob, the contacts' or witnesses' shares, the anchor part — whichever this request earned.
+   */
   async recoveryStatus(id) {
     const r = await this.#json("GET", `/recovery/requests/${id}`);
-    return { ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined };
+    return { ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined, anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined };
   }
   /** A contact looks up the recovery code someone sent them. */
   async getHelp(input) {
