@@ -83,6 +83,8 @@ const ctx = await esbuild.context({
     __HUMID_MODULES__: JSON.stringify(versions),
     // Demo mode (no sensor) exists only in local development builds: HUMID_ALLOW_DEMO=1.
     __HUMID_ALLOW_DEMO__: JSON.stringify(allowDemo),
+    // Simulation build: the vault server runs inside the app (src/sim). HUMID_SIMULATE=1.
+    __HUMID_SIM__: JSON.stringify(process.env.HUMID_SIMULATE === "1"),
   },
   legalComments: "eof",
   logLevel: "info",

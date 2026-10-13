@@ -4,7 +4,8 @@ import "./styles/app.css";
 import { render } from "preact";
 import * as S from "./core/state.js";
 import { boot } from "./core/controller.js";
-import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar } from "./ui.jsx";
+import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet } from "./ui.jsx";
+import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
 import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
 import { Activity } from "./screens/activity.jsx";
@@ -16,6 +17,7 @@ function App() {
   const sheet = S.sheet.value;
   return (
     <>
+      {SIM && v !== "boot" && <SimStrip />}
       {v === "boot" && <main class="screen"><div class="hero"><Mark state="scanning" /></div></main>}
       {v === "welcome" && <Welcome />}
       {v === "enroll" && <Enroll />}
@@ -32,6 +34,7 @@ function App() {
           <Viewer />
         </>
       )}
+      {SIM && <ChecksSheet />}
       <ChipReadOverlay />
       <InterruptOverlay />
       <Toasts />

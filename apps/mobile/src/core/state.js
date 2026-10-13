@@ -41,6 +41,10 @@ export const continuity = signal(null);      // public-log check: { ok, reason, 
 export const nfc = signal(null);             // { available, kind: "phone" | "reader" | "none", reason } — the ID chip reader
 export const chipRead = signal(null);        // { stage, message, fraction, error } while reading a chip
 
+// Simulation build: what the in-app server checked, newest first, and the sheet that shows it.
+export const simLog = signal([]);
+export const simShow = signal(null);         // a report to show in the checks sheet
+
 export const interrupt = signal(null);       // overlay state
 export const sheet = signal(null);           // { type, ... }
 export const viewer = signal(null);          // decrypted preview

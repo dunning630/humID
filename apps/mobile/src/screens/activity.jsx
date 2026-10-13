@@ -20,9 +20,9 @@ function describe(e, names) {
   const nm = d.id ? names?.get(d.id) || "a document" : "";
   switch (e.type) {
     case "identity.created": return { icon: "sparkle", tone: "mint", title: "HumID created", meta: [d.platform, method(d.method)] };
-    case "session.opened": return { icon: "unlock", tone: "amber", title: "Unlocked", meta: [method(d.method), d.platform] };
+    case "session.opened": return { icon: "unlock", tone: "amber", title: "Unlocked", meta: [method(d.method), d.platform, d.checks ? `${d.checks} server checks ✓` : null] };
     case "session.closed": return { icon: "lock", tone: "", title: "Locked", meta: [] };
-    case "object.sealed": return { icon: "lock", tone: "mint", title: `Sealed ${nm}`, meta: [] };
+    case "object.sealed": return { icon: "lock", tone: "mint", title: `Sealed ${nm}`, meta: [d.checks ? `${d.checks} server checks ✓` : null] };
     case "object.opened": return { icon: "eye", tone: "amber", title: `Opened ${nm}`, meta: [method(d.method)], proof: d.proof };
     case "object.updated": return { icon: "pencil", tone: "", title: `Renamed ${nm}`, meta: [] };
     case "object.deleted": return { icon: "trash", tone: "amber", title: `Deleted ${nm}`, meta: [method(d.method)], proof: d.proof };

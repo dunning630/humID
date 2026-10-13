@@ -18,6 +18,7 @@
     "affected": "node tools/affected.mjs"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.3"
+    "@changesets/cli": "^3.0.3",
+    "fake-indexeddb": "^6.2.2"
   }
 }

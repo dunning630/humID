@@ -44,6 +44,10 @@ on:
         description: "That server's 64-hex key id from `humid status` (blank = the HUMID_SERVER_KID variable)"
         required: false
         default: ""
+      simulate:
+        description: "Simulation build: the vault server runs inside the app (no server needed; real biometric checks)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -95,6 +99,7 @@ jobs:
       HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
       HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
       HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
+      HUMID_SIMULATE: ${{ inputs.simulate == true && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -245,6 +250,9 @@ jobs:
       - name: Android · signed release .apk + .aab
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
         run: npm run tauri -- android build --apk --aab
+      - name: Android · stable test signing key (so each test build installs over the last)
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
+        run: mkdir -p ~/.android && cp tools/android-test.keystore ~/.android/debug.keystore
       - name: Android · installable test .apk (debug-signed, sideload)
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
         # 64-bit ARM only (every phone on Android 11+), without Rust debug info: small enough to
