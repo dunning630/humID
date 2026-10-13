@@ -10,7 +10,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, loginMessage, stepUpMessage, verify, proofHash, STEP_UP_MAX_AGE_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, loginMessage, stepUpMessage, liveMessage, verify, proofHash, STEP_UP_MAX_AGE_MS, random, utf8 } from "@humid/htp";
+import { verifyLiveSig } from "@humid/attest";
 
 const ID_RE = "hid_[0-9a-f]{40}";
 const DEV_RE = "dev_[0-9a-f]{24}";
@@ -18,8 +19,15 @@ const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
-/** Biometric gate strength, weakest first. "none" = demo mode (press-and-hold, no sensor). */
-const RANK = { none: 0, os: 1, hardware: 2 };
+/**
+ * Which devices may sign in (HUMID_DEVICE_POLICY):
+ *   attested   only phones whose secure chip proves every check is a live biometric
+ *              (Android key attestation / Apple App Attest). Default.
+ *   biometric  also desktop gates that accept only a biometric, enforced by the OS
+ *              (Touch ID, Windows fingerprint, Linux fingerprint), without hardware proof.
+ *   demo       anything, including demo mode with no sensor. Local development only.
+ */
+const POLICIES = ["attested", "biometric", "demo"];
 const re = (s) => new RegExp(`^${s}$`);
 
 /**
@@ -101,20 +109,10 @@ export function createGateway({
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
-  // Weakest biometric gate this server accepts: "none" (demo mode allowed, the POC default),
-  // "os" (OS-enforced, e.g. Linux fprintd) or "hardware" (Secure Enclave / Keystore / TPM).
-  minAssurance = env("HUMID_MIN_ASSURANCE", "none"),
+  devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
 } = {}) {
   const log = logger("gateway");
-  if (!Object.hasOwn(RANK, minAssurance)) throw new Error(`HUMID_MIN_ASSURANCE must be one of ${Object.keys(RANK).join(", ")}`);
-  const levelOf = (a) => (Object.hasOwn(RANK, a) ? a : "none");
-  const requireAssurance = (a) => {
-    if (RANK[levelOf(a)] < RANK[minAssurance]) {
-      throw new HttpError(403, "assurance_too_low", minAssurance === "hardware"
-        ? "This server needs a hardware-backed biometric (Face ID, Touch ID or a strong fingerprint sensor)."
-        : "This server does not accept demo identities.");
-    }
-  };
+  if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
@@ -123,7 +121,7 @@ export function createGateway({
   if (existsSync(keyFile)) statics = importStatics(JSON.parse(readFileSync(keyFile, "utf8")));
   else { statics = createStatics(); writeFileSync(keyFile, JSON.stringify(exportStatics(statics)), { mode: 0o600 }); }
   const htp = new HtpServer(statics);
-  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, minAssurance });
+  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy });
   setInterval(() => htp.sweep(), 60_000).unref();
 
   const helloLimit = new Buckets(30, 60_000);   // per client IP
@@ -167,7 +165,10 @@ export function createGateway({
   }
   const recordQuietly = (sub, type, detail) => record(sub, type, detail).catch((e) => log.warn("ledger write failed", { type, err: e.message }));
 
-  const claimsFor = (s, extra = {}) => ({ sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance, ...extra });
+  const claimsFor = (s, extra = {}) => ({
+    sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance,
+    ...(s.livePub ? { livePub: b64u(s.livePub) } : {}), ...extra,
+  });
 
   /** Bind a session to an account and the device that proved itself. */
   function bindSession(s, view, interrupt) {
@@ -176,12 +177,14 @@ export function createGateway({
     s.dsaPk = unb64u(view.deviceDsaPk); // device key: verifies step-up proofs
     s.dsaFp = view.dsaFp;               // account key: signs envelopes
     s.kemFp = view.kemFp;
-    s.assurance = levelOf(interrupt?.assurance);
+    s.livePub = view.deviceLivePub ? unb64u(view.deviceLivePub) : null; // hardware liveness key: checks every step-up
+    s.proof = view.device.proof || "none";
+    s.assurance = view.device.assurance; // derived by the server from the proof, never the device's own claim
     s.gateMethod = String(interrupt?.method || view.device.gateMethod || "unknown").slice(0, 64);
     s.platform = String(view.device.platform || "unknown").slice(0, 40);
     s.authAt = Date.now();
   }
-  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, ...extra });
+  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, proof: s.proof, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, ...extra });
   const dropWhere = (pred) => { for (const x of [...htp.sessions.values()]) if (pred(x)) htp.drop(x); };
 
   /* ---------- handlers (run inside the encrypted channel) ---------- */
@@ -190,15 +193,14 @@ export function createGateway({
     // First device: create the account and enrol this device.
     async register(s, body) {
       const r = parseJson(body) || {};
-      requireAssurance(r.device?.assurance);
       const reg = await internalJson("identity", "POST", "/internal/register", {
-        json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device },
+        json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device, policy: devicePolicy },
       });
       if (reg.status >= 300) fail(reg);
       bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
-      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance });
-      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
       return { status: reg.status, json: sessionView(s, { created: reg.status === 201 }) };
     },
 
@@ -206,12 +208,11 @@ export function createGateway({
     async enrollDevice(s, body) {
       const r = parseJson(body) || {};
       if (!re(ID_RE).test(String(r.account))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      requireAssurance(r.device?.assurance);
-      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), via: r.via, device: r.device } });
+      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), via: r.via, device: r.device, policy: devicePolicy } });
       if (add.status >= 300) fail(add);
       bindSession(s, add.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
-      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: String(r.via), method: s.gateMethod, assurance: s.assurance });
-      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: String(r.via), method: s.gateMethod, assurance: s.assurance, level: s.proof });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
       if (r.recoveryId && re(REQ_RE).test(String(r.recoveryId))) {
         const done = await internalJson("recovery", "POST", `/requests/${r.recoveryId}/complete`, { json: { account: s.subject } });
         if (done.status === 200) await recordQuietly(s.subject, "recovery.completed", { method: done.data.method, ref: done.data.ref, device: s.deviceId, platform: s.platform });
@@ -232,20 +233,20 @@ export function createGateway({
       s.challenge = null; // one attempt per challenge
       if (!c || c.id !== r.id || c.device !== r.device || Date.now() > c.exp) throw new HttpError(400, "challenge_invalid", "Request a new challenge");
       if (!loginLimit.take(r.id)) throw new HttpError(429, "rate_limited", "Too many sign-in attempts. Wait a few minutes.");
-      requireAssurance(r.interrupt?.assurance);
       const v = await internalJson("identity", "POST", "/internal/verify", {
-        json: { account: r.id, device: r.device, sig: r.sig, message: b64u(loginMessage(s.th, `${r.id}/${r.device}`, c.nonce)) },
+        json: { account: r.id, device: r.device, sig: r.sig, live: r.live, policy: devicePolicy, message: b64u(loginMessage(s.th, `${r.id}/${r.device}`, c.nonce)) },
       });
       if (v.status === 401) {
-        await recordQuietly(r.id, "access.denied", { reason: "bad_login_proof", device: r.device });
-        throw new HttpError(401, "bad_proof", "Sign-in proof was rejected.");
+        const live = v.data?.error === "bad_live_proof";
+        await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
+        throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
       if (v.status === 403 && v.data?.error === "device_removed") {
         await recordQuietly(r.id, "access.denied", { reason: "device_removed", device: r.device });
       }
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);
-      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, proof: proofHash(unb64u(r.sig)) });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
       return { status: 200, json: sessionView(s) };
     },
 
@@ -324,9 +325,17 @@ export function createGateway({
         await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "bad_step_up" });
         throw new HttpError(401, "bad_proof", "Biometric proof was rejected.");
       }
+      // The device's secure chip must have signed this request slot during a live biometric check.
+      if (s.livePub) {
+        let live = null;
+        try { live = meta.proof.live ? unb64u(String(meta.proof.live)) : null; } catch {}
+        if (!verifyLiveSig(s.livePub, liveMessage(s.th, seq, meta.m, meta.p, at), live)) {
+          await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "no_live_biometric" });
+          throw new HttpError(401, "bad_live_proof", "This needs a live face or fingerprint check on this device.");
+        }
+      }
       const i = meta.proof.interrupt || {};
-      stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: Object.hasOwn(RANK, i.assurance) ? i.assurance : s.assurance };
-      requireAssurance(stepUp.assurance);
+      stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: s.assurance, live: !!s.livePub };
     }
 
     if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p));
@@ -388,7 +397,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { minAssurance } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

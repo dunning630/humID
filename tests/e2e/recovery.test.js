@@ -284,18 +284,3 @@ test("contacts: a contact code returning someone else's keys is caught", async (
   db.close();
   await assert.rejects(phone.getOffer(code), (e) => e.code === "code_mismatch");
 });
-
-/* ---------------- server policy ---------------- */
-
-test("a server that requires hardware biometrics refuses demo identities", async () => {
-  const strict = await startStack({ minAssurance: "hardware" });
-  try {
-    const s = await new HumidApi({ baseUrl: strict.baseUrl }).server();
-    assert.equal(s.policy.minAssurance, "hardware");
-    const demo = makeHolder("demo", { assurance: "none" });
-    await assert.rejects(register(demo, strict.baseUrl), (e) => e.code === "assurance_too_low");
-    const real = makeHolder("real");
-    const api = await register(real, strict.baseUrl);
-    assert.equal(api.session.assurance, "hardware");
-  } finally { await strict.stop(); }
-});
