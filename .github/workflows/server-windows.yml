@@ -4,7 +4,9 @@ name: Release HumID Server for Windows
 # version is kept and downloadable from the repository's Releases page.
 #
 #   1. Bump deploy/windows/package.json and add a CHANGELOG entry.
-#   2. Tag the commit:   git tag server-win-v1.0.1 && git push origin server-win-v1.0.1
+#   2. Either push a tag:  git tag server-win-v1.0.1 && git push origin server-win-v1.0.1
+#      or click: Actions > Release HumID Server for Windows > Run workflow >
+#      tick "Publish a release" (it tags the chosen branch's commit for you).
 #
 # The zip is built on Windows, installed and smoke-tested there first; the
 # release is only created if that passes. The tag must match the version.
@@ -12,7 +14,12 @@ name: Release HumID Server for Windows
 on:
   push:
     tags: ["server-win-v*"]
-  workflow_dispatch: # build and test only (no release)
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (tag server-win-v<version> on this commit). Unticked: build and test only."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -75,14 +82,16 @@ jobs:
           "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
           Get-Content "$env:RUNNER_TEMP\notes.md"
       - uses: softprops/action-gh-release@v2
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.publish
         with:
+          tag_name: server-win-v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           name: HumID Server for Windows ${{ steps.version.outputs.version }}
           body_path: ${{ runner.temp }}/notes.md
           prerelease: true
           files: deploy/windows/out/HumID-Server-Windows-*.zip
       - uses: actions/upload-artifact@v4
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && !inputs.publish
         with:
           name: HumID-Server-Windows
           path: deploy/windows/out/HumID-Server-Windows-*.zip

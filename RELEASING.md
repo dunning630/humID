@@ -85,8 +85,9 @@ repository's Releases page, one release per version:
 
 1. Bump `deploy/windows/package.json` and add an entry to
    `deploy/windows/CHANGELOG.md`.
-2. Tag the commit and push the tag:
-   `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
+2. Either click **Actions → Release HumID Server for Windows → Run
+   workflow**, pick the branch and tick *Publish a release*, or tag the
+   commit yourself: `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
 
 *Release HumID Server for Windows* builds the zip on Windows, installs it and
 runs the smoke test there, then creates the release with the zip and the
