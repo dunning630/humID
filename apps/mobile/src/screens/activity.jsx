@@ -1,7 +1,7 @@
 // Activity: the holder's own access ledger, verified on this device.
 import { useEffect } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { dayLabel, fmtTime } from "../ui.jsx";
+import { dayLabel, fmtTime, fmtAgo } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { loadLedger } from "../core/controller.js";
 
@@ -29,22 +29,33 @@ function describe(e, names) {
     case "access.denied": return { icon: "alert", tone: "danger", title: "Access blocked", meta: [reason(d.reason)] };
     case "vault.erased": return { icon: "trash", tone: "danger", title: "Vault erased", meta: [] };
     case "identity.closed": return { icon: "x", tone: "danger", title: "HumID closed", meta: [] };
-    case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [VIA[d.via], method(d.method)] };
+    case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only owner's biometrics" : null] };
     case "device.removed": return { icon: "x", tone: "amber", title: `Device removed · ${d.platform || "device"}`, meta: [], proof: d.proof };
     case "device.link_approved": return { icon: "key", tone: "amber", title: `Approved ${d.platform || "a new device"}`, meta: [], proof: d.proof };
-    case "recovery.card_set": return { icon: "idcard", tone: "mint", title: "Recovery card made", meta: [], proof: d.proof };
-    case "recovery.card_removed": return { icon: "idcard", tone: "", title: "Recovery card removed", meta: [], proof: d.proof };
-    case "recovery.contacts_set": return { icon: "user", tone: "mint", title: `Recovery contacts set · any ${d.threshold} of ${d.n}`, meta: [], proof: d.proof };
-    case "recovery.contacts_removed": return { icon: "user", tone: "", title: "Recovery contacts removed", meta: [], proof: d.proof };
-    case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${d.method === "card" ? "card" : "contacts"}`, meta: [d.platform] };
-    case "recovery.approved": return { icon: "user", tone: "amber", title: `A contact helped · ${d.approvals} of ${d.threshold}`, meta: [] };
+    case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made" : "Seal card made", meta: [], proof: d.proof };
+    case "recovery.card_removed": return { icon: "idcard", tone: "", title: "Seal card removed", meta: [], proof: d.proof };
+    case "recovery.contacts_set": return { icon: "users", tone: "mint", title: `${d.scheme === "quorum" ? "Witnesses" : "Recovery contacts"} set · any ${d.threshold} of ${d.n}`, meta: [], proof: d.proof };
+    case "recovery.contacts_removed": return { icon: "users", tone: "", title: "Witnesses removed", meta: [], proof: d.proof };
+    case "recovery.anchor_set": return { icon: "passport", tone: "mint", title: `Anchored to your ${d.document || "ID"}`, meta: [d.country], proof: d.proof };
+    case "recovery.anchor_removed": return { icon: "passport", tone: "", title: "ID anchor removed", meta: [], proof: d.proof };
+    case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${({ card: "older card", contacts: "older contacts", quorum: "two proofs" })[d.method] || d.method}`, meta: [d.platform] };
+    case "recovery.evidence": return { icon: KIND_ICON[d.kind] || "shield", tone: "amber", title: `Recovery proof added · ${KIND[d.kind] || d.kind}${d.anchorMode === "remote" ? " (live)" : ""}`, meta: [d.releaseAt ? `opens ${new Date(d.releaseAt).toLocaleString()}` : "needs a second proof"] };
+    case "recovery.station_verified": return { icon: "station", tone: "amber", title: "ID verified in person at a station", meta: [d.country, d.releaseAt ? `opens ${new Date(d.releaseAt).toLocaleString()}` : null] };
+    case "station.verified": return { icon: "station", tone: "mint", title: "You verified someone at your station", meta: [d.country], proof: d.proof };
+    case "recovery.approved": return { icon: "users", tone: "amber", title: `A witness approved · ${d.approvals} of ${d.threshold}`, meta: [] };
     case "recovery.cancelled": return { icon: "x", tone: "mint", title: "Recovery cancelled", meta: [d.platform], proof: d.proof };
-    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.method === "card" ? "Recovery card" : "Recovery contacts"] };
+    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : d.method === "card" ? "Recovery card" : "Recovery contacts", d.waitedMs ? `waited ${hours(d.waitedMs)}` : null] };
+    case "duress.signaled": return { icon: "siren", tone: "danger", title: "Duress signal", meta: [d.platform] };
+    case "duress.cleared": return { icon: "siren", tone: "mint", title: "Lockdown lifted", meta: [], proof: d.proof };
+    case "settings.changed": return { icon: "siren", tone: "", title: d.duressAlert ? "Witnesses will see duress signals" : "Witnesses won't see duress signals", meta: [], proof: d.proof };
     case "recovery.helped": return { icon: "user", tone: "mint", title: "You helped someone recover", meta: [], proof: d.proof };
     default: return { icon: "info", tone: "", title: e.type, meta: [] };
   }
 }
-const VIA = { register: "First device", link: "From another device", card: "Recovery card", contacts: "Recovery contacts" };
+const VIA = { register: "First device", link: "From another device", card: "Older recovery card", contacts: "Older recovery contacts", quorum: "Two proofs" };
+const KIND = { witness: "witnesses", card: "seal card", anchor: "ID chip" };
+const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport" };
+const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
   device_not_proven: "Device can't prove a live check",
@@ -54,6 +65,7 @@ const reason = (r) => ({
   bad_login_proof: "Sign-in proof rejected",
   bad_proof: "Proof rejected",
   no_live_seal: "Sealed without a live check",
+  lockdown: "Blocked by lockdown",
 })[r] || r;
 
 export function Activity() {
@@ -87,6 +99,8 @@ export function Activity() {
         </div>
       ))}
 
+      {l?.ok && <Continuity />}
+
       <div class="timeline">
         {groups.map((g) => (
           <>
@@ -112,5 +126,23 @@ export function Activity() {
         ))}
       </div>
     </main>
+  );
+}
+
+/** The public transparency log, as this phone checked it. */
+function Continuity() {
+  const c = S.continuity.value;
+  if (!c) return <p class="muted small" style={{ marginTop: 10 }}>Checking the public log…</p>;
+  if (!c.ok && c.pending) return null;
+  return c.ok ? (
+    <div class="banner" style={{ marginTop: 10 }}>
+      <span class="b-ico"><Icon name="globe" /></span>
+      <div><strong>Published in the public log</strong><span>Your latest entry is in checkpoint #{c.size}{c.cosigned?.length ? `, cosigned by ${c.cosigned.join(", ")}` : ""}. The log only grew since this phone last checked{c.at ? ` (${fmtAgo(c.at)})` : ""}.</span></div>
+    </div>
+  ) : (
+    <div class="banner bad" style={{ marginTop: 10 }}>
+      <span class="b-ico"><Icon name="alert" /></span>
+      <div><strong>Public log check failed</strong><span>{c.reason}. Your history may have been altered on the server. Keep this screen and report it.</span></div>
+    </div>
   );
 }

@@ -15,7 +15,11 @@ export const DEFAULTS = [
   ["HUMID_ANDROID_PACKAGES", "app.humid.vault", "Android package names accepted in key attestation."],
   ["HUMID_ANDROID_CERT_DIGESTS", "", "SHA-256 of your Android release signing certificate; empty accepts any signer."],
   ["HUMID_REQUIRE_LOCKED_BOOT", "1", "1 refuses rooted / unlocked-bootloader Android phones."],
-  ["RECOVERY_DELAY_MS", "259200000", "How long a card or contacts recovery waits (72 hours)."],
+  ["RECOVERY_DELAY_MS", "259200000", "Base recovery wait (72 hours). Two-proof recoveries wait a third of it with a station, the whole of it with witnesses, 7/3 of it with a card and an ID chip alone; twice that after a duress signal."],
+  ["HUMID_CSCA_DIR", "", "Folder of country signing certificates (CSCA, PEM or DER) for ID chips. Empty = the csca folder next to data."],
+  ["HUMID_STATION_ACCOUNTS", "", "HumID account ids (hid_…, comma-separated) allowed to act as in-person verification stations."],
+  ["HUMID_TLOG_COSIGNERS", "", "name=base64url ML-DSA-87 public key, comma-separated: independent cosigners of the public log."],
+  ["HUMID_DURESS_COOLOFF_MS", "86400000", "After a duress signal, how long it must stay calm before the owner can lift the lockdown (24 hours)."],
   ["VAULT_QUOTA_BYTES", "262144000", "Storage per account (250 MB)."],
 ];
 

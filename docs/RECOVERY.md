@@ -1,5 +1,11 @@
 # Devices and recovery
 
+> **Two-proof recovery (v2)** is now the default for new accounts: the seed is
+> split 2-of-3 into witness, ID-anchor and seal-card parts, and any recovery
+> needs two different kinds of proof, with waits set by the evidence. See
+> [CONTINUITY.md](CONTINUITY.md). The v1 card and contacts below still work
+> for accounts that set them up earlier, and the app offers to upgrade them.
+
 Status: POC. Code: `packages/recovery`, `services/recovery`, `services/identity`,
 `apps/mobile/src/core/controller.js`. Tests: `tests/recovery.test.js`,
 `tests/e2e/recovery.test.js`.
@@ -51,7 +57,9 @@ policy the server adds the device only if that attestation checks out
 can only join from a real phone with a live face or fingerprint.
 
 Every way of getting a new device therefore comes down to getting `A` to that
-device safely. There are three.
+device safely: another device, two-proof recovery
+([CONTINUITY.md](CONTINUITY.md#layer-3--two-proof-recovery)), or the older
+single-proof routes below.
 
 ## 1. Another device you still have (instant)
 
@@ -69,11 +77,12 @@ check: envelope signer == account key derived from A
 wrap A ‖ D_N; join with deviceMessage signatures
 ```
 
-The code is a hash of N's public keys, so a server that swapped in its own
+N also shows the code as a QR code (`HUMID:LINK:<code>`); scanning it on E is
+the same as typing it. The code is a hash of N's public keys, so a server that swapped in its own
 keys would also have to find a 60-bit second preimage within the 10-minute
 window. Approval needs a fresh biometric check on E.
 
-## 2. Recovery card (72-hour wait)
+## 2. Recovery card, v1 (72-hour wait)
 
 At setup the app shows a card code: 120 random bits as 24 Crockford base32
 characters plus a check character (`HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`).
@@ -98,7 +107,7 @@ decrypt it.
 A stolen card is not enough on its own: the owner has three days to notice
 and cancel.
 
-## 3. Recovery contacts (any 2 of 3, then 72 hours)
+## 3. Recovery contacts, v1 (any 2 of 3, then 72 hours)
 
 The owner picks 2–5 people who also use HumID. `A` is split with Shamir secret
 sharing over GF(2⁸): any majority (2 of 2, 2 of 3, 3 of 4, 3 of 5) rebuilds it,
@@ -145,7 +154,7 @@ biometric, and a removed device can no longer reach the vault even then.
 
 ## Limits in this POC
 
-- Alerts appear when the owner opens HumID. There are no push or email alerts yet.
+- Alerts appear when the owner (or a witness) opens HumID. There are no push or email alerts yet.
 - Removing a device does not rotate `A`. A thief who defeated a lost phone's
   secure hardware would hold `A`, but could not sign in, because the device is
   revoked and adding a new one shows up in the ledger. Rotating `A`

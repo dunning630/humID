@@ -11,6 +11,7 @@ face or fingerprint check. Three parts:
 | **Server** | `services/` | Six small services: edge, gateway, identity, vault, ledger, recovery. Docker compose. |
 
 Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
+[docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
@@ -34,22 +35,30 @@ to use a phone, deploy a server or put the dev server behind an HTTPS tunnel.)
 The dev server runs a development build with demo mode (press and hold in
 place of a sensor) and a server policy that accepts it. Real builds accept only
 a live face or fingerprint, never a PIN or password, and real servers accept
-only phones whose secure chip proves each check. Locally, card and contact
-recovery waits 2 minutes instead of 72 hours.
+only phones whose secure chip proves each check. Locally, the base recovery
+wait is 2 minutes instead of 72 hours, every account can act as a verification
+station, and "Use a demo passport" gives you an ID chip to anchor and recover with.
 
 ## What you can do in the app
 
-- **Create** a HumID: bind it to your face or fingerprint, get a recovery card.
+- **Create** a HumID: bind it to your face or fingerprint, get a seal card.
   Every check is live: your phone's secure chip signs each one, and the server
   verifies it. A PIN or password never unlocks anything.
 - **Seal** photos, PDFs and files; search and sort them by category. The
   server never learns their names.
 - **Open** a document with a fresh biometric check each time. Every access is
   in your **Activity** log, which your phone verifies for itself.
-- **Add devices** with a 12-character code; **remove** a lost one.
-- **Recover** on a new phone with another device, your recovery card, or your
-  recovery contacts (any majority of 2–5 people). Card and contact recoveries
-  wait 72 hours and alert your devices, which can cancel.
+- **Add devices** by scanning a QR code or typing a 12-character code;
+  **remove** a lost one.
+- **Recover** on a new phone with any **two** of three proofs: your witnesses
+  (a majority of 2–5 people), your passport or ID chip, your seal card. The
+  wait depends on the evidence (24 h with an in-person station check, 72 h
+  with witnesses, 7 days otherwise); every surviving device is alerted and can
+  veto. See [docs/CONTINUITY.md](docs/CONTINUITY.md).
+- **Duress gesture:** unlock into a decoy view while the server silently locks
+  sensitive changes and slows recoveries.
+- **Continuity:** your ledger is published in a public append-only log that
+  your phone and independent cosigners check.
 
 ## Layout
 
@@ -57,12 +66,13 @@ recovery waits 2 minutes instead of 72 hours.
 apps/mobile/         the app (Preact) + Tauri project for iOS/Android/desktop
 packages/            independently versioned modules
   codec crypto gate store io       envelope format, HUMID-PQ1, biometric gates, storage, files
-  htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger checks, service kit
+  htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger + public-log checks, service kit
+  attest anchor                    phone attestation; passport / ID chip checks (server side)
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
 deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests
-tools/               dev server, change detection for CI
+tools/               dev server (with demo passports), change detection for CI, public-log cosigner
 ```
 
 ## Builds and releases

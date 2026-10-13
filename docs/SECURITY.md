@@ -16,8 +16,12 @@ it until that review and the items under *Before real data* are done.
 | **A bot, or someone with your PIN or password** | HumID never accepts a PIN, passcode or password, on any device. Every check is a live face or fingerprint match. On phones a hardware *liveness key* (Secure Enclave or Android Keystore, usable only after a live Class 3 / Face ID / Touch ID match) signs each sign-in, step-up and sealed file, and the server verifies that signature. When a phone joins, the server checks that this key is really in secure hardware and really biometric-only: Android key attestation chained to Google's roots, or Apple App Attest chained to Apple's root. A bot with the account's keys but no live finger or face on that phone can't produce the signature. See *Live biometric checks* below. |
 | **A stolen or lost phone** | Keys are released only by a live biometric check in the Secure Enclave or Android Keystore. Remove the device from any other device: its sessions end and the server refuses it. |
 | **A stolen session or a replayed request** | Opening, deleting, exporting, adding or removing devices, changing recovery, and closing the account each need a fresh biometric signature over that exact request, bound to the session, at most 60 seconds old. The app reserves the request slot first (a *ticket*), so the liveness key signs that exact request during the check; a signature captured for one request can't approve another. Frames carry sequence numbers checked against a replay window. |
-| **A stolen recovery card** | A card recovery waits 72 hours and alerts every signed-in device, any of which can cancel it. The card alone opens nothing without that wait. |
-| **A rogue recovery contact** | A majority of contacts must approve, each with their own biometric. Fewer pieces reveal nothing (Shamir sharing). Then the same 72-hour wait and cancel apply. |
+| **A stolen seal card** | Two-proof recovery: the card is one of three parts, and any recovery needs a second, different proof (witnesses or the ID chip). Then a wait of 24 h to 7 days, set by the evidence, during which any surviving device can veto. See [CONTINUITY.md](CONTINUITY.md). |
+| **Rogue or coerced witnesses** | A majority must approve, each with their own live biometric, and that counts as one proof only. Fewer pieces reveal nothing. |
+| **A copied passport chip** | Remote ID proofs need Active Authentication: the chip signs a fresh server nonce with its private key. Copied files can't. Otherwise only an in-person station check counts. |
+| **A forged or altered ID** | ICAO passive authentication: data-group hashes, the Document Signer's signature, and a chain to a trusted country CSCA. |
+| **Being forced to unlock** | A duress gesture unlocks into a decoy view and silently locks devices, recovery and closing the account; recoveries wait twice as long for 14 days; witnesses can be alerted. |
+| **The server rewriting history** | Every ledger entry is a leaf of a public append-only Merkle log; phones check inclusion and consistency, and independent cosigners refuse forks. |
 | **The server substituting keys while you add a device or contact** | Every code you type is a hash of the public keys behind it. The app recomputes it from what the server returns and stops on a mismatch. |
 | **Tampering with your access history** | Each account's ledger is a SHA-3 hash chain with an ML-DSA-87-signed head, verified on the phone. Opening or deleting a document is refused if the ledger can't record it first. |
 | **Brute force** | Sign-ins are rate-limited per account, handshakes per IP, calls per session. |
@@ -28,6 +32,14 @@ it until that review and the items under *Before real data* are done.
 - **Attestation proves the key, not the person.** The secure chip proves a
   live biometric match on that phone unlocked the key. It can't tell whose
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
+  Keys are destroyed if enrolment changes, and the owner confirms at setup
+  that only their own biometrics are enrolled (recorded in the ledger).
+- **Recovery proves a chain of evidence, not biology.** See the limits in
+  [CONTINUITY.md](CONTINUITY.md#what-it-doesnt-prove).
+- **ID chips are read from files for now.** Phone NFC reading is next. A
+  server with no CSCA certificates configured can't use ID anchors.
+- **Stations are trusted operators.** Their face check is a human check, and
+  their legal obligations (BIPA, GDPR) are theirs to meet.
 - **iPhone attestation proves the app, not the key's settings.** App Attest
   shows the genuine HumID app made the liveness key; Apple has no way to show
   the key's biometric-only setting to a server. A modified app can't pass App
@@ -55,7 +67,9 @@ it until that review and the items under *Before real data* are done.
   so a recovery is noticed when you next open HumID.
 - **Metadata.** The server sees account and device ids, document sizes and
   times, IP addresses at the edge, and which accounts protect which. It never
-  sees names, contents or keys.
+  sees names, contents or keys. The public log reveals the total number of
+  ledger events. The server holds a keyed hash of an anchored ID's stable
+  fields, and its issuing country.
 - **Demo mode has no biometric.** It exists only in local development builds
   (`npm run dev`); release builds don't contain it, and servers refuse it
   unless `HUMID_DEVICE_POLICY=demo`.

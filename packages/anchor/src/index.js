@@ -1,0 +1,281 @@
+// @humid/anchor — the identity anchor for two-proof recovery. Server side.
+//
+// A passport or ID card chip (ICAO 9303) holds the holder's identity data
+// (DG1, the MRZ), sometimes an Active Authentication key (DG15), and a
+// Document Security Object (EF.SOD): hashes of every data group, signed by the
+// issuing country's Document Signer, whose certificate is signed by that
+// country's CSCA. HumID checks:
+//
+//   passive authentication   the data is genuine and unaltered: DG hashes match
+//                            the SOD, the SOD signature verifies under the DS
+//                            certificate, the DS certificate chains to a
+//                            trusted CSCA, the document hasn't expired
+//   active authentication    the chip itself is present right now: it signs a
+//                            fresh server nonce with the private key whose
+//                            public half is in DG15 (which the SOD covers).
+//                            Copying a chip's files can't fake this.
+//
+// The anchor is a keyed hash of the identity fields that survive renewal, so a
+// new passport still matches and the server never stores the fields.
+// Nothing here sees a face or a photo.
+
+import { X509Certificate, createHash, createPublicKey, publicDecrypt, verify as cryptoVerify, constants, createHmac } from "node:crypto";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { parse, kids, int, octets, oid, readTLV, CLASS, TAG } from "@humid/attest/der";
+import { parseMrz, stableIdentity, expiryDate, MrzError } from "./mrz.js";
+
+export { parseMrz, stableIdentity, checkDigit, expiryDate, MrzError } from "./mrz.js";
+
+export class AnchorError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+const fail = (code, message) => { throw new AnchorError(code, message); };
+
+const HASHES = {
+  "1.3.14.3.2.26": "sha1", "2.16.840.1.101.3.4.2.4": "sha224", "2.16.840.1.101.3.4.2.1": "sha256",
+  "2.16.840.1.101.3.4.2.2": "sha384", "2.16.840.1.101.3.4.2.3": "sha512",
+};
+const SIG = {
+  "1.2.840.113549.1.1.1": { kind: "rsa" },                     // rsaEncryption: hash from digestAlgorithm
+  "1.2.840.113549.1.1.5": { kind: "rsa", hash: "sha1" },
+  "1.2.840.113549.1.1.14": { kind: "rsa", hash: "sha224" },
+  "1.2.840.113549.1.1.11": { kind: "rsa", hash: "sha256" },
+  "1.2.840.113549.1.1.12": { kind: "rsa", hash: "sha384" },
+  "1.2.840.113549.1.1.13": { kind: "rsa", hash: "sha512" },
+  "1.2.840.113549.1.1.10": { kind: "pss" },
+  "1.2.840.10045.2.1": { kind: "ecdsa" },                      // id-ecPublicKey: hash from digestAlgorithm
+  "1.2.840.10045.4.1": { kind: "ecdsa", hash: "sha1" },
+  "1.2.840.10045.4.3.1": { kind: "ecdsa", hash: "sha224" },
+  "1.2.840.10045.4.3.2": { kind: "ecdsa", hash: "sha256" },
+  "1.2.840.10045.4.3.3": { kind: "ecdsa", hash: "sha384" },
+  "1.2.840.10045.4.3.4": { kind: "ecdsa", hash: "sha512" },
+};
+const OID = {
+  signedData: "1.2.840.113549.1.7.2",
+  ldsSecurityObject: "2.23.136.1.1.1",
+  contentType: "1.2.840.113549.1.9.3",
+  messageDigest: "1.2.840.113549.1.9.4",
+};
+const HASH_LEN = { sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64 };
+
+const digest = (alg, ...parts) => { const h = createHash(alg); for (const p of parts) h.update(Buffer.from(p)); return h.digest(); };
+const same = (a, b) => a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
+const ctx = (t, n) => t && t.cls === CLASS.context && t.tag === n;
+const tryRead = (fn, code, message) => { try { return fn(); } catch (e) { if (e instanceof AnchorError) throw e; fail(code, message); } };
+
+/** Strip an ICAO file's application tag (DG1 = 0x61, DG15 = 0x6F, SOD = 0x77) and return its inside. */
+function unwrapFile(bytes, appTag, what) {
+  const t = tryRead(() => parse(Buffer.from(bytes)), "bad_chip_data", `${what} can't be read.`);
+  if (t.cls !== CLASS.application || t.tag !== appTag) fail("bad_chip_data", `${what} has the wrong file tag.`);
+  return t;
+}
+
+/* ---------------- EF.SOD ---------------- */
+
+function algorithm(t) {
+  const k = kids(t);
+  return { oid: oid(k[0]), params: k[1] || null };
+}
+
+/** Parse EF.SOD into what passive authentication needs. */
+export function parseSod(sodBytes) {
+  return tryRead(() => {
+    const file = unwrapFile(sodBytes, 23, "The document security object");
+    const ci = kids(parse(file.value));
+    if (oid(ci[0]) !== OID.signedData) fail("bad_chip_data", "The document security object isn't CMS signed data.");
+    const sd = kids(kids(ci[1])[0]);
+    // SignedData: version, digestAlgorithms, encapContentInfo, [0] certificates?, [1] crls?, signerInfos
+    const eci = kids(sd[2]);
+    if (oid(eci[0]) !== OID.ldsSecurityObject) fail("bad_chip_data", "The signed content isn't an LDS security object.");
+    const eContent = octets(kids(eci[1])[0]);
+    const lds = kids(parse(eContent));
+    const hashAlg = HASHES[algorithm(lds[1]).oid];
+    if (!hashAlg) fail("unsupported", "The chip uses a hash HumID doesn't support.");
+    const dgHashes = new Map(kids(lds[2]).map((d) => { const k = kids(d); return [int(k[0]), Buffer.from(octets(k[1]))]; }));
+    let i = 3;
+    const certs = [];
+    if (ctx(sd[i], 0)) { for (const c of kids(sd[i])) certs.push(Buffer.from(c.raw)); i++; }
+    if (ctx(sd[i], 1)) i++;
+    const signers = kids(sd[i]);
+    if (signers.length !== 1) fail("bad_chip_data", "The document security object must have exactly one signer.");
+    const si = kids(signers[0]);
+    // SignerInfo: version, sid, digestAlgorithm, [0] signedAttrs, signatureAlgorithm, signature
+    const sid = si[1];
+    const siDigest = HASHES[algorithm(si[2]).oid];
+    if (!ctx(si[3], 0)) fail("bad_chip_data", "The document security object has no signed attributes.");
+    const attrs = new Map(kids(si[3]).map((a) => { const k = kids(a); return [oid(k[0]), kids(k[1])[0]]; }));
+    // The signature covers the attributes encoded as a SET (tag 0x31), not as the [0] they're stored with.
+    const signedAttrsDer = Buffer.from(si[3].raw);
+    signedAttrsDer[0] = 0x31;
+    return {
+      hashAlg, dgHashes, eContent: Buffer.from(eContent), certs, sid,
+      signerDigest: siDigest, signatureAlg: algorithm(si[4]), signature: Buffer.from(octets(si[5])),
+      signedAttrsDer, contentTypeAttr: attrs.get(OID.contentType), messageDigestAttr: attrs.get(OID.messageDigest),
+    };
+  }, "bad_chip_data", "The document security object can't be read.");
+}
+
+/** PSS parameters: hash and salt length (RFC 4055 defaults: SHA-1, 20). */
+function pssParams(params) {
+  let hash = "sha1", saltLength = 20;
+  if (params && params.tag === TAG.sequence) {
+    for (const p of kids(params)) {
+      if (ctx(p, 0)) hash = HASHES[algorithm(kids(p)[0]).oid] || hash;
+      if (ctx(p, 2)) saltLength = int(kids(p)[0]);
+    }
+  }
+  return { hash, saltLength };
+}
+
+/** Verify a CMS / X.509-style signature by `publicKey` over `data`. */
+function verifyWith(publicKey, alg, digestAlg, data, signature) {
+  const s = SIG[alg.oid];
+  if (!s) fail("unsupported", "The chip uses a signature HumID doesn't support.");
+  if (s.kind === "pss") {
+    const { hash, saltLength } = pssParams(alg.params);
+    return cryptoVerify(hash, data, { key: publicKey, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength }, signature);
+  }
+  const hash = s.hash || digestAlg;
+  if (!hash) fail("unsupported", "The signature's hash is unknown.");
+  return cryptoVerify(hash, data, publicKey, signature);
+}
+
+/* ---------------- trust: country signing CAs ---------------- */
+
+/** Load CSCA certificates (PEM or DER files) from a directory. Missing directory = none. */
+export function loadCscas(dir) {
+  if (!dir || !existsSync(dir)) return [];
+  const out = [];
+  for (const f of readdirSync(dir)) {
+    if (!/\.(pem|crt|cer|der)$/i.test(f)) continue;
+    const raw = readFileSync(join(dir, f));
+    const text = raw.toString("latin1");
+    const blocks = text.includes("-----BEGIN CERTIFICATE-----") ? text.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) : [raw];
+    for (const b of blocks) { try { out.push(new X509Certificate(b)); } catch { /* skip unreadable */ } }
+  }
+  return out;
+}
+
+const asCert = (c) => (c instanceof X509Certificate ? c : new X509Certificate(c));
+
+/* ---------------- passive authentication ---------------- */
+
+/**
+ * Check that the chip's data is genuine. chip: { dg1, sod, dg15? } (bytes).
+ * cscas: trusted country signing CA certificates. Returns the parsed MRZ and what was proven.
+ */
+export function passiveAuth(chip, { cscas = [], now = new Date() } = {}) {
+  if (!chip?.dg1 || !chip?.sod) fail("bad_chip_data", "The chip data needs DG1 and the document security object.");
+  if (!cscas.length) fail("no_trust", "This server has no country signing certificates configured, so it can't check ID chips yet.");
+  const sod = parseSod(chip.sod);
+
+  // 1. Data groups match the signed hashes.
+  const dg1Hash = sod.dgHashes.get(1);
+  if (!dg1Hash || !same(digest(sod.hashAlg, chip.dg1), dg1Hash)) fail("data_altered", "The identity data doesn't match the chip's signed record.");
+  if (chip.dg15) {
+    const h = sod.dgHashes.get(15);
+    if (!h || !same(digest(sod.hashAlg, chip.dg15), h)) fail("data_altered", "The chip's authentication key doesn't match its signed record.");
+  }
+
+  // 2. Signed attributes bind the content.
+  const mdAlg = sod.signerDigest || sod.hashAlg;
+  const md = tryRead(() => octets(sod.messageDigestAttr), "bad_chip_data", "The document security object has no message digest.");
+  if (!same(md, digest(mdAlg, sod.eContent))) fail("data_altered", "The chip's signed record was altered.");
+  if (sod.contentTypeAttr && tryRead(() => oid(sod.contentTypeAttr), "bad_chip_data", "Bad content type.") !== OID.ldsSecurityObject) fail("bad_chip_data", "The signed content type is wrong.");
+
+  // 3. The Document Signer signed it.
+  if (!sod.certs.length) fail("bad_chip_data", "The chip doesn't include its document signer certificate.");
+  const dsCandidates = sod.certs.map((c) => tryRead(() => new X509Certificate(c), "bad_chip_data", "The document signer certificate can't be read."));
+  const ds = dsCandidates.find((c) => { try { return verifyWith(c.publicKey, sod.signatureAlg, mdAlg, sod.signedAttrsDer, sod.signature); } catch { return false; } });
+  if (!ds) fail("bad_signature", "The chip's signature doesn't verify. The document may be forged.");
+  if (now < new Date(ds.validFrom)) fail("bad_signature", "The document signer certificate isn't valid yet.");
+
+  // 4. The Document Signer belongs to a trusted country.
+  const csca = cscas.map(asCert).find((ca) => { try { return ds.checkIssued(ca) && ds.verify(ca.publicKey); } catch { return false; } });
+  if (!csca) fail("untrusted_country", "This document's issuer isn't in the server's trusted country list.");
+  if (now > new Date(csca.validTo) && now > new Date(ds.validTo)) fail("expired", "The issuing country's certificate has expired.");
+
+  // 5. The MRZ, and the document must still be valid.
+  const mrz = readDg1(chip.dg1);
+  if (expiryDate(mrz.expiry) < now) fail("expired", "This document has expired. Use a valid passport or ID card.");
+  return { mrz, hashAlg: sod.hashAlg, hasAaKey: !!sod.dgHashes.get(15) && !!chip.dg15, issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+}
+
+/** DG1 (tag 0x61) → MRZ (tag 0x5F1F) → parsed fields. */
+export function readDg1(dg1) {
+  const file = unwrapFile(dg1, 1, "The identity data (DG1)");
+  const inner = tryRead(() => readTLV(file.value, 0), "bad_chip_data", "The identity data can't be read.");
+  if (inner.cls !== CLASS.application || inner.tag !== 0x1f) fail("bad_chip_data", "The identity data has no MRZ.");
+  try { return parseMrz(Buffer.from(inner.value).toString("latin1")); }
+  catch (e) { fail("bad_chip_data", e instanceof MrzError ? e.message : "The MRZ can't be read."); }
+}
+
+/* ---------------- active authentication ---------------- */
+
+const ISO9796_TRAILERS = { 0x33: "sha1", 0x34: "sha256", 0x35: "sha512", 0x36: "sha384", 0x38: "sha224" };
+const bigOf = (b) => BigInt("0x" + (Buffer.from(b).toString("hex") || "0"));
+const bytesOf = (n, len) => Buffer.from(n.toString(16).padStart(len * 2, "0"), "hex");
+
+/** The chip's AA public key from DG15 (tag 0x6F wrapping a SubjectPublicKeyInfo). */
+export function readDg15(dg15) {
+  const file = unwrapFile(dg15, 15, "The chip's authentication key (DG15)");
+  return tryRead(() => createPublicKey({ key: Buffer.from(file.value), format: "der", type: "spki" }), "bad_chip_data", "The chip's authentication key can't be read.");
+}
+
+/** RSA AA: ISO/IEC 9796-2 digital signature scheme 1, partial message recovery. */
+function verifyRsaAa(key, nonce, sig) {
+  const jwk = key.export({ format: "jwk" });
+  const n = bigOf(Buffer.from(jwk.n, "base64url"));
+  const k = Buffer.from(jwk.n, "base64url").length;
+  let m;
+  try { m = bigOf(publicDecrypt({ key, padding: constants.RSA_NO_PADDING }, sig)); } catch { return false; }
+  for (const cand of [m, n - m]) {
+    const f = bytesOf(cand, k);
+    if ((f[0] & 0xf0) !== 0x60) continue; // header 01 + partial-recovery bit
+    let hash, tlen;
+    if (f[k - 1] === 0xbc) { hash = "sha1"; tlen = 1; }
+    else if (f[k - 1] === 0xcc && ISO9796_TRAILERS[f[k - 2]]) { hash = ISO9796_TRAILERS[f[k - 2]]; tlen = 2; }
+    else continue;
+    const hlen = HASH_LEN[hash];
+    const m1 = f.subarray(1, k - tlen - hlen);
+    const d = f.subarray(k - tlen - hlen, k - tlen);
+    if (same(digest(hash, m1, nonce), d)) return true;
+  }
+  return false;
+}
+
+/** ECDSA AA (BSI TR-03111 plain r ‖ s). The hash comes from DG14; without it, the usual ones are tried. */
+function verifyEcAa(key, nonce, sig, hash) {
+  for (const h of hash ? [hash] : ["sha256", "sha1", "sha224", "sha384", "sha512"]) {
+    try { if (cryptoVerify(h, nonce, { key, dsaEncoding: "ieee-p1363" }, sig)) return true; } catch { /* try the next */ }
+  }
+  return false;
+}
+
+/**
+ * Check that the chip is physically present: it signed `nonce` (the server's
+ * fresh challenge) with the private key behind DG15. dg15 must already be
+ * covered by passive authentication.
+ */
+export function activeAuth({ dg15, nonce, signature, hash }) {
+  if (!dg15 || !nonce || !signature) fail("no_chip_proof", "The chip didn't answer the challenge.");
+  const key = readDg15(dg15);
+  const ok = key.asymmetricKeyType === "rsa" ? verifyRsaAa(key, Buffer.from(nonce), Buffer.from(signature))
+    : key.asymmetricKeyType === "ec" ? verifyEcAa(key, Buffer.from(nonce), Buffer.from(signature), hash)
+    : false;
+  if (!ok) fail("chip_not_present", "The chip's answer didn't verify. The chip data may have been copied.");
+  return true;
+}
+
+/* ---------------- the anchor ---------------- */
+
+/**
+ * A keyed hash of the identity fields that survive renewal. `key` is a server
+ * secret, so the anchor can't be recomputed from a stolen database plus
+ * guessable personal details.
+ */
+export const anchorOf = (mrz, key) => createHmac("sha3-256", key).update(stableIdentity(mrz)).digest("hex");
+
+/** Country and document kind only, for display ("Passport · USA"). Never names or numbers. */
+export const anchorSummary = (mrz) => ({ document: mrz.documentCode?.startsWith("P") ? "passport" : "ID card", country: mrz.issuer });

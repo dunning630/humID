@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- macOS: merged into the app's Info.plist by Tauri. -->
+  <key>NSCameraUsageDescription</key>
+  <string>HumID uses the camera only to scan HumID QR codes, such as a new device's code or a recovery code. Nothing is recorded.</string>
+</dict>
+</plist>

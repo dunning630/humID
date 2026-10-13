@@ -8,7 +8,7 @@ export const enrollStep = signal(0);         // 0 connect · 1 bind · 2 done + 
 
 // A new device joining an existing account (another device, a recovery card, or recovery contacts).
 export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
-export const joinMethod = signal(null);      // link | card | contacts
+export const joinMethod = signal(null);      // link | quorum | card | contacts
 export const joinStatus = signal(null);      // last polled status from the server
 
 export const identity = signal(null);        // local identity record (public parts + wrapped seeds)
@@ -27,9 +27,17 @@ export const ledger = signal(null);          // verified ledger page
 export const ledgerLoading = signal(false);
 
 export const devices = signal(null);         // this account's devices (from the identity service)
-export const recovery = signal(null);        // { card, contacts: { n, threshold, names[] } }
+export const recovery = signal(null);        // { card, contacts: { n, threshold, names[], scheme }, anchor, settings, ready }
+export const protecting = signal([]);        // alerts about people this HumID protects: recoveries, duress signals
+export const station = signal(null);         // { station: bool, countries } — this HumID runs a verification station
 export const alerts = signal([]);            // recoveries in progress for this account
 export const cardCode = signal(null);        // a recovery card to show once, then forget
+
+// Duress. `decoy` is true for a session opened with the duress gesture: the app then shows
+// only decoy documents and a calm account, while the server has locked sensitive changes.
+export const decoy = signal(false);
+export const duressInfo = signal(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
+export const continuity = signal(null);      // public-log check: { ok, reason, size, cosigned, at }
 
 export const interrupt = signal(null);       // overlay state
 export const sheet = signal(null);           // { type, ... }

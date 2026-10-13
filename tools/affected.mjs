@@ -14,10 +14,11 @@ const SERVICES = [...NODE_SERVICES, "edge"];
 
 // Which shared package feeds which service image. Every package also feeds the
 // app, except the server-only ones.
-const SERVER_ONLY = new Set(["svc", "attest"]);
+const SERVER_ONLY = new Set(["svc", "attest", "anchor"]);
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
-  attest: ["identity", "vault", "gateway"],
+  attest: ["identity", "vault", "gateway", "recovery"],
+  anchor: ["recovery"],
   htp: NODE_SERVICES,
   crypto: ["vault", "recovery"],
   codec: ["vault", "recovery"],
@@ -38,6 +39,7 @@ const RULES = [
   [/^plugins\/humid-gate\//, APPS, []],
   [/^apps\/mobile\/src-tauri\/Entitlements\.plist$/, ["macos"], []],
   [/^apps\/mobile\/src-tauri\/Info\.ios\.plist$/, ["ios"], []],
+  [/^apps\/mobile\/src-tauri\/Info\.plist$/, ["macos"], []],
   [/^apps\/mobile\/src-tauri\/icons\/android\//, ["android"], []],
   [/^apps\/mobile\/src-tauri\/icons\/ios\//, ["ios"], []],
   [/^apps\/mobile\/src-tauri\//, APPS, []],

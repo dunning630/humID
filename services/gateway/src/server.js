@@ -41,10 +41,14 @@ const ROUTES = [
   { m: "POST", p: re("/auth/challenge"), h: "challenge" },
   { m: "POST", p: re("/auth/login"), h: "login" },
   { m: "POST", p: re("/auth/logout"), h: "logout" },
+  // duress: every unlock reports presence the same way; only the flag inside differs
+  { m: "POST", p: re("/auth/presence"), h: "presence", auth: true },
+  { m: "GET", p: re("/auth/duress"), h: "duressStatus", auth: true },
+  { m: "POST", p: re("/auth/duress/clear"), h: "clearDuress", auth: true },
 
   { m: "GET", p: re("/identity/me"), to: "identity", path: "/me", auth: true },
-  { m: "DELETE", p: re("/identity/me"), h: "closeIdentity", auth: true },
-  { m: "DELETE", p: re(`/identity/devices/(${DEV_RE})`), h: "removeDevice", auth: true },
+  { m: "DELETE", p: re("/identity/me"), h: "closeIdentity", auth: true, guard: true },
+  { m: "DELETE", p: re(`/identity/devices/(${DEV_RE})`), h: "removeDevice", auth: true, guard: true },
 
   { m: "GET", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true },
   { m: "POST", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true, event: "object.sealed" },
@@ -53,31 +57,52 @@ const ROUTES = [
   { m: "DELETE", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.deleted", audited: true },
 
   { m: "GET", p: re("/ledger/events"), to: "ledger", path: "/events", auth: true },
+  // the public transparency log, as the holder's phone checks it
+  { m: "GET", p: re("/ledger/tlog/checkpoint"), to: "ledger", path: "/tlog/checkpoint", auth: true },
+  { m: "GET", p: re("/ledger/tlog/inclusion"), to: "ledger", path: "/tlog/inclusion", auth: true },
+  { m: "GET", p: re("/ledger/tlog/consistency"), to: "ledger", path: "/tlog/consistency", auth: true },
 
   // add a device you still have
   { m: "POST", p: re("/recovery/links"), to: "recovery", path: "/links", anon: true },
   { m: "GET", p: re(`/recovery/links/(${CODE_RE})`), to: "recovery", path: "/links/$1", auth: true },
-  { m: "POST", p: re(`/recovery/links/(${CODE_RE})/approve`), to: "recovery", path: "/links/$1/approve", auth: true, event: "device.link_approved", audited: true, detail: (r, su) => ({ platform: r?.platform, proof: su?.proof }) },
+  { m: "POST", p: re(`/recovery/links/(${CODE_RE})/approve`), to: "recovery", path: "/links/$1/approve", auth: true, guard: true, event: "device.link_approved", audited: true, detail: (r, su) => ({ platform: r?.platform, proof: su?.proof }) },
   { m: "GET", p: re(`/recovery/links/(${CODE_RE})/result`), to: "recovery", path: "/links/$1/result", anon: true },
   // recovery card
   { m: "GET", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true },
-  { m: "PUT", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, event: "recovery.card_set", detail: (r, su) => ({ proof: su?.proof }) },
-  { m: "DELETE", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, event: "recovery.card_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  { m: "PUT", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, guard: true, event: "recovery.card_set", detail: (r, su) => ({ scheme: r?.scheme, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/card"), to: "recovery", path: "/card", auth: true, guard: true, event: "recovery.card_removed", detail: (r, su) => ({ proof: su?.proof }) },
   // recovery contacts
   { m: "POST", p: re("/recovery/offers"), to: "recovery", path: "/offers", auth: true },
   { m: "GET", p: re(`/recovery/offers/(${CODE_RE})`), to: "recovery", path: "/offers/$1", auth: true },
   { m: "GET", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true },
-  { m: "PUT", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, event: "recovery.contacts_set", detail: (r, su) => ({ n: r?.n, threshold: r?.threshold, proof: su?.proof }) },
-  { m: "DELETE", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, event: "recovery.contacts_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  { m: "PUT", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, guard: true, event: "recovery.contacts_set", detail: (r, su) => ({ n: r?.n, threshold: r?.threshold, scheme: r?.scheme, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/contacts"), to: "recovery", path: "/contacts", auth: true, guard: true, event: "recovery.contacts_removed", detail: (r, su) => ({ proof: su?.proof }) },
   { m: "GET", p: re("/recovery/protecting"), to: "recovery", path: "/protecting", auth: true },
+  { m: "GET", p: re("/recovery/protecting/alerts"), to: "recovery", path: "/protecting/alerts", auth: true },
+  // identity anchor (passport or ID chip) and recovery settings
+  { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
+  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  { m: "GET", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true },
+  { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
+  // verification stations
+  { m: "GET", p: re("/recovery/station"), to: "recovery", path: "/station", auth: true },
+  { m: "GET", p: re(`/recovery/station/requests/(${CODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
   // recovering on a new device
   { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
   { m: "GET", p: re(`/recovery/requests/(${REQ_RE})`), to: "recovery", path: "/requests/$1", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/card`), h: "addEvidence", kind: "card", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/challenge`), to: "recovery", path: "/requests/$1/challenge", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
   { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
-  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true },
+  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
   { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
 ];
+
+/** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
+const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
 
 const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
@@ -199,7 +224,7 @@ export function createGateway({
       if (reg.status >= 300) fail(reg);
       bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
-      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof });
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
       // A recovery card made with the account: the registration itself was the live check.
       let cardSet = false;
@@ -207,7 +232,7 @@ export function createGateway({
         const stepUp = { at: Date.now(), proof: proofHash(unb64u(r.sig)), method: s.gateMethod, assurance: s.assurance, live: !!s.livePub };
         const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp }), json: r.card }).catch(() => ({ status: 503 }));
         cardSet = c.status === 200;
-        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup" });
+        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup", scheme: c.data?.scheme });
       }
       return { status: reg.status, json: sessionView(s, { created: reg.status === 201, cardSet }) };
     },
@@ -219,12 +244,18 @@ export function createGateway({
       const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), via: r.via, device: r.device, policy: devicePolicy } });
       if (add.status >= 300) fail(add);
       bindSession(s, add.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
-      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: String(r.via), method: s.gateMethod, assurance: s.assurance, level: s.proof });
-      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
+      // Continuity: every device carries the evidence that let it in.
+      let evidence = { via: String(r.via) };
       if (r.recoveryId && re(REQ_RE).test(String(r.recoveryId))) {
         const done = await internalJson("recovery", "POST", `/requests/${r.recoveryId}/complete`, { json: { account: s.subject } });
-        if (done.status === 200) await recordQuietly(s.subject, "recovery.completed", { method: done.data.method, ref: done.data.ref, device: s.deviceId, platform: s.platform });
+        if (done.status === 200) {
+          const d = done.data;
+          evidence = { via: String(r.via), kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs, ref: d.ref };
+          await recordQuietly(s.subject, "recovery.completed", { method: d.method, ref: d.ref, device: s.deviceId, platform: s.platform, kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs });
+        }
       }
+      await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, ...evidence });
+      await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
       return { status: 201, json: sessionView(s, { created: add.status === 201 }) };
     },
 
@@ -282,6 +313,7 @@ export function createGateway({
       await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
       await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
+      await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
       const subject = s.subject;
@@ -295,9 +327,67 @@ export function createGateway({
       const r = await internalJson("recovery", "POST", "/requests", { body });
       if (r.status >= 300) fail(r);
       if (r.data.account) {
-        await recordQuietly(r.data.account, "recovery.requested", { method: r.data.method, ref: r.data.ref, platform: r.data.platform, releaseAt: r.data.releaseAt });
+        await recordQuietly(r.data.account, "recovery.requested", { method: r.data.method, ref: r.data.ref, platform: r.data.platform, releaseAt: r.data.releaseAt, kinds: r.data.kinds });
+        if (r.data.method === "quorum") await recordQuietly(r.data.account, "recovery.evidence", { ref: r.data.ref, kind: "card", kinds: r.data.kinds, releaseAt: r.data.releaseAt });
       }
-      return { status: 201, json: r.data };
+      const { first: _f, ...out } = r.data;
+      return { status: 201, json: out };
+    },
+
+    // Two-proof recovery: the new device adds its seal card or its live ID chip.
+    async addEvidence(s, body, stepUp, m, route) {
+      const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
+      if (r.status !== 200) fail(r);
+      const d = r.data;
+      if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
+      await recordQuietly(d.account, "recovery.evidence", { ref: d.ref, kind: route.kind, anchorMode: d.anchorMode, kinds: d.kinds, releaseAt: d.releaseAt, evidence: d.evidence });
+      const { first: _f, ...out } = d;
+      return { status: 200, json: out };
+    },
+
+    // A verification station vouches, in person, for the ID chip of whoever is recovering.
+    async stationVerify(s, body, stepUp, m) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Verifying needs the operator's fresh biometric check.");
+      const r = await internalJson("recovery", "POST", `/station/requests/${m[1]}/verify`, { claims: claimsFor(s, { stepUp }), body });
+      if (r.status !== 200) fail(r);
+      const d = r.data;
+      if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
+      await recordQuietly(d.account, "recovery.station_verified", { ref: d.ref, station: s.subject, country: d.country, kinds: d.kinds, releaseAt: d.releaseAt });
+      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, proof: stepUp.proof });
+      return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country } };
+    },
+
+    // Every unlock reports presence the same way. d = 1 means the owner used their duress
+    // gesture: this session becomes a decoy, the account is locked down, recoveries slow down.
+    // The work happens after the reply, so the answer looks and times the same either way.
+    async presence(s, body) {
+      const r = parseJson(body) || {};
+      if (r.d === 1 && !s.duress) {
+        s.duress = true;
+        const account = s.subject, device = s.deviceId, platform = s.platform;
+        setImmediate(async () => {
+          await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
+          await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
+          await recordQuietly(account, "duress.signaled", { device, platform });
+        });
+      }
+      return { status: 200, json: { ok: true } };
+    },
+
+    async duressStatus(s) {
+      if (s.duress) return { status: 200, json: { lockdown: false } }; // a decoy session sees a calm account
+      const r = await internalJson("identity", "GET", `/internal/lockdown/${s.subject}`);
+      if (r.status !== 200) fail(r);
+      return { status: 200, json: r.data };
+    },
+
+    async clearDuress(s, body, stepUp) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Lifting lockdown needs a fresh biometric check.");
+      if (s.duress) throw busy();
+      const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`);
+      if (r.status !== 200) fail(r);
+      if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, proof: stepUp.proof });
+      return { status: 200, json: r.data };
     },
 
     // A recovery contact releases their share. Recorded in both people's ledgers.
@@ -306,8 +396,8 @@ export function createGateway({
       const r = await internalJson("recovery", "POST", `/help/${m[1]}`, { claims: claimsFor(s, { stepUp }), body });
       if (r.status !== 200) fail(r);
       const d = r.data;
-      if (d.first) await recordQuietly(d.owner, "recovery.requested", { method: "contacts", ref: d.ref, platform: d.platform });
-      await recordQuietly(d.owner, "recovery.approved", { ref: d.ref, contact: s.subject, approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt });
+      if (d.first) await recordQuietly(d.owner, "recovery.requested", { method: d.method, ref: d.ref, platform: d.platform });
+      await recordQuietly(d.owner, "recovery.approved", { ref: d.ref, contact: s.subject, approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt, kinds: d.kinds });
       await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, proof: stepUp.proof });
       return { status: 200, json: { approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt } };
     },
@@ -346,7 +436,13 @@ export function createGateway({
       stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: s.assurance, live: !!s.livePub };
     }
 
-    if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p));
+    // Duress lockdown: sensitive changes fail the way a busy server would.
+    if (route.guard && s.subject && await lockedDown(s)) {
+      await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "lockdown" });
+      throw busy();
+    }
+
+    if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p), route);
 
     const headers = {};
     for (const k of FORWARD_REQ_HEADERS) if (meta.h?.[k]) headers[k] = String(meta.h[k]);
@@ -368,6 +464,12 @@ export function createGateway({
       }
     }
     return res;
+  }
+
+  async function lockedDown(s) {
+    if (s.duress) return true;
+    const r = await internalJson("identity", "GET", `/internal/lockdown/${s.subject}`).catch(() => null);
+    return !!r?.data?.lockdown;
   }
 
   const safeJson = (b) => { try { return JSON.parse(Buffer.from(b).toString()); } catch { return null; } };
@@ -412,6 +514,18 @@ export function createGateway({
       catch (e) { if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message }); throw e; }
     }, { public: true, bodyLimit: 16 * 1024 }],
     ["POST", "/htp/v1/call", call, { public: true, bodyLimit: maxCallBytes }],
+    // The public transparency log: anyone can fetch checkpoints and consistency proofs, and
+    // configured cosigners can vouch for them. No account data: only tree sizes and hashes.
+    ["GET", "/tlog/v1/checkpoint", () => internal("ledger", "GET", "/tlog/checkpoint"), { public: true }],
+    ["GET", "/tlog/v1/consistency", ({ query }) => {
+      const q = new URLSearchParams();
+      for (const k of ["from", "to"]) if (query.get(k) != null) q.set(k, String(Number(query.get(k))));
+      return internal("ledger", "GET", `/tlog/consistency?${q}`);
+    }, { public: true }],
+    ["POST", "/tlog/v1/cosign", ({ req, body }) => {
+      if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Slow down" });
+      return internal("ledger", "POST", "/tlog/cosign", { body, headers: { "content-type": "application/json" } });
+    }, { public: true, bodyLimit: 16 * 1024 }],
     ["OPTIONS", "/htp/v1/keys", () => ({ status: 204, headers: {}, body: "" }), { public: true }],
     ["OPTIONS", "/htp/v1/hello", () => ({ status: 204, headers: {}, body: "" }), { public: true }],
     ["OPTIONS", "/htp/v1/call", () => ({ status: 204, headers: {}, body: "" }), { public: true }],

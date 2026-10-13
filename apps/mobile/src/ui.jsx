@@ -4,6 +4,8 @@ import { Mark } from "./brand.jsx";
 import { Icon } from "./icons.jsx";
 import * as S from "./core/state.js";
 import { holdComplete, holdCancel } from "./core/controller.js";
+import qrcode from "qrcode-generator";
+import { qrPayload, parseQr } from "@humid/recovery";
 
 export const fmtSize = (n) => n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 export const fmtDate = (t) => new Date(t).toLocaleDateString([], { month: "short", day: "numeric", year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
@@ -176,4 +178,135 @@ export function CardBox({ code }) {
       <div class="cardcode"><b>{prefix}</b>{groups.map((g, i) => <span key={i}>{g}</span>)}</div>
     </div>
   );
+}
+
+/* ---------------- QR codes: show and scan ---------------- */
+// A QR carries the same 12-character code you could type. The code is what
+// commits to the keys, so scanning is only a convenience.
+
+
+/** A QR code for a code: kind is link | recover | contact. */
+export function QrCode({ kind, code, size = 184 }) {
+  let q;
+  try { q = qrcode(0, "M"); q.addData(qrPayload(kind, code)); q.make(); }
+  catch { return null; }
+  const n = q.getModuleCount();
+  let d = "";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += `M${c + 4} ${r + 4}h1v1h-1z`;
+  return (
+    <div class="qr" role="img" aria-label="QR code with the same code">
+      <svg viewBox={`0 0 ${n + 8} ${n + 8}`} width={size} height={size} shape-rendering="crispEdges">
+        <rect width={n + 8} height={n + 8} fill="#f4f7f2" rx="2" />
+        <path d={d} fill="#06150b" />
+      </svg>
+    </div>
+  );
+}
+
+/**
+ * Point the camera at a HumID QR code. Calls onCode({ kind, code }).
+ * Uses the platform's barcode detector where there is one, jsQR otherwise.
+ * Typing the code always works too, so a missing camera is never a dead end.
+ */
+export function Scanner({ onCode, onCancel, expect }) {
+  const video = useRef(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let stream = null, stop = false, timer = null, detector = null, jsqr = null;
+    const canvas = document.createElement("canvas");
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error("This device can't open its camera here. Type the code instead.");
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        if (stop) return;
+        video.current.srcObject = stream;
+        await video.current.play().catch(() => {});
+        if ("BarcodeDetector" in globalThis) {
+          try { detector = new globalThis.BarcodeDetector({ formats: ["qr_code"] }); } catch { detector = null; }
+        }
+        if (!detector) jsqr = (await import("jsqr")).default;
+        const tick = async () => {
+          if (stop) return;
+          const v = video.current;
+          if (v && v.readyState >= 2) {
+            let text = null;
+            try {
+              if (detector) text = (await detector.detect(v))[0]?.rawValue || null;
+              else {
+                const w = Math.min(640, v.videoWidth), h = Math.round((w / v.videoWidth) * v.videoHeight);
+                canvas.width = w; canvas.height = h;
+                const g = canvas.getContext("2d", { willReadFrequently: true });
+                g.drawImage(v, 0, 0, w, h);
+                text = jsqr(g.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" })?.data || null;
+              }
+            } catch { /* keep looking */ }
+            const hit = text && parseQr(text);
+            if (hit && (!expect || !hit.kind || hit.kind === expect)) { stop = true; onCode(hit); return; }
+          }
+          timer = setTimeout(tick, 180);
+        };
+        tick();
+      } catch (e) {
+        setErr(e?.name === "NotAllowedError" ? "Camera access was declined. Type the code instead." : e?.message || "The camera isn't available. Type the code instead.");
+      }
+    })();
+    return () => { stop = true; clearTimeout(timer); stream?.getTracks().forEach((t) => t.stop()); };
+  }, []);
+  return (
+    <div class="scanner">
+      {err ? <div class="banner warn"><span class="b-ico"><Icon name="info" /></span><div><strong>Can't scan</strong><span>{err}</span></div></div>
+        : <div class="scan-frame"><video ref={video} playsInline muted /><i /></div>}
+      <button class="btn ghost block" style={{ marginTop: 12 }} onClick={onCancel}>Type the code instead</button>
+    </div>
+  );
+}
+
+/** A code field with a Scan button. */
+export function CodeInput({ id, label, value, onInput, expect }) {
+  const [scan, setScan] = useState(false);
+  if (scan) return <Scanner expect={expect} onCancel={() => setScan(false)} onCode={(c) => { setScan(false); onInput(c.code); }} />;
+  return (
+    <div class="field">
+      <label for={id}>{label}</label>
+      <div class="code-input">
+        <input id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXX-XXXX-XXXX" value={value} onInput={(e) => onInput(e.currentTarget.value)} />
+        <button class="btn quiet sm" type="button" onClick={() => setScan(true)} aria-label="Scan a QR code"><Icon name="scan" />Scan</button>
+      </div>
+    </div>
+  );
+}
+
+/** A labelled on/off switch. */
+export function Toggle({ checked, onChange, label, hint, disabled }) {
+  return (
+    <label class="toggle">
+      <span><strong>{label}</strong>{hint && <span>{hint}</span>}</span>
+      <input type="checkbox" role="switch" checked={checked} disabled={disabled} onChange={(e) => onChange(e.currentTarget.checked)} />
+      <i aria-hidden="true" />
+    </label>
+  );
+}
+
+/** The three kinds of proof, and which ones a recovery or an account has. */
+export const PROOFS = [
+  { id: "witness", icon: "users", title: "Witnesses", short: "witnesses" },
+  { id: "anchor", icon: "passport", title: "ID chip", short: "ID chip" },
+  { id: "card", icon: "idcard", title: "Seal card", short: "seal card" },
+];
+export function ProofMeter({ have }) {
+  const n = PROOFS.filter((p) => have.includes(p.id)).length;
+  return (
+    <div class="proofmeter" aria-label={`${n} of 2 proofs`}>
+      {PROOFS.map((p) => <span data-on={have.includes(p.id) ? "1" : "0"}><Icon name={p.icon} />{p.title}</span>)}
+    </div>
+  );
+}
+
+/** How long a recovery with these proofs waits, in words (mirrors quorumDelay on the server). */
+export function tierText(kinds, anchorMode) {
+  const k = new Set(kinds || []);
+  if (k.size < 2) return null;
+  if (k.has("anchor") && anchorMode === "station") return "about 24 hours";
+  if (k.has("witness")) return "about 72 hours";
+  return "about 7 days";
 }

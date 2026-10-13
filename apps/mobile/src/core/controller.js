@@ -18,7 +18,7 @@
 import { batch } from "@preact/signals";
 import { toB64, fromB64, toHex, MEDIA_TYPE, EXTENSION } from "@humid/codec";
 import { suite, random } from "@humid/crypto";
-import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE } from "@humid/gate";
+import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE, DEMO_BUILD } from "@humid/gate";
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
 import { HumidApi, ApiError } from "@humid/api";
@@ -26,6 +26,7 @@ import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
+  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM,
 } from "@humid/recovery";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
@@ -33,6 +34,9 @@ import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024;
 const SEED = 64;
+const CARD = 15;          // a seal card's secret
+const DURESS_HOLD_MS = 1800;
+export { DURESS_HOLD_MS };
 const KEY_TYPE = "application/x-humid-key";
 const wipe = (...b) => { for (const x of b) if (x && x.fill) x.fill(0); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -214,7 +218,7 @@ const gateClaim = (gate) => (gate.needsHold
 
 export function startEnroll() { S.enrollStep.value = 0; S.view.value = "enroll"; if (!S.server.value) connectServer(); }
 
-export async function enroll(useDemo) {
+export async function enroll(useDemo, { soleBiometric = false } = {}) {
   const gate = chooseGate(useDemo);
   if (!gate) return;
   const Suite = suite();
@@ -229,12 +233,15 @@ export async function enroll(useDemo) {
     const pub = Suite.publicOf(keys);
     const accountId = identityId(pub.dsaPk);
     const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk)));
+    // The seal card holds one of the three recovery parts; recovery always needs a second proof.
     card = newCard();
-    const cardBody = { tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, accountId) };
+    const parts = quorumParts(seed);
+    const cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
+    for (const p of Object.values(parts)) wipe(p.y);
     showInterrupt({ progress: 0.2, message: "Opening a post-quantum channel to your vault…" });
 
     const sess = await api.register({
-      pub, commit, card: cardBody,
+      pub, commit, card: cardBody, soleBiometric,
       device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
@@ -292,17 +299,17 @@ export function finishEnroll() { S.cardCode.value = null; S.view.value = "app"; 
 /* ---------------- recovery card: show, save, copy ---------------- */
 
 const cardText = (code) => [
-  "HumID recovery card", "",
+  "HumID seal card", "",
   code, "",
-  "This card restores your HumID on a new phone if you lose all your devices.",
-  "Recovery waits 72 hours and alerts your other devices, so a stolen card alone is not enough.",
-  "Keep it somewhere safe and offline. Anyone with this card and 72 hours unnoticed could open your vault.",
+  "One of the two proofs that bring your HumID back on a new phone if you lose all your devices.",
+  "On its own it opens nothing: recovery also needs your witnesses or your ID, then waits and alerts your devices.",
+  "Keep it somewhere safe and offline, away from your ID.",
   "", `Created ${new Date().toLocaleDateString()}`,
 ].join("\n");
 
 export async function saveCard(code) {
   markPicking();
-  try { await saveBytes(utf8(cardText(code)), "HumID recovery card.txt", "text/plain"); toast("Saved your recovery card."); }
+  try { await saveBytes(utf8(cardText(code)), "HumID seal card.txt", "text/plain"); toast("Saved your seal card."); }
   catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -313,8 +320,15 @@ export async function copyCard(code) {
 
 /* ---------------- unlock / lock ---------------- */
 
-export async function unlock() {
+/**
+ * Unlock. duress = true when the person used their duress gesture (Security → Duress
+ * protection): the session opens exactly the same way, then shows only decoy documents,
+ * while the server silently locks sensitive changes. Every unlock reports presence, so
+ * the two look the same on the wire.
+ */
+export async function unlock(duress = false) {
   const id = S.identity.value;
+  duress = !!duress && !!id?.duress?.enabled;
   if (!id?.server?.id) return toast("This identity is not registered with a vault server.", "error");
   try {
     showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
@@ -328,7 +342,8 @@ export async function unlock() {
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
-    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.view.value = "app"; });
+    await reportPresence(duress);
+    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.decoy.value = duress; S.view.value = "app"; });
     await endInterrupt(true, "Welcome back.", 500);
     refresh();
     loadAlerts();
@@ -337,6 +352,12 @@ export async function unlock() {
     if (["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven"].includes(e?.code)) S.lockIssue.value = e.code;
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e)) toast(friendly(e), "error");
+  }
+}
+
+async function reportPresence(duress) {
+  for (let i = 0; i < 2; i++) {
+    try { await api.presence(duress); return; } catch { /* try once more; never block the unlock */ }
   }
 }
 
@@ -353,6 +374,11 @@ export function lock(reason) {
     S.devices.value = null;
     S.recovery.value = null;
     S.alerts.value = [];
+    S.protecting.value = [];
+    S.station.value = null;
+    S.duressInfo.value = null;
+    S.continuity.value = null;
+    S.decoy.value = false;
     S.sheet.value = null;
     closeViewer();
   });
@@ -377,7 +403,10 @@ export async function refresh() {
       knownNames.set(it.id, meta.name);
       return { ...it, ...meta, id: it.id, size: meta.size ?? it.size, envelopeSize: it.size };
     }));
-    batch(() => { S.items.value = decoded; S.usage.value = usage; });
+    // A decoy session shows only the documents marked for it, and their usage.
+    const shown = S.decoy.value ? decoded.filter((i) => i.decoy) : decoded;
+    const u = S.decoy.value ? { ...usage, bytes: shown.reduce((n, i) => n + (i.envelopeSize || 0), 0), count: shown.length } : usage;
+    batch(() => { S.items.value = shown; S.usage.value = u; });
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 401)) toast(friendly(e), "error");
   } finally { S.loading.value = false; }
@@ -469,9 +498,26 @@ export async function exportSealed(item) {
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
+const indexEntry = (item, patch = {}) => ({
+  name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
+  ...(item.decoy ? { decoy: true } : {}), ...patch,
+});
+
+/** Show (or stop showing) a document in the decoy view. Stored inside the encrypted index. */
+export async function setDecoy(item, on) {
+  if (S.decoy.value) return toast("Updated.");
+  try {
+    const entry = indexEntry(item);
+    if (on) entry.decoy = true; else delete entry.decoy;
+    await api.rename(item.id, await suite().sealIndex(indexKey, entry));
+    await refresh();
+    toast(on ? `${item.name} will show in the decoy view.` : `${item.name} is hidden from the decoy view.`);
+  } catch (e) { toast(friendly(e), "error"); }
+}
+
 export async function renameItem(item, name, category) {
   try {
-    const idx = await suite().sealIndex(indexKey, { name: name.trim().slice(0, 120) || item.name, type: item.type, size: item.size, category, addedAt: item.addedAt, plainHash: item.plainHash });
+    const idx = await suite().sealIndex(indexKey, indexEntry(item, { name: name.trim().slice(0, 120) || item.name, category }));
     await api.rename(item.id, idx);
     await refresh();
     S.sheet.value = null;
@@ -490,14 +536,43 @@ export async function deleteItem(item) {
 
 /* ---------------- activity ---------------- */
 
+/** In a decoy session, Activity shows only what a calm account with these documents would show. */
+const DECOY_TYPES = new Set(["identity.created", "session.opened", "session.closed", "device.added", "device.removed", "object.sealed", "object.opened", "object.updated", "object.deleted"]);
+function decoyView(l) {
+  const ids = new Set(S.items.value.map((i) => i.id));
+  const entries = l.entries.filter((e) => DECOY_TYPES.has(e.type) && (!e.type.startsWith("object.") || ids.has(e.detail?.id)));
+  return { ...l, entries };
+}
+
 export async function loadLedger() {
   S.ledgerLoading.value = true;
   try {
     const l = await api.ledger({ limit: 300 });
     for (const it of S.items.value) knownNames.set(it.id, it.name);
-    S.ledger.value = { ...l, names: new Map(knownNames) };
+    S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l) : l), names: new Map(knownNames) };
+    checkContinuity();
   } catch (e) { toast(friendly(e), "error"); }
   finally { S.ledgerLoading.value = false; }
+}
+
+/**
+ * The public transparency log: prove this account's latest entry is in it, and that it
+ * extends the log this device saw last time. The checkpoint is remembered on success.
+ */
+export async function checkContinuity() {
+  const id = S.identity.value;
+  try {
+    const r = await api.continuity({ previous: id?.tlog || null });
+    S.continuity.value = r;
+    if (r.ok && (!id.tlog || r.size >= id.tlog.size)) {
+      const record = { ...id, tlog: { size: r.size, root: r.root, at: r.at } };
+      delete record.schema;
+      await store.putIdentity(record);
+      S.identity.value = { ...record, schema: id.schema ?? 4 };
+    }
+  } catch (e) {
+    S.continuity.value = { ok: false, reason: e?.code === "not_in_log" ? "Not published yet" : friendly(e), pending: e?.code === "not_in_log" };
+  }
 }
 
 /* ---------------- devices ---------------- */
@@ -541,24 +616,49 @@ export async function removeDevice(d) {
 /* ---------------- recovery card & contacts (owner) ---------------- */
 
 export async function loadRecovery() {
-  const [card, contacts] = await Promise.all([quietly(api.card()), quietly(api.contacts())]);
+  const [card, contacts, anchor, settings] = await Promise.all([quietly(api.card()), quietly(api.contacts()), quietly(api.anchor()), quietly(api.settings())]);
   if (!card || !contacts) return;
   const names = [];
   for (const g of contacts.guardians || []) {
-    let name = "A recovery contact";
+    let name = "A witness";
     try { if (g.label && indexKey) name = (await suite().openIndex(indexKey, g.label)).name; } catch {}
     names.push(name);
   }
-  S.recovery.value = { card, contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names } };
+  // Two-proof recovery is ready when at least two of the three proofs are set up (v2).
+  const proofs = {
+    witness: contacts.n > 0 && contacts.scheme === "quorum",
+    anchor: !!anchor?.exists,
+    card: card.exists && card.scheme === "quorum",
+  };
+  const legacy = (card.exists && card.scheme !== "quorum") || (contacts.n > 0 && contacts.scheme !== "quorum");
+  S.recovery.value = {
+    card, anchor: anchor || { available: false, exists: false }, settings: settings || {},
+    contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names, scheme: contacts.scheme },
+    proofs, ready: Object.values(proofs).filter(Boolean).length >= 2, legacy,
+  };
+  if (!S.decoy.value) {
+    api.protectingAlerts().then((a) => { S.protecting.value = a; }).catch(() => {});
+    api.station().then((st) => { S.station.value = st; }).catch(() => {});
+  }
 }
+
+/** The part of two-proof recovery this flow needs, made from the seed inside a live check. */
+const partOf = (seed, kind) => {
+  const parts = quorumParts(seed);
+  const p = parts[kind];
+  for (const k of Object.keys(parts)) if (k !== kind) wipe(parts[k].y);
+  return p;
+};
 
 export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
   try {
-    await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
+    await withStepUp("setCard", [], "card", "Make a seal card", async ({ seed, proof }) => {
       card = newCard();
-      await api.setCard({ tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, accountId) }, proof);
+      const part = partOf(seed, "card");
+      try { await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
+      finally { wipe(part.y); }
     });
     S.sheet.value = { type: "card", code: card.code };
     loadRecovery();
@@ -568,9 +668,9 @@ export async function makeNewCard() {
 
 export async function removeCard() {
   try {
-    await withStepUp("removeCard", [], "card", "Remove recovery card", async ({ proof }) => api.removeCard(proof));
+    await withStepUp("removeCard", [], "card", "Remove seal card", async ({ proof }) => api.removeCard(proof));
     S.sheet.value = null;
-    toast("Recovery card removed. The old card no longer works.");
+    toast("Seal card removed. The old card no longer works.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
@@ -592,9 +692,11 @@ export async function saveContacts(contacts, ownerName) {
   if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} recovery contacts.`, "warn");
   const t = thresholdFor(n);
   try {
-    await withStepUp("setContacts", [], "contacts", "Save recovery contacts", async ({ keys, seed, rec, proof, Suite }) => {
-      showInterrupt({ progress: 0.6, message: `Splitting your account key into ${n} pieces…` });
-      const shares = split(seed, n, t);
+    await withStepUp("setContacts", [], "contacts", "Save your witnesses", async ({ keys, seed, rec, proof, Suite }) => {
+      showInterrupt({ progress: 0.6, message: `Splitting your witness part into ${n} pieces…` });
+      const part = partOf(seed, "witness");
+      const shares = split(part.y, n, t);
+      wipe(part.y);
       const guardians = [];
       for (let i = 0; i < n; i++) {
         const c = contacts[i];
@@ -603,19 +705,19 @@ export async function saveContacts(contacts, ownerName) {
         guardians.push({ contact: c.offer.account, offer: c.code, envelope, label: await Suite.sealIndex(indexKey, { name: c.name.trim().slice(0, 40) || "Contact" }) });
         wipe(piece, shares[i].y);
       }
-      await api.setContacts({ threshold: t, guardians }, proof);
+      await api.setContacts({ threshold: t, guardians, scheme: "quorum" }, proof);
     });
     S.sheet.value = null;
-    toast(`Saved. Any ${t} of your ${n} contacts can help you recover.`);
+    toast(`Saved. Any ${t} of your ${n} witnesses count as one proof.`);
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
 export async function removeContacts() {
   try {
-    await withStepUp("removeContacts", [], "contacts", "Remove recovery contacts", async ({ proof }) => api.removeContacts(proof));
+    await withStepUp("removeContacts", [], "contacts", "Remove your witnesses", async ({ proof }) => api.removeContacts(proof));
     S.sheet.value = null;
-    toast("Recovery contacts removed. Their pieces no longer work.");
+    toast("Witnesses removed. Their pieces no longer work.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
@@ -673,8 +775,10 @@ export async function releasePiece(req, person) {
 /* ---------------- alerts: recoveries of this account ---------------- */
 
 export async function loadAlerts() {
+  if (S.decoy.value) { S.alerts.value = []; return; } // a decoy session sees a calm account
   const a = await api.alerts().catch(() => null);
   if (a) S.alerts.value = a;
+  api.protectingAlerts().then((p) => { S.protecting.value = p; }).catch(() => {});
 }
 
 export async function cancelRecovery(alert) {
@@ -698,11 +802,14 @@ export function startJoin() { S.joinStep.value = 0; S.joinMethod.value = null; S
 
 /**
  * Bind this device and start the chosen route.
- * method: "link" | "card" | "contacts"; cardInput: what the person typed (card only).
+ * method: "link" | "quorum" (two proofs) | "card" | "contacts" (older single-proof routes).
+ * cardInput: what the person typed (card; optional for quorum).
+ * What's wrapped under this device's gate while it waits: D ‖ x ‖ card?, where x is
+ * the link key seed, the recovery key seed (quorum, contacts) or the card (v1 card).
  */
-export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}) {
+export async function beginJoin(method, { useDemo = false, cardInput = "", soleBiometric = false } = {}) {
   let cardSecret = null;
-  if (method === "card") {
+  if (method === "card" || (method === "quorum" && cardInput.trim())) {
     try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return; }
   }
   const gate = chooseGate(useDemo);
@@ -720,7 +827,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
     dseed = random(SEED);
     dkeys = Suite.deriveKeys(dseed);
     x = method === "card" ? cardSecret : random(SEED);
-    both = concat(dseed, x);
+    both = method === "quorum" && cardSecret ? concat(concat(dseed, x), cardSecret) : concat(dseed, x);
     const wrapped = await Suite.wrapSeed(secret, both, fromB64(e.bindingId));
     showInterrupt({ progress: 0.7, message: method === "link" ? "Getting a code for your other device…" : "Asking your vault to start a recovery…" });
     let pending;
@@ -732,6 +839,11 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
     } else if (method === "card") {
       const r = await api.startRecovery({ method: "card", tag: cardTag(cardSecret), platform: PLATFORM });
       pending = { method, requestId: r.id, account: r.account, releaseAt: r.releaseAt, expiresAt: r.expiresAt };
+    } else if (method === "quorum") {
+      const rk = Suite.deriveKeys(x);
+      const r = await api.startRecovery({ method: "quorum", kemPk: rk.kemPk, xPk: rk.xPk, platform: PLATFORM, ...(cardSecret ? { tag: cardTag(cardSecret) } : {}) });
+      Suite.wipeKeys(rk);
+      pending = { method, requestId: r.id, code: r.code, account: r.account, expiresAt: r.expiresAt, hasCard: !!cardSecret };
     } else {
       const rk = Suite.deriveKeys(x);
       const r = await api.startRecovery({ method: "contacts", kemPk: rk.kemPk, xPk: rk.xPk, platform: PLATFORM });
@@ -744,7 +856,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
       assurance: e.interrupt.assurance, method: e.interrupt.method,
       gate: { adapter: gate.id, handle: e.handle }, bindingId: e.bindingId, wrapped,
       suite: Suite.ID, enrolledAt: new Date().toISOString(),
-      pending: { ...pending, devicePub: toB64(dkeys.dsaPk), startedAt: Date.now() }, device: null, pub: null, commit: null,
+      pending: { ...pending, devicePub: toB64(dkeys.dsaPk), startedAt: Date.now(), soleBiometric }, device: null, pub: null, commit: null,
       server: serverRecord(srv),
     };
     await store.putIdentity(record);
@@ -776,6 +888,7 @@ export async function pollJoin() {
   if (st && ["approved", "released"].includes(st.status)) return finishJoin(st);
   if (st && ["expired", "cancelled", "completed"].includes(st.status)) return;
   const quick = p.method === "link" || st?.status === "collecting" || (st?.releaseAt && st.releaseAt - Date.now() < 60_000);
+  if (p.method === "quorum" && st?.status === "collecting") { joinTimer = setTimeout(pollJoin, 5000); return; }
   joinTimer = setTimeout(pollJoin, quick ? 2500 : 30_000);
 }
 
@@ -792,7 +905,7 @@ async function finishJoin(st) {
   const pieces = [];
   try {
     const sess = await api.enrollDevice({
-      account, via: p.method, recoveryId: p.requestId,
+      account, via: p.method, recoveryId: p.requestId, soleBiometric: !!p.soleBiometric,
       device: { dsaPk: fromB64(p.devicePub), platform: PLATFORM, gateMethod: id.method, assurance: id.assurance },
       // One live check unlocks what arrived, and the secure chip attests a fresh liveness key to this session.
       sign: async (message, th) => {
@@ -801,7 +914,7 @@ async function finishJoin(st) {
         released = await gate.release(id.gate.handle, { purpose: "enroll", prompt: "Open your HumID here", challenge: message, attest: th });
         secret = released.secret;
         both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
-        const x = both.subarray(SEED);
+        const x = both.subarray(SEED, p.method === "quorum" ? 2 * SEED : undefined);
         showInterrupt({ needsHold: false, progress: 0.4, message: "Unsealing your account key…" });
         if (p.method === "link") {
           xkeys = Suite.deriveKeys(x);
@@ -811,6 +924,19 @@ async function finishJoin(st) {
           if (opened.manifest.signer.mldsa87Pk !== toB64(keys.dsaPk)) throw new Error("The key that arrived was not sealed by its own account. Nothing was added.");
         } else if (p.method === "card") {
           seed = await openCard(x, st.blob, account);
+          keys = Suite.deriveKeys(seed);
+        } else if (p.method === "quorum") {
+          // Two of: the witnesses' pieces, the seal card part, the anchor part.
+          const parts = [];
+          if (st.shares?.length) {
+            xkeys = Suite.deriveKeys(x);
+            for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
+            parts.push({ x: QUORUM.witness, y: combine(pieces) });
+          }
+          if (st.blob && both.length >= 2 * SEED + CARD) parts.push(await openCardPart(both.subarray(2 * SEED, 2 * SEED + CARD), st.blob, account));
+          if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart));
+          seed = combineQuorum(parts);
+          for (const pt of parts) wipe(pt.y);
           keys = Suite.deriveKeys(seed);
         } else {
           xkeys = Suite.deriveKeys(x);
@@ -854,7 +980,7 @@ async function finishJoin(st) {
     await endInterrupt(true, "Welcome back. This device is part of your HumID.", 900);
     refresh();
     loadAlerts();
-    if (p.method !== "link") toast("Recovered. Consider making a new recovery card in Security.", "warn");
+    if (p.method !== "link") toast("Recovered. Check your proofs in Security, and make a new seal card if you used it.", "warn");
   } catch (err) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
     if (!cancelled(err)) S.joinStatus.value = { ...st, status: "error", message: friendly(err) };
@@ -864,6 +990,64 @@ async function finishJoin(st) {
     for (const k of [keys, dkeys, xkeys]) if (k) Suite.wipeKeys(k);
     busy = false;
   }
+}
+
+/** Two proofs, while waiting: add the seal card. One live check re-wraps it with this device's keys. */
+export async function addCardToJoin(cardInput) {
+  const id = S.identity.value;
+  const p = id?.pending;
+  if (p?.method !== "quorum") return false;
+  if (p.hasCard) { toast("Your seal card is already part of this recovery.", "warn"); return false; }
+  let cardSecret;
+  try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return false; }
+  const gate = gateAdapter(id.gate.adapter);
+  const Suite = suite(id.suite);
+  busy = true;
+  showInterrupt({ purpose: "card", label: "Add your seal card", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  let secret, both, next;
+  try {
+    await waitForHold(gate);
+    const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your seal card", challenge: localChallenge("card") });
+    secret = rel.secret;
+    both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
+    next = concat(both.subarray(0, 2 * SEED), cardSecret);
+    showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your seal card…" });
+    const r = await api.recoveryAddCard(p.requestId, cardTag(cardSecret));
+    const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
+    const record = { ...id, wrapped, pending: { ...p, hasCard: true, account: r.account } };
+    delete record.schema;
+    await store.putIdentity(record);
+    S.identity.value = { ...record, schema: 4 };
+    S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
+    await endInterrupt(true, "Seal card added.", 600);
+    pollJoin();
+    return true;
+  } catch (e) {
+    await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    return false;
+  } finally {
+    wipe(secret, both, next, cardSecret);
+    busy = false;
+  }
+}
+
+/**
+ * Two proofs, while waiting: the ID chip, live. The chip must answer a fresh challenge
+ * from the server, so a copy of its data isn't enough. `chip` is { dg1, sod, dg15, answer(nonce) }.
+ */
+export async function addChipToJoin(chip) {
+  const p = S.identity.value?.pending;
+  if (p?.method !== "quorum") return false;
+  try {
+    const nonce = await api.recoveryChallenge(p.requestId);
+    const signature = await chip.answer(nonce);
+    if (!signature) throw new Error("This ID's chip can't answer challenges. Verify at a HumID station instead.");
+    const r = await api.recoveryAddAnchor(p.requestId, { chip, signature });
+    S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
+    toast("Your ID chip is verified.");
+    pollJoin();
+    return true;
+  } catch (e) { toast(friendly(e), "error"); return false; }
 }
 
 /** Give up on a join: forget the half-made device and go back to the start. */
@@ -894,7 +1078,7 @@ export async function eraseEverything() {
   wipe(indexKey); indexKey = null;
   batch(() => {
     S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null;
-    S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.view.value = "welcome";
+    S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
   });
   api.htp.pinnedKid = PINNED_KID;
   toast("Your HumID was closed and your vault erased.");
@@ -913,4 +1097,138 @@ export async function resetLocal() {
   api.htp.server = null;
   batch(() => { S.identity.value = null; S.lockIssue.value = null; S.view.value = "welcome"; });
   connectServer();
+}
+
+/* ---------------- identity anchor: your passport or ID chip ---------------- */
+// Reading a chip needs NFC (next update). Until then the chip's data comes from a
+// file, or, in local development builds, from the dev server's demo passports.
+
+const fromAny = (s) => {
+  const t = String(s || "").trim();
+  if (/^[0-9a-f]+$/i.test(t) && t.length % 2 === 0) return Uint8Array.from(t.match(/../g), (h) => parseInt(h, 16));
+  return fromB64(t.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((t.length + 3) % 4));
+};
+
+/**
+ * Chip data from files: one JSON file { dg1, sod, dg15? } (base64 or hex), or the
+ * raw files a chip reader exports (names containing DG1, SOD and DG15).
+ */
+export async function readChipFiles(files) {
+  const list = [...(files || [])];
+  if (!list.length) return null;
+  try {
+    if (list.length === 1 && /\.json$/i.test(list[0].name)) {
+      const j = JSON.parse(new TextDecoder().decode(await readFile(list[0])));
+      const get = (k) => j[k] ?? j[k.toUpperCase()] ?? j[`EF_${k.toUpperCase()}`];
+      const chip = { dg1: fromAny(get("dg1")), sod: fromAny(get("sod")), ...(get("dg15") ? { dg15: fromAny(get("dg15")) } : {}) };
+      if (!chip.dg1.length || !chip.sod.length) throw new Error();
+      return chip;
+    }
+    const chip = {};
+    for (const f of list) {
+      const n = f.name.toUpperCase();
+      const key = /DG15/.test(n) ? "dg15" : /DG1(?!\d)/.test(n) ? "dg1" : /SOD/.test(n) ? "sod" : null;
+      if (key) chip[key] = await readFile(f);
+    }
+    if (!chip.dg1 || !chip.sod) throw new Error();
+    return chip;
+  } catch {
+    toast("Those files aren't ID chip data. Choose the DG1 and SOD files (and DG15 if there is one), or one .json with them.", "warn");
+    return null;
+  }
+}
+
+/** Development builds only: a demo passport from the local dev server, with a chip that answers challenges. */
+export async function demoPassport(name = "Demo Person") {
+  if (!DEMO_BUILD) return null;
+  try {
+    const res = await fetch(`${SERVER_URL}/dev/passport?name=${encodeURIComponent(name)}`, { method: "POST" });
+    if (!res.ok) throw new Error("This server has no demo passports.");
+    const j = await res.json();
+    return {
+      dg1: fromAny(j.dg1), sod: fromAny(j.sod), dg15: j.dg15 ? fromAny(j.dg15) : undefined, demo: true, name,
+      answer: async (nonce) => {
+        const r = await fetch(`${SERVER_URL}/dev/passport/answer?name=${encodeURIComponent(name)}&nonce=${toHex(nonce)}`, { method: "POST" });
+        return r.ok ? fromAny((await r.json()).signature) : null;
+      },
+    };
+  } catch (e) { toast(friendly(e), "error"); return null; }
+}
+
+/** Bind your passport or ID to your HumID: the anchor part, stored under the chip's identity. */
+export async function setAnchor(chip) {
+  try {
+    const r = await withStepUp("setAnchor", [], "anchor", "Anchor your HumID to your ID", async ({ seed, proof }) => {
+      showInterrupt({ progress: 0.6, message: "Checking your ID chip's signature with its issuing country…" });
+      const part = partOf(seed, "anchor");
+      try { return await api.setAnchor({ chip, part: encodeQuorumPart(part) }, proof); }
+      finally { wipe(part.y); }
+    });
+    S.sheet.value = null;
+    toast(`Anchored to your ${r.document}${r.country ? ` (${r.country})` : ""}.`);
+    loadRecovery();
+    return true;
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
+}
+
+export async function removeAnchor() {
+  try {
+    await withStepUp("removeAnchor", [], "anchor", "Remove your ID anchor", async ({ proof }) => api.removeAnchor(proof));
+    S.sheet.value = null;
+    toast("ID anchor removed.");
+    loadRecovery();
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
+}
+
+/* ---------------- duress ---------------- */
+// The duress setting itself lives on this device (which gesture you use). What it
+// changes lives on the server (lockdown, slower recoveries, witness alerts).
+
+export async function saveDuress({ enabled, gesture }) {
+  const id = S.identity.value;
+  if (S.decoy.value) { S.sheet.value = null; return toast("Saved."); }
+  const record = { ...id, duress: { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" } };
+  delete record.schema;
+  await store.putIdentity(record);
+  S.identity.value = { ...record, schema: id.schema ?? 4 };
+  toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
+}
+
+export async function loadDuress() {
+  if (S.decoy.value) { S.duressInfo.value = { lockdown: false }; return; }
+  const [st, settings] = await Promise.all([api.duressStatus().catch(() => null), api.settings().catch(() => null)]);
+  S.duressInfo.value = { ...(st || {}), alert: !!settings?.duressAlert };
+}
+
+export async function setWitnessAlert(on) {
+  try {
+    await withStepUp("setSettings", [], "settings", on ? "Let witnesses see duress" : "Stop duress alerts", async ({ proof }) => api.setSettings({ duressAlert: !!on }, proof));
+    toast(on ? "Your witnesses will see a duress signal when they open HumID." : "Witnesses won't be told.");
+    loadDuress();
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
+}
+
+export async function clearLockdown() {
+  try {
+    const r = await withStepUp("clearDuress", [], "duress", "Lift lockdown", async ({ proof }) => api.clearDuress(proof));
+    toast(r.cleared ? "Lockdown lifted." : "There was no lockdown.");
+    loadDuress();
+  } catch (e) { if (!cancelled(e)) toast(e?.code === "too_soon" ? "Lockdown can be lifted once things have been calm for a while. Try again later." : friendly(e), "error"); }
+}
+
+/* ---------------- verification station (operators) ---------------- */
+
+export async function stationLookup(code) {
+  try { return await api.stationRequest(code); }
+  catch (e) { toast(friendly(e), "error"); return null; }
+}
+
+/** The operator vouches: document genuine, face matches, person present. Their own live check signs it. */
+export async function stationVerify(code, chip, checks) {
+  try {
+    return await withStepUp("stationVerify", [code], "station", "Vouch for this person", async ({ proof }) => {
+      showInterrupt({ progress: 0.6, message: "Checking the chip with its issuing country…" });
+      return api.stationVerify(code, { chip, checks }, proof);
+    });
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }

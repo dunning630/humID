@@ -22,7 +22,7 @@ import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256,
 import { verifyLiveKey, verifyLiveSig, AttestationError } from "@humid/attest";
 
 const SIZES = { kemPk: 1568, dsaPk: 2592, xPk: 32 };
-const VIA = new Set(["register", "link", "card", "contacts"]);
+const VIA = new Set(["register", "link", "card", "contacts", "quorum"]);
 const POLICIES = new Set(["attested", "biometric", "demo"]);
 /** Desktop gates that only ever accept a biometric, enforced by the OS (no hardware proof). */
 export const DESKTOP_BIOMETRIC = new Set(["macos-keychain-biometry", "windows-winbio-fingerprint", "linux-fprintd-keyring"]);
@@ -34,6 +34,8 @@ export function createIdentity({
   port = Number(env("PORT", "8081")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
+  // After a duress signal the account stays locked down until its owner clears it, calmly, at least this long after the last signal.
+  duressCoolOffMs = Number(env("HUMID_DURESS_COOLOFF_MS", String(24 * 3600_000))),
   attest = {
     androidPackages: list(env("HUMID_ANDROID_PACKAGES", "app.humid.vault")),
     androidDigests: list(env("HUMID_ANDROID_CERT_DIGESTS", "")).map((d) => d.toLowerCase().replace(/:/g, "")),
@@ -66,6 +68,9 @@ export function createIdentity({
     `ALTER TABLE device_keys ADD COLUMN live_pub BLOB;
      ALTER TABLE device_keys ADD COLUMN proof TEXT NOT NULL DEFAULT 'none';
      ALTER TABLE device_keys ADD COLUMN proof_detail TEXT`,
+    // Duress: a silent lockdown of sensitive changes (devices, recovery, closing), set by the owner's duress gesture.
+    `ALTER TABLE identities ADD COLUMN lockdown_at TEXT;
+     ALTER TABLE identities ADD COLUMN last_duress_at TEXT`,
   ]);
 
   const getAccount = db.prepare("SELECT * FROM identities WHERE id = ?");
@@ -212,6 +217,31 @@ export function createIdentity({
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
       db.prepare("UPDATE device_keys SET last_seen_at = ? WHERE id = ?").run(new Date().toISOString(), device.id);
       return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });
+    }],
+
+    // Duress. The gateway sets and reads this; it is never shown in /me.
+    ["POST", "/internal/duress", ({ body, claims }) => {
+      gatewayOnly(claims);
+      const r = parseJson(body);
+      active(String(r.account));
+      const t = new Date().toISOString();
+      db.prepare("UPDATE identities SET lockdown_at = COALESCE(lockdown_at, ?), last_duress_at = ? WHERE id = ?").run(t, t, String(r.account));
+      return json(200, { lockdown: true, since: getAccount.get(String(r.account)).lockdown_at });
+    }],
+    ["GET", "/internal/lockdown/:id", ({ params, claims }) => {
+      gatewayOnly(claims);
+      const a = getAccount.get(params.id);
+      const last = a?.last_duress_at ? Date.parse(a.last_duress_at) : null;
+      return json(200, { lockdown: !!a?.lockdown_at, since: a?.lockdown_at || null, lastDuressAt: a?.last_duress_at || null, clearableAt: last ? last + duressCoolOffMs : null });
+    }],
+    ["POST", "/internal/lockdown/:id/clear", ({ params, claims }) => {
+      gatewayOnly(claims);
+      const a = active(params.id);
+      if (!a.lockdown_at) return json(200, { cleared: false, lockdown: false });
+      const clearableAt = Date.parse(a.last_duress_at) + duressCoolOffMs;
+      if (Date.now() < clearableAt) throw new HttpError(409, "too_soon", "Lockdown can be lifted once it has been calm for a while.");
+      db.prepare("UPDATE identities SET lockdown_at = NULL WHERE id = ?").run(a.id);
+      return json(200, { cleared: true, lockdown: false, since: a.lockdown_at });
     }],
 
     // The holder's own profile and devices.

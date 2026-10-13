@@ -1,6 +1,7 @@
 // The local edge: what Caddy does in the Docker deployment, minus TLS (the
 // tunnel provides HTTPS). Listens on 127.0.0.1 only.
 //   /htp/*     streamed to the gateway (bodies capped at 64 MB)
+//   /tlog/*    the public transparency log, at the gateway
 //   /healthz   ok when the gateway answers
 //   anything   the web app, with the same security headers as the Docker edge
 import http from "node:http";
@@ -120,7 +121,7 @@ export function createEdge({ port, host = "127.0.0.1", appDir, gatewayUrl, maxBo
   const server = http.createServer((req, res) => {
     let url;
     try { url = new URL(req.url, "http://edge"); } catch { return send(res, 400, { "content-type": "text/plain" }, "Bad request"); }
-    if (url.pathname.startsWith("/htp/")) return proxy(req, res);
+    if (url.pathname.startsWith("/htp/") || url.pathname.startsWith("/tlog/")) return proxy(req, res);
     if (url.pathname === "/healthz") return health(res);
     return file(req, res, url);
   });

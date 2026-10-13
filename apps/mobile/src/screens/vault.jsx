@@ -4,7 +4,7 @@ import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
 import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill } from "../ui.jsx";
 import * as S from "../core/state.js";
-import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow } from "../core/controller.js";
+import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy } from "../core/controller.js";
 
 export function Vault() {
   const list = S.visibleItems.value;
@@ -185,6 +185,13 @@ export function ItemSheet() {
               <button class="btn danger" onClick={() => setMode("confirm")}><Icon name="trash" />Delete</button>
             </div>
           </div>
+          {S.identity.value?.duress?.enabled && !S.decoy.value && (
+            <label class="toggle" style={{ marginTop: 12 }}>
+              <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
+              <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
+              <i aria-hidden="true" />
+            </label>
+          )}
           <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh biometric check. Every one is recorded in Activity.</p>
         </>
       )}
