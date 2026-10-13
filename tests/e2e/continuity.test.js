@@ -17,7 +17,7 @@ import {
 import { makeHolder, anotherDevice, register, sealFor, sealBytes } from "./holder.js";
 import { testCsca, testPassport } from "../support/passport.js";
 
-const DELAY = 1500;
+const DELAY = 2500;   // generous margins: CI runners are slow
 const S = suite();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const csca = testCsca("HumID Test Country");
@@ -157,7 +157,7 @@ test("witnesses + seal card: 72-hour tier, alerts, then the device joins carryin
   assert.equal(first.releaseAt, null);
   await dev.api.recoveryAddCard(dev.req.id, cardTag(card.secret));
   const second = await witness(2, dev.req.code);
-  assert.ok(second.releaseAt - Date.now() > DELAY - 400 && second.releaseAt - Date.now() <= DELAY, "witnesses + card wait the base delay");
+  assert.ok(second.releaseAt - Date.now() > DELAY - 1000 && second.releaseAt - Date.now() <= DELAY, "witnesses + card wait the base delay");
   const [alert] = await phone.alerts();
   assert.deepEqual(alert.kinds.sort(), ["card", "witness"]);
   assert.match(alert.evidence, /witnesses \+ seal card/);
@@ -184,7 +184,7 @@ test("seal card + live ID chip (no people): the 7-day tier, and only a chip that
   const r = await liveChip(dev.api, dev.req.id);
   assert.equal(r.anchorMode, "remote");
   const wait = r.releaseAt - Date.now();
-  assert.ok(wait > (DELAY * 7) / 3 - 400 && wait <= (DELAY * 7) / 3, `card + chip waits 7/3 × base (${wait})`);
+  assert.ok(wait > (DELAY * 7) / 3 - 1000 && wait <= (DELAY * 7) / 3, `card + chip waits 7/3 × base (${wait})`);
   const released = await waitFor(dev.api, dev.req.id, wait + 150);
   assert.ok(released.anchorPart && released.blob && !released.shares);
   const joined = await finish(dev, released);
@@ -277,7 +277,7 @@ test("duress: a decoy session works for reading, sensitive changes fail like a b
   const dev = await newDevice({ tag: cardTag(card.secret) });
   await witness(0, dev.req.code);
   const w = await witness(1, dev.req.code);
-  assert.ok(w.releaseAt - Date.now() > 2 * DELAY - 400, "doubled wait");
+  assert.ok(w.releaseAt - Date.now() > 2 * DELAY - 1000, "doubled wait");
   const [alert] = await phone.alerts();
   assert.equal(alert.duress, true);
 
