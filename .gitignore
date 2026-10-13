@@ -9,3 +9,4 @@ plugins/humid-gate/android/.tauri/
 plugins/humid-gate/ios/.tauri/
 .data/
 .DS_Store
+deploy/windows/out/

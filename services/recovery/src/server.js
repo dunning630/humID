@@ -11,7 +11,7 @@
 // request is released. See docs/RECOVERY.md.
 
 import { randomBytes } from "node:crypto";
-import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, logger } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { sha3_256, toHex, identityId, STEP_UP_MAX_AGE_MS } from "@humid/htp";
@@ -364,4 +364,4 @@ export function createRecovery({
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) createRecovery().start();
+if (isMain(import.meta.url)) createRecovery().start();

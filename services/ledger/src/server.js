@@ -7,7 +7,7 @@
 // key, so the app can prove that no entry was edited, removed or reordered.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { createService, openDb, env, json, parseJson, verifyAssertion, HttpError, b64u, unb64u } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, verifyAssertion, HttpError, b64u, unb64u, isMain } from "@humid/svc";
 import { ml_dsa87, sha3_256, toHex } from "@humid/htp";
 import { GENESIS, entryHash, headMessage } from "@humid/audit";
 
@@ -92,4 +92,4 @@ export function createLedger({ port = Number(env("PORT", "8083")), dataDir = env
   return createService({ name: "ledger", port, routes, bodyLimit: 32 * 1024, verify: (t) => verifyAssertion(internalPk, t, "ledger") });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) createLedger().start();
+if (isMain(import.meta.url)) createLedger().start();

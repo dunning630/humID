@@ -1,5 +1,12 @@
 # Running a HumID vault server
 
+Two ways:
+
+- **On one Windows PC, no Docker:** [windows/README.md](windows/README.md).
+  Unzip, double-click the installer, then give it an https address with
+  Tailscale Funnel. Good for a pilot on a laptop.
+- **On a Linux server with Docker** (this page).
+
 Six small containers: **edge** (Caddy, the only one on the internet),
 **gateway**, **identity**, **vault**, **ledger** and **recovery**. They run on
 a private network with no route to the internet, read-only, as non-root.

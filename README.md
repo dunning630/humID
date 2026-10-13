@@ -14,7 +14,7 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), and [deploy/README.md](deploy/README.md) (running a server).
+doesn't yet), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
 
 ## Try it on your machine
 
@@ -60,7 +60,7 @@ packages/            independently versioned modules
   htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger checks, service kit
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
-deploy/              docker compose + setup.sh for a real server
+deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests
 tools/               dev server, change detection for CI
 ```

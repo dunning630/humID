@@ -5,6 +5,8 @@ name: CI
 #   2. compile only the app platforms the change touches
 #   3. build only the service images the change touches, then boot the whole
 #      stack with docker compose and run the smoke test against it over TLS
+#   4. build HumID Server for Windows, install it on a Windows runner from the
+#      zip (as a person would), smoke-test, back up, restore, update, uninstall
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -162,3 +164,78 @@ jobs:
         working-directory: deploy
         env: { HUMID_REGISTRY: local, HUMID_VERSION: ci }
         run: docker compose logs --no-color | tail -200
+
+  windows-server:
+    needs: test
+    if: needs.test.outputs.anyServices == 'true'
+    runs-on: windows-latest
+    env:
+      HUMID: C:\Program Files\HumID Server\humid.ps1
+      NODE_NO_WARNINGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build HumID Server for Windows
+        run: node deploy/windows/build.mjs --zip
+      - name: Install from the zip (Windows PowerShell 5.1; fetches Node.js from nodejs.org, checksum verified)
+        shell: cmd
+        run: |
+          powershell -NoProfile -Command "Expand-Archive -Path (Get-ChildItem deploy\windows\out\HumID-Server-Windows-*.zip).FullName -DestinationPath $env:RUNNER_TEMP\pkg"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%RUNNER_TEMP%\pkg\HumID-Server\humid.ps1" install -Quiet
+      - name: Runs as LOCAL SERVICE; data readable only by admins and the server
+        shell: pwsh
+        run: |
+          $t = Get-ScheduledTask -TaskName 'HumID Server'
+          $t.Principal.UserId
+          if ($t.Principal.UserId -notmatch 'LOCAL ?SERVICE') { throw "task runs as $($t.Principal.UserId)" }
+          icacls C:\ProgramData\HumID
+          $acl = (Get-Acl C:\ProgramData\HumID).Access | ForEach-Object { $_.IdentityReference.Value }
+          if ($acl -match 'Users|Everyone') { throw "data folder is readable by: $($acl -join ', ')" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID status
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Smoke test, default policy (refuses devices without hardware proof)
+        run: node tests/smoke.mjs http://127.0.0.1:8480
+      - name: Smoke test, full flow (humid set HUMID_DEVICE_POLICY=biometric)
+        shell: pwsh
+        run: |
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID set HUMID_DEVICE_POLICY=biometric
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          if ($after -ne $kid) { throw "server identity changed on restart" }
+      - name: Backup, restore, and update in place keep the server's identity
+        shell: pwsh
+        run: |
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path "$env:RUNNER_TEMP\b.zip"
+          if ($LASTEXITCODE -or -not (Test-Path "$env:RUNNER_TEMP\b.zip")) { throw 'backup failed' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$env:RUNNER_TEMP\b.zip" -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          if ($after -ne $kid) { throw "server identity changed" }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Uninstall removes the task and, with -RemoveData, the data
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Get-ScheduledTask -TaskName 'HumID Server' -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          if (Test-Path 'C:\Program Files\HumID Server') { throw 'program folder still there' }
+          if (Test-Path 'C:\ProgramData\HumID') { throw 'data still there' }
+      - name: Log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ScheduledTaskInfo -TaskName 'HumID Server' -ErrorAction SilentlyContinue | Format-List
+          Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HumID-Server-Windows
+          path: deploy/windows/out/HumID-Server-Windows-*.zip

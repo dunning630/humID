@@ -17,7 +17,7 @@
 // accepts desktop biometric-only gates without hardware proof, "demo" accepts
 // anything (local development only).
 
-import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import { verifyLiveKey, verifyLiveSig, AttestationError } from "@humid/attest";
 
@@ -242,4 +242,4 @@ export function createIdentity({
   return createService({ name: "identity", port, routes, bodyLimit: 64 * 1024, verify: (t) => verifyAssertion(internalPk, t, "identity") });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) createIdentity().start();
+if (isMain(import.meta.url)) createIdentity().start();
