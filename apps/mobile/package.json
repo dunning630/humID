@@ -13,7 +13,7 @@
     "@humid/api": "^1.1.0",
     "@humid/codec": "^1.0.0",
     "@humid/crypto": "^1.1.0",
-    "@humid/gate": "^1.0.0",
+    "@humid/gate": "^2.0.0",
     "@humid/io": "^1.0.0",
     "@humid/store": "^1.2.0",
     "@humid/htp": "^1.0.0",
