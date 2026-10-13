@@ -10,9 +10,10 @@ name: Release apps
 # server zip on Windows, installs and smoke-tests it, and with "Publish" ticked
 # creates its own release (tag server-win-v<version>). See server-windows.yml.
 #
-# Which vault server the apps talk to (repository variables, Settings > Secrets and variables > Actions > Variables):
+# Which vault server the apps talk to (repository variables, Settings > Secrets and variables > Actions > Variables,
+# or the server_url / server_kid boxes when you run it by hand, which win over the variables):
 #   HUMID_SERVER_URL   e.g. https://vault.humidsecure.ai
-#   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh) — pins it in the app
+#   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh or `humid status`) — pins it in the app
 #
 # Signing secrets (optional; without them you still get installable test builds where the platform allows):
 #   macOS + iOS: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
@@ -33,6 +34,14 @@ on:
         description: "With server-windows: publish it as a release (tag server-win-v<version>)"
         type: boolean
         default: false
+      server_url:
+        description: "Vault server the apps talk to, e.g. https://pd-cc.tail1234.ts.net (blank = the HUMID_SERVER_URL variable)"
+        required: false
+        default: ""
+      server_kid:
+        description: "That server's 64-hex key id from `humid status` (blank = the HUMID_SERVER_KID variable)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -82,8 +91,8 @@ jobs:
       HAS_APPLE: ${{ secrets.APPLE_CERTIFICATE != '' }}
       HAS_ANDROID_KEY: ${{ secrets.ANDROID_KEYSTORE != '' }}
       HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
-      HUMID_SERVER_URL: ${{ vars.HUMID_SERVER_URL }}
-      HUMID_SERVER_KID: ${{ vars.HUMID_SERVER_KID }}
+      HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
+      HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -97,6 +106,8 @@ jobs:
           if [ -z "$HUMID_SERVER_URL" ]; then
             echo "::warning::HUMID_SERVER_URL is not set; the app will need a server URL. Set it under Settings > Secrets and variables > Actions > Variables."
           else
+            if ! [[ "$HUMID_SERVER_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then echo "::error::server URL must be https://host with no path, got: $HUMID_SERVER_URL"; exit 1; fi
+            if [ -n "$HUMID_SERVER_KID" ] && ! [[ "$HUMID_SERVER_KID" =~ ^[0-9a-fA-F]{64}$ ]]; then echo "::error::server key id must be 64 hex characters"; exit 1; fi
             echo "Building for $HUMID_SERVER_URL (pinned key: ${HUMID_SERVER_KID:-trust on first use})"
           fi
 
