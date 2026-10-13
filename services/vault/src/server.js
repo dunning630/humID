@@ -12,7 +12,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, openDb, env, json, bytes, verifyAssertion, unb64u, HttpError } from "@humid/svc";
+import { createService, openDb, env, json, bytes, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
 import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
@@ -163,4 +163,4 @@ export function createVault({
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) createVault().start();
+if (isMain(import.meta.url)) createVault().start();

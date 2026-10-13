@@ -4,6 +4,7 @@
 
 import http from "node:http";
 import { mkdirSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
@@ -17,6 +18,14 @@ export function env(name, fallback) {
   }
   return v;
 }
+
+/**
+ * True when the module at `url` is the program being run: not imported by a
+ * test, and not bundled into a host that runs several services in one process
+ * (the Windows server sets globalThis.__HUMID_EMBEDDED__ before loading them).
+ */
+export const isMain = (url) =>
+  !globalThis.__HUMID_EMBEDDED__ && typeof process.argv[1] === "string" && url === pathToFileURL(process.argv[1]).href;
 
 export function logger(service) {
   const write = (level, msg, extra) =>
@@ -135,7 +144,12 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
   server.requestTimeout = 120_000;
   server.headersTimeout = 15_000;
 
-  const start = () => new Promise((resolve) => server.listen(port, () => { log.info("listening", { port: server.address().port }); resolve(server); }));
+  // HUMID_BIND_HOST=127.0.0.1 keeps a service off the network (the Windows server does this).
+  const start = () => new Promise((resolve, reject) => {
+    const host = process.env.HUMID_BIND_HOST || undefined;
+    server.once("error", reject);
+    server.listen(port, host, () => { server.off("error", reject); log.info("listening", { port: server.address().port, ...(host ? { host } : {}) }); resolve(server); });
+  });
   const stop = () => new Promise((resolve) => server.close(() => resolve()));
   for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => { log.info("shutdown", { sig }); stop().then(() => process.exit(0)); });
   return { server, start, stop, log };

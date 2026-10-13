@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger } from "@humid/svc";
+import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import { MEDIA_TYPE, loginMessage, stepUpMessage, liveMessage, verify, proofHash, STEP_UP_MAX_AGE_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
@@ -421,7 +421,7 @@ export function createGateway({
   return { ...svc, htp };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   if (process.argv.includes("keygen")) {
     // `docker compose run --rm gateway server.mjs keygen` -> lines for deploy/.env
     const { newInternalKeys } = await import("@humid/svc");
