@@ -5,7 +5,11 @@
 // Creates a throwaway account, seals + uploads a document, sets a recovery
 // card, adds a second device with a link code, opens the document from that
 // device with a step-up proof, verifies the ledger, then closes the account.
-// SMOKE_ASSURANCE=hardware if the server sets HUMID_MIN_ASSURANCE=hardware.
+//
+// The smoke client has no phone, so it enrols as a biometric-only desktop
+// (no hardware proof). Servers with HUMID_DEVICE_POLICY=biometric or demo run
+// the whole flow; servers with the default "attested" policy must REFUSE that
+// enrolment, and the test checks exactly that.
 import { HumidApi } from "@humid/api";
 import { suite } from "@humid/crypto";
 import { ml_dsa87, toHex, sha3_256, random } from "@humid/htp";
@@ -14,8 +18,9 @@ import { newCard, cardTag, sealCard } from "@humid/recovery";
 const base = process.argv[2] || "https://localhost";
 const step = (m) => process.stdout.write(`• ${m}\n`);
 const S = suite();
-const assurance = process.env.SMOKE_ASSURANCE || "none";
-const interrupt = { method: "smoke-test", assurance };
+const GATE = "linux-fprintd-keyring"; // a biometric-only desktop gate; the server derives assurance itself
+const assurance = "os";
+const interrupt = { method: GATE, assurance };
 const sign = (m, k) => ml_dsa87.sign(m, k.dsaSk);
 
 // One account seed (shared by devices), one seed per device.
@@ -23,17 +28,28 @@ const seed = random(64);
 const keys = S.deriveKeys(seed);
 const pub = S.publicOf(keys);
 const commit = toHex(S.identityCommit(pub, sha3_256(random(16))));
-const device = (dkeys) => ({ dsaPk: dkeys.dsaPk, platform: "smoke", gateMethod: "smoke-test", assurance });
+const device = (dkeys) => ({ dsaPk: dkeys.dsaPk, platform: "smoke", gateMethod: GATE, assurance });
 const stepUpBy = (dkeys) => async ({ message }) => ({ sig: sign(message, dkeys), interrupt });
 
 const phone = S.deriveKeys(random(64));
 const api = new HumidApi({ baseUrl: base });
 const srv = await api.server();
-step(`server ${base} · fingerprint ${srv.fingerprint} · min assurance ${srv.policy?.minAssurance}`);
-const s = await api.register({
+const policy = srv.policy?.devicePolicy;
+step(`server ${base} · fingerprint ${srv.fingerprint} · device policy ${policy}`);
+const enrol = () => api.register({
   pub, commit, device: device(phone),
   sign: async (m) => ({ registerSig: sign(m.register, keys), sigAccount: sign(m.device, keys), sigDevice: sign(m.device, phone) }),
 });
+if (policy === "attested") {
+  try { await enrol(); } catch (e) {
+    if (e.code !== "device_not_proven") throw e;
+    step("a device without hardware proof was refused (device_not_proven)");
+    console.log("SMOKE OK (attested policy: the full flow needs a real phone)");
+    process.exit(0);
+  }
+  throw new Error("an attested-only server accepted a device with no hardware proof");
+}
+const s = await enrol();
 step(`registered ${s.id} on device ${s.device}`);
 
 const text = `smoke ${new Date().toISOString()}`;

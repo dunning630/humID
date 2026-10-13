@@ -13,7 +13,9 @@ if [ ! -f .env ]; then
   HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x docker compose build gateway >/dev/null
   keys="$(HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x docker compose run --rm --no-deps gateway server.mjs keygen)"
   umask 077
-  { echo "HUMID_DOMAIN=$domain"; echo "$keys"; } > .env
+  team="${HUMID_APPLE_TEAM_ID:-}"
+  if [ -z "$team" ]; then read -rp "Apple Developer Team ID for the iPhone app (10 characters; Enter to skip iPhones for now): " team; fi
+  { echo "HUMID_DOMAIN=$domain"; echo "$keys"; [ -n "$team" ] && echo "HUMID_IOS_APP_ID=$team.app.humid.vault"; } > .env
   echo "Wrote deploy/.env (keep it secret; it is not in git)."
 fi
 
@@ -27,6 +29,8 @@ fp="$(echo "$line" | grep -o '"fingerprint":"[^"]*"' | cut -d'"' -f4)"
 kid="$(echo "$line" | grep -o '"kid":"[^"]*"' | cut -d'"' -f4)"
 echo
 echo "HumID is running at https://$domain"
+echo "Device policy: ${HUMID_DEVICE_POLICY:-attested} (phones whose secure chip proves every face or fingerprint check)"
+grep -q '^HUMID_IOS_APP_ID=' .env || echo "iPhones: not enabled yet. Add HUMID_IOS_APP_ID=<TeamID>.app.humid.vault to deploy/.env and run docker compose up -d."
 echo "Server fingerprint: ${fp:-see 'docker compose logs gateway'}"
 echo
 echo "To build apps that trust only this server, set these repository variables on GitHub"

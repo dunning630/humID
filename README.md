@@ -31,12 +31,17 @@ Open http://localhost:5173 in a normal and a private window to try two
 devices: create a HumID in one, then choose *I already have HumID* in the
 other. (Browsers allow the app's encryption only on `localhost` or HTTPS, so
 to use a phone, deploy a server or put the dev server behind an HTTPS tunnel.)
-Without a fingerprint sensor, use demo mode (press and hold). Locally, card
-and contact recovery waits 2 minutes instead of 72 hours.
+The dev server runs a development build with demo mode (press and hold in
+place of a sensor) and a server policy that accepts it. Real builds accept only
+a live face or fingerprint, never a PIN or password, and real servers accept
+only phones whose secure chip proves each check. Locally, card and contact
+recovery waits 2 minutes instead of 72 hours.
 
 ## What you can do in the app
 
 - **Create** a HumID: bind it to your face or fingerprint, get a recovery card.
+  Every check is live: your phone's secure chip signs each one, and the server
+  verifies it. A PIN or password never unlocks anything.
 - **Seal** photos, PDFs and files; search and sort them by category. The
   server never learns their names.
 - **Open** a document with a fresh biometric check each time. Every access is

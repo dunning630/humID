@@ -14,8 +14,8 @@ conversion.
 | **HTP/1** (`packages/htp`) | Version and suite are checked on every handshake. A change to any primitive or label is a new version. | Servers can accept two versions during a migration. |
 | **Envelope format v1** (`@humid/codec`) | Frozen. A new layout gets a new version byte and a new parse branch. | Documents sealed today open in every future build. |
 | **Sealing suites** (`@humid/crypto`) | A suite is frozen once released. New primitives mean a new suite id beside HUMID-PQ1. | New seals use the new suite; old documents still open. |
-| **Gate contract v1** (`@humid/gate`) | Adapters implement probe / enroll / release / forget. | Add a gate as one file. |
-| **Native plugin** (`plugins/humid-gate`) | Command names and response shapes are its API (`humid-gate@1`). Platform code is one file per OS. | A Windows Hello fix rebuilds Windows only. |
+| **Gate contract v2** (`@humid/gate`) | Adapters implement probe / enroll / release / forget; enroll and release take a `challenge` (and `attest` when a device is added) and return the liveness signature. | Add a gate as one file. |
+| **Native plugin** (`plugins/humid-gate`) | Command names and request / response shapes are its API; its major version is the contract (`humid-gate@2`), read from `Cargo.toml` by the app build. Platform code is one file per OS. | A Windows fingerprint fix rebuilds Windows only. |
 | **Identity record** (`@humid/store`) | Records carry `schema`; one migration step per bump, run on read. Never edit a released step. | On-device data upgrades lazily, per record. |
 
 ## 2. Day-to-day flow
@@ -57,6 +57,20 @@ conversion.
 Signing secrets are listed at the top of `.github/workflows/release.yml`.
 Without them you still get an installable Android test APK (debug-signed) and
 Linux packages.
+
+**Live-check proof needs these on the server side** (`deploy/.env`):
+
+- **iPhone:** enable the *App Attest* capability on the `app.humid.vault` App
+  ID in your Apple Developer account. The release workflow adds the
+  `com.apple.developer.devicecheck.appattest-environment = production`
+  entitlement. Set `HUMID_IOS_APP_ID=<Team ID>.app.humid.vault` on the server.
+  TestFlight and App Store builds use App Attest's production environment;
+  Xcode debug builds use development (`HUMID_APP_ATTEST_ENV=development` on a
+  test server).
+- **Android:** the app needs Android 11 (API 30) or later. Set
+  `HUMID_ANDROID_CERT_DIGESTS` to the SHA-256 of your release signing
+  certificate (Play App Signing: the app-signing key's certificate) so only
+  your build can join. The debug-signed test APK works while it's empty.
 
 ## 4. Shipping the server
 

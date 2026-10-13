@@ -31,13 +31,17 @@ check on one of the holder's devices. Three parts:
 One codebase, built three ways from the same `dist/` bundle (about 195 KB of
 JavaScript before compression):
 
-| Target | How | Biometric gate |
+| Target | How | Live biometric gate (never a PIN or password) |
 |---|---|---|
-| iOS | Tauri 2 → WKWebView | Keychain item bound to `.biometryCurrentSet` (Secure Enclave), no passcode fallback |
-| Android | Tauri 2 → Android WebView | Keystore AES key, `BIOMETRIC_STRONG`, auth per use (StrongBox where present) |
-| Web / PWA | served by the edge | WebAuthn platform authenticator + PRF |
+| iOS | Tauri 2 → WKWebView | Face ID / Touch ID. Secret in the Keychain (`.biometryCurrentSet`); liveness key in the Secure Enclave, proven with App Attest |
+| Android | Tauri 2 → Android WebView | Class 3 face or fingerprint. Liveness key in the Keystore (StrongBox where present), per use, proven with key attestation |
+| macOS | Tauri 2 | Touch ID (Keychain `.biometryCurrentSet`); no hardware proof |
+| Windows | Tauri 2 | Fingerprint through the Windows Biometric Framework (not Hello, which allows a PIN); no hardware proof |
+| Linux | Tauri 2 | Fingerprint through fprintd; no hardware proof |
+| Web / PWA | served by the edge | None: a browser can't prove a live check, so it points people to the app |
 
-The desktop builds (macOS, Windows, Linux) come from the same Tauri project.
+Servers accept proven phones by default (`HUMID_DEVICE_POLICY=attested`);
+`biometric` also admits the desktops. See [SECURITY.md](SECURITY.md#live-biometric-checks).
 
 **Screens.** Welcome → *Create my HumID* (connect · bind · recovery card) or
 *I already have HumID* (connect · choose: another device, recovery card,
@@ -55,7 +59,10 @@ proofs, so a lost device can be removed alone. Details:
 
 **Key handling** (`src/core/controller.js`): seeds exist only inside
 `withKeys()`, which runs one biometric interrupt, derives the keys, runs one
-operation, and zeroes seeds and secret keys in `finally`. The index key is
+operation, and zeroes seeds and secret keys in `finally`. The interrupt is
+given its challenge before the prompt opens (the sign-in challenge, a
+step-up ticket from `withStepUp()`, or a sealed file's hash) so the phone's
+liveness key signs exactly what the check approves. The index key is
 derived during the unlock interrupt and held in memory while unlocked. The
 app locks after 5 minutes idle and when it goes to the background.
 
@@ -65,7 +72,7 @@ app locks after 5 minutes idle and when it goes to the background.
 |---|---|
 | `@humid/codec` | `.humid` envelope framing (format v1) |
 | `@humid/crypto` | sealing suite HUMID-PQ1; vault-index encryption |
-| `@humid/gate` | biometric gate contract + native / WebAuthn / demo adapters |
+| `@humid/gate` | live-biometric gate contract (v2) + native adapter; demo adapter in development builds only |
 | `@humid/store` | on-device identity record with per-record migrations (schema 4) |
 | `@humid/io` | save dialog / download |
 | `@humid/htp` | HTP/1 client and server, proofs |
@@ -73,6 +80,7 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/api` | typed client for the HumID API over HTP; checks every typed code |
 | `@humid/audit` | ledger hash-chain verification (shared by app and ledger service) |
 | `@humid/svc` | tiny service kit: HTTP, internal assertions, SQLite |
+| `@humid/attest` | server only: verifies Android key attestation and Apple App Attest against pinned roots |
 
 Each package declares what it `provides` and `requires` in `package.json`
 under `"humid"`. The app build refuses an incompatible combination.
@@ -95,7 +103,7 @@ capabilities dropped.
 |---|---|---|---|
 | **edge** | internet :443 | nothing | TLS only; HTP frames are opaque to it |
 | **gateway** | edge | its HTP key pair | session keys, which account and device are signed in |
-| **identity** | gateway | account and device public keys, gate method | public keys only |
+| **identity** | gateway | account and device public keys, gate method, liveness keys and their verified proof | public keys only |
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
 | **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |

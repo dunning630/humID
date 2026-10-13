@@ -5,6 +5,7 @@
 - Devices: `register` enrols the first device, `enrollDevice` adds one, `removeDevice`.
 - Device links, recovery card, recovery contacts, recovery requests and alerts.
 - Every typed code (device link, contact, recovery request) is recomputed from the keys the server returns; a mismatch throws `code_mismatch`.
+- Live checks: `register`, `enrollDevice` and `login` carry the liveness key's signature (and, when a device joins, its attestation); `ticket(op, …args)` for step-ups; `register` can save a recovery card under the same check.
 
 ## 1.0.0
 

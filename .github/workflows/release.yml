@@ -138,6 +138,14 @@ jobs:
       - name: iOS · generate Xcode project
         if: matrix.platform == 'ios'
         run: npm run tauri -- ios init --ci
+      - name: iOS · App Attest entitlement (servers verify each phone's liveness key with it)
+        if: matrix.platform == 'ios'
+        run: |
+          ENT=$(find apps/mobile/src-tauri/gen/apple -name '*.entitlements' -not -path '*/build/*' | head -1)
+          if [ -z "$ENT" ]; then echo "::error::no iOS .entitlements file after ios init"; exit 1; fi
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.devicecheck.appattest-environment" "$ENT" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.devicecheck.appattest-environment string production" "$ENT"
+          echo "App Attest (production) added to $ENT"
       - name: iOS · signed .ipa for TestFlight / App Store Connect
         if: matrix.platform == 'ios' && env.HAS_APPLE == 'true'
         env:

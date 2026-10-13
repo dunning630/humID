@@ -47,7 +47,7 @@
       "minimumSystemVersion": "16.0"
     },
     "android": {
-      "minSdkVersion": 24
+      "minSdkVersion": 30
     },
     "linux": {
       "deb": {

@@ -44,6 +44,12 @@ HTP session transcript:
 deviceMessage = "HTP/1 device" ‖ lp(th, accountId, SHA3-256(device dsaPk))
 ```
 
+On a phone, the same live check also makes a new hardware liveness key,
+attested to `th`, which signs `deviceMessage` too. With the default device
+policy the server adds the device only if that attestation checks out
+([SECURITY.md](SECURITY.md#live-biometric-checks)), so even a recovered seed
+can only join from a real phone with a live face or fingerprint.
+
 Every way of getting a new device therefore comes down to getting `A` to that
 device safely. There are three.
 

@@ -29,7 +29,10 @@ for (const m of mods) {
 const app = JSON.parse(await readFile(here("./package.json"), "utf8"));
 versions[app.name] = app.version;
 
-const provided = { "shell-command": "save_bytes@1", "native-plugin": "humid-gate@1" };
+// The native plugin's major version is its contract (plugins/humid-gate/Cargo.toml).
+const pluginToml = await readFile(`${root}plugins/humid-gate/Cargo.toml`, "utf8");
+const pluginMajor = /^version\s*=\s*"(\d+)\./m.exec(pluginToml)?.[1];
+const provided = { "shell-command": "save_bytes@1", "native-plugin": `humid-gate@${pluginMajor}` };
 for (const p of manifests) Object.assign(provided, p.humid?.provides || {});
 const problems = [];
 for (const p of manifests) {
@@ -47,7 +50,19 @@ await rm(out, { recursive: true, force: true });
 await mkdir(`${out}assets`, { recursive: true });
 await mkdir(`${out}icons`, { recursive: true });
 
+// Release builds don't contain the demo gate at all: its module is swapped for an empty stub.
+const allowDemo = process.env.HUMID_ALLOW_DEMO === "1";
+const noDemoGate = {
+  name: "no-demo-gate",
+  setup(b) {
+    if (allowDemo) return;
+    b.onResolve({ filter: /adapters\/demo\.js$/ }, () => ({ path: "demo-gate-removed", namespace: "humid-stub" }));
+    b.onLoad({ filter: /.*/, namespace: "humid-stub" }, () => ({ contents: "export const demoAdapter = null;", loader: "js" }));
+  },
+};
+
 const ctx = await esbuild.context({
+  plugins: [noDemoGate],
   entryPoints: { app: here("./src/main.jsx") },
   bundle: true,
   format: "esm",
@@ -64,6 +79,8 @@ const ctx = await esbuild.context({
     __HUMID_KID__: JSON.stringify(kid),
     __HUMID_VERSION__: JSON.stringify(app.version),
     __HUMID_MODULES__: JSON.stringify(versions),
+    // Demo mode (no sensor) exists only in local development builds: HUMID_ALLOW_DEMO=1.
+    __HUMID_ALLOW_DEMO__: JSON.stringify(allowDemo),
   },
   legalComments: "eof",
   logLevel: "info",

@@ -79,12 +79,16 @@ function ConnectStep({ eyebrow, onNext }) {
 function BindButtons({ onBind, label, disabled = false }) {
   const hw = S.hwGate.value;
   const demo = S.demoAllowed.value;
+  const policy = S.server.value?.policy?.devicePolicy || "attested";
   return (
     <>
       {!hw?.probe.available && hw?.probe.reason && (
-        <div class="banner warn" style={{ marginBottom: 12 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No biometric gate here</strong><span>{hw.probe.reason} {demo ? "You can try HumID in demo mode." : "This vault server requires a real biometric sensor."}</span></div></div>
+        <div class="banner warn" style={{ marginBottom: 12 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Open HumID in the app</strong><span>{hw.probe.reason} {demo ? "This development server also allows demo mode." : "PINs and passwords are never accepted."}</span></div></div>
       )}
-      {hw?.probe.available && <button class="btn primary block" disabled={disabled} onClick={() => onBind(false)}><Icon name="fingerprint" />{label} with {hw.probe.label}</button>}
+      {hw?.probe.available && !hw.probe.proof && policy === "attested" && (
+        <div class="banner warn" style={{ marginBottom: 12 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Use your phone</strong><span>This vault accepts only phones whose secure chip can prove each face or fingerprint check. Set up HumID on your iPhone or Android phone first.</span></div></div>
+      )}
+      {hw?.probe.available && (hw.probe.proof || policy !== "attested") && <button class="btn primary block" disabled={disabled} onClick={() => onBind(false)}><Icon name="fingerprint" />{label} with {hw.probe.label}</button>}
       {demo && <button class={`btn ${hw?.probe.available ? "ghost" : "primary"} block`} disabled={disabled} onClick={() => onBind(true)}>Use demo mode (no sensor)</button>}
     </>
   );
@@ -295,6 +299,7 @@ const ISSUES = {
     warn: true,
   }),
   unknown_identity: (host) => ({ title: "Your vault doesn't know this HumID", text: `The server at ${host} has no record of this identity. It may have been reset or replaced, or this HumID came from an earlier test version.` }),
+  device_not_proven: () => ({ title: "Your vault needs a provable live check", text: "This vault server now accepts only devices whose secure chip proves every face or fingerprint check. Open HumID on your phone, or add this device again once it qualifies." }),
   device_removed: () => ({ title: "This device was removed from your HumID", text: "Someone removed it from another of your devices. It can no longer open your vault. If that was you, set this device up again with I already have HumID." }),
 };
 

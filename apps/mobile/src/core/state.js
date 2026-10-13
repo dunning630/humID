@@ -1,5 +1,6 @@
 // App state as signals. Screens read these; only core/controller.js writes them.
 import { signal, computed } from "@preact/signals";
+import { DEMO_BUILD } from "@humid/gate";
 
 export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
 export const tab = signal("vault");          // vault | activity | security
@@ -37,7 +38,8 @@ export const toasts = signal([]);
 export const idleDeadline = signal(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);
 
-export const demoAllowed = computed(() => (server.value?.policy?.minAssurance ?? "none") === "none");
+// Demo mode only in a local development build talking to a server whose policy is "demo".
+export const demoAllowed = computed(() => DEMO_BUILD && server.value?.policy?.devicePolicy === "demo");
 
 export const visibleItems = computed(() => {
   const q = query.value.trim().toLowerCase();
