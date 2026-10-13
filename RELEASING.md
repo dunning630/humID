@@ -45,6 +45,11 @@ conversion.
 
 ## 3. Shipping apps
 
+Every *Release apps* run also leaves one download, `HumID-<version>-<server>`:
+a `HumID <version>` folder with a folder per app (Android, iPhone, Mac,
+Windows, Linux, Windows Server), a README naming the server the apps are
+pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
+
 - Set repository variables `HUMID_SERVER_URL` and `HUMID_SERVER_KID` (printed
   by `deploy/setup.sh`) so the apps pin your server.
 - **One or a few platforms:** Actions → *Release apps* → platforms: `android`

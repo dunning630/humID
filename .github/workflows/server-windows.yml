@@ -96,8 +96,7 @@ jobs:
           body_path: ${{ runner.temp }}/notes.md
           prerelease: true
           files: deploy/windows/out/HumID-Server-Windows-*.zip
-      - uses: actions/upload-artifact@v4
-        if: github.ref_type != 'tag' && !inputs.publish
+      - uses: actions/upload-artifact@v4 # also when publishing: Release apps bundles it
         with:
           name: HumID-Server-Windows
           path: deploy/windows/out/HumID-Server-Windows-*.zip

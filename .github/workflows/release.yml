@@ -5,6 +5,8 @@ name: Release apps
 #
 #   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
 #   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
+#   Every run also leaves one artifact, HumID-<version>-<server>: a "HumID <version>" folder
+#   with a folder per app (Android, iPhone, Mac, Windows, Linux, Windows Server).
 #
 # HumID Server for Windows rides along: platforms "server-windows" builds the
 # server zip on Windows, installs and smoke-tests it, and with "Publish" ticked
@@ -250,6 +252,29 @@ jobs:
           name: humid-${{ matrix.platform }}
           path: out/*
           if-no-files-found: warn
+
+  # Everything this run built, as one folder per version with a folder per app
+  # (Android/, iPhone/, Mac/, Windows/, Linux/, Windows Server/), a README naming
+  # the server the apps are pinned to, and checksums. Download it from the run's
+  # Artifacts: HumID-<version>-<server>.
+  bundle:
+    needs: [plan, build, server-windows]
+    if: always() && needs.plan.result == 'success' # bundle whatever built, even if one platform failed
+    runs-on: ubuntu-22.04
+    env:
+      HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
+      HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: One folder per app
+        id: bundle
+        run: node tools/bundle-release.mjs artifacts bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: bundle/
 
   publish:
     needs: build
