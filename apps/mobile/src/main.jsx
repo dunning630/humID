@@ -4,7 +4,7 @@ import "./styles/app.css";
 import { render } from "preact";
 import * as S from "./core/state.js";
 import { boot } from "./core/controller.js";
-import { InterruptOverlay, Toasts, TabBar } from "./ui.jsx";
+import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar } from "./ui.jsx";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
 import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
 import { Activity } from "./screens/activity.jsx";
@@ -32,6 +32,7 @@ function App() {
           <Viewer />
         </>
       )}
+      <ChipReadOverlay />
       <InterruptOverlay />
       <Toasts />
     </>

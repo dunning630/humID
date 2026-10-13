@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { startStack } from "../tests/e2e/stack.js";
 import { testCsca, testPassport } from "../tests/support/passport.js";
+import { simulatedChip } from "../tests/support/chip.js";
+import { randomBytes } from "node:crypto";
 
 // Local development build: includes demo mode (no sensor) so you can try HumID on a
 // laptop. Release builds never contain it, and real servers refuse it.
@@ -23,11 +25,15 @@ const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
 // as a verification station here, so you can try the operator side too.
 const devCsca = testCsca("HumID Dev Country");
 const passports = new Map();
+const chips = new Map();
 const passportFor = (name) => {
   const key = String(name || "Demo Person").toUpperCase().replace(/[^A-Z ]/g, "").trim().slice(0, 30) || "DEMO PERSON";
   if (!passports.has(key)) {
     const [given, ...rest] = key.split(" ");
-    passports.set(key, testPassport({ csca: devCsca, mrz: { issuer: "UTO", nationality: "UTO", surname: rest.join(" ") || "PERSON", given, number: `D${String(passports.size + 1).padStart(8, "0")}` } }));
+    const number = `D${String(passports.size + 1).padStart(8, "0")}`;
+    const p = testPassport({ csca: devCsca, mrz: { issuer: "UTO", nationality: "UTO", surname: rest.join(" ") || "PERSON", given, number } });
+    p.access = { number, birth: "740812", expiry: "341231" };
+    passports.set(key, p);
   }
   return passports.get(key);
 };
@@ -51,6 +57,27 @@ http.createServer(async (req, res) => {
     const nonce = Buffer.from(String(url.searchParams.get("nonce") || ""), "hex");
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     return res.end(JSON.stringify({ signature: p.answer(nonce).toString("base64") }));
+  }
+  // A simulated chip for the demo passport, so the chip reader runs for real in a dev browser.
+  // Alternates BAC and PACE so both get exercised.
+  if (url.pathname === "/dev/chip/begin" && req.method === "POST") {
+    const p = passportFor(url.searchParams.get("name"));
+    const id = randomBytes(8).toString("hex");
+    const pace = chips.size % 2 ? null : { oid: "0.4.0.127.0.7.2.2.4.2.2", parameterId: 13 };
+    chips.set(id, simulatedChip({ passport: p, access: p.access, pace }));
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ session: id, hint: p.access }));
+  }
+  if (url.pathname === "/dev/chip/transceive" && req.method === "POST") {
+    const chip = chips.get(url.searchParams.get("session") || "");
+    const apdu = Buffer.from(String(url.searchParams.get("apdu") || ""), "hex");
+    const r = chip ? Buffer.from(await chip.transceive(Uint8Array.from(apdu))) : Buffer.from([0x6f, 0x00]);
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ response: r.toString("hex") }));
+  }
+  if (url.pathname === "/dev/chip/hint" && req.method === "POST") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify(passportFor(url.searchParams.get("name")).access));
   }
   if (url.pathname.startsWith("/htp/") || url.pathname.startsWith("/tlog/")) {
     const p = http.request({ host: gw.hostname, port: gw.port, path: req.url, method: req.method, headers: { ...req.headers, "x-forwarded-for": req.socket.remoteAddress } }, (r) => {

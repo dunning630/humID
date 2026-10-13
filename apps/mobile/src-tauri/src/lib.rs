@@ -1,5 +1,5 @@
 //! HumID native shell. Deliberately thin: it hosts the web modules, registers
-//! the biometric gate plugin and offers one command for saving files. Feature
+//! the biometric gate and chip reader plugins and offers one command for saving files. Feature
 //! work happens in the modules and the plugin, so the shell itself rarely
 //! needs a new release.
 
@@ -46,6 +46,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_humid_gate::init())
+        .plugin(tauri_plugin_humid_nfc::init())
         .invoke_handler(tauri::generate_handler![save_bytes])
         .run(tauri::generate_context!())
         .expect("error while running HumID");

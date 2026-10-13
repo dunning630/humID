@@ -19,6 +19,7 @@ tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
 tauri-plugin-fs = "2.7"
 tauri-plugin-humid-gate = { path = "../../../plugins/humid-gate" }
+tauri-plugin-humid-nfc = { path = "../../../plugins/humid-nfc" }
 percent-encoding = "2.3"
 
 [profile.release]

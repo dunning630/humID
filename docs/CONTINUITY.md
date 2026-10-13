@@ -80,8 +80,35 @@ Proving it again:
   themselves. The operator's own live biometric signs the result. The
   operator never learns whose HumID it is. Both ledgers record it.
 
-Reading chips over NFC on the phone is the next step; until then chip data
-comes from a file, or from demo passports on the local dev server.
+### Reading the chip
+
+The app reads the chip itself: on iPhone and Android with the phone's NFC,
+on Windows and Mac with a USB contactless card reader (handy for a station
+laptop). `@humid/emrtd` implements ICAO 9303 part 11 once, in the shared app
+code; the native plugin `tauri-plugin-humid-nfc` (`humid-nfc@1`) only moves
+APDUs (Core NFC `NFCTagReaderSession`, Android `IsoDep` reader mode, PC/SC).
+
+1. **Access.** The person types the document number, date of birth and expiry
+   from the photo page, or an ID card's 6-digit CAN. **PACE** is used when the
+   chip offers it (EF.CardAccess): ECDH Generic Mapping with AES-128/192/256
+   or 3DES, on NIST P-256/384/521 or Brainpool P-256/384/512. Otherwise
+   **BAC**. The details live only in that one read; nothing is stored.
+2. **Files.** Over secure messaging: EF.COM, DG1, DG15 (if the chip has an
+   Active Authentication key) and EF.SOD. The photo (DG2) is never read.
+3. **Live proof.** When recovering, the app first asks the server for a nonce,
+   and the chip signs it (INTERNAL AUTHENTICATE) in the same session.
+
+The server then runs passive and active authentication as above; the phone
+never decides whether a document is genuine. Tests cover the ICAO worked
+example for BAC and secure messaging byte for byte, every PACE variant
+against a simulated chip, and (in CI) the real PC/SC transport through
+pcscd with a virtual reader. Real documents still need trying: PACE variants
+with Integrated or Chip Authentication Mapping aren't supported yet, nor is
+Chip Authentication, and some chips refuse to sign a nonce at all (those can
+anchor, and recover through a station).
+
+Files exported by other readers (DG1, SOD, DG15, or one `.json`) still load,
+and local development builds read a simulated chip in the browser.
 
 ## Layer 4 · Waits set by the evidence, and the veto
 

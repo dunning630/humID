@@ -1,11 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "HumID main window: core IPC and the biometric gate. File saving goes through the shell's save_bytes command, not the fs/dialog JS APIs.",
-  "windows": ["main"],
-  "platforms": ["linux", "macOS", "windows", "android", "iOS"],
+  "description": "HumID main window: core IPC, the biometric gate and the ID chip reader. File saving goes through the shell's save_bytes command, not the fs/dialog JS APIs.",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows",
+    "android",
+    "iOS"
+  ],
   "permissions": [
     "core:default",
-    "humid-gate:default"
+    "humid-gate:default",
+    "humid-nfc:default"
   ]
 }

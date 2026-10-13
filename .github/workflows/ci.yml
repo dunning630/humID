@@ -95,6 +95,36 @@ jobs:
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
         run: ../../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
 
+  # The chip reader end to end through real native code: the shared ICAO 9303 reader drives
+  # tauri-plugin-humid-nfc's PC/SC transport, through pcscd, to a simulated passport chip in a
+  # virtual reader (vsmartcard vpcd). Then the server's own checks verify what was read.
+  chip-reader:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: plugins/humid-nfc }
+      - name: PC/SC daemon, virtual reader, Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libpcsclite-dev pcscd vsmartcard-vpcd
+      - name: Build the reader bridge (the plugin's real PC/SC code, without Tauri)
+        working-directory: plugins/humid-nfc
+        run: ../../tools/ci-cargo.sh build --example apdu-bridge --features pcsc-linux
+      - name: Start pcscd with the virtual reader
+        run: |
+          sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+          sudo pcscd --foreground --disable-polkit > pcscd.log 2>&1 &
+          for i in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/35963) 2>/dev/null && break; sleep 0.5; done
+      - name: Read a chip through the native transport
+        run: node --test tests/e2e/pcsc.test.js
+        env: { NODE_NO_WARNINGS: "1", HUMID_REQUIRE_PCSC: "1" }
+
   images:
     needs: test
     if: needs.test.outputs.anyServices == 'true'

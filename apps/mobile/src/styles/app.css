@@ -422,3 +422,16 @@ p { margin: 0; }
 button.proof-row.linkrow { width: 100%; background: none; border: 0; border-top: 1px solid var(--line); color: var(--text); text-align: left; cursor: pointer; font: inherit; }
 button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted); }
 .option[aria-pressed="true"] { border-color: rgba(138,201,136,.5); background: var(--mint-wash); }
+
+/* ---------- ID chip reading ---------- */
+.chip-read .chip-ico { width: 120px; height: 120px; border-radius: 32px; display: grid; place-items: center; background: var(--surface-2); color: var(--amber-hi); margin: 18px auto; box-shadow: 0 0 0 1px var(--line-strong); }
+.chip-read .chip-ico svg { width: 64px; height: 64px; }
+.chip-read[data-state="scanning"] .chip-ico { animation: chip-pulse 1.6s var(--ease) infinite; }
+.chip-read[data-state="verified"] .chip-ico { color: var(--mint); }
+.chip-read[data-state="failed"] .chip-ico { color: var(--danger); }
+@keyframes chip-pulse { 50% { box-shadow: 0 0 0 10px rgba(218,147,74,.12), 0 0 0 1px var(--line-strong); } }
+@media (prefers-reduced-motion: reduce) { .chip-read .chip-ico { animation: none !important; } }
+.chip-read .bar { width: min(280px, 80%); height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; margin: 14px auto 0; }
+.chip-read .bar i { display: block; height: 100%; background: var(--amber); transition: width .3s var(--ease); }
+.chip-access .split { gap: 10px; }
+.chip-access input[type="date"] { color-scheme: dark; }

@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark } from "./brand.jsx";
 import { Icon } from "./icons.jsx";
 import * as S from "./core/state.js";
-import { holdComplete, holdCancel } from "./core/controller.js";
+import { holdComplete, holdCancel, dismissChipRead } from "./core/controller.js";
 import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
+import { DEMO_BUILD } from "@humid/gate";
+import { setDemoHolder, demoChipHint } from "./core/nfc.js";
 
 export const fmtSize = (n) => n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 export const fmtDate = (t) => new Date(t).toLocaleDateString([], { month: "short", day: "numeric", year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
@@ -309,4 +311,82 @@ export function tierText(kinds, anchorMode) {
   if (k.has("anchor") && anchorMode === "station") return "about 24 hours";
   if (k.has("witness")) return "about 72 hours";
   return "about 7 days";
+}
+
+/* ---------------- ID chips ---------------- */
+
+const yymmdd = (iso) => (iso ? iso.slice(2, 4) + iso.slice(5, 7) + iso.slice(8, 10) : "");
+
+/**
+ * What opens a chip: the passport details from the photo page (document number,
+ * birth date, expiry), or an ID card's 6-digit CAN. Kept only in this form and
+ * the read; never saved. onChange(access | null).
+ */
+export function ChipAccess({ onChange, title = "Details from the document" }) {
+  const [mode, setMode] = useState("mrz");
+  const [num, setNum] = useState("");
+  const [birth, setBirth] = useState("");
+  const [expiry, setExpiry] = useState("");
+  const [can, setCan] = useState("");
+  useEffect(() => {
+    const n = num.toUpperCase().replace(/[^0-9A-Z]/g, "");
+    if (mode === "can") onChange(/^\d{6}$/.test(can.replace(/\D/g, "")) ? { can: can.replace(/\D/g, "") } : null);
+    else onChange(n.length >= 6 && birth && expiry ? { number: n, birth: yymmdd(birth), expiry: yymmdd(expiry) } : null);
+  }, [mode, num, birth, expiry, can]);
+  return (
+    <div class="chip-access">
+      <div class="eyebrow" style={{ marginTop: 14 }}>{title}</div>
+      <div class="cats" role="tablist" style={{ marginTop: 8 }}>
+        <button role="tab" aria-pressed={mode === "mrz"} onClick={() => setMode("mrz")}><Icon name="passport" />Passport or ID</button>
+        <button role="tab" aria-pressed={mode === "can"} onClick={() => setMode("can")}><Icon name="idcard" />ID card number (CAN)</button>
+      </div>
+      {mode === "mrz" ? (
+        <>
+          <div class="field"><label for="doc-num">Document number</label><input id="doc-num" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} value={num} maxLength={22} onInput={(e) => setNum(e.currentTarget.value)} /></div>
+          <div class="split">
+            <div class="field"><label for="doc-birth">Date of birth</label><input id="doc-birth" type="date" value={birth} onInput={(e) => setBirth(e.currentTarget.value)} /></div>
+            <div class="field"><label for="doc-exp">Expiry date</label><input id="doc-exp" type="date" value={expiry} onInput={(e) => setExpiry(e.currentTarget.value)} /></div>
+          </div>
+        </>
+      ) : (
+        <div class="field"><label for="doc-can">6-digit card access number</label><input id="doc-can" class="mono" inputMode="numeric" autocomplete="off" maxLength={7} value={can} onInput={(e) => setCan(e.currentTarget.value)} />
+          <span class="hint">Printed on the front of most European and many other ID cards.</span></div>
+      )}
+      {DEMO_SIM && <DemoChipFill onFill={(h) => { setMode("mrz"); setNum(h.number); setBirth(`19${h.birth.slice(0, 2)}-${h.birth.slice(2, 4)}-${h.birth.slice(4)}`); setExpiry(`20${h.expiry.slice(0, 2)}-${h.expiry.slice(2, 4)}-${h.expiry.slice(4)}`); }} />}
+      <p class="small muted" style={{ marginTop: 6 }}>These only open the chip. HumID doesn't keep them, and never reads your photo.</p>
+    </div>
+  );
+}
+
+const DEMO_SIM = DEMO_BUILD && typeof globalThis.__TAURI_INTERNALS__?.invoke !== "function";
+
+/** Development builds in a browser: pick the demo passport holder and fill in their details. */
+function DemoChipFill({ onFill }) {
+  const [name, setName] = useState("Demo Person");
+  return (
+    <div class="field">
+      <label for="demo-chip-holder">Development build: simulated chip for</label>
+      <div class="code-input">
+        <input id="demo-chip-holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+        <button class="btn quiet sm" type="button" onClick={async () => { setDemoHolder(name); onFill(await demoChipHint(name)); }}>Fill details</button>
+      </div>
+    </div>
+  );
+}
+
+/** Progress while a chip is being read (the phone's own sheet may sit on top on iPhone). */
+export function ChipReadOverlay() {
+  const r = S.chipRead.value;
+  if (!r) return null;
+  const pct = Math.round((r.fraction || 0) * 100);
+  return (
+    <div class="interrupt chip-read" data-state={r.stage === "error" ? "failed" : r.stage === "done" ? "verified" : "scanning"} role="dialog" aria-modal="true" aria-labelledby="chip-title" aria-live="polite">
+      <div class="eyebrow">{r.kind === "reader" ? "Card reader" : "Chip reader"}</div>
+      <div class="chip-ico"><Icon name="passport" /></div>
+      <h2 id="chip-title">{r.stage === "waiting" ? "Hold your document to read it" : r.stage === "error" ? "Couldn't read the chip" : r.stage === "done" ? "Chip read" : "Reading your chip"}</h2>
+      <p>{r.message}</p>
+      {r.stage === "reading" && <div class="bar" aria-label={`${pct}%`}><i style={{ width: `${pct}%` }} /></div>}
+      {r.stage === "error" && <button class="btn primary" onClick={dismissChipRead}>Close</button>}
+    </div>
+  );
 }

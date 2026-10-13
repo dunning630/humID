@@ -18,7 +18,7 @@ const root = here("../../");
 
 // Module versions are stamped into the bundle, and module contracts are checked
 // so incompatible module releases can never ship together.
-const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api"];
+const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api", "emrtd"];
 const manifests = [];
 const versions = {};
 for (const m of mods) {
@@ -32,7 +32,9 @@ versions[app.name] = app.version;
 // The native plugin's major version is its contract (plugins/humid-gate/Cargo.toml).
 const pluginToml = await readFile(`${root}plugins/humid-gate/Cargo.toml`, "utf8");
 const pluginMajor = /^version\s*=\s*"(\d+)\./m.exec(pluginToml)?.[1];
-const provided = { "shell-command": "save_bytes@1", "native-plugin": `humid-gate@${pluginMajor}` };
+const nfcToml = await readFile(`${root}plugins/humid-nfc/Cargo.toml`, "utf8");
+const nfcMajor = /^version\s*=\s*"(\d+)\./m.exec(nfcToml)?.[1];
+const provided = { "shell-command": "save_bytes@1", "native-plugin": `humid-gate@${pluginMajor}`, "nfc-plugin": `humid-nfc@${nfcMajor}` };
 for (const p of manifests) Object.assign(provided, p.humid?.provides || {});
 const problems = [];
 for (const p of manifests) {

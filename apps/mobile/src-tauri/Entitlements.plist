@@ -14,6 +14,9 @@
   <true/>
   <key>com.apple.security.files.user-selected.read-write</key>
   <true/>
+  <!-- Reading passport and ID card chips with a USB contactless reader (PC/SC). -->
+  <key>com.apple.security.smartcard</key>
+  <true/>
   <!-- Scanning HumID QR codes (device links, recovery codes). -->
   <key>com.apple.security.device.camera</key>
   <true/>

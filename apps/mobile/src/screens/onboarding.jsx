@@ -2,11 +2,11 @@
 // Welcome → Join (connect · choose · details · wait) for a new device of an existing HumID.
 import { Mark, Wordmark, Stars } from "../brand.jsx";
 import { Icon } from "../icons.jsx";
-import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft, QrCode, ProofMeter, tierText } from "../ui.jsx";
+import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft, QrCode, ProofMeter, tierText, ChipAccess } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
   startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard, copyCard,
-  startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoPassport, DURESS_HOLD_MS,
+  startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, DURESS_HOLD_MS,
 } from "../core/controller.js";
 import { useRef, useState } from "preact/hooks";
 import { parseCard } from "@humid/recovery";
@@ -353,7 +353,10 @@ function QuorumWait({ p, st, now }) {
   const ended = st && ["expired", "cancelled"].includes(st.status);
   const tier = tierText(kinds, st?.anchorMode);
   const cardOk = (() => { try { parseCard(card); return true; } catch { return false; } })();
-  const chip = async () => { setBusy(true); const c = await demoPassport(name); if (c) await addChipToJoin(c); setBusy(false); };
+  const [access, setAccess] = useState(null);
+  const nfc = S.nfc.value;
+  const chip = async () => { setBusy(true); await addChipToJoin(demoChipSource(name)); setBusy(false); };
+  const readLive = async () => { setBusy(true); await addChipToJoin(nfcChipSource(access)); setBusy(false); };
   return (
     <>
       <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
@@ -386,9 +389,15 @@ function QuorumWait({ p, st, now }) {
             )}
             <div class="proof-row" data-done={kinds.includes("anchor") ? "1" : "0"}>
               <span class="p-ico"><Icon name="passport" /></span>
-              <span><strong>ID chip</strong><span>{kinds.includes("anchor") ? (st?.anchorMode === "station" ? "Verified in person at a station" : "Verified live") : DEMO_BUILD ? "Development build: use a demo passport." : "At a HumID station: show the operator this code and your passport or ID. Reading the chip with this phone comes in the next update."}</span></span>
+              <span><strong>ID chip</strong><span>{kinds.includes("anchor") ? (st?.anchorMode === "station" ? "Verified in person at a station" : "Verified live") : nfc?.available ? "Read your passport or ID card's chip now, or show this code at a HumID station." : "At a HumID station: show the operator this code and your passport or ID."}</span></span>
               {kinds.includes("anchor") ? <Icon name="check" /> : <span />}
             </div>
+            {nfc?.available && !kinds.includes("anchor") && (
+              <>
+                <ChipAccess onChange={setAccess} />
+                <button class="btn quiet sm" style={{ marginTop: 8 }} disabled={busy || !access} onClick={readLive}><Icon name="passport" />{nfc.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
+              </>
+            )}
             {DEMO_BUILD && !kinds.includes("anchor") && (
               <div class="field" style={{ marginTop: 0 }}>
                 <input aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />

@@ -36,8 +36,11 @@ it until that review and the items under *Before real data* are done.
   that only their own biometrics are enrolled (recorded in the ledger).
 - **Recovery proves a chain of evidence, not biology.** See the limits in
   [CONTINUITY.md](CONTINUITY.md#what-it-doesnt-prove).
-- **ID chips are read from files for now.** Phone NFC reading is next. A
-  server with no CSCA certificates configured can't use ID anchors.
+- **ID chips: what's not checked yet.** The app reads chips with BAC or PACE
+  (ECDH Generic Mapping) and Active Authentication. Chip Authentication, and
+  PACE with Integrated or Chip Authentication Mapping, aren't supported yet;
+  chips without Active Authentication count only at a station. A server with
+  no CSCA certificates configured can't use ID anchors.
 - **Stations are trusted operators.** Their face check is a human check, and
   their legal obligations (BIPA, GDPR) are theirs to meet.
 - **iPhone attestation proves the app, not the key's settings.** App Attest
