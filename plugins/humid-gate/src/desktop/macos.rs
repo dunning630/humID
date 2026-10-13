@@ -1,6 +1,8 @@
 // macOS: a random 32-byte secret in the data-protection keychain with access
 // control .biometryCurrentSet. macOS will only hand it back after a Touch ID
-// match, and the item is destroyed if the enrolled fingerprints change.
+// match (the login password cannot stand in for it), and the item is
+// destroyed if the enrolled fingerprints change. There is no attestation for
+// Mac apps, so the server sees this as a biometric-only desktop ("os").
 //
 // Requires a signed build with the keychain-access-groups entitlement
 // (shell/src-tauri/Entitlements.plist); unsigned builds get errSecMissingEntitlement.
@@ -17,7 +19,7 @@ use super::{random32, Secret};
 use crate::{Error, Probe, Result};
 
 pub const METHOD: &str = "macos-keychain-biometry";
-pub const ASSURANCE: &str = "hardware";
+pub const ASSURANCE: &str = "os";
 const SERVICE: &str = "app.humid.gate";
 
 // Not exported by security-framework-sys; declared here from Security.framework.
@@ -57,6 +59,8 @@ pub fn probe() -> Result<Probe> {
         method: METHOD.into(),
         assurance: ASSURANCE.into(),
         label: "Touch ID".into(),
+        modalities: vec!["fingerprint".into()],
+        proof: None,
         reason: (!ok).then(|| "Touch ID is not available or has no fingerprints enrolled on this Mac.".into()),
     })
 }
@@ -71,7 +75,7 @@ fn read(id: &str, prompt: &str) -> Result<Secret> {
     if bytes.len() != 32 {
         return Err(Error::KeyInvalidated);
     }
-    Ok(Secret { bytes: Zeroizing::new(bytes), detail: None })
+    Ok(Secret::new(Zeroizing::new(bytes), "fingerprint"))
 }
 
 pub fn enroll(id: &str, prompt: &str) -> Result<Secret> {
@@ -88,7 +92,7 @@ pub fn enroll(id: &str, prompt: &str) -> Result<Secret> {
     read(id, prompt)
 }
 
-pub fn release(id: &str, prompt: &str) -> Result<Secret> {
+pub fn release(_handle: &serde_json::Value, id: &str, prompt: &str) -> Result<Secret> {
     read(id, prompt)
 }
 

@@ -2,7 +2,7 @@
 // others), this device, connection, and the exits.
 import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { AssurancePill, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft } from "../ui.jsx";
+import { AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
   lockNow, eraseEverything, loadDevices, loadRecovery, loadAlerts, findLink, approveLink, removeDevice,
@@ -15,9 +15,8 @@ const GATE = {
   "ios-keychain-biometry": "Face ID / Touch ID · Secure Enclave policy",
   "android-keystore-biometric": "Android Keystore · Class 3 biometric",
   "macos-keychain-biometry": "Touch ID · Keychain",
-  "windows-hello-keycredential": "Windows Hello · TPM key",
+  "windows-winbio-fingerprint": "Fingerprint · Windows Biometric Framework",
   "linux-fprintd-keyring": "Fingerprint · fprintd + keyring",
-  "webauthn-platform-uv-prf": "Device passkey (WebAuthn PRF)",
   "demo-no-hardware": "Demo · press and hold",
 };
 const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with card", contacts: "Recovered with contacts" };
@@ -60,6 +59,7 @@ export function Security() {
               <div style={{ minWidth: 0 }}>
                 <div class="d-name">{d.platform || "Device"}{d.current && <span class="pill mint" style={{ marginLeft: 8 }}>This device</span>}</div>
                 <div class="d-meta">{VIA[d.via] || d.via} · {fmtDate(d.enrolledAt)}{d.lastSeenAt && !d.current ? ` · seen ${fmtAgo(d.lastSeenAt)}` : ""}</div>
+                <div class="d-meta">{proofLabel(d.proof, d.assurance)}</div>
               </div>
               {!d.current && <button class="link" onClick={() => open("removeDevice", { device: d })}>Remove</button>}
             </div>
@@ -106,6 +106,8 @@ export function Security() {
         <div class="rows" style={{ marginTop: 6 }}>
           <div class="row"><span class="k">Protection</span><span class="v"><AssurancePill assurance={id?.assurance} /></span></div>
           <div class="row"><span class="k">Gate</span><span class="v">{GATE[id?.method] || id?.method}</span></div>
+          <div class="row"><span class="k">Proof</span><span class="v">{proofLabel(id?.proof, id?.assurance)}</span></div>
+          <div class="row"><span class="k">PIN or password</span><span class="v"><span class="pill mint"><Icon name="check" />Never accepted</span></span></div>
           <div class="row"><span class="k">Device</span><span class="v">{PLATFORM}</span></div>
         </div>
       </div>

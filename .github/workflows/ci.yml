@@ -146,10 +146,16 @@ jobs:
           docker compose up -d
           for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
           docker compose ps
-      - name: Smoke test over TLS + HTP/1
+      - name: Smoke test over TLS + HTP/1 (default policy refuses devices without hardware proof)
         env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1" } # Caddy's local CA in CI only
         run: |
           curl -sk https://localhost/ | grep -q '<div id="app">'
+          node tests/smoke.mjs https://localhost
+      - name: Smoke test, full flow (gateway switched to HUMID_DEVICE_POLICY=biometric)
+        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1", HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: |
+          (cd deploy && HUMID_DEVICE_POLICY=biometric docker compose up -d gateway)
+          for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
           node tests/smoke.mjs https://localhost
       - name: Logs on failure
         if: failure()

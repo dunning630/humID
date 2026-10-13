@@ -1,28 +1,33 @@
-// @humid/gate — Gate contract v1.
+// @humid/gate — Gate contract v2: live biometrics only.
 //
 // A gate adapter turns "a live human just passed a biometric check on this
-// device" into a 32-byte secret. The identity seed is wrapped under that
-// secret, so no key exists in memory without a fresh interrupt.
+// device" into (1) a 32-byte secret that unwraps the device's seeds, and
+// (2) on phones, a signature by a hardware liveness key that the server can
+// check. No gate may fall back to a PIN, pattern or password.
 //
 // Every adapter implements:
-//   id                      stable string, stored with the identity
-//   probe()                 -> { available, method, assurance, label, reason }
-//   enroll()                -> { handle, bindingId, secret, interrupt }
-//   release(handle, purpose, prompt) -> { secret, interrupt }
-//   forget(handle)          optional; removes the OS-held key material
+//   id                  stable string, stored with the identity
+//   probe()             -> { available, method, assurance, label, modalities, proof, reason }
+//   enroll(opts)        -> { handle, bindingId, secret, interrupt, live }
+//   release(handle, opts) -> { secret, interrupt, live }
+//   forget(handle)      optional; removes the OS-held key material
 //
-// handle      JSON-serialisable data the adapter needs later (key alias, salt…).
-// bindingId   base64 id, bound as associated data when the seed is wrapped.
-// secret      Uint8Array(32); callers wipe it after use.
-// interrupt   record signed into every envelope manifest:
-//             { method, purpose, up, uv, assurance, at, ...adapter fields }
+// opts: { purpose, prompt, challenge, attest }
+//   challenge  bytes the liveness key signs inside this one biometric check
+//              (the sign-in message, a step-up ticket, a sealed file's hash…)
+//   attest     bytes (the session transcript) to make a fresh liveness key and
+//              attest it to: Android key attestation or Apple App Attest
+// live: null (no liveness key on this platform) or
+//   { pub: SPKI bytes, sig: DER ECDSA P-256 over challenge,
+//     attestation?: { kind: "android-key", chain: [DER…] } | { kind: "apple-app-attest", object: CBOR } }
+// modalities: which live biometrics this gate accepts, e.g. ["face", "fingerprint"].
+// proof: what can vouch for it to a server: "android-key" | "apple-app-attest" | null.
 //
-// assurance is "hardware" (secret released by secure hardware only after a
-// biometric match), "os" (OS-verified biometric, software-held secret) or
-// "none" (demo). The UI and manifests show it, so a weaker gate is never
-// presented as a stronger one.
+// assurance: "hardware" (secure hardware releases the secret only after a
+// biometric match), "os" (the OS verifies a biometric; software-held secret),
+// "none" (demo, local development builds only).
 
-export const GATE_CONTRACT = 1;
+export const GATE_CONTRACT = 2;
 
 export const ASSURANCE = Object.freeze({ HARDWARE: "hardware", OS: "os", NONE: "none" });
 

@@ -1,7 +1,12 @@
 // Everything the app does, in one place. Screens call these functions and read
-// the signals in state.js. Rule enforced here: private keys exist only inside
-// withKeys() (or a join's finish step), i.e. during a biological interrupt, and
-// are wiped right after.
+// the signals in state.js. Rules enforced here:
+//   - private keys exist only inside one biometric check (withKeys, or a
+//     registration / join step) and are wiped right after;
+//   - every check is a LIVE biometric (face or fingerprint): no PIN, no
+//     password. On phones the secure chip's liveness key signs a challenge
+//     known BEFORE the prompt opens — the sign-in message, a step-up ticket
+//     naming the exact request, or a sealed file's hash — so the server can
+//     verify that a live check approved precisely that.
 //
 // Keys on a device (docs/RECOVERY.md):
 //   account seed A   shared by all of the holder's devices. Its keys seal and open
@@ -17,7 +22,7 @@ import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANC
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
 import { HumidApi, ApiError } from "@humid/api";
-import { ml_dsa87, identityId } from "@humid/htp";
+import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
@@ -33,6 +38,8 @@ const wipe = (...b) => { for (const x of b) if (x && x.fill) x.fill(0); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const concat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
 const utf8 = (s) => new TextEncoder().encode(s);
+/** For checks no server verifies (seeing whose pieces you hold): still a live check, fresh challenge. */
+const localChallenge = (purpose) => concat(utf8(`HUMID-LOCAL-v1 ${purpose} `), random(32));
 
 let store = null;
 let api = null;
@@ -65,19 +72,18 @@ const quietly = (p) => p.catch((e) => { if (!cancelled(e)) toast(friendly(e), "e
 
 function gateLabel(method) {
   return ({
-    "ios-keychain-biometry": "Face ID / Touch ID",
-    "android-keystore-biometric": "your fingerprint or face",
+    "ios-keychain-biometry": "Face ID or Touch ID",
+    "android-keystore-biometric": "your face or fingerprint",
     "macos-keychain-biometry": "Touch ID",
-    "windows-hello-keycredential": "Windows Hello",
+    "windows-winbio-fingerprint": "your fingerprint",
     "linux-fprintd-keyring": "your fingerprint",
-    "webauthn-platform-uv-prf": "your device passkey",
-  })[method] || "your device biometric";
+  })[method] || "your face or fingerprint";
 }
 
 function showInterrupt(patch) { S.interrupt.value = { ...(S.interrupt.value || {}), ...patch }; }
 const holdMessage = "Demo mode has no sensor. Press and hold to stand in for it.";
 
-/** Called by the overlay's press-and-hold control (demo gate only). */
+/** Called by the overlay's press-and-hold control (demo gate, development builds only). */
 export function holdComplete() { holdWaiter?.resolve(); holdWaiter = null; }
 export function holdCancel() { holdWaiter?.reject(new Error(CANCELLED)); holdWaiter = null; }
 const waitForHold = (gate) => gate.needsHold ? new Promise((resolve, reject) => { holdWaiter = { resolve, reject }; }) : null;
@@ -88,36 +94,33 @@ async function endInterrupt(ok, message, ms) {
   S.interrupt.value = null;
 }
 
-/** Signs a step-up proof with this device's key (the gateway checks it against the session's device). */
-const proofBy = (dkeys, interrupt) => async ({ message }) => ({ sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt });
-
 /**
- * Run fn with this device's keys. Shows the interrupt overlay, asks the gate
- * (Face ID, fingerprint, Windows Hello, passkey, or demo hold) to release the
- * seeds, and wipes everything afterwards, success or failure.
- * fn gets { keys (account), dkeys (device), seed (account seed), interrupt, rec, Suite, proof }.
+ * Run fn with this device's keys, inside ONE live biometric check. The gate
+ * signs `challenge` with the device's liveness key during that check.
+ * fn gets { keys (account), dkeys (device), seed (account seed), interrupt, rec, live, Suite }.
  */
-async function withKeys(purpose, label, fn, { keepOpen = false } = {}) {
+async function withKeys(purpose, label, fn, { keepOpen = false, challenge, attest } = {}) {
   const id = S.identity.value;
-  const gate = gateAdapter(id.gate.adapter);
   const Suite = suite(id.suite);
+  let gate;
   busy = true;
-  showInterrupt({ purpose, label, state: "scanning", progress: 0.08, needsHold: !!gate.needsHold,
-    message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
   let secret, both, keys, dkeys;
   try {
+    gate = gateAdapter(id.gate.adapter);
+    showInterrupt({ purpose, label, state: "scanning", progress: 0.08, needsHold: !!gate.needsHold,
+      message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
     if (!id.device) throw Object.assign(new Error("This HumID was made by an earlier test version and has to be set up again."), { code: "unknown_identity" });
     await waitForHold(gate);
-    const rel = await gate.release(id.gate.handle, purpose, label);
+    const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
     secret = rel.secret;
-    showInterrupt({ needsHold: false, progress: 0.45, message: "Unlocking your keys on this device…" });
+    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed a live check. Unlocking your keys…" : "Unlocking your keys on this device…" });
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     const seed = both.subarray(0, SEED);
     keys = Suite.deriveKeys(seed);
     dkeys = Suite.deriveKeys(both.subarray(SEED, 2 * SEED));
     if (toB64(keys.dsaPk) !== id.pub.dsaPk || toB64(dkeys.dsaPk) !== id.device.dsaPk) throw new Error("Unlocked keys do not match this identity.");
     const interrupt = { method: rel.interrupt.method, assurance: rel.interrupt.assurance };
-    const out = await fn({ keys, dkeys, seed, interrupt, rec: rel.interrupt, Suite, proof: proofBy(dkeys, interrupt) });
+    const out = await fn({ keys, dkeys, seed, interrupt, rec: rel.interrupt, live: rel.live, Suite });
     if (keepOpen) showInterrupt({ progress: 0.85, message: "Keys wiped from memory. Waiting for your vault to confirm…" });
     else await endInterrupt(true, "Verified. Keys wiped from memory.", 620);
     return out;
@@ -130,6 +133,19 @@ async function withKeys(purpose, label, fn, { keepOpen = false } = {}) {
     if (dkeys) Suite.wipeKeys(dkeys);
     setTimeout(() => { busy = false; }, 600);
   }
+}
+
+/**
+ * A step-up: reserve the request slot first, let the liveness key sign that
+ * slot during the check, then send the request with both signatures.
+ * fn gets withKeys' arguments plus `proof`, to pass as the API call's stepUp.
+ */
+async function withStepUp(op, args, purpose, label, fn) {
+  const ticket = await api.ticket(op, ...args);
+  return withKeys(purpose, label, (k) => fn({
+    ...k,
+    proof: { ticket, sign: async (message) => ({ sig: ml_dsa87.sign(message, k.dkeys.dsaSk), interrupt: k.interrupt, live: k.live?.sig }) },
+  }), { challenge: ticket.live });
 }
 
 /* ---------------- boot ---------------- */
@@ -178,18 +194,21 @@ function wireGlobalEvents() {
 
 export const markPicking = () => { picking = true; };
 
-/** The gate to bind on this device: hardware if present, else demo when the server allows it. */
+/** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 function chooseGate(useDemo) {
   if (useDemo) {
-    if (!S.demoAllowed.value) { toast("This vault server requires a real biometric sensor.", "warn"); return null; }
+    if (!S.demoAllowed.value) { toast("HumID needs a live face or fingerprint check.", "warn"); return null; }
     return demoGate();
   }
-  const g = S.hwGate.value?.adapter;
-  if (!g) toast("No biometric gate on this device.", "warn");
-  return g;
+  const hw = S.hwGate.value;
+  if (!hw?.probe.available) { toast(hw?.probe.reason || "This device has no face or fingerprint sensor HumID can use.", "warn"); return null; }
+  return hw.adapter;
 }
 
 const serverRecord = (srv, extra = {}) => ({ url: SERVER_URL, kid: srv.kid, fingerprint: srv.fingerprint, ...extra });
+const gateClaim = (gate) => (gate.needsHold
+  ? { gateMethod: "demo-no-hardware", assurance: ASSURANCE.NONE }
+  : { gateMethod: S.hwGate.value?.probe.method, assurance: S.hwGate.value?.probe.assurance });
 
 /* ---------------- enrolment: the first device ---------------- */
 
@@ -200,44 +219,47 @@ export async function enroll(useDemo) {
   if (!gate) return;
   const Suite = suite();
   busy = true;
-  showInterrupt({ purpose: "enroll", label: "Create your HumID", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
-    message: gate.needsHold ? holdMessage : "Confirm with your device biometric to bind HumID to it." });
-  let secret, seed, dseed, both, keys, dkeys, card;
+  showInterrupt({ purpose: "enroll", label: "Create your HumID", state: "scanning", progress: 0.06, needsHold: false, message: "Generating your post-quantum keys…" });
+  let secret, seed, dseed, both, keys, dkeys, card, enrolled;
   try {
-    await waitForHold(gate);
-    const e = await gate.enroll();
-    secret = e.secret;
-    showInterrupt({ needsHold: false, progress: 0.3, message: "Generating your post-quantum keys…" });
-    await sleep(30);
+    // Keys and the recovery card are made before the check; the check binds them to you.
     seed = random(SEED); dseed = random(SEED);
-    both = concat(seed, dseed);
-    const wrapped = await Suite.wrapSeed(secret, both, fromB64(e.bindingId));
     keys = Suite.deriveKeys(seed);
     dkeys = Suite.deriveKeys(dseed);
     const pub = Suite.publicOf(keys);
-    const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(fromB64(e.bindingId))));
-    showInterrupt({ progress: 0.6, message: "Registering your public keys with the vault…" });
-    const interrupt = { method: e.interrupt.method, assurance: e.interrupt.assurance };
-    const device = { dsaPk: dkeys.dsaPk, platform: PLATFORM, gateMethod: interrupt.method, assurance: interrupt.assurance };
+    const accountId = identityId(pub.dsaPk);
+    const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk)));
+    card = newCard();
+    const cardBody = { tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, accountId) };
+    showInterrupt({ progress: 0.2, message: "Opening a post-quantum channel to your vault…" });
+
     const sess = await api.register({
-      pub, commit, device,
-      sign: async (m) => ({ registerSig: ml_dsa87.sign(m.register, keys.dsaSk), sigAccount: ml_dsa87.sign(m.device, keys.dsaSk), sigDevice: ml_dsa87.sign(m.device, dkeys.dsaSk) }),
+      pub, commit, card: cardBody,
+      device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
+      // One live check: the secure chip makes a liveness key for this session (th),
+      // proves it, and signs the device statement with it.
+      sign: async ({ register, device, th }) => {
+        showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to bind HumID to you." });
+        await waitForHold(gate);
+        enrolled = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: device, attest: th });
+        secret = enrolled.secret;
+        showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
+        return {
+          registerSig: ml_dsa87.sign(register, keys.dsaSk),
+          sigAccount: ml_dsa87.sign(device, keys.dsaSk),
+          sigDevice: ml_dsa87.sign(device, dkeys.dsaSk),
+          live: enrolled.live, gateMethod: enrolled.interrupt.method, assurance: enrolled.interrupt.assurance,
+        };
+      },
     });
 
-    // A recovery card, made under the same biometric check. Shown on the next screen.
-    showInterrupt({ progress: 0.8, message: "Making your recovery card…" });
-    let cardMade = false;
-    try {
-      card = newCard();
-      await api.setCard({ tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, sess.id) }, proofBy(dkeys, interrupt));
-      cardMade = true;
-    } catch { /* the vault is still usable; Security offers to make a card */ }
-
+    both = concat(seed, dseed);
+    const wrapped = await Suite.wrapSeed(secret, both, fromB64(enrolled.bindingId));
     const srv = await api.server();
     const record = {
-      mode: e.interrupt.assurance === ASSURANCE.NONE ? "demo" : "hardware",
-      assurance: e.interrupt.assurance, method: e.interrupt.method,
-      gate: { adapter: gate.id, handle: e.handle }, bindingId: e.bindingId, wrapped, commit,
+      mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",
+      assurance: sess.assurance, proof: sess.proof, method: enrolled.interrupt.method,
+      gate: { adapter: gate.id, handle: enrolled.handle }, bindingId: enrolled.bindingId, wrapped, commit,
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: toB64(dkeys.dsaPk) },
       enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null,
@@ -249,13 +271,14 @@ export async function enroll(useDemo) {
       S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.items.value = [];
-      S.cardCode.value = cardMade ? card.code : null;
+      S.cardCode.value = sess.cardSet ? card.code : null;
       S.enrollStep.value = 2;
     });
     api.htp.pinnedKid = srv.kid;
     await endInterrupt(true, "Your HumID is bound to this device.", 700);
   } catch (err) {
-    await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 1800);
+    if (enrolled) try { await gate.forget(enrolled.handle); } catch {}
+    await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
   } finally {
     wipe(secret, seed, dseed, both, card?.secret);
     if (keys) Suite.wipeKeys(keys);
@@ -298,11 +321,12 @@ export async function unlock() {
     const sess = await api.login({
       id: id.server.id,
       device: id.device?.id || "dev_" + "0".repeat(24),
-      sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, Suite }) => {
+      // The secure chip signs the server's sign-in challenge during the live check.
+      sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         indexKey = Suite.indexKey(seed);
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
-        return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt };
-      }, { keepOpen: true }),
+        return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
+      }, { keepOpen: true, challenge: message }),
     });
     batch(() => { S.session.value = sess; S.lockIssue.value = null; S.view.value = "app"; });
     await endInterrupt(true, "Welcome back.", 500);
@@ -310,7 +334,7 @@ export async function unlock() {
     loadAlerts();
   } catch (e) {
     wipe(indexKey); indexKey = null;
-    if (["unknown_identity", "server_identity_changed", "device_removed"].includes(e?.code)) S.lockIssue.value = e.code;
+    if (["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven"].includes(e?.code)) S.lockIssue.value = e.code;
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e)) toast(friendly(e), "error");
   }
@@ -367,20 +391,24 @@ export async function addDocument({ file, name, category }) {
   const finalName = (name || file.name || "Document").trim().slice(0, 120);
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
   try {
-    const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, Suite }) => {
-      const pub = { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) };
-      const sealed = await Suite.seal({ bytes, name: finalName, type }, keys, pub, { identityCommit: id.commit, interrupt: rec });
-      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size: bytes.length, category, addedAt: new Date().toISOString(), plainHash: sealed.plainHash });
-      return { envelope: sealed.envelope, index: idx };
-    });
+    // Encrypt first (public keys only), then one live check signs the ciphertext's hash
+    // in hardware and releases the key that signs the envelope.
+    const Suite = suite(id.suite);
+    const prepared = await Suite.prepareSeal({ bytes, name: finalName, type }, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
+    const size = bytes.length;
     wipe(bytes); bytes = null;
+    const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
+      const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
+      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash: sealed.plainHash });
+      return { envelope: sealed.envelope, index: idx };
+    }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sheet.value = { ...S.sheet.value, stage: "upload" };
     await api.upload(envelope, index);
     S.sheet.value = { ...S.sheet.value, stage: "done" };
     await refresh();
     await sleep(650);
     S.sheet.value = null;
-    toast(`${finalName} sealed. Only your biometric can open it.`);
+    toast(`${finalName} sealed. Only your face or fingerprint can open it.`);
     return true;
   } catch (e) {
     wipe(bytes);
@@ -390,9 +418,9 @@ export async function addDocument({ file, name, category }) {
   }
 }
 
-/** Download, verify, decrypt — all under one biometric check. Returns { bytes, meta }. */
+/** Download, verify, decrypt — all under one live check. Returns { bytes, meta }. */
 async function fetchPlain(item, purpose, label) {
-  return withKeys(purpose, label, async ({ keys, proof, Suite }) => {
+  return withStepUp("download", [item.id], purpose, label, async ({ keys, proof, Suite }) => {
     showInterrupt({ progress: 0.65, message: "Fetching sealed copy over HTP/1…" });
     const env = await api.download(item.id, proof);
     showInterrupt({ progress: 0.85, message: "Verifying ML-DSA-87 signature and decrypting…" });
@@ -435,7 +463,7 @@ export async function saveCopy(item) {
 
 export async function exportSealed(item) {
   try {
-    const env = await withKeys("export", `Export sealed ${item.name}`, async ({ proof }) => api.download(item.id, proof));
+    const env = await withStepUp("download", [item.id], "export", `Export sealed ${item.name}`, async ({ proof }) => api.download(item.id, proof));
     await saveBytes(env, `${item.name}${EXTENSION}`, MEDIA_TYPE);
     toast("Exported the sealed envelope. It stays encrypted.");
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
@@ -453,7 +481,7 @@ export async function renameItem(item, name, category) {
 
 export async function deleteItem(item) {
   try {
-    await withKeys("delete", `Delete ${item.name}`, async ({ proof }) => api.remove(item.id, proof));
+    await withStepUp("remove", [item.id], "delete", `Delete ${item.name}`, async ({ proof }) => api.remove(item.id, proof));
     S.sheet.value = null;
     await refresh();
     toast(`${item.name} deleted from your vault.`);
@@ -489,7 +517,7 @@ export async function findLink(code) {
 export async function approveLink(req) {
   const id = S.identity.value;
   try {
-    await withKeys("link", `Add ${req.platform}`, async ({ keys, seed, rec, proof, Suite }) => {
+    await withStepUp("approveLink", [req.code], "link", `Add ${req.platform}`, async ({ keys, seed, rec, proof, Suite }) => {
       showInterrupt({ progress: 0.6, message: "Sealing your account key to the new device…" });
       const { envelope } = await Suite.seal({ bytes: seed, name: "HumID account key", type: KEY_TYPE }, keys, { kemPk: req.kemPk, xPk: req.xPk }, { identityCommit: id.commit, interrupt: rec });
       return api.approveLink(req.code, envelope, proof);
@@ -503,7 +531,7 @@ export async function approveLink(req) {
 
 export async function removeDevice(d) {
   try {
-    await withKeys("remove", `Remove ${d.platform || "device"}`, async ({ proof }) => api.removeDevice(d.id, proof));
+    await withStepUp("removeDevice", [d.id], "remove", `Remove ${d.platform || "device"}`, async ({ proof }) => api.removeDevice(d.id, proof));
     S.sheet.value = null;
     toast(`${d.platform || "Device"} removed. It can no longer reach your vault.`);
     loadDevices();
@@ -528,7 +556,7 @@ export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
   try {
-    await withKeys("card", "Make a recovery card", async ({ seed, proof }) => {
+    await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();
       await api.setCard({ tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, accountId) }, proof);
     });
@@ -540,7 +568,7 @@ export async function makeNewCard() {
 
 export async function removeCard() {
   try {
-    await withKeys("card", "Remove recovery card", async ({ proof }) => api.removeCard(proof));
+    await withStepUp("removeCard", [], "card", "Remove recovery card", async ({ proof }) => api.removeCard(proof));
     S.sheet.value = null;
     toast("Recovery card removed. The old card no longer works.");
     loadRecovery();
@@ -564,7 +592,7 @@ export async function saveContacts(contacts, ownerName) {
   if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} recovery contacts.`, "warn");
   const t = thresholdFor(n);
   try {
-    await withKeys("contacts", "Save recovery contacts", async ({ keys, seed, rec, proof, Suite }) => {
+    await withStepUp("setContacts", [], "contacts", "Save recovery contacts", async ({ keys, seed, rec, proof, Suite }) => {
       showInterrupt({ progress: 0.6, message: `Splitting your account key into ${n} pieces…` });
       const shares = split(seed, n, t);
       const guardians = [];
@@ -585,7 +613,7 @@ export async function saveContacts(contacts, ownerName) {
 
 export async function removeContacts() {
   try {
-    await withKeys("contacts", "Remove recovery contacts", async ({ proof }) => api.removeContacts(proof));
+    await withStepUp("removeContacts", [], "contacts", "Remove recovery contacts", async ({ proof }) => api.removeContacts(proof));
     S.sheet.value = null;
     toast("Recovery contacts removed. Their pieces no longer work.");
     loadRecovery();
@@ -608,7 +636,7 @@ export async function findHelpRequest(code) {
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 
-/** Biometric check 1: open the pieces you hold to see whose they are. Only names leave the interrupt. */
+/** Live check 1: open the pieces you hold to see whose they are. Only names leave the check. */
 export async function whoDoIProtect() {
   try {
     return await withKeys("help", "See who you protect", async ({ keys, Suite }) => {
@@ -627,11 +655,11 @@ export async function whoDoIProtect() {
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
 
-/** Biometric check 2: release your piece for `owner`, re-sealed to the device that asked. */
+/** Live check 2: release your piece for `owner`, re-sealed to the device that asked. */
 export async function releasePiece(req, person) {
   const id = S.identity.value;
   try {
-    return await withKeys("help", `Help ${person.label} recover`, async ({ keys, rec, proof, Suite }) => {
+    return await withStepUp("help", [req.code], "help", `Help ${person.label} recover`, async ({ keys, rec, proof, Suite }) => {
       const held = (await api.protecting()).find((h) => h.owner === person.owner);
       if (!held) throw new Error("You no longer hold a piece for this person.");
       const { bytes } = await Suite.open(held.envelope, keys);
@@ -651,7 +679,7 @@ export async function loadAlerts() {
 
 export async function cancelRecovery(alert) {
   try {
-    await withKeys("cancel", "Cancel this recovery", async ({ proof }) => api.cancelAlert(alert.ref, proof));
+    await withStepUp("cancelAlert", [alert.ref], "cancel", "Cancel this recovery", async ({ proof }) => api.cancelAlert(alert.ref, proof));
     S.sheet.value = null;
     toast("Cancelled. That device gets nothing.");
     loadAlerts();
@@ -663,6 +691,8 @@ export async function cancelRecovery(alert) {
 // 72 hours for a card or contacts). What it needs at the end is wrapped under
 // its gate the whole time: its device seed D, plus the link or recovery key
 // seed, or the card. The record is saved, so the wait survives restarts.
+// Finishing is one more live check, in which the secure chip makes and
+// attests a fresh liveness key for the session that adds the device.
 
 export function startJoin() { S.joinStep.value = 0; S.joinMethod.value = null; S.joinStatus.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
 
@@ -680,14 +710,15 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
   const Suite = suite();
   busy = true;
   showInterrupt({ purpose: "enroll", label: "Bind this device", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
-    message: gate.needsHold ? holdMessage : "Confirm with your biometric. Your HumID will open only for you on this device." });
-  let secret, dseed, x, both;
+    message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor. Your HumID will open only for you on this device." });
+  let secret, dseed, x, both, dkeys;
   try {
     await waitForHold(gate);
-    const e = await gate.enroll();
+    const e = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: localChallenge("bind") });
     secret = e.secret;
     showInterrupt({ needsHold: false, progress: 0.4, message: "Generating this device's keys…" });
     dseed = random(SEED);
+    dkeys = Suite.deriveKeys(dseed);
     x = method === "card" ? cardSecret : random(SEED);
     both = concat(dseed, x);
     const wrapped = await Suite.wrapSeed(secret, both, fromB64(e.bindingId));
@@ -713,7 +744,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
       assurance: e.interrupt.assurance, method: e.interrupt.method,
       gate: { adapter: gate.id, handle: e.handle }, bindingId: e.bindingId, wrapped,
       suite: Suite.ID, enrolledAt: new Date().toISOString(),
-      pending: { ...pending, startedAt: Date.now() }, device: null, pub: null, commit: null,
+      pending: { ...pending, devicePub: toB64(dkeys.dsaPk), startedAt: Date.now() }, device: null, pub: null, commit: null,
       server: serverRecord(srv),
     };
     await store.putIdentity(record);
@@ -725,6 +756,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "" } = {}
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 1800);
   } finally {
     wipe(secret, dseed, x, both, cardSecret);
+    if (dkeys) Suite.wipeKeys(dkeys);
     busy = false;
   }
 }
@@ -747,60 +779,66 @@ export async function pollJoin() {
   joinTimer = setTimeout(pollJoin, quick ? 2500 : 30_000);
 }
 
-/** The account seed has arrived (sealed, or as a card blob, or as contact pieces): unlock it and join. */
+/** The account seed has arrived (sealed, as a card blob, or as contact pieces): unlock it and join. */
 async function finishJoin(st) {
   const id = S.identity.value;
   const p = id.pending;
   const gate = gateAdapter(id.gate.adapter);
   const Suite = suite(id.suite);
+  const account = st.account;
   busy = true;
-  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: !!gate.needsHold,
-    message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)} to finish.` });
-  let secret, both, seed, keys, dkeys, xkeys, rewrapped, pieces = [];
+  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
+  let secret, both, seed, keys, dkeys, xkeys, released;
+  const pieces = [];
   try {
-    await waitForHold(gate);
-    const rel = await gate.release(id.gate.handle, "enroll", "Open your HumID here");
-    secret = rel.secret;
-    both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
-    const dseed = both.subarray(0, SEED), x = both.subarray(SEED);
-    showInterrupt({ needsHold: false, progress: 0.4, message: "Unsealing your account key…" });
-    let account;
-    if (p.method === "link") {
-      xkeys = Suite.deriveKeys(x);
-      const opened = await Suite.open(st.envelope, xkeys);
-      seed = opened.bytes;
-      keys = Suite.deriveKeys(seed);
-      if (opened.manifest.signer.mldsa87Pk !== toB64(keys.dsaPk)) throw new Error("The key that arrived was not sealed by its own account. Nothing was added.");
-      account = st.account;
-    } else if (p.method === "card") {
-      seed = await openCard(x, st.blob, st.account);
-      keys = Suite.deriveKeys(seed);
-      account = st.account;
-    } else {
-      xkeys = Suite.deriveKeys(x);
-      for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
-      seed = combine(pieces);
-      keys = Suite.deriveKeys(seed);
-      account = st.account;
-    }
-    if (identityId(keys.dsaPk) !== account) throw new Error("The pieces didn't rebuild this HumID. Ask your contacts to check the code and try again.");
-
-    showInterrupt({ progress: 0.65, message: "Adding this device to your HumID…" });
-    dkeys = Suite.deriveKeys(dseed);
-    rewrapped = concat(seed, dseed);
-    const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
-    const pub = Suite.publicOf(keys);
-    const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(fromB64(id.bindingId))));
-    const interrupt = { method: rel.interrupt.method, assurance: rel.interrupt.assurance };
     const sess = await api.enrollDevice({
       account, via: p.method, recoveryId: p.requestId,
-      device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, gateMethod: interrupt.method, assurance: interrupt.assurance },
-      sign: async (m) => ({ sigAccount: ml_dsa87.sign(m, keys.dsaSk), sigDevice: ml_dsa87.sign(m, dkeys.dsaSk) }),
+      device: { dsaPk: fromB64(p.devicePub), platform: PLATFORM, gateMethod: id.method, assurance: id.assurance },
+      // One live check unlocks what arrived, and the secure chip attests a fresh liveness key to this session.
+      sign: async (message, th) => {
+        showInterrupt({ progress: 0.2, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)} to finish.` });
+        await waitForHold(gate);
+        released = await gate.release(id.gate.handle, { purpose: "enroll", prompt: "Open your HumID here", challenge: message, attest: th });
+        secret = released.secret;
+        both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
+        const x = both.subarray(SEED);
+        showInterrupt({ needsHold: false, progress: 0.4, message: "Unsealing your account key…" });
+        if (p.method === "link") {
+          xkeys = Suite.deriveKeys(x);
+          const opened = await Suite.open(st.envelope, xkeys);
+          seed = opened.bytes;
+          keys = Suite.deriveKeys(seed);
+          if (opened.manifest.signer.mldsa87Pk !== toB64(keys.dsaPk)) throw new Error("The key that arrived was not sealed by its own account. Nothing was added.");
+        } else if (p.method === "card") {
+          seed = await openCard(x, st.blob, account);
+          keys = Suite.deriveKeys(seed);
+        } else {
+          xkeys = Suite.deriveKeys(x);
+          for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
+          seed = combine(pieces);
+          keys = Suite.deriveKeys(seed);
+        }
+        if (identityId(keys.dsaPk) !== account) throw new Error("The pieces didn't rebuild this HumID. Ask your contacts to check the code and try again.");
+        dkeys = Suite.deriveKeys(both.subarray(0, SEED));
+        if (toB64(dkeys.dsaPk) !== p.devicePub) throw new Error("This device's keys changed while it waited. Start again.");
+        showInterrupt({ progress: 0.65, message: "Adding this device to your HumID…" });
+        return {
+          sigAccount: ml_dsa87.sign(message, keys.dsaSk), sigDevice: ml_dsa87.sign(message, dkeys.dsaSk),
+          live: released.live, gateMethod: released.interrupt.method, assurance: released.interrupt.assurance,
+        };
+      },
     });
+    const rewrapped = concat(seed, both.subarray(0, SEED));
+    const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
+    wipe(rewrapped);
+    const pub = Suite.publicOf(keys);
     const record = {
-      ...id, wrapped, commit, pending: null,
+      ...id, wrapped, pending: null,
+      commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
+      assurance: sess.assurance, proof: sess.proof,
+      mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
-      device: { id: sess.device, dsaPk: toB64(dkeys.dsaPk) },
+      device: { id: sess.device, dsaPk: p.devicePub },
       server: { ...id.server, id: account, registeredAt: new Date().toISOString() },
     };
     delete record.schema;
@@ -821,7 +859,7 @@ async function finishJoin(st) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
     if (!cancelled(err)) S.joinStatus.value = { ...st, status: "error", message: friendly(err) };
   } finally {
-    wipe(secret, both, seed, rewrapped);
+    wipe(secret, both, seed);
     for (const s of pieces) wipe(s.y);
     for (const k of [keys, dkeys, xkeys]) if (k) Suite.wipeKeys(k);
     busy = false;
@@ -844,7 +882,7 @@ export const prettyCode = formatCode;
 export async function eraseEverything() {
   const id = S.identity.value;
   try {
-    await withKeys("erase", "Close HumID and erase vault", async ({ proof }) => api.closeIdentity(proof));
+    await withStepUp("closeIdentity", [], "erase", "Close HumID and erase vault", async ({ proof }) => api.closeIdentity(proof));
   } catch (e) {
     if (cancelled(e)) return;
     toast(`${friendly(e)} Local data was kept.`, "error");

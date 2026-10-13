@@ -114,7 +114,7 @@ nonce               0x00000000 || u64 seq
 ciphertext          AES-256-GCM(key = dir == 1 ? kC2S : kS2C, nonce, plaintext, aad = header)
 plaintext           u32 metaLength || meta JSON || body bytes
 
-request meta        { m: method, p: path, h?: headers, proof?: step-up proof }
+request meta        { m: method, p: path, h?: headers, proof?: { at, sig, interrupt, live? } }
 response meta       { s: status, h?: headers }
 ```
 
@@ -135,6 +135,12 @@ A HumID account has an **account key** and one **device key** per device
 that a device releases only after a live biometric check (Secure Enclave or
 Keystore on mobile). Every proof below is made during that check.
 
+Phones also hold a **liveness key**: P-256 in the Secure Enclave or Android
+Keystore, usable only right after a live face or fingerprint match, never
+with a PIN or passcode. It signs the same check's challenge, so the server
+can verify a live check approved each action (ECDSA-SHA256, DER; the key is
+sent as SubjectPublicKeyInfo).
+
 ```
 account id    = "hid_" || hex(SHA3-256(account dsaPk))[0:40]
 device id     = "dev_" || hex(SHA3-256(device dsaPk))[0:24]
@@ -143,7 +149,42 @@ register      account key over "HTP/1 register" || lp(th, SHA3-256(kemPk), SHA3-
 device        account key AND device key over "HTP/1 device" || lp(th, account id, SHA3-256(device dsaPk))
 login         device key over "HTP/1 login"   || lp(th, "<account id>/<device id>", challenge)   challenge: 32 random bytes, single use
 step-up       device key over "HTP/1 step-up" || lp(th, u64 seq, METHOD, path, SHA3-256(body), u64 at)
+
+liveness key (phones):
+device        same "HTP/1 device" bytes, plus the key's attestation made for th
+login         same "HTP/1 login" bytes
+step-up       "HTP/1 live" || lp(th, u64 seq, METHOD, path, u64 at)        known before the body, see tickets
+seal          "HUMID-SEAL-v1" || SHA3-512(envelope ciphertext)             carried in the envelope's interrupt.live
 ```
+
+**Attestation** (sent once, with the `device` statement):
+
+- Android: `{ kind: "android-key", chain: [DER…] }`, the Keystore certificate
+  chain. The server verifies it to a pinned Google root, then requires a
+  hardware key (TEE or StrongBox), EC P-256, `userAuthType` biometric only
+  (no password bit), auth per use, not valid while on-body, a locked
+  bootloader with verified boot, the HumID package (and signing-cert digest if
+  configured), and `attestationChallenge = th`. The leaf's key must be the
+  liveness key.
+- iPhone: `{ kind: "apple-app-attest", object }`. The server verifies it to
+  Apple's App Attestation Root and checks the app id, environment, counter 0,
+  key id, and `clientDataHash = SHA-256(th || liveness key SPKI)`.
+
+The verified proof (`android-tee`, `android-strongbox`, `apple-secure-enclave`)
+is stored with the device. After that, the device's login, step-ups and
+seals must carry valid liveness signatures (`bad_live_proof`,
+`no_live_seal`). The server's **device policy** (`/htp/v1/keys` →
+`policy.devicePolicy`) decides who may join: `attested` (proven phones only,
+the default), `biometric` (also biometric-only desktops, which have no
+liveness key), or `demo` (development).
+
+**Tickets.** The biometric prompt has to know what it is approving before it
+opens, but the request body may only exist afterwards (a decrypted key to
+re-seal, say). So the client first reserves the request's slot, a ticket
+`{ sid, seq, at, METHOD, path }`, and the liveness key signs the ticket's
+`HTP/1 live` bytes. The device key's step-up signature, made in the same
+check, still covers the body. The replay window accepts the reserved `seq`
+even if other calls went first.
 
 - **Register** creates the account. It is proof of possession: the server
   stores the account's public keys only if the holder can sign with them, in
@@ -194,7 +235,12 @@ The client surfaces these codes:
 | `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, 10 sign-ins per 5 minutes per identity. |
 | `audit_unavailable` | The ledger could not record an access, so the access was refused (fail closed). |
 | `device_removed` | This device was removed from the account. |
-| `assurance_too_low` | The server requires a stronger biometric gate (`HUMID_MIN_ASSURANCE`). |
+| `device_not_proven` | The device can't prove a live check the way the server's device policy requires. |
+| `bad_live_proof` | The liveness key's signature is missing or wrong. Logged as `access.denied` (`no_live_biometric`). |
+| `no_live_seal` | A phone uploaded an envelope its liveness key didn't sign. |
+| `wrong_challenge` / `software_key` / `no_biometric` / `pin_allowed` / `not_per_use` / `unlocked_device` / `wrong_app` / `untrusted_root` / `bad_attestation` | Android key attestation refused, and why. |
+| `wrong_environment` / `not_configured` | App Attest refused: development object on a production server, or the server has no iOS app id. |
+| `session_changed` / `ticket_mismatch` | A ticket was used in another session or for another request. |
 | `code_mismatch` | A typed code doesn't match the keys the server returned. Hard stop. |
 
 ## Versioning

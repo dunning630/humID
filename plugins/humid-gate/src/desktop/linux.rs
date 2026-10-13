@@ -108,6 +108,8 @@ pub fn probe() -> Result<Probe> {
         method: METHOD.into(),
         assurance: ASSURANCE.into(),
         label: "Fingerprint (fprintd)".into(),
+        modalities: vec!["fingerprint".into()],
+        proof: None,
         reason: check.err().map(|e| e.to_string()),
     })
 }
@@ -122,11 +124,11 @@ pub fn enroll(id: &str, _prompt: &str) -> Result<Secret> {
         col.create_item("HumID gate key", attrs(id), &secret, true, "application/octet-stream")
             .await
             .map_err(keyring)?;
-        Ok(Secret { bytes: secret, detail: Some(serde_json::json!({ "factor": "fingerprint" })) })
+        Ok(Secret::new(secret, "fingerprint"))
     })
 }
 
-pub fn release(id: &str, _prompt: &str) -> Result<Secret> {
+pub fn release(_handle: &serde_json::Value, id: &str, _prompt: &str) -> Result<Secret> {
     run(async {
         verify_finger().await?;
         let ss = SecretService::connect(EncryptionType::Dh).await.map_err(keyring)?;
@@ -137,7 +139,7 @@ pub fn release(id: &str, _prompt: &str) -> Result<Secret> {
         if bytes.len() != 32 {
             return Err(Error::KeyInvalidated);
         }
-        Ok(Secret { bytes, detail: Some(serde_json::json!({ "factor": "fingerprint" })) })
+        Ok(Secret::new(bytes, "fingerprint"))
     })
 }
 

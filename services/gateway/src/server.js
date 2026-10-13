@@ -201,7 +201,15 @@ export function createGateway({
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
-      return { status: reg.status, json: sessionView(s, { created: reg.status === 201 }) };
+      // A recovery card made with the account: the registration itself was the live check.
+      let cardSet = false;
+      if (reg.status === 201 && r.card) {
+        const stepUp = { at: Date.now(), proof: proofHash(unb64u(r.sig)), method: s.gateMethod, assurance: s.assurance, live: !!s.livePub };
+        const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp }), json: r.card }).catch(() => ({ status: 503 }));
+        cardSet = c.status === 200;
+        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup" });
+      }
+      return { status: reg.status, json: sessionView(s, { created: reg.status === 201, cardSet }) };
     },
 
     // Another device joins an account it now holds the seed of (device link or recovery).
@@ -241,8 +249,8 @@ export function createGateway({
         await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
-      if (v.status === 403 && v.data?.error === "device_removed") {
-        await recordQuietly(r.id, "access.denied", { reason: "device_removed", device: r.device });
+      if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
+        await recordQuietly(r.id, "access.denied", { reason: v.data.error, device: r.device });
       }
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);

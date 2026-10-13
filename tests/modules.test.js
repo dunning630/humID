@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { migrateIdentity, IDENTITY_SCHEMA } from "../packages/store/src/migrations.js";
 import { suite, supportedSuites, suiteForEnvelope } from "@humid/crypto";
-import { adapter, GATE_CONTRACT, assertAdapter } from "@humid/gate";
+import { adapter, GATE_CONTRACT, assertAdapter, DEMO_BUILD } from "@humid/gate";
+import { demoAdapter } from "../packages/gate/src/adapters/demo.js";
 import { unpack, isEnvelope } from "@humid/codec";
 
 test("legacy hardware identity migrates to the gate layout", () => {
@@ -29,14 +30,21 @@ test("current records are left alone; future ones refuse to load", () => {
 });
 
 test("every shipped gate honours the contract", () => {
-  for (const id of ["native", "webauthn-prf", "demo"]) assertAdapter(adapter(id));
+  assertAdapter(adapter("native"));
+  assertAdapter(demoAdapter);
   assert.throws(() => assertAdapter({ id: "x", probe() {}, enroll() {}, release() {}, contract: GATE_CONTRACT + 1 }), /contract/);
 });
 
+test("release builds have no way to unlock without a live biometric", () => {
+  assert.equal(DEMO_BUILD, false);
+  assert.throws(() => adapter("demo"), (e) => e.code === "unknown_identity");
+  assert.throws(() => adapter("webauthn-prf"), (e) => e.code === "unknown_identity"); // passkeys can fall back to a PIN
+});
+
 test("demo gate round-trips its secret", async () => {
-  const demo = adapter("demo");
+  const demo = demoAdapter;
   const e = await demo.enroll();
-  const r = await demo.release(e.handle, "seal");
+  const r = await demo.release(e.handle, { purpose: "seal" });
   assert.deepEqual(r.secret, e.secret);
   assert.equal(r.interrupt.assurance, "none");
   assert.equal(r.interrupt.uv, false);

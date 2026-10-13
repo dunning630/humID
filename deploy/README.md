@@ -31,8 +31,9 @@ Set those as repository variables on GitHub (Settings → Secrets and variables
 → Actions → Variables), then run **Actions → Release apps**. The built apps
 connect to this server only.
 
-The web app is served at the same address, so `https://vault.humidsecure.ai`
-also works in a phone browser and can be added to the home screen.
+The web app is served at the same address, but a browser can't prove a live
+face or fingerprint check, so it only points people to the iPhone and
+Android apps.
 
 ## Settings (`deploy/.env`)
 
@@ -40,7 +41,12 @@ also works in a phone browser and can be added to the home screen.
 |---|---|---|
 | `HUMID_DOMAIN` | (required) | The server's domain. |
 | `HUMID_INTERNAL_SK`, `HUMID_INTERNAL_PK` | (generated) | Key pair the gateway uses to sign calls to the other services. |
-| `HUMID_MIN_ASSURANCE` | `none` | Weakest biometric gate accepted: `none` (demo mode allowed), `os`, or `hardware`. Use `hardware` for anything beyond a demo. |
+| `HUMID_DEVICE_POLICY` | `attested` | Which devices may join and sign in. `attested`: phones whose secure chip proves every live face or fingerprint check. `biometric`: also biometric-only desktops (Touch ID, fingerprint readers), which can't prove it. `demo`: local testing only. No policy accepts a PIN or password. |
+| `HUMID_IOS_APP_ID` | (empty) | `<Apple Team ID>.app.humid.vault`. Needed to accept iPhones (App Attest). `setup.sh` asks for the Team ID. |
+| `HUMID_APP_ATTEST_ENV` | `production` | `development` only for Xcode debug builds. |
+| `HUMID_ANDROID_PACKAGES` | `app.humid.vault` | Android package names accepted in key attestation. |
+| `HUMID_ANDROID_CERT_DIGESTS` | (empty = any) | SHA-256 of your release / Play signing certificate, comma-separated. Set it so only your signed app can join. |
+| `HUMID_REQUIRE_LOCKED_BOOT` | `1` | Refuse Android phones with an unlocked bootloader or failed verified boot. |
 | `RECOVERY_DELAY_MS` | `259200000` (72 h) | How long a card or contacts recovery waits before release. |
 | `VAULT_QUOTA_BYTES` | `262144000` (250 MB) | Storage per account. |
 | `HUMID_REGISTRY`, `HUMID_VERSION` | `ghcr.io/dunning630`, `latest` | Where to pull images from, and which version. |
@@ -80,8 +86,10 @@ Back up all five volumes together, encrypted, and test a restore.
 curl https://vault.humidsecure.ai/healthz          # ok
 docker compose ps                                   # all healthy
 docker compose logs gateway | grep "server identity"
-node ../tests/smoke.mjs https://vault.humidsecure.ai   # account, seal, card, second device, open, ledger
+node ../tests/smoke.mjs https://vault.humidsecure.ai   # see below
 ```
 
-The smoke test signs in as a demo device. On a server with
-`HUMID_MIN_ASSURANCE=hardware`, run it with `SMOKE_ASSURANCE=hardware`.
+The smoke test has no phone, so it enrols as a biometric-only desktop. On the
+default `attested` policy it checks that the server **refuses** it
+(`device_not_proven`). With `HUMID_DEVICE_POLICY=biometric` it runs the full
+flow (account, seal, card, second device, open, ledger).

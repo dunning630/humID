@@ -12,9 +12,12 @@ const APPS = ["ios", "android", "macos", "windows", "linux"];
 const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery"];
 const SERVICES = [...NODE_SERVICES, "edge"];
 
-// Which shared package feeds which service image. Every package also feeds the app.
+// Which shared package feeds which service image. Every package also feeds the
+// app, except the server-only ones.
+const SERVER_ONLY = new Set(["svc", "attest"]);
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
+  attest: ["identity", "vault", "gateway"],
   htp: NODE_SERVICES,
   crypto: ["vault", "recovery"],
   codec: ["vault", "recovery"],
@@ -66,8 +69,10 @@ for (const f of files || []) {
   const pkg = f.match(/^packages\/([^/]+)\//);
   if (pkg) {
     modules.add(`@humid/${pkg[1]}`);
-    APPS.forEach((a) => apps.add(a));
-    services.add("edge");
+    if (!SERVER_ONLY.has(pkg[1])) {
+      APPS.forEach((a) => apps.add(a));
+      services.add("edge");
+    }
     (PKG_SERVICES[pkg[1]] ?? NODE_SERVICES).forEach((s) => services.add(s));
     continue;
   }

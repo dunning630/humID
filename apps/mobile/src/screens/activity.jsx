@@ -9,9 +9,8 @@ const METHOD = {
   "ios-keychain-biometry": "Face ID / Touch ID",
   "android-keystore-biometric": "Fingerprint / face",
   "macos-keychain-biometry": "Touch ID",
-  "windows-hello-keycredential": "Windows Hello",
+  "windows-winbio-fingerprint": "Fingerprint",
   "linux-fprintd-keyring": "Fingerprint",
-  "webauthn-platform-uv-prf": "Passkey",
   "demo-no-hardware": "Demo hold",
 };
 const method = (m) => METHOD[m] || m || "";
@@ -46,7 +45,16 @@ function describe(e, names) {
   }
 }
 const VIA = { register: "First device", link: "From another device", card: "Recovery card", contacts: "Recovery contacts" };
-const reason = (r) => ({ device_removed: "Removed device tried to sign in",  step_up_required: "No biometric check", bad_step_up: "Biometric proof rejected", bad_login_proof: "Sign-in proof rejected", bad_proof: "Proof rejected" })[r] || r;
+const reason = (r) => ({
+  device_removed: "Removed device tried to sign in",
+  device_not_proven: "Device can't prove a live check",
+  no_live_biometric: "No live face or fingerprint check",
+  step_up_required: "No biometric check",
+  bad_step_up: "Biometric proof rejected",
+  bad_login_proof: "Sign-in proof rejected",
+  bad_proof: "Proof rejected",
+  no_live_seal: "Sealed without a live check",
+})[r] || r;
 
 export function Activity() {
   useEffect(() => { loadLedger(); }, []);

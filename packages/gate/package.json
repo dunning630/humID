@@ -1,12 +1,16 @@
 {
   "name": "@humid/gate",
-  "version": "1.0.0",
-  "description": "Biometric interrupt gates: native OS key stores, WebAuthn PRF, demo.",
+  "version": "2.0.0",
+  "description": "Live-biometric gates: native OS biometrics with hardware liveness keys; demo for local development only.",
   "type": "module",
   "exports": "./src/index.js",
   "humid": {
-    "provides": { "gate-contract": 1 },
-    "requires": { "native-plugin": "humid-gate@1" }
+    "provides": {
+      "gate-contract": 2
+    },
+    "requires": {
+      "native-plugin": "humid-gate@2"
+    }
   },
   "dependencies": {
     "@humid/codec": "^1.0.0",

@@ -125,10 +125,19 @@ export function Steps({ steps, current }) {
 }
 
 export function AssurancePill({ assurance }) {
-  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Hardware-bound</span>;
-  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />OS biometric</span>;
+  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Live check · chip-proven</span>;
+  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />Live biometric · OS</span>;
   return <span class="pill amber"><Icon name="info" />Demo · no sensor</span>;
 }
+
+const PROOF = {
+  "android-strongbox": "Android StrongBox chip attested the key",
+  "android-tee": "Android secure chip attested the key",
+  "apple-secure-enclave": "Apple Secure Enclave attested the key",
+};
+/** What the server verified about a device's live check. */
+export const proofLabel = (proof, assurance) =>
+  PROOF[proof] || (assurance === "os" ? "Biometric only, not hardware-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
 
 /* ---------------- codes, cards, countdowns ---------------- */
 

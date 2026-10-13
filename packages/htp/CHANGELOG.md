@@ -3,7 +3,9 @@
 ## 1.1.0
 
 - Accounts with many devices: `deviceId`, `deviceMessage` (signed by the account key and the device key); sign-in proofs name `<account>/<device>` and are signed by the device key.
-- Client keeps the server's `policy` hint (`minAssurance`) from `/htp/v1/keys`.
+- Client keeps the server's `policy` hint (`devicePolicy`) from `/htp/v1/keys`.
+- Liveness proofs: `liveMessage` (step-ups) and `sealLiveMessage` (sealed files), signed by the phone's hardware liveness key.
+- `ticket(method, path)` reserves a request slot before the biometric prompt, so the liveness key signs exactly that request; `call` accepts `{ ticket, sign }`.
 
 ## 1.0.0
 

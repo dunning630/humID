@@ -101,7 +101,7 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign }) {
+  async register({ pub, commit, device, sign, card }) {
     await this.htp.connect();
     const th = this.htp.transcript;
     const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
@@ -109,6 +109,8 @@ export class HumidApi {
       body: {
         kemPk: b64u(pub.kemPk), dsaPk: b64u(pub.dsaPk), xPk: b64u(pub.xPk), commit, sig: b64u(sigs.registerSig),
         device: deviceBody(device, sigs),
+        // optional recovery card { tag, blob }, stored under this same live check
+        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
       },
     });
     return this.session;

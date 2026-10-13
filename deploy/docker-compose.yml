@@ -45,8 +45,11 @@ services:
       LEDGER_URL: http://ledger:8083
       RECOVERY_URL: http://recovery:8084
       TRUST_PROXY: "1"
-      # none = demo mode allowed (POC) · os · hardware = real biometric hardware only
-      HUMID_MIN_ASSURANCE: ${HUMID_MIN_ASSURANCE:-none}
+      # Which devices may join and sign in. Every check is a live face or fingerprint; never a PIN.
+      #   attested  (default) phones whose secure chip proves each check (Android key attestation, Apple App Attest)
+      #   biometric also biometric-only desktops (Touch ID, fingerprint readers) that can't prove it
+      #   demo      local testing only: accepts a device with no sensor
+      HUMID_DEVICE_POLICY: ${HUMID_DEVICE_POLICY:-attested}
       HUMID_ALLOWED_ORIGINS: ${HUMID_ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
     volumes: [gateway-data:/data]
     healthcheck:
@@ -62,7 +65,15 @@ services:
     <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-identity:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: identity } }
-    environment: { <<: *env, PORT: "8081" }
+    environment:
+      <<: *env
+      PORT: "8081"
+      # Hardware proof of each phone's liveness key (docs/SECURITY.md).
+      HUMID_ANDROID_PACKAGES: ${HUMID_ANDROID_PACKAGES:-app.humid.vault}
+      HUMID_ANDROID_CERT_DIGESTS: ${HUMID_ANDROID_CERT_DIGESTS:-}   # SHA-256 of your Play / release signing cert; empty = any
+      HUMID_IOS_APP_ID: ${HUMID_IOS_APP_ID:-}                       # "<Apple Team ID>.app.humid.vault"; empty = no iPhones
+      HUMID_APP_ATTEST_ENV: ${HUMID_APP_ATTEST_ENV:-production}     # "development" for Xcode debug builds
+      HUMID_REQUIRE_LOCKED_BOOT: ${HUMID_REQUIRE_LOCKED_BOOT:-1}    # refuse rooted / unlocked-bootloader Android phones
     volumes: [identity-data:/data]
     healthcheck:
       <<: *health

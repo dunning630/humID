@@ -138,6 +138,18 @@ test("card: set up a recovery card (needs a biometric check)", async () => {
   assert.equal((await phone.card()).exists, true);
 });
 
+test("card: a card made during registration is saved under that same live check", async () => {
+  const bob = makeHolder("bob-card");
+  const c = newCard();
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  const sess = await api.register({ pub: bob.pub, commit: bob.commit, device: bob.device, sign: bob.registerSign, card: { tag: cardTag(c.secret), blob: await sealCard(c.secret, bob.seed, bob.id) } });
+  assert.equal(sess.cardSet, true);
+  assert.equal((await api.card()).exists, true);
+  const req = await new HumidApi({ baseUrl: stack.baseUrl }).startRecovery({ method: "card", tag: cardTag(c.secret) });
+  assert.equal(req.account, bob.id);
+  await api.cancelAlert((await api.alerts())[0].ref, bob.stepUp);
+});
+
 test("card: recovery waits, alerts the owner's devices, then releases to the new device", async () => {
   const secret = parseCard(card.code.toLowerCase());
   const fresh = new HumidApi({ baseUrl: stack.baseUrl });

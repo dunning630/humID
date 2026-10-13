@@ -1,5 +1,10 @@
 // macOS, Windows, Linux. Each OS module exposes the same four blocking
 // functions; this file runs them off the async runtime and wraps the secret.
+//
+// Every desktop gate is biometric-only (Touch ID, a fingerprint reader), but
+// none has a liveness key the server can verify, so `challenge` and `attest`
+// are ignored and `live` is never returned. Servers decide whether to accept
+// such devices (HUMID_DEVICE_POLICY=biometric) or not (attested, the default).
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::de::DeserializeOwned;
@@ -28,6 +33,15 @@ use windows as os;
 pub(crate) struct Secret {
     pub bytes: Zeroizing<Vec<u8>>,
     pub detail: Option<serde_json::Value>,
+    /// Extra fields to store in the handle at enrolment (Windows keeps its
+    /// DPAPI blob there). Ignored on release.
+    pub handle: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Secret {
+    pub(crate) fn new(bytes: Zeroizing<Vec<u8>>, factor: &str) -> Self {
+        Secret { bytes, detail: Some(json!({ "factor": factor })), handle: Default::default() }
+    }
 }
 
 pub(crate) fn new_id() -> String {
@@ -66,8 +80,10 @@ impl<R: Runtime> HumidGate<R> {
         let prompt = req.prompt.unwrap_or_else(|| "Bind your HumID identity to this device".into());
         let id = new_id();
         let (handle, s) = blocking(move || {
-            let s = os::enroll(&id, &prompt)?;
-            Ok((json!({ "id": id }), s))
+            let mut s = os::enroll(&id, &prompt)?;
+            let mut handle = std::mem::take(&mut s.handle);
+            handle.insert("id".into(), json!(id));
+            Ok((serde_json::Value::Object(handle), s))
         })
         .await?;
         Ok(Enrolled {
@@ -76,18 +92,21 @@ impl<R: Runtime> HumidGate<R> {
             method: os::METHOD.into(),
             assurance: os::ASSURANCE.into(),
             detail: s.detail,
+            live: None,
         })
     }
 
     pub async fn release(&self, req: ReleaseRequest) -> Result<Released> {
         let id = handle_id(&req.handle)?;
         let prompt = req.prompt.unwrap_or_else(|| "Confirm it's you".into());
-        let s = blocking(move || os::release(&id, &prompt)).await?;
+        let handle = req.handle;
+        let s = blocking(move || os::release(&handle, &id, &prompt)).await?;
         Ok(Released {
             secret: B64.encode(&*s.bytes),
             method: os::METHOD.into(),
             assurance: os::ASSURANCE.into(),
             detail: s.detail,
+            live: None,
         })
     }
 
