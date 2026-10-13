@@ -28,6 +28,8 @@ import {
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
   quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM,
 } from "@humid/recovery";
+import { readDocument } from "@humid/emrtd";
+import { probeNfc, openChip } from "./nfc.js";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
 
@@ -157,6 +159,7 @@ async function withStepUp(op, args, purpose, label, fn) {
 export async function boot() {
   store = await openStore();
   S.hwGate.value = await bestHardwareGate();
+  probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
   const id = S.identity.value;
   api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID });
@@ -1033,22 +1036,38 @@ export async function addCardToJoin(cardInput) {
 
 /**
  * Two proofs, while waiting: the ID chip, live. The chip must answer a fresh challenge
- * from the server, so a copy of its data isn't enough. `chip` is { dg1, sod, dg15, answer(nonce) }.
+ * from the server, so a copy of its data isn't enough.
+ * source(nonce) → { chip: { dg1, sod, dg15 }, signature }: reads the chip and has it sign
+ * the nonce in the same session (readChipLive), or a demo passport in development builds.
  */
-export async function addChipToJoin(chip) {
+export async function addChipToJoin(source) {
   const p = S.identity.value?.pending;
   if (p?.method !== "quorum") return false;
   try {
     const nonce = await api.recoveryChallenge(p.requestId);
-    const signature = await chip.answer(nonce);
+    const got = await source(nonce);
+    if (!got) return false;
+    const { chip, signature } = got;
     if (!signature) throw new Error("This ID's chip can't answer challenges. Verify at a HumID station instead.");
     const r = await api.recoveryAddAnchor(p.requestId, { chip, signature });
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
     toast("Your ID chip is verified.");
     pollJoin();
     return true;
-  } catch (e) { toast(friendly(e), "error"); return false; }
+  } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); return false; }
 }
+
+/** Development builds: a demo passport as a live chip source for addChipToJoin. */
+export const demoChipSource = (name) => async (nonce) => {
+  const c = await demoPassport(name);
+  return c ? { chip: c, signature: await c.answer(nonce) } : null;
+};
+
+/** A real chip as a live source for addChipToJoin: one read that also answers the nonce. */
+export const nfcChipSource = (access) => async (nonce) => {
+  const r = await readChip(access, { nonce, purpose: "recover" });
+  return r ? { chip: r, signature: r.aaSignature } : null;
+};
 
 /** Give up on a join: forget the half-made device and go back to the start. */
 export async function cancelJoin() {
@@ -1232,3 +1251,48 @@ export async function stationVerify(code, chip, checks) {
     });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
+
+/* ---------------- reading an ID chip (NFC on phones, USB reader on desktops) ---------------- */
+
+const CHIP_PROMPT = {
+  phone: "Hold the top of your phone flat against the photo page of your passport, or against your ID card.",
+  reader: "Place the passport's photo page, or the ID card, flat on the card reader.",
+};
+
+/**
+ * Read a passport or ID card chip. access: { number, birth, expiry } (YYMMDD) or { can }.
+ * nonce: a server challenge for the chip to sign (live proof). The access details live only
+ * in this call; nothing read is stored on the device.
+ * Returns { dg1, sod, dg15?, aaSignature?, access } or null if cancelled or failed (shown to the person).
+ */
+export async function readChip(access, { nonce, purpose = "anchor" } = {}) {
+  const n = S.nfc.value || await probeNfc();
+  S.nfc.value = n;
+  if (!n.available) { toast(n.reason || "This device can't read ID chips.", "warn"); return null; }
+  const show = (patch) => { S.chipRead.value = { ...(S.chipRead.value || {}), ...patch }; };
+  show({ stage: "waiting", fraction: 0, message: CHIP_PROMPT[n.kind] || CHIP_PROMPT.phone, error: null, kind: n.kind, purpose });
+  let chip = null;
+  try {
+    chip = await openChip({ prompt: CHIP_PROMPT[n.kind] });
+    show({ stage: "reading", fraction: 0.05, message: "Keep holding still…" });
+    let said = "";
+    const r = await readDocument(chip, {
+      access, nonce,
+      onProgress: ({ fraction, message }) => { show({ stage: "reading", fraction, message }); if (message !== said) { said = message; chip.message(message); } },
+    });
+    await chip.end({ message: "Done. You can move your document away." });
+    show({ stage: "done", fraction: 1, message: "Read and checked. You can move your document away." });
+    await sleep(700);
+    S.chipRead.value = null;
+    return r;
+  } catch (e) {
+    const cancelledRead = e?.code === "cancelled";
+    const message = cancelledRead ? "Cancelled." : friendly(e);
+    await chip?.end({ error: message });
+    if (cancelledRead) { S.chipRead.value = null; return null; }
+    show({ stage: "error", message, error: e?.code || "error" });
+    return null;
+  }
+}
+
+export const dismissChipRead = () => { S.chipRead.value = null; };

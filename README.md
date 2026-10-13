@@ -51,7 +51,8 @@ station, and "Use a demo passport" gives you an ID chip to anchor and recover wi
 - **Add devices** by scanning a QR code or typing a 12-character code;
   **remove** a lost one.
 - **Recover** on a new phone with any **two** of three proofs: your witnesses
-  (a majority of 2–5 people), your passport or ID chip, your seal card. The
+  (a majority of 2–5 people), your passport or ID chip (read with the phone's
+  NFC, or a USB card reader on a computer), your seal card. The
   wait depends on the evidence (24 h with an in-person station check, 72 h
   with witnesses, 7 days otherwise); every surviving device is alerted and can
   veto. See [docs/CONTINUITY.md](docs/CONTINUITY.md).
@@ -68,7 +69,9 @@ packages/            independently versioned modules
   codec crypto gate store io       envelope format, HUMID-PQ1, biometric gates, storage, files
   htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger + public-log checks, service kit
   attest anchor                    phone attestation; passport / ID chip checks (server side)
+  emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
+plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
 deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests

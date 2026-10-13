@@ -38,6 +38,8 @@ export const cardCode = signal(null);        // a recovery card to show once, th
 export const decoy = signal(false);
 export const duressInfo = signal(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
 export const continuity = signal(null);      // public-log check: { ok, reason, size, cosigned, at }
+export const nfc = signal(null);             // { available, kind: "phone" | "reader" | "none", reason } — the ID chip reader
+export const chipRead = signal(null);        // { stage, message, fraction, error } while reading a chip
 
 export const interrupt = signal(null);       // overlay state
 export const sheet = signal(null);           // { type, ... }

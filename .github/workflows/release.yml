@@ -183,6 +183,11 @@ jobs:
           /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.devicecheck.appattest-environment" "$ENT" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :com.apple.developer.devicecheck.appattest-environment string production" "$ENT"
           echo "App Attest (production) added to $ENT"
+          # Reading passport / ID chips (the App ID needs the NFC Tag Reading capability).
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.nfc.readersession.formats" "$ENT" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.nfc.readersession.formats array" "$ENT"
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.nfc.readersession.formats:0 string TAG" "$ENT"
+          echo "NFC tag reading added to $ENT"
       - name: iOS · signed .ipa for TestFlight / App Store Connect
         if: matrix.platform == 'ios' && env.HAS_APPLE == 'true'
         env:

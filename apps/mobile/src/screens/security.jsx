@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
   AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft,
-  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText,
+  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess,
 } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
@@ -13,7 +13,7 @@ import {
   makeNewCard, removeCard, saveCard, copyCard, findContact, saveContacts, removeContacts,
   offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, cancelRecovery,
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
-  stationLookup, stationVerify, markPicking, DURESS_HOLD_MS,
+  stationLookup, stationVerify, markPicking, DURESS_HOLD_MS, readChip,
 } from "../core/controller.js";
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD } from "../core/config.js";
 
@@ -421,6 +421,10 @@ function AnchorSheet() {
   const a = rec?.anchor;
   const [chip, setChip] = useState(null);
   const [name, setName] = useState("Demo Person");
+  const [nfcOpen, setNfcOpen] = useState(false);
+  const [access, setAccess] = useState(null);
+  const nfc = S.nfc.value;
+  const read = async () => { const r = await readChip(access, { purpose: "anchor" }); if (r) { setChip(r); setNfcOpen(false); } };
   const files = useRef(null);
   const pick = () => { markPicking(); files.current.click(); };
   const onFiles = async (e) => { const c = await readChipFiles(e.currentTarget.files); e.currentTarget.value = ""; if (c) setChip(c); };
@@ -434,9 +438,19 @@ function AnchorSheet() {
       {a?.available && (
         <>
           <input ref={files} type="file" multiple hidden accept=".json,.bin,.dat,application/json,application/octet-stream" onChange={onFiles} />
-          {!chip ? (
+          {!chip && nfcOpen && (
+            <>
+              <ChipAccess onChange={setAccess} />
+              <div class="actions">
+                <button class="btn primary block" disabled={!access} onClick={read}><Icon name="passport" />{nfc?.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
+                <button class="btn ghost block" onClick={() => setNfcOpen(false)}>Back</button>
+              </div>
+            </>
+          )}
+          {!chip ? (!nfcOpen && (
             <div class="actions">
-              <button class="btn quiet block" disabled title="Coming in the next update"><Icon name="passport" />Read the chip with this phone (next update)</button>
+              <button class="btn primary block" disabled={!nfc?.available} onClick={() => setNfcOpen(true)}><Icon name="passport" />{nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
+              {!nfc?.available && nfc?.reason && <p class="small muted">{nfc.reason}</p>}
               <button class="btn ghost block" onClick={pick}><Icon name="file" />Load chip data from a file</button>
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>
@@ -446,9 +460,9 @@ function AnchorSheet() {
                 </div>
               )}
             </div>
-          ) : (
+          )) : (
             <>
-              <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="check" /></span><div><strong>Chip data loaded{chip.demo ? " (demo)" : ""}</strong><span>The server checks its country signature next. {chip.dg15 ? "This chip can also prove it's present, live." : "This chip can't prove it's present live, so recovering with it will need a HumID station."}</span></div></div>
+              <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="check" /></span><div><strong>{chip.access ? `Chip read · ${chip.access}` : `Chip data loaded${chip.demo ? " (demo)" : ""}`}</strong><span>The server checks its country signature next. {chip.dg15 ? "This chip can also prove it's present, live." : "This chip can't prove it's present live, so recovering with it will need a HumID station."}</span></div></div>
               <div class="actions">
                 <button class="btn primary block" onClick={() => setAnchor(chip)}><Icon name="fingerprint" />{a?.exists ? "Replace with this ID" : "Anchor with biometric"}</button>
                 <button class="btn ghost block" onClick={() => setChip(null)}>Choose another</button>
@@ -511,6 +525,8 @@ function StationSheet() {
   const [code, setCode] = useState("");
   const [req, setReq] = useState(null);
   const [chip, setChip] = useState(null);
+  const [access, setAccess] = useState(null);
+  const nfc = S.nfc.value;
   const [checks, setChecks] = useState({ document: false, face: false, present: false });
   const [done, setDone] = useState(null);
   const [name, setName] = useState("Demo Person");
@@ -536,7 +552,13 @@ function StationSheet() {
           <input ref={files} type="file" multiple hidden accept=".json,.bin,.dat,application/json,application/octet-stream" onChange={onFiles} />
           {!chip ? (
             <div class="actions">
-              <button class="btn quiet block" disabled><Icon name="passport" />Read their chip with this phone (next update)</button>
+              {nfc?.available && (
+                <>
+                  <ChipAccess onChange={setAccess} title="Details from their document" />
+                  <button class="btn primary block" disabled={!access} onClick={async () => { const r = await readChip(access, { purpose: "station" }); if (r) setChip(r); }}><Icon name="passport" />{nfc.kind === "reader" ? "Read with the card reader" : "Hold to this phone and read"}</button>
+                </>
+              )}
+              {!nfc?.available && <p class="small muted">{nfc?.reason || "This device can't read ID chips."}</p>}
               <button class="btn ghost block" onClick={() => { markPicking(); files.current.click(); }}><Icon name="file" />Load chip data from a file</button>
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>

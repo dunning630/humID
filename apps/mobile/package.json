@@ -1,6 +1,6 @@
 {
   "name": "@humid/mobile",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "HumID mobile app (iOS, Android) and installable web app. One codebase; Tauri 2 for the native apps.",
   "type": "module",
@@ -24,7 +24,8 @@
     "@preact/signals": "2.11.3",
     "jsqr": "1.4.0",
     "preact": "10.29.8",
-    "qrcode-generator": "2.0.4"
+    "qrcode-generator": "2.0.4",
+    "@humid/emrtd": "^1.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.2",
