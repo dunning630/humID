@@ -5,8 +5,9 @@ name: Release HumID Server for Windows
 #
 #   1. Bump deploy/windows/package.json and add a CHANGELOG entry.
 #   2. Either push a tag:  git tag server-win-v1.0.1 && git push origin server-win-v1.0.1
-#      or click: Actions > Release HumID Server for Windows > Run workflow >
-#      tick "Publish a release" (it tags the chosen branch's commit for you).
+#      or click: Actions > Release apps > Run workflow > platforms "server-windows",
+#      tick "publish" (it tags the chosen branch's commit for you). Once this file
+#      is on main it also has its own Run workflow button.
 #
 # The zip is built on Windows, installed and smoke-tested there first; the
 # release is only created if that passes. The tag must match the version.
@@ -14,6 +15,11 @@ name: Release HumID Server for Windows
 on:
   push:
     tags: ["server-win-v*"]
+  workflow_call: # from release.yml (platforms: server-windows)
+    inputs:
+      publish:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:

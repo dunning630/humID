@@ -6,6 +6,10 @@ name: Release apps
 #   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
 #   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
 #
+# HumID Server for Windows rides along: platforms "server-windows" builds the
+# server zip on Windows, installs and smoke-tests it, and with "Publish" ticked
+# creates its own release (tag server-win-v<version>). See server-windows.yml.
+#
 # Which vault server the apps talk to (repository variables, Settings > Secrets and variables > Actions > Variables):
 #   HUMID_SERVER_URL   e.g. https://vault.humidsecure.ai
 #   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh) — pins it in the app
@@ -22,9 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Comma-separated: ios,android,macos,windows,linux — or all"
+        description: "Comma-separated: ios,android,macos,windows,linux — or all — and/or server-windows"
         default: android
         required: true
+      publish_server:
+        description: "With server-windows: publish it as a release (tag server-win-v<version>)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,22 +42,38 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      anyApps: ${{ steps.m.outputs.anyApps }}
+      server: ${{ steps.m.outputs.server }}
     steps:
       - id: m
         run: |
           WANT="${{ github.event.inputs.platforms || 'all' }}"
-          [ "$WANT" = "all" ] && WANT="ios,android,macos,windows,linux"
+          WANT="${WANT/all/ios,android,macos,windows,linux}"
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
           import json, sys
           runners = {"ios": "macos-14", "macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
           want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
-          bad = [p for p in want if p not in runners]
+          server = "server-windows" in want
+          apps = [p for p in want if p != "server-windows"]
+          bad = [p for p in apps if p not in runners]
           if bad: sys.exit(f"Unknown platform(s): {bad}")
-          print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in want]}))
+          print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in apps]}))
+          print("anyApps=" + json.dumps(bool(apps)))
+          print("server=" + json.dumps(server))
           EOF
+
+  server-windows:
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
+    uses: ./.github/workflows/server-windows.yml
+    with:
+      publish: ${{ inputs.publish_server == true }}
+    permissions:
+      contents: write
 
   build:
     needs: plan
+    if: needs.plan.outputs.anyApps == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
