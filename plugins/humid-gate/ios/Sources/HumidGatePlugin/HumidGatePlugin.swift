@@ -97,7 +97,7 @@ class HumidGatePlugin: Plugin {
       "available": ok, "method": gateMethod, "assurance": "hardware", "label": biometryLabel(ctx),
       "modalities": ctx.biometryType == .faceID ? ["face"] : ["fingerprint"],
     ]
-    if DCAppAttestService.shared.isSupported { out["proof"] = "apple-app-attest" }
+    if #available(iOS 14.0, *), DCAppAttestService.shared.isSupported { out["proof"] = "apple-app-attest" }
     if !ok {
       out["reason"] = "Face ID or Touch ID is not set up on this iPhone, or HumID is not allowed to use it. HumID never accepts the passcode instead."
     }
@@ -315,6 +315,7 @@ class HumidGatePlugin: Plugin {
   /// nil when App Attest isn't available (simulator, some older devices):
   /// the server then refuses the device unless its policy allows unproven ones.
   private static func appAttest(clientDataHash: Data) throws -> Data? {
+    guard #available(iOS 14.0, *) else { return nil }
     let svc = DCAppAttestService.shared
     guard svc.isSupported else { return nil }
     let done = DispatchSemaphore(value: 0)
@@ -336,7 +337,7 @@ class HumidGatePlugin: Plugin {
   }
 
   private static func attestError(_ e: Error?) -> GateError {
-    if let dc = e as? DCError, dc.code == .serverUnavailable {
+    if #available(iOS 14.0, *), let dc = e as? DCError, dc.code == .serverUnavailable {
       return .unavailable("Couldn't reach Apple to prove this is the genuine HumID app. Check your connection and try again.")
     }
     return .unavailable("Apple couldn't vouch for this app (App Attest): \(e?.localizedDescription ?? "unknown error")")
