@@ -60,3 +60,9 @@ test("envelopes route to the suite that sealed them", async () => {
   assert.throws(() => suite("HUMID-PQ9"), /Update HumID/);
   assert.throws(() => unpack(new Uint8Array(20)), /Not a HumID envelope/);
 });
+
+test("the native shell doesn't freeze Object.prototype (the UI's signals library assigns valueOf, so a frozen prototype leaves the app blank)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const conf = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  assert.notEqual(conf.app.security.freezePrototype, true);
+});

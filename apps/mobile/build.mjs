@@ -89,6 +89,7 @@ const ctx = await esbuild.context({
 });
 
 await copyFile(here("./src/index.html"), `${out}index.html`);
+await copyFile(here("./src/boot-guard.js"), `${out}assets/boot-guard.js`);
 await writeFile(`${out}sw.js`, (await readFile(here("./src/sw.js"), "utf8")).replace("__HUMID_VERSION__", `humid-${app.version}-${Date.now()}`));
 await writeFile(`${out}modules.json`, JSON.stringify(versions, null, 2));
 await writeFile(`${out}manifest.webmanifest`, JSON.stringify({
