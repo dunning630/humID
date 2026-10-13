@@ -201,6 +201,16 @@ jobs:
         run: cargo build --release --target aarch64-apple-ios --lib
 
       # ---------------- Android ----------------
+      # The runner's disk is too small for the NDK plus four Android Rust targets: free the
+      # toolchains Android doesn't use (about 25 GB) before building.
+      - name: Android · free disk space
+        if: matrix.platform == 'android'
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/local/share/powershell \
+            /usr/local/lib/node_modules /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy /usr/share/swift || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h / | tail -1
       - name: Android · Java 17
         if: matrix.platform == 'android'
         uses: actions/setup-java@v4
@@ -237,7 +247,10 @@ jobs:
         run: npm run tauri -- android build --apk --aab
       - name: Android · installable test .apk (debug-signed, sideload)
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
-        run: npm run tauri -- android build --apk --debug
+        # 64-bit ARM only (every phone on Android 11+), without Rust debug info: small enough to
+        # fit the runner and quick to download. The signed release build above covers every ABI.
+        env: { CARGO_PROFILE_DEV_DEBUG: "0" }
+        run: npm run tauri -- android build --apk --debug --target aarch64
 
       # ---------------- collect ----------------
       - name: Collect artifacts
