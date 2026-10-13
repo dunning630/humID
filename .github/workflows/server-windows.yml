@@ -1,0 +1,88 @@
+name: Release HumID Server for Windows
+
+# Publishes HumID-Server-Windows-<version>.zip as a GitHub release, so every
+# version is kept and downloadable from the repository's Releases page.
+#
+#   1. Bump deploy/windows/package.json and add a CHANGELOG entry.
+#   2. Tag the commit:   git tag server-win-v1.0.1 && git push origin server-win-v1.0.1
+#
+# The zip is built on Windows, installed and smoke-tested there first; the
+# release is only created if that passes. The tag must match the version.
+
+on:
+  push:
+    tags: ["server-win-v*"]
+  workflow_dispatch: # build and test only (no release)
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      HUMID: C:\Program Files\HumID Server\humid.ps1
+      NODE_NO_WARNINGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Version matches the tag
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content deploy/windows/package.json | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "server-win-v$v") {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match deploy/windows/package.json version $v"
+          }
+      - name: Build
+        run: node deploy/windows/build.mjs --zip
+      - name: Install from the zip and smoke-test (as a person would)
+        shell: pwsh
+        run: |
+          Expand-Archive -Path deploy/windows/out/HumID-Server-Windows-*.zip -DestinationPath "$env:RUNNER_TEMP\pkg"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID set HUMID_DEVICE_POLICY=biometric
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Log on failure
+        if: failure()
+        shell: pwsh
+        run: Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+      - name: Release notes from the changelog
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $log = Get-Content deploy/windows/CHANGELOG.md -Raw
+          $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($v))\s*\r?\n(.*?)(?=^## |\z)")
+          $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' }
+          @"
+          HumID Server for Windows $($v): the HumID vault server on one Windows 10/11 PC, no Docker.
+
+          **Install:** download the zip, right-click > Properties > Unblock, Extract All, then double-click ``Install HumID Server.cmd``. Steps are in ``README.txt`` inside the zip.
+
+          $notes
+
+          Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
+          "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
+          Get-Content "$env:RUNNER_TEMP\notes.md"
+      - uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          name: HumID Server for Windows ${{ steps.version.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
+          prerelease: true
+          files: deploy/windows/out/HumID-Server-Windows-*.zip
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: HumID-Server-Windows
+          path: deploy/windows/out/HumID-Server-Windows-*.zip

@@ -80,6 +80,19 @@ cd deploy && docker compose pull && docker compose up -d
 
 Pin a version with `HUMID_VERSION=<commit>` in `deploy/.env` to roll back.
 
+**HumID Server for Windows** (`deploy/windows/`) ships as a zip on the
+repository's Releases page, one release per version:
+
+1. Bump `deploy/windows/package.json` and add an entry to
+   `deploy/windows/CHANGELOG.md`.
+2. Tag the commit and push the tag:
+   `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
+
+*Release HumID Server for Windows* builds the zip on Windows, installs it and
+runs the smoke test there, then creates the release with the zip and the
+changelog entry. The tag must match the version. To update a laptop,
+download the new zip and run its installer; settings and data are kept.
+
 ## 5. Breaking changes, safely
 
 - **New envelope layout:** add a codec branch, keep v1 parsing forever.
