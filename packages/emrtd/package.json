@@ -1,10 +1,14 @@
 {
   "name": "@humid/emrtd",
-  "version": "1.0.0",
-  "description": "Reads a passport or ID card chip (ICAO 9303 eMRTD) over any APDU transport: BAC or PACE, secure messaging, DG1 / SOD / DG15, Active Authentication. No platform code.",
+  "version": "1.1.0",
+  "description": "Reads a passport or ID card chip (ICAO 9303 eMRTD) over any APDU transport: BAC or PACE, secure messaging, DG1 / SOD / DG15, Active Authentication, and (only when asked, for the holder's own vault copy) the DG2 photo. No platform code.",
   "type": "module",
   "exports": "./src/index.js",
-  "humid": { "provides": { "emrtd": 1 } },
+  "humid": {
+    "provides": {
+      "emrtd": 1
+    }
+  },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",

@@ -46,6 +46,11 @@ station, and "Use a demo passport" gives you an ID chip to anchor and recover wi
   verifies it. A PIN or password never unlocks anything.
 - **Seal** photos, PDFs and files; search and sort them by category. The
   server never learns their names.
+- **Scan an ID:** photograph a driver's license, passport or ID card and
+  HumID reads it on the phone (the license barcode, the passport's
+  machine-readable lines, and the chip over NFC with its photo), lets you
+  check the details, and seals one record with its photos. The vault shows
+  when each ID expires. See [docs/ID-SCANNING.md](docs/ID-SCANNING.md).
 - **Open** a document with a fresh biometric check each time. Every access is
   in your **Activity** log, which your phone verifies for itself.
 - **Add devices** by scanning a QR code or typing a 12-character code;
@@ -70,6 +75,7 @@ packages/            independently versioned modules
   htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger + public-log checks, service kit
   attest anchor                    phone attestation; passport / ID chip checks (server side)
   emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
+  idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery

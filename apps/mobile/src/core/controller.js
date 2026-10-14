@@ -29,6 +29,7 @@ import {
   quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
+import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
 import { probeNfc, openChip } from "./nfc.js";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
@@ -442,10 +443,24 @@ export async function refresh() {
 
 export async function addDocument({ file, name, category }) {
   if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. This POC seals files up to 50 MB.`, "warn"); return false; }
+  const bytes = await readFile(file);
+  return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category });
+}
+
+/**
+ * Seal an identity document record (@humid/idscan) into the vault: one sealed JSON
+ * with its photos, and a summary (kind, issuer, expiry) inside the encrypted index
+ * so the list can show when it expires without opening it.
+ */
+export async function addIdRecord(record, name) {
+  const bytes = encodeRecord(record);
+  if (bytes.length > MAX_FILE) { toast("Those photos are too large to seal. Retake them and try again.", "warn"); return false; }
+  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) } });
+}
+
+/** Encrypt on this device, one live check signs it, upload. The sheet shows the stages. */
+async function sealAndStore({ bytes, type, name: finalName, category, extra = {} }) {
   const id = S.identity.value;
-  let bytes = await readFile(file);
-  const type = file.type || "application/octet-stream";
-  const finalName = (name || file.name || "Document").trim().slice(0, 120);
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
   try {
     // Encrypt first (public keys only), then one live check signs the ciphertext's hash
@@ -456,7 +471,7 @@ export async function addDocument({ file, name, category }) {
     wipe(bytes); bytes = null;
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
-      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash: sealed.plainHash });
+      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash: sealed.plainHash, ...extra });
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sheet.value = { ...S.sheet.value, stage: "upload" };
@@ -489,10 +504,12 @@ export async function openItem(item) {
   try {
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     const type = meta.type || item.type || "application/octet-stream";
-    let url = null, text = null;
-    if (type.startsWith("text/") || type === "application/json") { text = new TextDecoder().decode(bytes); wipe(bytes); }
+    let url = null, text = null, idRecord = null;
+    if (type === ID_TYPE) {
+      try { idRecord = decodeRecord(bytes); } catch { text = new TextDecoder().decode(bytes); }
+    } else if (type.startsWith("text/") || type === "application/json") { text = new TextDecoder().decode(bytes); wipe(bytes); }
     else url = URL.createObjectURL(new Blob([bytes], { type }));
-    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, bytes: url ? bytes : null, item }; });
+    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, idRecord, bytes: url || idRecord ? bytes : null, item }; });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -528,7 +545,7 @@ export async function exportSealed(item) {
 
 const indexEntry = (item, patch = {}) => ({
   name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
-  ...(item.decoy ? { decoy: true } : {}), ...patch,
+  ...(item.decoy ? { decoy: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...patch,
 });
 
 /** Show (or stop showing) a document in the decoy view. Stored inside the encrypted index. */
@@ -1290,7 +1307,7 @@ const CHIP_PROMPT = {
  * in this call; nothing read is stored on the device.
  * Returns { dg1, sod, dg15?, aaSignature?, access } or null if cancelled or failed (shown to the person).
  */
-export async function readChip(access, { nonce, purpose = "anchor" } = {}) {
+export async function readChip(access, { nonce, purpose = "anchor", photo = false } = {}) {
   const n = S.nfc.value || await probeNfc();
   S.nfc.value = n;
   if (!n.available) { toast(n.reason || "This device can't read ID chips.", "warn"); return null; }
@@ -1302,7 +1319,7 @@ export async function readChip(access, { nonce, purpose = "anchor" } = {}) {
     show({ stage: "reading", fraction: 0.05, message: "Keep holding still…" });
     let said = "";
     const r = await readDocument(chip, {
-      access, nonce,
+      access, nonce, photo,
       onProgress: ({ fraction, message }) => { show({ stage: "reading", fraction, message }); if (message !== said) { said = message; chip.message(message); } },
     });
     await chip.end({ message: "Done. You can move your document away." });
@@ -1321,3 +1338,30 @@ export async function readChip(access, { nonce, purpose = "anchor" } = {}) {
 }
 
 export const dismissChipRead = () => { S.chipRead.value = null; };
+
+/** Is there a chip reader here (phone NFC, or a USB reader on a desktop)? Cached in S.nfc. */
+export async function chipReader({ fresh = false } = {}) {
+  if (!S.nfc.value || fresh) S.nfc.value = await probeNfc();
+  return S.nfc.value;
+}
+
+/**
+ * Read a passport or ID card chip for the holder's own vault copy: the MRZ data,
+ * the photo, and the signed hashes, checked against each other. Fills the record
+ * in place. Returns true if it read. The chip data stays in the record (sealed).
+ */
+export async function readChipInto(record, access, { portrait } = {}) {
+  const r = await readChip(access, { purpose: "vault", photo: true });
+  if (!r) return false;
+  const b64 = (b) => toB64(b);
+  let mrz = null;
+  try { mrz = readDg1(r.dg1).mrz; } catch { /* shown as unread below */ }
+  const integrity = (() => { try { return checkIntegrity(r.sod, { 1: r.dg1, ...(r.dg2 ? { 2: r.dg2 } : {}), ...(r.dg15 ? { 15: r.dg15 } : {}) }); } catch { return null; } })();
+  applyChip(record, r, { mrz, integrity, b64 });
+  if (r.dg2 && portrait) {
+    try { setImage(record, "portrait", await portrait(readDg2(r.dg2))); }
+    catch { toast("Read the chip, but its photo is in a format HumID can't show yet. It's kept with the record.", "warn"); }
+  }
+  if (integrity && !integrity.ok) toast("The chip's data doesn't match its own signed hashes. Check the document.", "warn");
+  return true;
+}

@@ -6,7 +6,9 @@
 //   1. access    PACE if the chip offers a variant we support (EF.CardAccess),
 //                otherwise BAC. Keys come from the MRZ details or the CAN.
 //   2. files     EF.COM, DG1 (MRZ), DG15 (Active Authentication key), EF.SOD,
-//                over secure messaging. DG2 (the photo) is never read.
+//                over secure messaging. DG2 (the photo) is read only when the
+//                holder asks for a copy in their own vault ({ photo: true });
+//                proving identity (anchors, stations, recovery) never reads it.
 //   3. liveness  with a nonce from the server, INTERNAL AUTHENTICATE: the chip
 //                signs it with its private key, proving it's the real chip.
 //
@@ -64,21 +66,33 @@ class Session {
   selectFile(fid) { return this.ok({ cla: 0x00, ins: 0xa4, p1: 0x02, p2: 0x0c, data: Uint8Array.of(fid >> 8, fid & 255) }, "Selecting a file"); }
 
   /** Read a whole elementary file: its TLV header says how long it is. */
-  async readFile(fid, onBytes) {
+  async readFile(fid, onBytes, { max = 64 * 1024 } = {}) {
     await this.selectFile(fid);
     const head = await this.ok({ cla: 0x00, ins: 0xb0, p1: 0, p2: 0, le: 8 }, "Reading");
     const total = tlvTotalLength(head);
-    if (!total || total > 64 * 1024) throw new ChipError("bad_tlv", "A file on the chip has an impossible length.");
+    if (!total || total > max) throw new ChipError("bad_tlv", "A file on the chip has an impossible length.");
     let out = head.subarray(0, Math.min(head.length, total));
     while (out.length < total) {
       const off = out.length;
-      const part = await this.ok({ cla: 0x00, ins: 0xb0, p1: (off >> 8) & 0x7f, p2: off & 255, le: Math.min(CHUNK, total - off) }, "Reading");
+      const want = Math.min(CHUNK, total - off);
+      // READ BINARY's offset is 15 bits; past 32 KB (a big photo), the odd READ BINARY
+      // carries the offset as a data object and answers inside one (tag 53).
+      const part = off <= 0x7fff
+        ? await this.ok({ cla: 0x00, ins: 0xb0, p1: (off >> 8) & 0x7f, p2: off & 255, le: want }, "Reading")
+        : unwrap53(await this.ok({ cla: 0x00, ins: 0xb1, p1: 0, p2: 0, data: offsetDo(off), le: want + 4 }, "Reading"));
       if (!part.length) throw new ChipError("bad_tlv", "The chip stopped sending a file early.");
       out = concat(out, part);
       onBytes?.(out.length, total);
     }
     return out;
   }
+}
+
+const offsetDo = (off) => (off > 0xffff ? Uint8Array.of(0x54, 3, off >> 16, (off >> 8) & 255, off & 255) : Uint8Array.of(0x54, 2, off >> 8, off & 255));
+function unwrap53(b) {
+  const t = readTlvs(b).get(0x53);
+  if (!t) throw new ChipError("bad_tlv", "The chip answered a long read in an unexpected form.");
+  return t;
 }
 
 /** EF.CardAccess, readable without any key: which PACE options the chip offers (or null). */
@@ -101,9 +115,10 @@ async function readCardAccess(s) {
  *   access     { number, birth, expiry } (YYMMDD) or { can }
  *   nonce      optional server challenge for Active Authentication (8 bytes)
  *   onProgress ({ step, fraction, message })
- * Returns { dg1, sod, dg15?, com, aaSignature?, access: "PACE …" | "BAC" }.
+ *   photo      also read DG2, the holder's face image (for their own vault copy)
+ * Returns { dg1, sod, dg15?, dg2?, com, aaSignature?, access: "PACE …" | "BAC" }.
  */
-export async function readDocument(transport, { access, nonce, onProgress = () => {}, preferBac = false } = {}) {
+export async function readDocument(transport, { access, nonce, onProgress = () => {}, preferBac = false, photo = false } = {}) {
   const useCan = !!access?.can;
   if (!useCan) normalizeAccess(access || {});
   const s = new Session(transport);
@@ -129,10 +144,19 @@ export async function readDocument(transport, { access, nonce, onProgress = () =
   const tags = (() => { try { return [...(readTlvs(readTlvs(com).get(0x60) || new Uint8Array(0)).get(0x5c) || [])]; } catch { return []; } })();
   const dg1 = await s.readFile(FILES.dg1);
   step("files", 0.4, "Reading the issuing country's signature…");
-  const sod = await s.readFile(FILES.sod, (n, t) => step("files", 0.4 + 0.35 * (n / t), "Reading the issuing country's signature…"));
+  const sodShare = photo ? 0.15 : 0.35;
+  const sod = await s.readFile(FILES.sod, (n, t) => step("files", 0.4 + sodShare * (n / t), "Reading the issuing country's signature…"));
   let dg15 = null;
   if (!tags.length || tags.includes(0x6f)) {
     try { dg15 = await s.readFile(FILES.dg15); } catch (e) { if (e.code !== "no_file") throw e; }
+  }
+
+  // The photo is the biggest file by far (often 15-60 KB): most of the reading time.
+  let dg2 = null;
+  if (photo && (!tags.length || tags.includes(0x75))) {
+    step("photo", 0.55, "Reading the photo from the chip…");
+    try { dg2 = await s.readFile(FILES.dg2, (n, t) => step("photo", 0.55 + 0.4 * (n / t), "Reading the photo from the chip…"), { max: 512 * 1024 }); }
+    catch (e) { if (e.code !== "no_file") throw e; }
   }
 
   let aaSignature = null;
@@ -142,5 +166,5 @@ export async function readDocument(transport, { access, nonce, onProgress = () =
     aaSignature = await s.ok({ cla: 0x00, ins: 0x88, p1: 0, p2: 0, data: Uint8Array.from(nonce), le: 256 }, "Chip proof");
   }
   step("done", 1, "Done. You can move the document away.");
-  return { com, dg1, sod, ...(dg15 ? { dg15 } : {}), ...(aaSignature ? { aaSignature } : {}), access: method };
+  return { com, dg1, sod, ...(dg15 ? { dg15 } : {}), ...(dg2 ? { dg2 } : {}), ...(aaSignature ? { aaSignature } : {}), access: method };
 }

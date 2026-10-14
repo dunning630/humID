@@ -5,6 +5,8 @@ import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
 import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy } from "../core/controller.js";
+import { DocCamera, IdView } from "./ids.jsx";
+import { status as idStatus, kindLabel } from "@humid/idscan";
 
 export function Vault() {
   const list = S.visibleItems.value;
@@ -48,8 +50,9 @@ export function Vault() {
         <div class="empty">
           <Mark />
           <h3>Your vault is empty</h3>
-          <p>Add a passport scan, insurance card or any document. It's sealed on this phone before it goes anywhere.</p>
-          <button class="btn primary" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>
+          <p>Scan your license or passport, or add any document. It's sealed on this phone before it goes anywhere.</p>
+          <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>
+          <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>
         </div>
       )}
 
@@ -68,12 +71,16 @@ export function Vault() {
 
 function ItemRow({ item }) {
   const cat = categoryOf(item.category);
+  const id = item.idInfo;
+  const st = id ? idStatus({ fields: { expiry: id.expiry } }) : null;
   return (
     <button class="item" onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-      <span class="ico" data-cat={cat.id}><Icon name={item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
+      <span class="ico" data-cat={cat.id}><Icon name={id ? (id.kind === "passport" ? "passport" : "idcard") : item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
       <span style={{ minWidth: 0 }}>
         <div class="name">{item.name}</div>
-        <div class="meta">{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</div>
+        <div class="meta">{id
+          ? <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>
+          : <>{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>}</div>
       </span>
       <span class="end"><Icon name="chevron" /></span>
     </button>
@@ -87,9 +94,18 @@ export function AddSheet() {
   const [file, setFile] = useState(null);
   const [name, setName] = useState("");
   const [cat, setCat] = useState("identity");
-  const cam = useRef(null), pick = useRef(null);
+  const [camera, setCamera] = useState(false);
+  const pick = useRef(null);
   const close = () => { if (!st.stage) S.sheet.value = null; };
   const choose = (input) => { markPicking(); input.current.click(); };
+  const photographed = async ({ canvas }) => {
+    setCamera(false);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
+    if (!blob) return;
+    const when = new Date();
+    setFile(new File([blob], `Photo ${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.jpg`, { type: "image/jpeg" }));
+    setName(`Photo ${when.toLocaleDateString()}`);
+  };
   const onFile = (e) => {
     const f = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
@@ -105,15 +121,22 @@ export function AddSheet() {
       <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{file ? "Seal it into your vault" : "Add to your vault"}</h2></div>
         {!st.stage && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
 
-      <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
       <input ref={pick} type="file" hidden onChange={onFile} />
 
       {!file && (
-        <div class="source">
-          <button onClick={() => choose(cam)}><Icon name="camera" /><strong>Take a photo</strong><span>Passport, license, card</span></button>
-          <button onClick={() => choose(pick)}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
-        </div>
+        <>
+          <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
+            <span class="ico"><Icon name="idcard" /></span>
+            <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the chip where there is one.</span></span>
+            <Icon name="chevron" />
+          </button>
+          <div class="source" style={{ marginTop: 10 }}>
+            <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card</span></button>
+            <button onClick={() => choose(pick)}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
+          </div>
+        </>
       )}
+      {camera && <DocCamera shape="full" title="Take a photo" hint="Fit the document in the frame, then take the photo." onCancel={() => setCamera(false)} onDone={photographed} />}
 
       {file && st.stage == null && (
         <>
@@ -227,6 +250,16 @@ export function Viewer() {
   if (!v) return null;
   const isImg = v.type.startsWith("image/");
   const isPdf = v.type === "application/pdf";
+  if (v.idRecord) return (
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+      <header>
+        <button class="icon-btn" aria-label="Close and wipe" onClick={closeViewer}><Icon name="x" /></button>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+      </header>
+      <div class="body id-body"><IdView record={v.idRecord} item={v.item} /></div>
+      <div class="wipe">Closing wipes the decrypted copy from memory.</div>
+    </div>
+  );
   return (
     <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
       <header>
