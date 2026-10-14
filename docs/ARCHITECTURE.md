@@ -83,6 +83,7 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/attest` | server only: verifies Android key attestation and Apple App Attest against pinned roots |
 | `@humid/emrtd` | reads passport and ID card chips (ICAO 9303) over any APDU transport: BAC, PACE, secure messaging, Active Authentication; the DG2 photo only for the holder's own vault copy |
 | `@humid/idscan` | reads ID documents into one record: MRZ (OCR-tolerant), AAMVA license barcodes, chip data groups and SOD hashes ([ID-SCANNING.md](ID-SCANNING.md)) |
+| `@humid/cards` | the holder's payment cards: number checks and networks, camera and contactless (read-only EMV) capture, the sealed card record ([CARDS.md](CARDS.md)) |
 
 Each package declares what it `provides` and `requires` in `package.json`
 under `"humid"`. The app build refuses an incompatible combination.

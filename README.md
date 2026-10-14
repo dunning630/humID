@@ -76,6 +76,7 @@ packages/            independently versioned modules
   attest anchor                    phone attestation; passport / ID chip checks (server side)
   emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
   idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
+  cards                            payment cards: number checks, camera + contactless capture, sealed card record (no PIN; CVV opt-in)
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
