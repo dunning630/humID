@@ -21,7 +21,7 @@ and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
 
 | File | |
 |---|---|
-| `humid-server.mjs` | The five services (identity, vault, ledger, recovery, gateway) and a local edge, bundled into one file. The same service code as the Docker images. |
+| `humid-server.mjs` | The six services (identity, vault, ledger, recovery, access, gateway) and a local edge, bundled into one file. The same service code as the Docker images. |
 | `app/` | The web app the edge serves (release build: no demo mode). |
 | `humid.ps1` | Install, update, start / stop, status, logs, settings, backup / restore, expose, uninstall. Windows PowerShell 5.1 compatible. |
 | `Install HumID Server.cmd`, `Uninstall HumID Server.cmd` | Double-click launchers that ask for administrator rights. |
@@ -77,6 +77,15 @@ an account a verification station with
 `humid set HUMID_STATION_ACCOUNTS=hid_…`. The public log is at
 `https://<your tunnel>/tlog/v1/checkpoint`. Every setting is in `humid.env`
 with an explanation; see [../../docs/CONTINUITY.md](../../docs/CONTINUITY.md).
+
+## Selling access (anonymous payment)
+
+A new HumID needs an access pass unless you `humid set HUMID_REGISTRATION=open`.
+Print access codes to sell, for cash or through an online store that delivers
+license keys, with `humid mint 100 counter-2026-10` (one code per line; the
+batch name is for your records). `humid set HUMID_PASS_BUY_URL=https://…` makes
+the app link to your shop. How it stays anonymous:
+[docs/ANONYMITY.md](../../docs/ANONYMITY.md).
 
 ## Limits
 

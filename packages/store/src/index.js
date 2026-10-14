@@ -27,5 +27,11 @@ export async function openStore() {
     putItem: (item) => backend.put("vault", item.id, item),
     delItem: (id) => backend.del("vault", id),
     clearVault: () => backend.clear("vault"),
+
+    // An access pass between buying and spending it (docs/ANONYMITY.md). Survives
+    // clearIdentity on purpose: it was paid for. Removed once the account exists.
+    getPass: () => backend.get("wallet", "pass").then((p) => p || null),
+    putPass: (p) => backend.put("wallet", "pass", p),
+    clearPass: () => backend.del("wallet", "pass"),
   };
 }

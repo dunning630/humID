@@ -34,6 +34,8 @@ import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { p256 } from "@noble/curves/nist.js";
 import { parse, kids, int, bool, octets, certExtension, CLASS } from "@humid/attest/der";
+import { verifyPass, spentId, parseAccessCode, accessCodeHash, newAccessCode } from "@humid/pass";
+import { newSimIssuerKey, simIssuerKey, blindSignJwk } from "@humid/pass/jwk";
 
 const SIZES = { kemPk: 1568, dsaPk: 2592, xPk: 32 };
 const DB = "humid-sim";
@@ -107,6 +109,11 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
 
   // accounts, devices, objects (metadata), ledger, log leaves, checkpoints, settings
   const st = (await load("state")) || { accounts: {}, devices: {}, objects: {}, ledger: {}, leaves: [], checkpoints: {}, cards: {}, settings: {} };
+  // Anonymous payment, as the access service does it: codes by hash, spent passes by hash, no accounts.
+  st.access ||= { codes: {}, spent: {} };
+  let passJwk = await load("passKey");
+  if (!passJwk) { passJwk = (await newSimIssuerKey()).jwk; await save("passKey", passJwk); }
+  const passKey = simIssuerKey(passJwk);
   const persist = () => save("state", st);
 
   const now = () => Date.now();
@@ -229,7 +236,34 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   const OBJ = "([0-9a-f-]{36})";
   const NOT_HERE = (what) => () => { throw fail(501, "not_in_simulation", `${what} needs other people or devices, so it isn't part of the simulation.`); };
 
+  route("GET", "/pass/keys", () => [200, { suite: "RSABSSA-SHA384-PSS-Randomized", keys: [{ ...passKey.publicView, issuing: true }] }]);
+  route("POST", "/pass/issue", (s, r) => {
+    if (s.subject) throw fail(400, "signed_in", "Get access passes from a session that isn't signed in.");
+    const code = parseAccessCode(r.code);
+    if (!code) throw fail(400, "code_invalid", "That access code isn't valid. Check it and try again.");
+    if (r.kid !== passKey.id) throw fail(409, "key_changed", "The pass key changed. Try again.");
+    const h = accessCodeHash(code), row = st.access.codes[h];
+    if (!row) throw fail(403, "code_unknown", "This access code wasn't issued by this vault.");
+    if (row.used && row.blinded !== r.blinded) throw fail(409, "code_used", "This access code has already been used.");
+    const sig = blindSignJwk(passKey, unb64u(String(r.blinded || "")));
+    st.access.codes[h] = { used: true, blinded: r.blinded };
+    s.closeAfterReply = true;
+    report("Access code swapped for a blind pass", [
+      pass("Access code is genuine and unused", "only its hash is stored, with no account"),
+      pass("Signed without seeing the pass", "RFC 9474 blind RSA: the vault can't recognise this pass later"),
+    ], { kind: "pass" });
+    return [200, { kid: passKey.id, blindSig: b64u(sig) }];
+  });
+
   route("POST", "/auth/register", (s, r) => {
+    // An access pass first, checked and spent the way the access service does it.
+    const passChecks = [];
+    let spent = null;
+    if (!r.pass) throw fail(402, "pass_required", "Creating a HumID needs an access pass.");
+    if (!verifyPass(passKey.pub, r.pass)) throw fail(403, "pass_invalid", "This access pass isn't valid.");
+    spent = spentId(r.pass);
+    if (st.access.spent[spent]) throw fail(409, "pass_spent", "This access pass has already been used.");
+    passChecks.push(pass("Access pass is genuine and unspent", "the vault's own signature, on a pass it has never seen before"));
     const keys = {};
     for (const k of Object.keys(SIZES)) { keys[k] = unb64u(String(r[k] || "")); if (keys[k].length !== SIZES[k]) throw fail(400, "bad_key", `${k} has the wrong length`); }
     if (!/^[0-9a-f]{64}$/.test(String(r.commit || ""))) throw fail(400, "bad_commit", "Identity commit must be 64 hex characters");
@@ -238,8 +272,12 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     const created = !st.accounts[id];
     if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso() };
     const a = st.accounts[id];
-    const { device, checks } = enrolDevice(a, s.th, r.device, "register");
-    checks.unshift(pass("Account key proved possession", "ML-DSA-87 signature over your public keys and this session"));
+    let enrolled;
+    try { enrolled = enrolDevice(a, s.th, r.device, "register"); }
+    catch (e) { if (created) delete st.accounts[id]; throw e; } // nothing half-made, and the pass stays unspent
+    const { device, checks } = enrolled;
+    if (created) st.access.spent[spent] = new Date().toISOString().slice(0, 10); // a day, never a time; never an account
+    checks.unshift(...passChecks, pass("Account key proved possession", "ML-DSA-87 signature over your public keys and this session"));
     bind(s, a, device);
     if (created) record(id, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
     record(id, "device.added", { device: device.id, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, checks: checks.filter((c) => c.ok).length });
@@ -547,7 +585,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   async function fetchFn(input, init = {}) {
     const path = new URL(String(input), "sim://humid").pathname;
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90)); // a little network latency
-    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy } });
+    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass" } });
     if (path.endsWith("/htp/v1/hello")) {
       try { return jsonRes(200, htp.hello(JSON.parse(init.body))); }
       catch (e) { return jsonRes(e.status || 400, { error: e.code || "handshake_failed", message: e.message }); }
@@ -562,5 +600,13 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     await tx(db, "blobs", "readwrite", (s) => s.clear());
   }
 
-  return { fetch: fetchFn, kid: htp.kid, fingerprint: htp.fingerprint, reset };
+  /** "Use a demo access code": what a counter or an online store would sell you. */
+  function demoAccessCode() {
+    const code = newAccessCode();
+    st.access.codes[accessCodeHash(parseAccessCode(code))] = { used: false };
+    persist();
+    return code;
+  }
+
+  return { fetch: fetchFn, kid: htp.kid, fingerprint: htp.fingerprint, reset, demoAccessCode };
 }

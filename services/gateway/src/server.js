@@ -28,6 +28,13 @@ const REF_RE = "[0-9a-f]{16}";
  *   demo       anything, including demo mode with no sensor. Local development only.
  */
 const POLICIES = ["attested", "biometric", "demo"];
+/**
+ * Who may create an account (HUMID_REGISTRATION):
+ *   pass  only with an access pass: paid for with an access code, signed blind,
+ *         so the payment can't be linked to the account. Default.
+ *   open  anyone (testing, private deployments).
+ */
+const REGISTRATION = ["pass", "open"];
 const re = (s) => new RegExp(`^${s}$`);
 
 /**
@@ -36,6 +43,11 @@ const re = (s) => new RegExp(`^${s}$`);
  * to a session that has not signed in (a new device that has no keys yet).
  */
 const ROUTES = [
+  // Anonymous payment (docs/ANONYMITY.md): swap an access code for a blind-signed pass.
+  // The app does this in a session of its own that never signs in.
+  { m: "GET", p: re("/pass/keys"), h: "passKeys", anon: true },
+  { m: "POST", p: re("/pass/issue"), h: "passIssue", anon: true },
+
   { m: "POST", p: re("/auth/register"), h: "register" },
   { m: "POST", p: re("/auth/device"), h: "enrollDevice" },
   { m: "POST", p: re("/auth/challenge"), h: "challenge" },
@@ -130,14 +142,19 @@ export function createGateway({
     vault: env("VAULT_URL", "http://vault:8082"),
     ledger: env("LEDGER_URL", "http://ledger:8083"),
     recovery: env("RECOVERY_URL", "http://recovery:8084"),
+    access: env("ACCESS_URL", "http://access:8085"),
   },
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
+  registration = env("HUMID_REGISTRATION", "pass"),
+  passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
 } = {}) {
   const log = logger("gateway");
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
+  if (!REGISTRATION.includes(registration)) throw new Error(`HUMID_REGISTRATION must be one of ${REGISTRATION.join(", ")}`);
+  if (passBuyUrl && !/^https:\/\//.test(passBuyUrl)) throw new Error("HUMID_PASS_BUY_URL must be an https:// URL");
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
@@ -146,7 +163,7 @@ export function createGateway({
   if (existsSync(keyFile)) statics = importStatics(JSON.parse(readFileSync(keyFile, "utf8")));
   else { statics = createStatics(); writeFileSync(keyFile, JSON.stringify(exportStatics(statics)), { mode: 0o600 }); }
   const htp = new HtpServer(statics);
-  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy });
+  log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
 
   const helloLimit = new Buckets(30, 60_000);   // per client IP
@@ -215,12 +232,43 @@ export function createGateway({
   /* ---------- handlers (run inside the encrypted channel) ---------- */
 
   const handlers = {
+    // The access service's published pass keys (at most two; the app checks).
+    async passKeys() {
+      const r = await internalJson("access", "GET", "/internal/keys");
+      if (r.status !== 200) fail(r);
+      return { status: 200, json: r.data };
+    },
+
+    // Access code → blind signature. Nothing about this session is kept, and it never signs in.
+    async passIssue(s, body) {
+      if (s.subject) throw new HttpError(400, "signed_in", "Get access passes from a session that isn't signed in.");
+      const r = parseJson(body) || {};
+      const out = await internalJson("access", "POST", "/internal/issue", { json: { code: r.code, kid: r.kid, blinded: r.blinded } });
+      if (out.status !== 200) fail(out);
+      s.closeAfterReply = true; // one code per session: nothing to carry over to a registration
+      return { status: 200, json: out.data };
+    },
+
     // First device: create the account and enrol this device.
+    // With HUMID_REGISTRATION=pass, an access pass is spent first. The access service gets
+    // only the pass; identity gets only the keys. Neither learns the other's half.
     async register(s, body) {
       const r = parseJson(body) || {};
-      const reg = await internalJson("identity", "POST", "/internal/register", {
-        json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device, policy: devicePolicy },
-      });
+      let spent = null;
+      if (registration === "pass") {
+        if (!r.pass || typeof r.pass !== "object") throw new HttpError(402, "pass_required", "Creating a HumID needs an access pass.");
+        const sp = await internalJson("access", "POST", "/internal/spend", { json: { pass: r.pass } }).catch(() => ({ status: 503, data: { error: "access_unavailable", message: "Payments are unavailable right now. Your pass wasn't used." } }));
+        if (sp.status !== 200) fail(sp);
+        spent = sp.data.spent;
+      }
+      const refund = () => spent && internalJson("access", "POST", "/internal/refund", { json: { spent } }).catch((e) => log.warn("pass refund failed", { err: e.message }));
+      let reg;
+      try {
+        reg = await internalJson("identity", "POST", "/internal/register", {
+          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device, policy: devicePolicy },
+        });
+      } catch (e) { await refund(); throw e; }
+      if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
       if (reg.status >= 300) fail(reg);
       bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
@@ -507,7 +555,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, ...(passBuyUrl ? { passBuyUrl } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

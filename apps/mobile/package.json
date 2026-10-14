@@ -21,6 +21,7 @@
     "@humid/htp": "^1.0.0",
     "@humid/idscan": "^1.0.0",
     "@humid/io": "^1.0.0",
+    "@humid/pass": "^1.0.0",
     "@humid/recovery": "^1.1.0",
     "@humid/store": "^1.2.0",
     "@preact/signals": "2.11.3",

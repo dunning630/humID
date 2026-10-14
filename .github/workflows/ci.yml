@@ -189,13 +189,13 @@ jobs:
         working-directory: deploy
         run: |
           for t in /tmp/images/*.tar; do docker load -i "$t"; done
-          for s in gateway identity vault ledger recovery edge; do
+          for s in gateway identity vault ledger recovery access edge; do
             if docker image inspect "humid-$s:ci" >/dev/null 2>&1; then docker tag "humid-$s:ci" "local/humid-$s:ci"; fi
           done
           node ../services/gateway/src/server.js keygen 2>/dev/null > .env || true
           echo "HUMID_DOMAIN=localhost" >> .env
           export HUMID_REGISTRY=local HUMID_VERSION=ci
-          missing=$(for s in gateway identity vault ledger recovery edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
+          missing=$(for s in gateway identity vault ledger recovery access edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
           if [ -n "$missing" ]; then docker compose build --pull $missing; fi
       - name: Boot the stack (docker compose)
         working-directory: deploy
@@ -204,17 +204,21 @@ jobs:
           docker compose up -d
           for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
           docker compose ps
-      - name: Smoke test over TLS + HTP/1 (default policy refuses devices without hardware proof)
-        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1" } # Caddy's local CA in CI only
+      - name: Smoke test over TLS + HTP/1 (default policy refuses devices without hardware proof, and accounts without a pass)
+        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1", HUMID_REGISTRY: local, HUMID_VERSION: ci } # Caddy's local CA in CI only
         run: |
           curl -sk https://localhost/ | grep -q '<div id="app">'
           node tests/smoke.mjs https://localhost
+          # with an access code: the pass is spent, the unproven device refused, and the pass refunded
+          code=$(cd deploy && docker compose run --rm --no-deps access server.mjs mint 1 ci | tail -1)
+          node tests/smoke.mjs https://localhost "$code"
       - name: Smoke test, full flow (gateway switched to HUMID_DEVICE_POLICY=biometric)
         env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1", HUMID_REGISTRY: local, HUMID_VERSION: ci }
         run: |
           (cd deploy && HUMID_DEVICE_POLICY=biometric docker compose up -d gateway)
           for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
-          node tests/smoke.mjs https://localhost
+          code=$(cd deploy && docker compose run --rm --no-deps access server.mjs mint 1 ci | tail -1)
+          node tests/smoke.mjs https://localhost "$code"
       - name: Logs on failure
         if: failure()
         working-directory: deploy

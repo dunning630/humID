@@ -44,12 +44,19 @@ services:
       VAULT_URL: http://vault:8082
       LEDGER_URL: http://ledger:8083
       RECOVERY_URL: http://recovery:8084
+      ACCESS_URL: http://access:8085
       TRUST_PROXY: "1"
       # Which devices may join and sign in. Every check is a live face or fingerprint; never a PIN.
       #   attested  (default) phones whose secure chip proves each check (Android key attestation, Apple App Attest)
       #   biometric also biometric-only desktops (Touch ID, fingerprint readers) that can't prove it
       #   demo      local testing only: accepts a device with no sensor
       HUMID_DEVICE_POLICY: ${HUMID_DEVICE_POLICY:-attested}
+      # Who may create a HumID (docs/ANONYMITY.md):
+      #   pass  (default) only with an access pass, paid for with an access code and signed
+      #         blind, so no one, HumID included, can link the payment to the account
+      #   open  anyone
+      HUMID_REGISTRATION: ${HUMID_REGISTRATION:-pass}
+      HUMID_PASS_BUY_URL: ${HUMID_PASS_BUY_URL:-}                   # https page where people buy access codes; the app links to it
       HUMID_ALLOWED_ORIGINS: ${HUMID_ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
     volumes: [gateway-data:/data]
     healthcheck:
@@ -60,6 +67,7 @@ services:
       vault: { condition: service_healthy }
       ledger: { condition: service_healthy }
       recovery: { condition: service_healthy }
+      access: { condition: service_healthy }
 
   identity:
     <<: *service
@@ -117,6 +125,22 @@ services:
       <<: *health
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8084/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
+  # Anonymous payment: access codes, blind-signed passes, spent passes. Knows no accounts.
+  # Mint codes to sell:  docker compose run --rm access server.mjs mint 100 counter-oct
+  access:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-access:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: access } }
+    environment:
+      <<: *env
+      PORT: "8085"
+      HUMID_PASS_ISSUE_DAYS: ${HUMID_PASS_ISSUE_DAYS:-365}          # a new pass key each period
+      HUMID_PASS_ACCEPT_DAYS: ${HUMID_PASS_ACCEPT_DAYS:-545}        # how long a key's passes stay spendable
+    volumes: [access-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8085/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
 networks:
   public: {}
   internal: { internal: true }
@@ -129,3 +153,4 @@ volumes:
   vault-data: {}
   ledger-data: {}
   recovery-data: {}
+  access-data: {}

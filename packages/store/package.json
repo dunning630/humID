@@ -7,7 +7,7 @@
   "humid": {
     "provides": {
       "identity-schema": 4,
-      "db": "humid@1"
+      "db": "humid@2"
     }
   },
   "license": "UNLICENSED"

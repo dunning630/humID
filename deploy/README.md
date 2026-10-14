@@ -7,8 +7,8 @@ Two ways:
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
 
-Six small containers: **edge** (Caddy, the only one on the internet),
-**gateway**, **identity**, **vault**, **ledger** and **recovery**. They run on
+Seven small containers: **edge** (Caddy, the only one on the internet),
+**gateway**, **identity**, **vault**, **ledger**, **recovery** and **access**. They run on
 a private network with no route to the internet, read-only, as non-root.
 
 ## What you need
@@ -84,8 +84,25 @@ builds from the checked-out source instead.
 | `identity-data` | accounts and device public keys | Nobody can sign in. |
 | `ledger-data` | access history and the ledger signing key | History is gone; new history starts. |
 | `recovery-data` | seal-card pieces, witnesses' pieces, ID-anchor parts and `anchor-secret.bin` | Recovery stops working; devices still do. Without `anchor-secret.bin` no ID anchor opens. |
+| `access-data` | access-code hashes, pass signing keys, spent passes | Unsold and unswapped codes stop working, and passes not yet spent are refused. |
 
-Back up all five volumes together, encrypted, and test a restore.
+Back up all six volumes together, encrypted, and test a restore.
+
+## Selling access (anonymous payment)
+
+By default a new HumID needs an access pass (`HUMID_REGISTRATION=pass`). People
+buy an **access code**, the app swaps it for a pass the server signs blind, and
+registration spends the pass, so the payment can't be linked to the account.
+How it works and what it doesn't hide: [docs/ANONYMITY.md](../docs/ANONYMITY.md).
+
+```bash
+docker compose run --rm access server.mjs mint 100 counter-2026-10   # 100 codes, one per line
+```
+
+Sell them for cash (printed cards) or through any online store that delivers
+license keys. Set `HUMID_PASS_BUY_URL=https://…` in `deploy/.env` and the app
+links to your shop. For a private server, `HUMID_REGISTRATION=open` turns
+payment off.
 
 ## Two-proof recovery, stations, the public log
 

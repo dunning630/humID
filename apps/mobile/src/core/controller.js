@@ -30,6 +30,7 @@ import {
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
+import { parseAccessCode } from "@humid/pass";
 import { probeNfc, openChip } from "./nfc.js";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
@@ -187,10 +188,12 @@ export async function boot() {
   S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
+  try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
   const id = S.identity.value;
   api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, ...(SIM ? { fetch: (await startSim()).fetch } : {}) });
   api.onSignedOut = (why) => { if (S.view.value === "app") lock(why === "expired" ? "Your session ended. Unlock to continue." : null); };
   connectServer();
+  if (S.pass.value?.state === "draft" && !id) resumePass(); // an access code was sent but the answer never arrived
   if (id?.pending) { S.joinMethod.value = id.pending.method; S.joinStep.value = 3; S.view.value = "join"; pollJoin(); }
   else S.view.value = id ? "locked" : "welcome";
   wireGlobalEvents();
@@ -245,9 +248,77 @@ const gateClaim = (gate) => (gate.needsHold
 
 /* ---------------- enrolment: the first device ---------------- */
 
-export function startEnroll() { S.enrollStep.value = 0; S.view.value = "enroll"; if (!S.server.value) connectServer(); }
+export function startEnroll() { S.enrollStep.value = "connect"; S.view.value = "enroll"; if (!S.server.value) connectServer(); }
+
+/* ---------------- anonymous payment: access code → access pass ---------------- */
+// The pass is signed blind (RFC 9474): the vault signs it without seeing it, so when
+// registration spends it, the vault can't tell which access code, purchase or person it
+// came from. Before the code is sent, the request is saved here, so a crash or a lost
+// connection never loses a paid-for code: the same request is simply sent again.
+
+const PASS_REFUSED = new Set(["code_invalid", "code_unknown", "code_used", "too_many_keys", "no_keys", "bad_key"]);
+
+export async function redeemAccessCode(input) {
+  const code = parseAccessCode(input);
+  if (!code) { toast("That access code isn't valid. Check it and try again.", "error"); return false; }
+  if (S.pass.value?.state === "ready") return true;
+  if (S.pass.value?.state === "draft") return resumePass();
+  S.passBusy.value = true;
+  let saved = false;
+  try {
+    const pass = await api.getPass(code, {
+      saveDraft: async (draft) => {
+        const rec = { state: "draft", code, draft, savedAt: new Date().toISOString().slice(0, 10) };
+        await store.putPass(rec);
+        S.pass.value = rec;
+        saved = true;
+      },
+    });
+    await keepPass(pass);
+    toast("Access pass ready. It isn't linked to your access code, or to you.");
+    return true;
+  } catch (e) {
+    // A definite refusal: nothing was signed, so the saved request is worthless.
+    if (saved && PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; }
+    toast(saved && !PASS_REFUSED.has(e?.code) ? "Your access code is saved on this phone. HumID will finish your pass when it can reach the vault." : friendly(e), "error");
+    return false;
+  } finally { S.passBusy.value = false; }
+}
+
+/** Finish a pass whose request was sent but whose answer never arrived. */
+export async function resumePass() {
+  const rec = S.pass.value;
+  if (rec?.state !== "draft" || S.passBusy.value) return rec?.state === "ready";
+  S.passBusy.value = true;
+  try {
+    await keepPass(await api.getPass(rec.code, { draft: rec.draft }));
+    return true;
+  } catch (e) {
+    if (PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; toast(friendly(e), "error"); }
+    return false;
+  } finally { S.passBusy.value = false; }
+}
+
+/** Keep the finished pass, and drop the access code: from here on, nothing ties the pass to it. */
+async function keepPass(pass) {
+  const rec = { state: "ready", pass };
+  await store.putPass(rec);
+  S.pass.value = rec;
+}
+
+/** A demo access code: in the simulation build, or from a local development server. */
+export async function demoAccessCode() {
+  try {
+    if (SIM) return redeemAccessCode(sim.demoAccessCode());
+    const r = await fetch("/dev/access-code", { method: "POST" });
+    if (!r.ok) throw new Error("This server has no demo access codes.");
+    return redeemAccessCode((await r.json()).code);
+  } catch (e) { toast(friendly(e), "error"); return false; }
+}
 
 export async function enroll(useDemo, { soleBiometric = false } = {}) {
+  const pass = S.passNeeded.value ? S.pass.value?.pass : undefined;
+  if (S.passNeeded.value && S.pass.value?.state !== "ready") { S.enrollStep.value = "access"; return toast("Add an access pass first.", "warn"); }
   const gate = chooseGate(useDemo);
   if (!gate) return;
   const Suite = suite();
@@ -270,7 +341,7 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
     showInterrupt({ progress: 0.2, message: "Opening a post-quantum channel to your vault…" });
 
     const sess = await api.register({
-      pub, commit, card: cardBody, soleBiometric,
+      pub, commit, card: cardBody, soleBiometric, pass,
       device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
@@ -308,12 +379,18 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       S.session.value = sess;
       S.items.value = [];
       S.cardCode.value = sess.cardSet ? card.code : null;
-      S.enrollStep.value = 2;
+      S.enrollStep.value = "done";
     });
     api.htp.pinnedKid = srv.kid;
+    if (pass) { await store.clearPass(); S.pass.value = null; } // spent: nothing to keep
     await endInterrupt(true, "Your HumID is bound to this device.", 700);
   } catch (err) {
     if (enrolled) try { await gate.forget(enrolled.handle); } catch {}
+    // The vault refused the pass itself: it's no use to keep, so ask for another code.
+    if (["pass_spent", "pass_invalid", "pass_expired", "pass_required"].includes(err?.code)) {
+      await store.clearPass();
+      batch(() => { S.pass.value = null; S.enrollStep.value = "access"; });
+    }
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
   } finally {
     wipe(secret, seed, dseed, both, card?.secret);
