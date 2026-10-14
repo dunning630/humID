@@ -8,12 +8,13 @@ face or fingerprint check. Three parts:
 |---|---|---|
 | **App** | `apps/mobile` | iOS and Android (Tauri 2), plus an installable web app. Brand: humidsecure.ai. |
 | **Transit** | `packages/htp` | HTP/1: hybrid ML-KEM-1024 + X25519 handshake, AES-256-GCM frames, biometric step-up proofs, inside TLS 1.3. |
-| **Server** | `services/` | Six small services: edge, gateway, identity, vault, ledger, recovery. Docker compose. |
+| **Server** | `services/` | Seven small services: edge, gateway, identity, vault, ledger, recovery, access. Docker compose. |
 
 Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
+[docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
 doesn't yet), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
 
@@ -37,10 +38,14 @@ place of a sensor) and a server policy that accepts it. Real builds accept only
 a live face or fingerprint, never a PIN or password, and real servers accept
 only phones whose secure chip proves each check. Locally, the base recovery
 wait is 2 minutes instead of 72 hours, every account can act as a verification
-station, and "Use a demo passport" gives you an ID chip to anchor and recover with.
+station, "Use a demo passport" gives you an ID chip to anchor and recover with,
+and "Use a demo access code" pays for a new HumID.
 
 ## What you can do in the app
 
+- **Pay anonymously:** an access code (bought for cash, or online) becomes a
+  pass the server signs blind, so it can't link the payment to your account.
+  No name, email or phone number anywhere.
 - **Create** a HumID: bind it to your face or fingerprint, get a seal card.
   Every check is live: your phone's secure chip signs each one, and the server
   verifies it. A PIN or password never unlocks anything.
@@ -74,11 +79,12 @@ packages/            independently versioned modules
   codec crypto gate store io       envelope format, HUMID-PQ1, biometric gates, storage, files
   htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger + public-log checks, service kit
   attest anchor                    phone attestation; passport / ID chip checks (server side)
+  pass                             anonymous access passes (RFC 9474 blind signatures), access codes
   emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
   idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
-services/            edge (Caddy) · gateway · identity · vault · ledger · recovery
+services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access
 deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests
 tools/               dev server (with demo passports), change detection for CI, public-log cosigner

@@ -19,7 +19,7 @@ const root = here("../../");
 
 // Module versions are stamped into the bundle, and module contracts are checked
 // so incompatible module releases can never ship together.
-const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api", "emrtd", "idscan"];
+const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api", "emrtd", "idscan", "pass"];
 const manifests = [];
 const versions = {};
 for (const m of mods) {

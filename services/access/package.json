@@ -1,0 +1,20 @@
+{
+  "name": "@humid/access-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Anonymous payment: access codes, blind-signed passes, spent-pass registry. Knows nothing about accounts.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "build": "node ../build-service.mjs access"
+  },
+  "humid": {
+    "port": 8085
+  },
+  "dependencies": {
+    "@humid/svc": "^1.0.0",
+    "@humid/pass": "^1.0.0"
+  },
+  "license": "UNLICENSED"
+}

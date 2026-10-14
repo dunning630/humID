@@ -1,10 +1,11 @@
-// HumID Server for Windows: the five HumID services and a local edge in one
+// HumID Server for Windows: the six HumID services and a local edge in one
 // Node process, so a single background task runs the whole vault.
 //
 //   node humid-server.mjs run   [--root DIR] [--service]   run the server
 //   node humid-server.mjs init  [--root DIR] [--set K=V …]  create humid.env (keys + defaults), or update it
 //   node humid-server.mjs set   [--root DIR]  K=V …          change settings
 //   node humid-server.mjs show  [--root DIR]                 print settings (keys hidden) and server.json
+//   node humid-server.mjs mint  [--root DIR] COUNT [BATCH]   print COUNT new access codes to sell (docs/ANONYMITY.md)
 //   node humid-server.mjs version
 //
 // DIR defaults to %ProgramData%\HumID (HUMID_HOME overrides). Inside it:
@@ -27,6 +28,7 @@ import { createVault } from "../../../services/vault/src/server.js";
 import { createLedger } from "../../../services/ledger/src/server.js";
 import { createRecovery } from "../../../services/recovery/src/server.js";
 import { createGateway } from "../../../services/gateway/src/server.js";
+import { createAccess } from "../../../services/access/src/server.js";
 import { readEnvFile, updateEnvFile, initialEnvText, validate, DEFAULTS } from "./config.mjs";
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
@@ -60,7 +62,8 @@ async function main() {
     case "set": return set(parsePairs([...sets, ...argv]));
     case "show": return show();
     case "run": return run({ service: has("--service") });
-    default: fail(`Unknown command "${command}". Use run, init, set, show or version.`, 2);
+    case "mint": return mint(argv[0], argv[1]);
+    default: fail(`Unknown command "${command}". Use run, init, set, show, mint or version.`, 2);
   }
 }
 
@@ -87,6 +90,16 @@ function set(changes) {
   validate({ ...readEnvFile(envFile), ...changes });
   updateEnvFile(envFile, changes);
   for (const [k, v] of Object.entries(changes)) process.stdout.write(`${k}=${/_SK$/.test(k) ? "(hidden)" : v}\n`);
+}
+
+/** Access codes to sell. Safe while the server runs: the database allows one writer at a time and waits. */
+function mint(count, batch) {
+  if (!existsSync(envFile)) fail(`${envFile} doesn't exist yet. Run init first.`);
+  const n = Number(count);
+  if (!Number.isInteger(n) || n < 1 || n > 10000) fail("Usage: mint COUNT [BATCH]   (COUNT from 1 to 10000)");
+  const a = createAccess({ port: 0, dataDir: join(root, "data", "access"), internalPk: readEnvFile(envFile).HUMID_INTERNAL_PK });
+  process.stdout.write(a.mint(n, batch).join("\n") + "\n");
+  a.close();
 }
 
 function show() {
@@ -117,12 +130,13 @@ async function run({ service }) {
   const ledger = createLedger({ port: 0, dataDir: data("ledger"), internalPk: pk });
   // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
   const recovery = createRecovery({ port: 0, dataDir: data("recovery"), internalPk: pk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
-  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start()]);
+  const access = createAccess({ port: 0, dataDir: data("access"), internalPk: pk });
+  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start()]);
   const url = (s) => `http://${host.includes(":") ? `[${host}]` : host}:${s.server.address().port}`;
   const local = (s) => `http://127.0.0.1:${s.server.address().port}`;
   const gateway = createGateway({
     port: 0, dataDir: data("gateway"), internalSk: process.env.HUMID_INTERNAL_SK,
-    upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery) },
+    upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery), access: local(access) },
     trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
   });
   await gateway.start();
@@ -145,6 +159,7 @@ async function run({ service }) {
     kid: gateway.htp.kid,
     fingerprint: gateway.htp.fingerprint,
     devicePolicy: S("HUMID_DEVICE_POLICY", "attested"),
+    registration: S("HUMID_REGISTRATION", "pass"),
     iphones: Boolean(S("HUMID_IOS_APP_ID", "")),
     startedAt: new Date().toISOString(),
     pid: process.pid,

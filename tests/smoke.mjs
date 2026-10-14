@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Smoke test against a RUNNING HumID deployment (used by CI against the
 // docker compose stack, and by you against a real server):
-//   node tests/smoke.mjs https://vault.humidsecure.ai
+//   node tests/smoke.mjs https://vault.humidsecure.ai [ACCESS-CODE]
 // Creates a throwaway account, seals + uploads a document, sets a recovery
 // card, adds a second device with a link code, opens the document from that
 // device with a step-up proof, verifies the ledger, then closes the account.
@@ -10,12 +10,17 @@
 // (no hardware proof). Servers with HUMID_DEVICE_POLICY=biometric or demo run
 // the whole flow; servers with the default "attested" policy must REFUSE that
 // enrolment, and the test checks exactly that.
+//
+// Servers with HUMID_REGISTRATION=pass (the default) need an access pass to
+// create an account: pass an access code (argv[3] or HUMID_SMOKE_ACCESS_CODE),
+// minted with `docker compose run --rm access server.mjs mint 1 smoke`.
 import { HumidApi } from "@humid/api";
 import { suite } from "@humid/crypto";
 import { ml_dsa87, toHex, sha3_256, random } from "@humid/htp";
 import { newCard, cardTag, sealCard } from "@humid/recovery";
 
 const base = process.argv[2] || "https://localhost";
+const accessCode = process.argv[3] || process.env.HUMID_SMOKE_ACCESS_CODE || "";
 const step = (m) => process.stdout.write(`• ${m}\n`);
 const S = suite();
 const GATE = "linux-fprintd-keyring"; // a biometric-only desktop gate; the server derives assurance itself
@@ -35,9 +40,17 @@ const phone = S.deriveKeys(random(64));
 const api = new HumidApi({ baseUrl: base });
 const srv = await api.server();
 const policy = srv.policy?.devicePolicy;
-step(`server ${base} · fingerprint ${srv.fingerprint} · device policy ${policy}`);
+step(`server ${base} · fingerprint ${srv.fingerprint} · device policy ${policy} · registration ${srv.policy?.registration}`);
+let pass = null;
+if (srv.policy?.registration === "pass") {
+  try { await api.register({ pub, commit, device: device(phone), sign: async (m) => ({ registerSig: sign(m.register, keys), sigAccount: sign(m.device, keys), sigDevice: sign(m.device, phone) }) }); throw new Error("registered without an access pass"); }
+  catch (e) { if (e.code !== "pass_required") throw e; step("registration without an access pass was refused (pass_required)"); }
+  if (!accessCode) { console.log("SMOKE OK (registration needs an access pass: give an access code to run the full flow)"); process.exit(0); }
+  pass = await api.getPass(accessCode);
+  step(`access code swapped for a blind-signed pass (key ${pass.kid.slice(0, 12)}…)`);
+}
 const enrol = () => api.register({
-  pub, commit, device: device(phone),
+  pub, commit, device: device(phone), pass,
   sign: async (m) => ({ registerSig: sign(m.register, keys), sigAccount: sign(m.device, keys), sigDevice: sign(m.device, phone) }),
 });
 if (policy === "attested") {

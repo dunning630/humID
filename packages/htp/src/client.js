@@ -46,7 +46,10 @@ export class HtpClient {
     // policy is a UI hint (e.g. whether demo identities are accepted); the server enforces it.
     // A hint for the app's UI only; the gateway enforces the policy on every sign-in.
     const devicePolicy = ["attested", "biometric", "demo"].includes(j.policy?.devicePolicy) ? j.policy.devicePolicy : "attested";
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy } };
+    // Older servers don't say: they had no payment step, so "open".
+    const registration = j.policy?.registration === "pass" ? "pass" : "open";
+    const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(j.policy?.passBuyUrl || "")) ? j.policy.passBuyUrl : null;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl } };
     return this.server;
   }
 

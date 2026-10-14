@@ -10,13 +10,15 @@
     },
     "requires": {
       "htp": 1,
-      "recovery": 2
+      "recovery": 2,
+      "pass": 1
     }
   },
   "dependencies": {
     "@humid/htp": "^1.1.0",
     "@humid/audit": "^1.1.0",
-    "@humid/recovery": "^1.1.0"
+    "@humid/recovery": "^1.1.0",
+    "@humid/pass": "^1.0.0"
   },
   "license": "UNLICENSED"
 }

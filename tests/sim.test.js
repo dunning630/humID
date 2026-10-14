@@ -16,13 +16,26 @@ const last = (kind) => reports.filter((r) => r.kind === kind).at(-1);
 const alice = makeHolder("alice-sim");
 let phone, docId;
 
+test("an access code becomes a blind pass; no pass, no account; a pass spends once", async () => {
+  const bob = makeHolder("bob-sim");
+  await assert.rejects(api().register({ pub: bob.pub, commit: bob.commit, device: bob.device, sign: bob.registerSign }), (e) => e.code === "pass_required");
+  const code = sim.demoAccessCode();
+  const pass = await api().getPass(code);
+  assert.ok(last("pass").checks.every((c) => c.ok));
+  await assert.rejects(api().getPass(code), (e) => e.code === "code_used");
+  assert.equal((await api().register({ pub: bob.pub, commit: bob.commit, device: bob.device, sign: bob.registerSign, pass })).created, true);
+  const carol = makeHolder("carol-sim");
+  await assert.rejects(api().register({ pub: carol.pub, commit: carol.commit, device: carol.device, sign: carol.registerSign, pass }), (e) => e.code === "pass_spent");
+});
+
 test("register: account key, device key and the secure chip are all checked; the attestation is read", async () => {
   phone = api();
-  const s = await phone.register({ pub: alice.pub, commit: alice.commit, device: alice.device, sign: alice.registerSign, soleBiometric: true });
+  const pass = await api().getPass(sim.demoAccessCode());
+  const s = await phone.register({ pub: alice.pub, commit: alice.commit, device: alice.device, sign: alice.registerSign, soleBiometric: true, pass });
   assert.equal(s.created, true);
   assert.equal(s.assurance, "hardware");
   const labels = last("enrol").checks.map((c) => `${c.ok} ${c.label}`);
-  for (const want of ["true Account key proved possession", "true Secure chip signed during a live biometric match", "true Biometric only: no PIN or password can use it", "true Needs a live check for every single use", "true Attestation made for this connection"]) {
+  for (const want of ["true Access pass is genuine and unspent", "true Account key proved possession", "true Secure chip signed during a live biometric match", "true Biometric only: no PIN or password can use it", "true Needs a live check for every single use", "true Attestation made for this connection"]) {
     assert.ok(labels.some((l) => l.startsWith(want)), `${want}\n${labels.join("\n")}`);
   }
   assert.ok(labels.some((l) => l.startsWith("null Certificate chain")), "says honestly it can't check the chain");
@@ -60,7 +73,10 @@ test("history and the public log verify on the phone; duress locks sensitive cha
   await assert.rejects(phone.setSettings({ duressAlert: true }, alice.stepUp), (e) => e.code === "busy");
 });
 
-test("a phone whose key accepts a PIN is refused, like a real server would", async () => {
+test("a phone whose key accepts a PIN is refused, like a real server would, and its pass isn't used up", async () => {
   const rooted = makeHolder("rooted-sim", { kind: "rooted" });
-  await assert.rejects(api().register({ pub: rooted.pub, commit: rooted.commit, device: rooted.device, sign: rooted.registerSign }), (e) => e.code === "pin_allowed");
+  const pass = await api().getPass(sim.demoAccessCode());
+  await assert.rejects(api().register({ pub: rooted.pub, commit: rooted.commit, device: rooted.device, sign: rooted.registerSign, pass }), (e) => e.code === "pin_allowed");
+  const dave = makeHolder("dave-sim");
+  assert.equal((await api().register({ pub: dave.pub, commit: dave.commit, device: dave.device, sign: dave.registerSign, pass })).created, true);
 });

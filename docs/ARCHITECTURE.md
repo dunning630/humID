@@ -20,8 +20,10 @@ check on one of the holder's devices. Three parts:
 │   ├──► identity   accounts, devices, public keys  (SQLite)    │
 │   ├──► vault      sealed envelopes + index    (SQLite+blobs)  │
 │   ├──► ledger     signed hash-chained log         (SQLite)    │
-│   └──► recovery   device links, card + contact    (SQLite)    │
-│                   backups, timed releases                     │
+│   ├──► recovery   device links, card + contact    (SQLite)    │
+│   │               backups, timed releases                     │
+│   └──► access     access codes, blind-signed      (SQLite)    │
+│                   passes, spent passes: no accounts           │
 │       internal network: no internet egress                   │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -43,7 +45,7 @@ JavaScript before compression):
 Servers accept proven phones by default (`HUMID_DEVICE_POLICY=attested`);
 `biometric` also admits the desktops. See [SECURITY.md](SECURITY.md#live-biometric-checks).
 
-**Screens.** Welcome → *Create my HumID* (connect · bind · recovery card) or
+**Screens.** Welcome → *Create my HumID* (connect · access pass · bind · recovery card) or
 *I already have HumID* (connect · choose: another device, recovery card,
 recovery contacts · bind · wait) → Lock → Vault (search, categories, add,
 open, rename, sealed copy, delete) → Activity (verified ledger) → Security
@@ -83,6 +85,7 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/attest` | server only: verifies Android key attestation and Apple App Attest against pinned roots |
 | `@humid/emrtd` | reads passport and ID card chips (ICAO 9303) over any APDU transport: BAC, PACE, secure messaging, Active Authentication; the DG2 photo only for the holder's own vault copy |
 | `@humid/idscan` | reads ID documents into one record: MRZ (OCR-tolerant), AAMVA license barcodes, chip data groups and SOD hashes ([ID-SCANNING.md](ID-SCANNING.md)) |
+| `@humid/pass` | anonymous access passes: RFC 9474 blind signatures (app side; `/issuer` for the server), access codes |
 
 Each package declares what it `provides` and `requires` in `package.json`
 under `"humid"`. The app build refuses an incompatible combination.
@@ -109,6 +112,7 @@ capabilities dropped.
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
 | **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
+| **access** | gateway | access-code hashes, pass keys, spent-pass hashes, all dated by day | which codes were used, and how many passes were spent. Never an account. See [ANONYMITY.md](ANONYMITY.md). |
 
 **Internal trust.** The gateway signs a short-lived Ed25519 assertion (30 s,
 audience-bound) for every internal call, naming the account, the device,
