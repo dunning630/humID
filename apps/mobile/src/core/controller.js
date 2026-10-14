@@ -30,7 +30,9 @@ import {
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
+import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, HANDLING as CARD_HANDLING } from "@humid/cards";
 import { probeNfc, openChip } from "./nfc.js";
+import { mrzReader } from "./scan.js";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
@@ -458,6 +460,49 @@ export async function addIdRecord(record, name) {
   return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) } });
 }
 
+/**
+ * Seal a payment card record (@humid/cards) into the vault. The encrypted index
+ * carries only network, last four digits, expiry and nickname, never the number.
+ */
+export async function addCardRecord(record, name) {
+  let bytes;
+  try { bytes = encodeCard(record); } catch (e) { toast(e.message, "warn"); return false; }
+  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), category: "money", extra: { cardInfo: cardSummary(record) } });
+}
+
+/** Tap a contactless card (Android NFC, or a USB reader on a computer): number and expiry. No payment is made. */
+export async function readCardTap() {
+  let t;
+  try {
+    t = await openChip({ prompt: "Hold your card flat against the back of your phone." });
+    const r = await readContactless(t);
+    await t.end({ message: "Card read." });
+    return r;
+  } catch (e) {
+    await t?.end({ error: "Couldn't read the card." });
+    if (e?.code !== "cancelled") toast(e?.message || "Couldn't read the card. Try the camera, or type it.", "warn");
+    return null;
+  }
+}
+
+/** Read a card's front from a photo with the on-device OCR. Best effort: the holder checks it. */
+export async function readCardPhoto(canvas) {
+  try { const ocr = await mrzReader(); return readCardText(await ocr.read(canvas)); }
+  catch { return null; }
+}
+
+/** Copy a card value, then clear the clipboard after HANDLING.clipboardClearMs if it still holds it. */
+export async function copySecret(text, what = "Copied") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${what}. The clipboard clears in ${Math.round(CARD_HANDLING.clipboardClearMs / 1000)} seconds.`);
+    setTimeout(async () => {
+      try { if ((await navigator.clipboard.readText()) === text) await navigator.clipboard.writeText(""); }
+      catch { try { await navigator.clipboard.writeText(""); } catch { /* not allowed here */ } }
+    }, CARD_HANDLING.clipboardClearMs);
+  } catch { toast("Couldn't copy here.", "warn"); }
+}
+
 /** Encrypt on this device, one live check signs it, upload. The sheet shows the stages. */
 async function sealAndStore({ bytes, type, name: finalName, category, extra = {} }) {
   const id = S.identity.value;
@@ -504,12 +549,15 @@ export async function openItem(item) {
   try {
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     const type = meta.type || item.type || "application/octet-stream";
-    let url = null, text = null, idRecord = null;
+    let url = null, text = null, idRecord = null, cardRecord = null;
     if (type === ID_TYPE) {
       try { idRecord = decodeRecord(bytes); } catch { text = new TextDecoder().decode(bytes); }
+    } else if (type === CARD_TYPE) {
+      try { cardRecord = decodeCard(bytes); } catch { text = "This card record can't be read."; }
     } else if (type.startsWith("text/") || type === "application/json") { text = new TextDecoder().decode(bytes); wipe(bytes); }
     else url = URL.createObjectURL(new Blob([bytes], { type }));
-    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, idRecord, bytes: url || idRecord ? bytes : null, item }; });
+    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, idRecord, cardRecord, bytes: url || idRecord ? bytes : null, item }; });
+    if (cardRecord) wipe(bytes); // the card stays only in the viewer, masked until revealed
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -545,7 +593,7 @@ export async function exportSealed(item) {
 
 const indexEntry = (item, patch = {}) => ({
   name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
-  ...(item.decoy ? { decoy: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...patch,
+  ...(item.decoy ? { decoy: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...(item.cardInfo ? { cardInfo: item.cardInfo } : {}), ...patch,
 });
 
 /** Show (or stop showing) a document in the decoy view. Stored inside the encrypted index. */
