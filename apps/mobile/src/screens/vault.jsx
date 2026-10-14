@@ -7,6 +7,8 @@ import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } 
 import * as S from "../core/state.js";
 import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
+import { CardView } from "./cards.jsx";
+import { BRANDS, expiryStatus, showExpiry } from "@humid/cards";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 
 export function Vault() {
@@ -57,6 +59,7 @@ export function Vault() {
           <h3>Your vault is empty</h3>
           <p>Scan your license or passport, or add any document. It's sealed on this phone before it goes anywhere.</p>
           {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>}
+          {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}><Icon name="card" />Add a payment card</button>}
           {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>}
         </div>
       )}
@@ -74,8 +77,24 @@ export function Vault() {
   );
 }
 
+const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+
 function ItemRow({ item }) {
   const cat = categoryOf(item.category);
+  const card = item.cardInfo;
+  if (card) {
+    const cs = expiryStatus(card.expiry);
+    return (
+      <button class="item" onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+        <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
+        <span style={{ minWidth: 0 }}>
+          <div class="name">{item.name}</div>
+          <div class="meta">{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
+        </span>
+        <span class="end"><Icon name="chevron" /></span>
+      </button>
+    );
+  }
   const id = item.idInfo;
   const st = id ? idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays) : null;
   return (
@@ -180,6 +199,11 @@ export function AddSheet() {
           <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
             <span class="ico"><Icon name="idcard" /></span>
             <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the chip where there is one.</span></span>
+            <Icon name="chevron" />
+          </button>
+          <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
+            <span class="ico"><Icon name="card" /></span>
+            <span><strong>Add a payment card</strong><span>Credit or debit. Scan the front, tap it, or type it. Never the PIN.</span></span>
             <Icon name="chevron" />
           </button>
           <div class="source" style={{ marginTop: 10 }}>
@@ -316,6 +340,16 @@ export function Viewer() {
   if (!v) return null;
   const isImg = v.type.startsWith("image/");
   const isPdf = v.type === "application/pdf";
+  if (v.cardRecord) return (
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+      <header>
+        <button class="icon-btn" aria-label="Close and wipe" onClick={closeViewer}><Icon name="x" /></button>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+      </header>
+      <div class="body id-body"><CardView record={v.cardRecord} /></div>
+      <div class="wipe">Closing wipes the decrypted card from memory.</div>
+    </div>
+  );
   if (v.idRecord) return (
     <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
       <header>
