@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/target
+**/gen
+apps/mobile/src-tauri
+plugins
+!plugins/humid-gate/Cargo.toml
+!plugins/humid-nfc/Cargo.toml
+.git
+tests/fixtures

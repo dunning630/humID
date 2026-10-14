@@ -1,19 +1,27 @@
 name: Release apps
 
-# Build installable apps. Choose the platforms to ship; each platform builds,
-# signs and uploads on its own, so shipping a Windows fix never rebuilds iOS.
+# Build installable HumID apps. Pick the platforms; each builds, signs (when
+# secrets exist) and uploads on its own runner.
 #
-#   Actions > Release apps > Run workflow > platforms: "windows"   (or "all", or "ios,android")
+#   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
+#   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
+#   Every run also leaves one artifact, HumID-<version>-<server>: a "HumID <version>" folder
+#   with a folder per app (Android, iPhone, Mac, Windows, Linux, Windows Server).
 #
-# A pushed tag app-vX.Y.Z builds all five and attaches them to a GitHub release.
+# HumID Server for Windows rides along: platforms "server-windows" builds the
+# server zip on Windows, installs and smoke-tests it, and with "Publish" ticked
+# creates its own release (tag server-win-v<version>). See server-windows.yml.
 #
-# Signing is picked up from repository secrets when present; without them the
-# job still produces unsigned builds (Linux, Windows, Android APK) or a
-# compile-only check (macOS needs signing for Touch ID; iOS needs it to build).
-#   macOS + iOS:  APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-#                 APPLE_TEAM_ID, APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_KEY_P8 (base64)
-#   Android:      ANDROID_KEYSTORE (base64 .jks), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS
-#   Windows:      WINDOWS_CERTIFICATE (base64 .pfx), WINDOWS_CERTIFICATE_PASSWORD
+# Which vault server the apps talk to (repository variables, Settings > Secrets and variables > Actions > Variables,
+# or the server_url / server_kid boxes when you run it by hand, which win over the variables):
+#   HUMID_SERVER_URL   e.g. https://vault.humidsecure.ai
+#   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh or `humid status`) — pins it in the app
+#
+# Signing secrets (optional; without them you still get installable test builds where the platform allows):
+#   macOS + iOS: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#                APPLE_TEAM_ID, APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_KEY_P8 (base64)
+#   Android:     ANDROID_KEYSTORE (base64 .jks), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS
+#   Windows:     WINDOWS_CERTIFICATE (base64 .pfx), WINDOWS_CERTIFICATE_PASSWORD
 
 on:
   push:
@@ -21,9 +29,25 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Comma-separated: ios,android,macos,windows,linux — or all"
-        default: all
+        description: "Comma-separated: ios,android,macos,windows,linux — or all — and/or server-windows"
+        default: android
         required: true
+      publish_server:
+        description: "With server-windows: publish it as a release (tag server-win-v<version>)"
+        type: boolean
+        default: false
+      server_url:
+        description: "Vault server the apps talk to, e.g. https://pd-cc.tail1234.ts.net (blank = the HUMID_SERVER_URL variable)"
+        required: false
+        default: ""
+      server_kid:
+        description: "That server's 64-hex key id from `humid status` (blank = the HUMID_SERVER_KID variable)"
+        required: false
+        default: ""
+      simulate:
+        description: "Simulation build: the vault server runs inside the app (no server needed; real biometric checks)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -33,22 +57,38 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      anyApps: ${{ steps.m.outputs.anyApps }}
+      server: ${{ steps.m.outputs.server }}
     steps:
       - id: m
         run: |
           WANT="${{ github.event.inputs.platforms || 'all' }}"
-          [ "$WANT" = "all" ] && WANT="ios,android,macos,windows,linux"
+          WANT="${WANT/all/ios,android,macos,windows,linux}"
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
           import json, sys
           runners = {"ios": "macos-14", "macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
           want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
-          bad = [p for p in want if p not in runners]
+          server = "server-windows" in want
+          apps = [p for p in want if p != "server-windows"]
+          bad = [p for p in apps if p not in runners]
           if bad: sys.exit(f"Unknown platform(s): {bad}")
-          print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in want]}))
+          print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in apps]}))
+          print("anyApps=" + json.dumps(bool(apps)))
+          print("server=" + json.dumps(server))
           EOF
+
+  server-windows:
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
+    uses: ./.github/workflows/server-windows.yml
+    with:
+      publish: ${{ inputs.publish_server == true }}
+    permissions:
+      contents: write
 
   build:
     needs: plan
+    if: needs.plan.outputs.anyApps == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
@@ -57,12 +97,26 @@ jobs:
       HAS_APPLE: ${{ secrets.APPLE_CERTIFICATE != '' }}
       HAS_ANDROID_KEY: ${{ secrets.ANDROID_KEYSTORE != '' }}
       HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+      HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
+      HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
+      HUMID_SIMULATE: ${{ inputs.simulate == true && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm test
+        env: { NODE_NO_WARNINGS: "1" }
+      - name: Server the app will use
+        shell: bash
+        run: |
+          if [ -z "$HUMID_SERVER_URL" ]; then
+            echo "::warning::HUMID_SERVER_URL is not set; the app will need a server URL. Set it under Settings > Secrets and variables > Actions > Variables."
+          else
+            if ! [[ "$HUMID_SERVER_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then echo "::error::server URL must be https://host with no path, got: $HUMID_SERVER_URL"; exit 1; fi
+            if [ -n "$HUMID_SERVER_KID" ] && ! [[ "$HUMID_SERVER_KID" =~ ^[0-9a-fA-F]{64}$ ]]; then echo "::error::server key id must be 64 hex characters"; exit 1; fi
+            echo "Building for $HUMID_SERVER_URL (pinned key: ${HUMID_SERVER_KID:-trust on first use})"
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -72,7 +126,7 @@ jobs:
              || matrix.platform == 'android' && 'aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android'
              || '' }}
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: shell/src-tauri }
+        with: { workspaces: apps/mobile/src-tauri }
 
       # ---------------- Linux ----------------
       - name: Linux · system libraries
@@ -91,27 +145,26 @@ jobs:
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WINDOWS_CERTIFICATE }}"))
           $pw = ConvertTo-SecureString "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" -AsPlainText -Force
           $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
-          $conf = Get-Content shell/src-tauri/tauri.conf.json | ConvertFrom-Json
+          $conf = Get-Content apps/mobile/src-tauri/tauri.conf.json | ConvertFrom-Json
           $conf.bundle.windows | Add-Member certificateThumbprint $cert.Thumbprint -Force
           $conf.bundle.windows | Add-Member digestAlgorithm "sha256" -Force
           $conf.bundle.windows | Add-Member timestampUrl "http://timestamp.digicert.com" -Force
-          $conf | ConvertTo-Json -Depth 20 | Set-Content shell/src-tauri/tauri.conf.json
+          $conf | ConvertTo-Json -Depth 20 | Set-Content apps/mobile/src-tauri/tauri.conf.json
       - name: Windows · build .msi and setup .exe
         if: matrix.platform == 'windows'
         run: npm run tauri -- build
 
-      # ---------------- macOS & iOS (signing) ----------------
+      # ---------------- macOS & iOS ----------------
       - name: Apple · keychain entitlement team id
         if: (matrix.platform == 'macos' || matrix.platform == 'ios') && env.HAS_APPLE == 'true'
-        run: sed -i '' "s/TEAMID/${{ secrets.APPLE_TEAM_ID }}/" shell/src-tauri/Entitlements.plist
+        run: sed -i '' "s/TEAMID/${{ secrets.APPLE_TEAM_ID }}/" apps/mobile/src-tauri/Entitlements.plist
       - name: Apple · API key file
         if: (matrix.platform == 'macos' || matrix.platform == 'ios') && env.HAS_APPLE == 'true'
         run: |
           mkdir -p ~/private_keys
           echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 --decode > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
           echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8" >> "$GITHUB_ENV"
-
-      - name: macOS · universal signed + notarised .app/.dmg
+      - name: macOS · universal signed + notarised .dmg
         if: matrix.platform == 'macos' && env.HAS_APPLE == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -121,68 +174,103 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: npm run tauri -- build --target universal-apple-darwin
-      - name: macOS · compile check (no signing secrets; Touch ID needs a signed build)
+      - name: macOS · unsigned build (Touch ID needs a signed build)
         if: matrix.platform == 'macos' && env.HAS_APPLE != 'true'
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app --no-sign
-
       - name: iOS · generate Xcode project
         if: matrix.platform == 'ios'
         run: npm run tauri -- ios init --ci
-      - name: iOS · signed .ipa for App Store Connect / TestFlight
+      - name: iOS · App Attest entitlement (servers verify each phone's liveness key with it)
+        if: matrix.platform == 'ios'
+        run: |
+          ENT=$(find apps/mobile/src-tauri/gen/apple -name '*.entitlements' -not -path '*/build/*' | head -1)
+          if [ -z "$ENT" ]; then echo "::error::no iOS .entitlements file after ios init"; exit 1; fi
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.devicecheck.appattest-environment" "$ENT" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.devicecheck.appattest-environment string production" "$ENT"
+          echo "App Attest (production) added to $ENT"
+          # Reading passport / ID chips (the App ID needs the NFC Tag Reading capability).
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.nfc.readersession.formats" "$ENT" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.nfc.readersession.formats array" "$ENT"
+          /usr/libexec/PlistBuddy -c "Add :com.apple.developer.nfc.readersession.formats:0 string TAG" "$ENT"
+          echo "NFC tag reading added to $ENT"
+      - name: iOS · signed .ipa for TestFlight / App Store Connect
         if: matrix.platform == 'ios' && env.HAS_APPLE == 'true'
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: npm run tauri -- ios build --export-method app-store-connect
-      - name: iOS · compile check (no signing secrets)
+      - name: iOS · compile check (no Apple signing yet)
         if: matrix.platform == 'ios' && env.HAS_APPLE != 'true'
-        working-directory: shell/src-tauri
+        working-directory: apps/mobile/src-tauri
         run: cargo build --release --target aarch64-apple-ios --lib
 
       # ---------------- Android ----------------
+      # The runner's disk is too small for the NDK plus four Android Rust targets: free the
+      # toolchains Android doesn't use (about 25 GB) before building.
+      - name: Android · free disk space
+        if: matrix.platform == 'android'
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/local/share/powershell \
+            /usr/local/lib/node_modules /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy /usr/share/swift || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h / | tail -1
       - name: Android · Java 17
         if: matrix.platform == 'android'
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      - name: Android · SDK + NDK
-        if: matrix.platform == 'android'
-        uses: android-actions/setup-android@v3
-      - name: Android · NDK
+      - name: Android · SDK (preinstalled on GitHub's Ubuntu runners) and NDK
         if: matrix.platform == 'android'
         run: |
-          sdkmanager "ndk;27.2.12479018"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKM" || { echo "::error::no Android SDK on this runner ($SDK)"; exit 1; }
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
       - name: Android · generate Gradle project
         if: matrix.platform == 'android'
         run: npm run tauri -- android init --ci
       - name: Android · release signing config
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
         run: |
-          APP=shell/src-tauri/gen/android/app
+          APP=apps/mobile/src-tauri/gen/android/app
           echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > $APP/release.jks
-          cat > shell/src-tauri/gen/android/keystore.properties <<EOF
+          cat > apps/mobile/src-tauri/gen/android/keystore.properties <<EOF
           storeFile=release.jks
           storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
           keyPassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           EOF
           python3 tools/android-signing.py $APP/build.gradle.kts
-      - name: Android · build .apk and .aab
-        if: matrix.platform == 'android'
+      - name: Android · signed release .apk + .aab
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
         run: npm run tauri -- android build --apk --aab
+      - name: Android · stable test signing key (so each test build installs over the last)
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
+        run: mkdir -p ~/.android && cp tools/android-test.keystore ~/.android/debug.keystore
+      - name: Android · installable test .apk (debug-signed, sideload)
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
+        # 64-bit ARM only (every phone on Android 11+), without Rust debug info: small enough to
+        # fit the runner and quick to download. The signed release build above covers every ABI.
+        env: { CARGO_PROFILE_DEV_DEBUG: "0" }
+        run: npm run tauri -- android build --apk --debug --target aarch64
 
       # ---------------- collect ----------------
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p out
-          find shell/src-tauri/target shell/src-tauri/gen -type f \
+          find apps/mobile/src-tauri/target apps/mobile/src-tauri/gen -type f \
             \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' \
                -o -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.aab' \) \
             -not -path '*/deps/*' -exec cp {} out/ \; 2>/dev/null || true
           if [ -z "$(ls -A out)" ] && [ "${{ matrix.platform }}" = "macos" ]; then
-            ( cd shell/src-tauri/target && find . -name 'HumID.app' -maxdepth 6 -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
+            ( cd apps/mobile/src-tauri/target && find . -maxdepth 6 -name 'HumID.app' -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
           fi
           ls -la out
       - uses: actions/upload-artifact@v4
@@ -190,6 +278,29 @@ jobs:
           name: humid-${{ matrix.platform }}
           path: out/*
           if-no-files-found: warn
+
+  # Everything this run built, as one folder per version with a folder per app
+  # (Android/, iPhone/, Mac/, Windows/, Linux/, Windows Server/), a README naming
+  # the server the apps are pinned to, and checksums. Download it from the run's
+  # Artifacts: HumID-<version>-<server>.
+  bundle:
+    needs: [plan, build, server-windows]
+    if: always() && needs.plan.result == 'success' # bundle whatever built, even if one platform failed
+    runs-on: ubuntu-22.04
+    env:
+      HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
+      HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: One folder per app
+        id: bundle
+        run: node tools/bundle-release.mjs artifacts bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: bundle/
 
   publish:
     needs: build

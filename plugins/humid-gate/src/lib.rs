@@ -1,19 +1,24 @@
 //! tauri-plugin-humid-gate — the native biometric interrupt for HumID.
 //!
 //! One contract, five implementations. Each releases a 32-byte secret only
-//! after the operating system has verified the user biometrically:
+//! after a LIVE biometric check (face or fingerprint). No implementation
+//! accepts a PIN, password or passcode instead.
 //!
-//! | Platform | Key store                                   | Assurance |
-//! |----------|---------------------------------------------|-----------|
-//! | iOS      | Keychain, `.biometryCurrentSet` (Swift)     | hardware  |
-//! | Android  | Keystore AES key, BIOMETRIC_STRONG (Kotlin) | hardware  |
-//! | macOS    | Keychain, `.biometryCurrentSet`             | hardware  |
-//! | Windows  | Windows Hello KeyCredential                 | hardware  |
-//! | Linux    | fprintd match + Secret Service keyring      | os        |
+//! | Platform | Secret                               | Liveness key, proof               | Assurance |
+//! |----------|--------------------------------------|-----------------------------------|-----------|
+//! | iOS      | Keychain, `.biometryCurrentSet`      | Secure Enclave P-256, App Attest  | hardware  |
+//! | Android  | Keystore AES, BIOMETRIC_STRONG       | Keystore P-256 per use, key attestation | hardware |
+//! | macOS    | Keychain, `.biometryCurrentSet`      | none                              | os        |
+//! | Windows  | DPAPI, released after a WinBio match | none                              | os        |
+//! | Linux    | Secret Service, after an fprintd match | none                            | os        |
 //!
-//! The plugin is versioned on its own (`humid-gate@1`). The JS side
+//! On phones the liveness key signs each request's challenge inside the same
+//! check that releases the secret, and is attested to the server when a
+//! device is added, so the server can tell a real live check from a bot.
+//!
+//! The plugin is versioned on its own (`humid-gate@2`). The JS side
 //! (`@humid/gate`, adapter "native") depends on the command names and the
-//! response shapes in `models.rs`, nothing else.
+//! request / response shapes in `models.rs`, nothing else.
 
 use tauri::{
     plugin::{Builder, TauriPlugin},

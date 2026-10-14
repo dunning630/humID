@@ -1,0 +1,76 @@
+// Native gate: talks to tauri-plugin-humid-gate (humid-gate@2), which accepts
+// only a live biometric on each platform:
+//   iOS      Face ID / Touch ID. Secret in the Keychain (.biometryCurrentSet);
+//            liveness key in the Secure Enclave; App Attest vouches for it.
+//   Android  Class 3 fingerprint or face. Liveness key in the Keystore
+//            (StrongBox if present), biometric-only and per use; key attestation.
+//   macOS    Touch ID, Keychain .biometryCurrentSet. No liveness key yet.
+//   Windows  Fingerprint via the Windows Biometric Framework (not Hello, which
+//            accepts a PIN). No liveness key.
+//   Linux    Fingerprint via fprintd. No liveness key.
+
+import { fromB64, toB64 } from "@humid/codec";
+import { GATE_CONTRACT, ASSURANCE, CANCELLED, interruptRecord } from "../contract.js";
+
+const invoke = (cmd, args) => globalThis.__TAURI_INTERNALS__.invoke(`plugin:humid-gate|${cmd}`, args);
+
+export const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
+
+const NOT_APP = "HumID checks your face or fingerprint with your phone's secure chip, so it works only in the HumID app for iPhone and Android.";
+
+function mapError(e) {
+  const msg = typeof e === "string" ? e : e?.message || String(e);
+  if (/cancel/i.test(msg)) return new Error(CANCELLED);
+  return new Error(msg);
+}
+
+const b64 = (b) => (b ? toB64(b) : null);
+function live(l) {
+  if (!l) return null;
+  const a = l.attestation;
+  return {
+    pub: l.pub ? fromB64(l.pub) : null,
+    sig: fromB64(l.sig),
+    ...(a ? { attestation: a.kind === "android-key" ? { kind: a.kind, chain: a.chain.map(fromB64) } : { kind: a.kind, object: fromB64(a.object) } } : {}),
+  };
+}
+
+export const nativeAdapter = {
+  id: "native",
+  contract: GATE_CONTRACT,
+
+  async probe() {
+    const off = { available: false, method: "native", assurance: ASSURANCE.NONE, label: "Face or fingerprint", modalities: [], proof: null };
+    if (!inTauri()) return { ...off, reason: NOT_APP };
+    try { return { modalities: [], proof: null, ...(await invoke("probe")) }; }
+    catch (e) { return { ...off, reason: mapError(e).message }; }
+  },
+
+  async enroll({ prompt, challenge, attest } = {}) {
+    try {
+      const r = await invoke("enroll", { prompt: prompt || "Bind HumID to your face or fingerprint", challenge: b64(challenge), attest: b64(attest) });
+      return {
+        handle: r.handle,
+        bindingId: r.handle.id,
+        secret: fromB64(r.secret),
+        interrupt: interruptRecord(r.method, "enroll", r.assurance, r.detail || {}),
+        live: live(r.live),
+      };
+    } catch (e) { throw mapError(e); }
+  },
+
+  async release(handle, { purpose, prompt, challenge, attest } = {}) {
+    try {
+      const r = await invoke("release", { handle, prompt: prompt || "Confirm it's you", challenge: b64(challenge), attest: b64(attest) });
+      return {
+        secret: fromB64(r.secret),
+        interrupt: interruptRecord(r.method, purpose, r.assurance, r.detail || {}),
+        live: live(r.live),
+      };
+    } catch (e) { throw mapError(e); }
+  },
+
+  async forget(handle) {
+    try { await invoke("forget", { handle }); } catch { /* best effort */ }
+  },
+};

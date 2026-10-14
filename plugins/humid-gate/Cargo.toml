@@ -1,7 +1,7 @@
 [package]
 name = "tauri-plugin-humid-gate"
-version = "1.0.0"
-description = "HumID biometric interrupt: releases a 32-byte secret only after an OS biometric check."
+version = "2.0.0"
+description = "HumID biological interrupt: releases a 32-byte secret only after a live face or fingerprint check; on phones a hardware liveness key signs each check."
 edition = "2021"
 rust-version = "1.77"
 links = "tauri-plugin-humid-gate"
@@ -24,14 +24,7 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-local-authentication = { version = "0.3", features = ["LAContext"] }
 
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
-  "Foundation",
-  "Security_Credentials",
-  "Security_Cryptography",
-  "Storage_Streams",
-] }
-windows-future = "0.3"
+# Windows: WinBio, DPAPI and token calls are declared directly in src/desktop/windows.rs.
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }

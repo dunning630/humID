@@ -1,49 +1,60 @@
 name: CI
 
-# Every push / PR: test the modules, then compile only the platforms the
-# change actually touches (tools/affected.mjs decides).
+# Every push / PR:
+#   1. unit, protocol and end-to-end tests (all services in-process)
+#   2. compile only the app platforms the change touches
+#   3. build only the service images the change touches, then boot the whole
+#      stack with docker compose and run the smoke test against it over TLS
+#   4. build HumID Server for Windows, install it on a Windows runner from the
+#      zip (as a person would), smoke-test, back up, restore, update, uninstall
+# tools/affected.mjs decides what "touches" means.
 
 on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch: # manual run: compiles all five platforms
+  workflow_dispatch: # manual run: everything
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  modules:
+  test:
     runs-on: ubuntu-22.04
     outputs:
-      matrix: ${{ steps.affected.outputs.matrix }}
-      any: ${{ steps.affected.outputs.any }}
+      apps: ${{ steps.affected.outputs.apps }}
+      services: ${{ steps.affected.outputs.services }}
+      anyApps: ${{ steps.affected.outputs.anyApps }}
+      anyServices: ${{ steps.affected.outputs.anyServices }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Module tests (incl. compatibility with the original web app)
-        run: npm test
-      - name: Bundle web layer + module contract check
-        run: npm run build:web
-      - name: Work out affected platforms
+      - name: Tests (crypto compatibility, HTP/1 protocol, services end to end)
+        run: npm test && npm run test:e2e
+        env: { NODE_NO_WARNINGS: "1" }
+      - name: Build the app bundle (module contract check included)
+        run: npm run build:app
+      - name: Work out what this change affects
         id: affected
         run: |
           BASE=${{ github.event_name == 'workflow_dispatch' && 'none' || github.event.pull_request.base.sha || 'HEAD~1' }}
           OUT=$(node tools/affected.mjs "$BASE")
-          echo "$OUT"
-          echo "matrix=$(echo "$OUT" | jq -c .matrix)" >> "$GITHUB_OUTPUT"
-          echo "any=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
+          echo "$OUT" | jq .
+          echo "apps=$(echo "$OUT" | jq -c .appMatrix)" >> "$GITHUB_OUTPUT"
+          echo "services=$(echo "$OUT" | jq -c .serviceMatrix)" >> "$GITHUB_OUTPUT"
+          echo "anyApps=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
+          echo "anyServices=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
 
-  compile:
-    needs: modules
-    if: needs.modules.outputs.any == 'true'
+  app:
+    needs: test
+    if: needs.test.outputs.anyApps == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.modules.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.test.outputs.apps) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +65,7 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || matrix.platform == 'android' && 'aarch64-linux-android' || '' }}
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: shell/src-tauri }
+        with: { workspaces: apps/mobile/src-tauri }
       - name: Linux system libraries
         if: matrix.platform == 'linux' || matrix.platform == 'android'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev
@@ -66,20 +77,199 @@ jobs:
       - name: Android NDK toolchain on PATH
         if: matrix.platform == 'android'
         run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - run: npm run build:web
+      - run: npm run build:app
       - name: Compile (desktop)
         if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
-        working-directory: shell/src-tauri
+        working-directory: apps/mobile/src-tauri
         shell: bash
-        run: ../../tools/ci-cargo.sh build
+        run: ../../../tools/ci-cargo.sh build
       - name: Compile (iOS library)
         if: matrix.platform == 'ios'
-        working-directory: shell/src-tauri
-        run: ../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
+        working-directory: apps/mobile/src-tauri
+        run: ../../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
       - name: Compile (Android library)
         if: matrix.platform == 'android'
-        working-directory: shell/src-tauri
+        working-directory: apps/mobile/src-tauri
         env:
           CC_aarch64_linux_android: aarch64-linux-android24-clang
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
-        run: ../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
+        run: ../../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
+
+  # The chip reader end to end through real native code: the shared ICAO 9303 reader drives
+  # tauri-plugin-humid-nfc's PC/SC transport, through pcscd, to a simulated passport chip in a
+  # virtual reader (vsmartcard vpcd). Then the server's own checks verify what was read.
+  chip-reader:
+    needs: test
+    runs-on: ubuntu-24.04 # pcsc-lite 2 (--disable-polkit) and vsmartcard 0.9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: plugins/humid-nfc }
+      - name: PC/SC daemon, virtual reader, Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libpcsclite-dev pcscd vsmartcard-vpcd
+      - name: Build the reader bridge (the plugin's real PC/SC code, without Tauri)
+        working-directory: plugins/humid-nfc
+        run: ../../tools/ci-cargo.sh build --example apdu-bridge --features pcsc-linux
+      - name: Start pcscd with the virtual reader
+        run: |
+          sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+          sudo pcscd --foreground --disable-polkit > pcscd.log 2>&1 &
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/35963) 2>/dev/null && exit 0; sleep 0.5; done
+          echo "::error::pcscd / vpcd didn't start: $(tail -20 pcscd.log | tr '\n' ' ')"; exit 1
+      - name: Read a chip through the native transport
+        run: |
+          node --test tests/e2e/pcsc.test.js > pcsc-test.log 2>&1 && exit 0
+          cat pcsc-test.log
+          echo "::error::$(grep -E 'error:|Error|expected|actual' pcsc-test.log | head -12 | tr '\n' ' ') pcscd: $(tail -8 pcscd.log | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", HUMID_REQUIRE_PCSC: "1" }
+
+  images:
+    needs: test
+    if: needs.test.outputs.anyServices == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.test.outputs.services) }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build humid-${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service == 'edge' && 'services/edge/Dockerfile' || 'services/Dockerfile' }}
+          build-args: SERVICE=${{ matrix.service }}
+          tags: humid-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          outputs: type=docker,dest=/tmp/humid-${{ matrix.service }}.tar
+      - uses: actions/upload-artifact@v4
+        with: { name: "image-${{ matrix.service }}", path: "/tmp/humid-${{ matrix.service }}.tar", retention-days: 1 }
+
+  stack:
+    needs: [test, images]
+    if: needs.test.outputs.anyServices == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with: { pattern: "image-*", path: /tmp/images, merge-multiple: true }
+      - name: Load images built in this run; build the rest
+        working-directory: deploy
+        run: |
+          for t in /tmp/images/*.tar; do docker load -i "$t"; done
+          for s in gateway identity vault ledger recovery edge; do
+            if docker image inspect "humid-$s:ci" >/dev/null 2>&1; then docker tag "humid-$s:ci" "local/humid-$s:ci"; fi
+          done
+          node ../services/gateway/src/server.js keygen 2>/dev/null > .env || true
+          echo "HUMID_DOMAIN=localhost" >> .env
+          export HUMID_REGISTRY=local HUMID_VERSION=ci
+          missing=$(for s in gateway identity vault ledger recovery edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
+          if [ -n "$missing" ]; then docker compose build --pull $missing; fi
+      - name: Boot the stack (docker compose)
+        working-directory: deploy
+        env: { HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: |
+          docker compose up -d
+          for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
+          docker compose ps
+      - name: Smoke test over TLS + HTP/1 (default policy refuses devices without hardware proof)
+        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1" } # Caddy's local CA in CI only
+        run: |
+          curl -sk https://localhost/ | grep -q '<div id="app">'
+          node tests/smoke.mjs https://localhost
+      - name: Smoke test, full flow (gateway switched to HUMID_DEVICE_POLICY=biometric)
+        env: { NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_NO_WARNINGS: "1", HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: |
+          (cd deploy && HUMID_DEVICE_POLICY=biometric docker compose up -d gateway)
+          for i in $(seq 1 40); do curl -skf https://localhost/healthz >/dev/null && break; sleep 3; done
+          node tests/smoke.mjs https://localhost
+      - name: Logs on failure
+        if: failure()
+        working-directory: deploy
+        env: { HUMID_REGISTRY: local, HUMID_VERSION: ci }
+        run: docker compose logs --no-color | tail -200
+
+  windows-server:
+    needs: test
+    if: needs.test.outputs.anyServices == 'true'
+    runs-on: windows-latest
+    env:
+      HUMID: C:\Program Files\HumID Server\humid.ps1
+      NODE_NO_WARNINGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build HumID Server for Windows
+        run: node deploy/windows/build.mjs --zip
+      - name: Install from the zip (Windows PowerShell 5.1; fetches Node.js from nodejs.org, checksum verified)
+        shell: cmd
+        run: |
+          powershell -NoProfile -Command "Expand-Archive -Path (Get-ChildItem deploy\windows\out\HumID-Server-Windows-*.zip).FullName -DestinationPath $env:RUNNER_TEMP\pkg"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%RUNNER_TEMP%\pkg\HumID-Server\humid.ps1" install -Quiet
+      - name: Runs as LOCAL SERVICE; data readable only by admins and the server
+        shell: pwsh
+        run: |
+          $t = Get-ScheduledTask -TaskName 'HumID Server'
+          $t.Principal.UserId
+          if ($t.Principal.UserId -notmatch 'LOCAL ?SERVICE') { throw "task runs as $($t.Principal.UserId)" }
+          icacls C:\ProgramData\HumID
+          $acl = (Get-Acl C:\ProgramData\HumID).Access | ForEach-Object { $_.IdentityReference.Value }
+          if ($acl -match 'Users|Everyone') { throw "data folder is readable by: $($acl -join ', ')" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID status
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Smoke test, default policy (refuses devices without hardware proof)
+        run: node tests/smoke.mjs http://127.0.0.1:8480
+      - name: Smoke test, full flow (humid set HUMID_DEVICE_POLICY=biometric)
+        shell: pwsh
+        run: |
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID set HUMID_DEVICE_POLICY=biometric
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          if ($after -ne $kid) { throw "server identity changed on restart" }
+      - name: Backup, restore, and update in place keep the server's identity
+        shell: pwsh
+        run: |
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path "$env:RUNNER_TEMP\b.zip"
+          if ($LASTEXITCODE -or -not (Test-Path "$env:RUNNER_TEMP\b.zip")) { throw 'backup failed' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$env:RUNNER_TEMP\b.zip" -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          if ($after -ne $kid) { throw "server identity changed" }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Uninstall removes the task and, with -RemoveData, the data
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Get-ScheduledTask -TaskName 'HumID Server' -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          if (Test-Path 'C:\Program Files\HumID Server') { throw 'program folder still there' }
+          if (Test-Path 'C:\ProgramData\HumID') { throw 'data still there' }
+      - name: Log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ScheduledTaskInfo -TaskName 'HumID Server' -ErrorAction SilentlyContinue | Format-List
+          Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HumID-Server-Windows
+          path: deploy/windows/out/HumID-Server-Windows-*.zip

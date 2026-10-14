@@ -1,0 +1,20 @@
+{
+  "name": "@humid/htp",
+  "version": "1.1.0",
+  "description": "HTP/1 — HumID Transit Protocol. Hybrid post-quantum session layer carried inside TLS: handshake, encrypted framing, replay protection, biometric-bound proofs.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./server": "./src/server.js"
+  },
+  "humid": {
+    "provides": { "htp": 1 }
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@noble/post-quantum": "0.7.1"
+  },
+  "license": "UNLICENSED"
+}
