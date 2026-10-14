@@ -8,6 +8,7 @@ import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksShee
 import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
 import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
+import { IdSheet } from "./screens/ids.jsx";
 import { Activity } from "./screens/activity.jsx";
 import { Security } from "./screens/security.jsx";
 import { Mark } from "./brand.jsx";
@@ -30,6 +31,7 @@ function App() {
           {S.tab.value === "security" && <Security />}
           <TabBar />
           {sheet?.type === "add" && <AddSheet />}
+          {sheet?.type === "id" && <IdSheet />}
           {sheet?.type === "item" && <ItemSheet key={sheet.id} />}
           <Viewer />
         </>

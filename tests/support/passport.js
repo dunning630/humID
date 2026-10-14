@@ -35,11 +35,13 @@ export function td3({ issuer = "UTO", surname = "ERIKSSON", given = "ANNA MARIA"
 /**
  * A chip. dsKind: "ec" | "rsa" | "pss" (how the document signer signs the SOD).
  * aaKind: "rsa" | "ec" | null (Active Authentication key in DG15, or none).
- * Returns { dg1, dg15, sod, mrz, answer(nonce) } — answer() is the chip signing a challenge.
+ * photo: a JPEG or JPEG 2000 image for DG2 (the holder's face), or null for none.
+ * Returns { dg1, dg2, dg15, sod, mrz, answer(nonce) } — answer() is the chip signing a challenge.
  */
-export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null } = {}) {
+export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null, photo = null } = {}) {
   const text = typeof mrz === "string" ? mrz : td3(mrz);
   const dg1 = tlv([0x61], tlv([0x5f, 0x1f], Buffer.from(text, "latin1")));
+  const dg2 = photo ? faceGroup(photo) : null;
 
   let aa = null, dg15 = null;
   if (aaKind === "rsa") aa = generateKeyPairSync("rsa", { modulusLength: 1024 });
@@ -49,7 +51,8 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
   const ds = dsKind === "ec" ? ecKeys("P-256") : generateKeyPairSync("rsa", { modulusLength: 2048 });
   const dsDer = certificate({ subject: "HumID Test Document Signer", issuer: csca.cn, publicKey: ds.publicKey, signingKey: csca.privateKey });
 
-  const hashes = [[1, dg1], ...(dg15 ? [[15, dg15]] : [])].map(([n, b]) => seq(int(n), octet(sha("sha256", tamper === "dg1" && n === 1 ? Buffer.from("x") : b))));
+  const hashes = [[1, dg1], ...(dg2 ? [[2, dg2]] : []), ...(dg15 ? [[15, dg15]] : [])]
+    .map(([n, b]) => seq(int(n), octet(sha("sha256", (tamper === "dg1" && n === 1) || (tamper === "dg2" && n === 2) ? Buffer.from("x") : b))));
   const lds = seq(int(0), seq(oid(OIDS.sha256)), seq(...hashes));
   const attrs = [
     seq(oid("1.2.840.113549.1.9.3"), set(oid("2.23.136.1.1.1"))),
@@ -80,5 +83,18 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
     return privateEncrypt({ key: aa.privateKey, padding: constants.RSA_NO_PADDING }, f);
   }
 
-  return { dg1, dg15, sod, mrz: text, answer };
+  return { dg1, dg2, dg15, sod, mrz: text, answer };
+}
+
+/** DG2: one face in a biometric information template, image in an ISO 19794-5 record. */
+function faceGroup(image) {
+  const img = Buffer.from(image);
+  const u32 = (n) => Buffer.from([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+  const facial = Buffer.concat([u32(20 + 12 + img.length), Buffer.from([0, 0]), Buffer.alloc(14)]); // face block length, no landmarks, defaults
+  const imageInfo = Buffer.from([1, 0, 0, 240, 0, 1, 44, 1, 0, 0, 0, 0]); // full frontal, 240 × 300 (approx), colour
+  const header = Buffer.concat([Buffer.from([0x46, 0x41, 0x43, 0, 0x30, 0x31, 0x30, 0]), u32(14 + facial.length + imageInfo.length + img.length), Buffer.from([0, 1])]);
+  const record = Buffer.concat([header, facial, imageInfo, img]);
+  const bht = tlv([0xa1], Buffer.concat([tlv([0x80], Buffer.from([1, 1])), tlv([0x87], Buffer.from([1, 1])), tlv([0x88], Buffer.from([0, 8]))]));
+  const template = tlv([0x7f, 0x61], Buffer.concat([tlv([0x02], Buffer.from([1])), tlv([0x7f, 0x60], Buffer.concat([bht, tlv([0x5f, 0x2e], record)]))]));
+  return tlv([0x75], template);
 }

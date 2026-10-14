@@ -1,5 +1,10 @@
 # HumID Server for Windows
 
+## 1.2.0
+
+- The web app it serves is HumID 1.4.0, with **Scan an ID**: driver's license barcodes, passport and ID card MRZs, and chip copies with the photo, sealed as one vault record. See docs/ID-SCANNING.md.
+- The local edge allows WebAssembly (`'wasm-unsafe-eval'` in the content security policy) for the document scanners, and serves `.wasm` as `application/wasm`.
+
 ## 1.1.0
 
 - Two-proof recovery: witnesses, ID chip anchor and seal card; any two, with waits set by the evidence (24 h with a station, 72 h with witnesses, 7 days for card + chip; doubled after a duress signal).

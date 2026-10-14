@@ -1,5 +1,6 @@
 // ICAO 9303 part 11 secure messaging: every command and answer after BAC or
-// PACE is encrypted (DO87) and MACed (DO8E) with session keys, and a send
+// PACE is encrypted (DO87, or DO85 for odd instructions such as READ BINARY
+// with a long offset) and MACed (DO8E) with session keys, and a send
 // sequence counter (SSC) makes each one unique, so nothing can be replayed,
 // reordered or altered between the phone and the chip.
 //
@@ -30,7 +31,10 @@ export class SecureMessaging {
   wrap({ cla, ins, p1, p2, data, le }) {
     increment(this.ssc);
     const header = Uint8Array.of(cla | 0x0c, ins, p1, p2);
-    const do87 = data && data.length ? tlv(0x87, concat(Uint8Array.of(1), this.encrypt(pad(data, this.block)))) : new Uint8Array(0);
+    // Odd instructions carry BER-TLV data: DO85, without the padding-indicator byte.
+    const do87 = !(data && data.length) ? new Uint8Array(0)
+      : ins & 1 ? tlv(0x85, this.encrypt(pad(data, this.block)))
+      : tlv(0x87, concat(Uint8Array.of(1), this.encrypt(pad(data, this.block))));
     const do97 = le != null ? tlv(0x97, le > 256 ? Uint8Array.of((le >> 8) & 255, le & 255) : Uint8Array.of(le === 256 ? 0 : le)) : new Uint8Array(0);
     const m = concat(pad(header, this.block), do87, do97);
     const do8e = tlv(0x8e, this.mac(m));
@@ -42,12 +46,12 @@ export class SecureMessaging {
     increment(this.ssc);
     if (!body.length) throw new ChipError("chip_refused", chipMessage(outerSw), outerSw);
     const t = readTlvs(body);
-    const do87 = t.get(0x87), do99 = t.get(0x99), do8e = t.get(0x8e);
+    const do87 = t.get(0x87), do85 = t.get(0x85), do99 = t.get(0x99), do8e = t.get(0x8e);
     if (!do99 || !do8e) throw new ChipError("bad_sm", "The chip's answer wasn't protected. Reading stopped.", outerSw);
-    const k = concat(do87 ? tlv(0x87, do87) : new Uint8Array(0), tlv(0x99, do99));
+    const k = concat(do87 ? tlv(0x87, do87) : do85 ? tlv(0x85, do85) : new Uint8Array(0), tlv(0x99, do99));
     if (!equal(this.mac(k), do8e)) throw new ChipError("bad_sm", "The chip's answer failed its integrity check. Reading stopped.", outerSw);
     const sw = (do99[0] << 8) | do99[1];
-    const data = do87 ? unpad(this.decrypt(do87.subarray(1))) : new Uint8Array(0);
+    const data = do87 ? unpad(this.decrypt(do87.subarray(1))) : do85 ? unpad(this.decrypt(do85)) : new Uint8Array(0);
     return { data, sw };
   }
 }
