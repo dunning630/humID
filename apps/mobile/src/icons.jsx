@@ -43,6 +43,11 @@ const P = {
   station: <><path d="M4 20h16M6 20V9l6-4 6 4v11" /><path d="M10 20v-5h4v5M9.5 11h5" /></>,
   siren: <><path d="M7 17v-5a5 5 0 0 1 10 0v5" /><path d="M5 17h14v3H5zM12 3v1.5M4.2 6.2l1 1M19.8 6.2l-1 1" /></>,
   globe: <><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5S9.7 5.9 12 3.5Z" /></>,
+  barcode: <><path d="M4 6v12M7 6v12M10.5 6v12M13 6v12M16.5 6v12M20 6v12" /><path d="M2.5 4h19M2.5 20h19" opacity=".35" /></>,
+  torch: <path d="M13 3 6.5 13H11l-1 8 6.5-10H12l1-8Z" />,
+  copy: <><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></>,
+  rotate: <><path d="M4.5 12a7.5 7.5 0 0 1 13-5.1L19.5 9" /><path d="M19.5 4.5V9H15" /><path d="M19.5 12a7.5 7.5 0 0 1-13 5.1L4.5 15" /><path d="M4.5 19.5V15H9" /></>,
+  nfc: <><path d="M8 7.5a6.5 6.5 0 0 1 0 9M11.5 5a10 10 0 0 1 0 14M15 3a13.5 13.5 0 0 1 0 18" /><circle cx="5" cy="12" r="1.2" /></>,
   wifi_off: <><path d="M4 4.5 20 19.5M8.5 15.5a5.5 5.5 0 0 1 6.3-.8M5 12.3a10 10 0 0 1 3.2-2M19 12.3a10 10 0 0 0-6.3-2.7" /><circle cx="12" cy="18.5" r="1" /></>,
 };
 
@@ -66,6 +71,7 @@ export const CATEGORIES = [
 export const categoryOf = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[5];
 
 export function kindIcon(type = "") {
+  if (type === "application/vnd.humid.id+json") return "idcard";
   if (type.startsWith("image/")) return "image";
   if (type === "application/pdf") return "pdf";
   if (type.startsWith("text/") || type === "application/json") return "text";

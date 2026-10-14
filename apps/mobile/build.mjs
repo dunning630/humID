@@ -8,7 +8,8 @@
 //       Leave HUMID_SERVER_URL empty for the web app (same origin).
 import * as esbuild from "esbuild";
 import { copyFile, mkdir, rm, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
@@ -18,7 +19,7 @@ const root = here("../../");
 
 // Module versions are stamped into the bundle, and module contracts are checked
 // so incompatible module releases can never ship together.
-const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api", "emrtd"];
+const mods = ["codec", "crypto", "gate", "store", "io", "htp", "audit", "recovery", "api", "emrtd", "idscan"];
 const manifests = [];
 const versions = {};
 for (const m of mods) {
@@ -74,6 +75,10 @@ const ctx = await esbuild.context({
   minify: !watch,
   sourcemap: watch ? "inline" : false,
   outdir: `${out}assets`,
+  // The scanning engines (Tesseract, zxing, JPEG 2000) load only when someone scans
+  // an ID, so they're split into chunks the main bundle imports on demand.
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
   loader: { ".woff2": "file" },
   assetNames: "[name]-[hash]",
   define: {
@@ -104,6 +109,30 @@ await writeFile(`${out}manifest.webmanifest`, JSON.stringify({
     { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
   ],
 }, null, 2));
+// Document scanning engines, loaded by the app only when someone scans an ID
+// (src/core/scan.js): Tesseract's worker and WebAssembly core with the MRZ model,
+// and zxing-cpp's barcode reader. Copied as files so nothing is fetched at run time.
+const MRZ_MODEL_SHA256 = "ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01";
+const mod = (p) => [here(`./node_modules/${p}`), `${root}node_modules/${p}`].find((x) => existsSync(x)) || (() => { throw new Error(`missing ${p}: run npm ci`); })();
+const model = await readFile(here("./vendor/ocr/mrz.traineddata"));
+if (createHash("sha256").update(model).digest("hex") !== MRZ_MODEL_SHA256) { console.error("vendor/ocr/mrz.traineddata doesn't match its recorded hash (see vendor/ocr/README.md)"); process.exit(1); }
+await mkdir(`${out}assets/ocr`, { recursive: true });
+await mkdir(`${out}assets/scan`, { recursive: true });
+await writeFile(`${out}assets/ocr/mrz.traineddata`, model);
+await copyFile(mod("tesseract.js/dist/worker.min.js"), `${out}assets/ocr/worker.min.js`);
+await copyFile(mod("tesseract.js-core/tesseract-core-lstm.js"), `${out}assets/ocr/tesseract-core-lstm.js`);
+await copyFile(mod("tesseract.js-core/tesseract-core-lstm.wasm"), `${out}assets/ocr/tesseract-core-lstm.wasm`);
+await copyFile(mod("zxing-wasm/dist/reader/zxing_reader.wasm"), `${out}assets/scan/zxing_reader.wasm`);
+const notice = (name, p) => { try { return `== ${name} ==\n\n${readFileSync(mod(p), "utf8")}`; } catch { return `== ${name} ==\n(see the package's license)`; } };
+await writeFile(`${out}assets/THIRD-PARTY-scan.txt`, [
+  "Document scanning in HumID uses the following, under their licenses.",
+  `== MRZ model: DoubangoTelecom/tesseractMRZ (tessdata_fast/mrz.traineddata) ==\n\n${await readFile(here("./vendor/ocr/LICENSE-tesseractMRZ.txt"), "utf8")}`,
+  notice("Tesseract.js (worker)", "tesseract.js/LICENSE.md"),
+  notice("Tesseract.js core (Tesseract OCR and Leptonica, compiled to WebAssembly)", "tesseract.js-core/LICENSE"),
+  notice("zxing-wasm (zxing-cpp compiled to WebAssembly; zxing-cpp is Apache-2.0)", "zxing-wasm/LICENSE"),
+  notice("jpeg2000 (JPEG 2000 decoder from Mozilla PDF.js)", "jpeg2000/LICENCE"),
+].join("\n\n"));
+
 const icons = here("./src-tauri/icons/");
 const iconMap = { "icon-192.png": "128x128@2x.png", "icon-512.png": "icon.png", "apple-touch-icon.png": "128x128@2x.png" };
 for (const [to, from] of Object.entries(iconMap)) if (existsSync(icons + from)) await copyFile(icons + from, `${out}icons/${to}`);

@@ -41,6 +41,16 @@ it until that review and the items under *Before real data* are done.
   PACE with Integrated or Chip Authentication Mapping, aren't supported yet;
   chips without Active Authentication count only at a station. A server with
   no CSCA certificates configured can't use ID anchors.
+- **A scanned ID is a copy, not a proof.** "Scan an ID" stores what the
+  document says. A license barcode and a photographed MRZ aren't signed, so
+  they show what's printed, not that the card is genuine. A chip copy is
+  checked against the issuing country's signed hashes, but the signer's
+  certificate is only checked against a country CSCA when the chip anchors an
+  identity on the server. See [ID-SCANNING.md](ID-SCANNING.md).
+- **Document images are parsed by WebAssembly engines.** zxing-cpp and
+  Tesseract read camera frames and chosen photos inside the app's sandbox,
+  which needs `'wasm-unsafe-eval'` in the content security policy (WebAssembly
+  only; JavaScript `eval` stays blocked).
 - **Stations are trusted operators.** Their face check is a human check, and
   their legal obligations (BIPA, GDPR) are theirs to meet.
 - **iPhone attestation proves the app, not the key's settings.** App Attest

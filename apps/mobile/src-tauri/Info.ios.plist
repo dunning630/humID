@@ -5,12 +5,12 @@
   <key>NSFaceIDUsageDescription</key>
   <string>HumID uses Face ID for the biological interrupt that unlocks your keys each time you open, seal or decrypt.</string>
   <key>NFCReaderUsageDescription</key>
-  <string>HumID reads your passport or ID card chip to check, with the issuing country's signature, that it's really you. Your photo is never read.</string>
+  <string>HumID reads your passport or ID card chip to check, with the issuing country's signature, that it's really you, and, when you add the document to your vault, to copy its details and photo into it.</string>
   <key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
   <array>
     <string>A0000002471001</string>
   </array>
   <key>NSCameraUsageDescription</key>
-  <string>HumID uses the camera only to scan HumID QR codes, such as a new device's code or a recovery code. Nothing is recorded.</string>
+  <string>HumID uses the camera to scan HumID QR codes and to photograph documents and IDs you add to your vault. Photos are sealed on this device; nothing is recorded otherwise.</string>
 </dict>
 </plist>
