@@ -25,7 +25,7 @@ const PKG_SERVICES = {
   audit: ["ledger"],
   recovery: ["recovery"],
   pass: ["access"],
-  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [],
+  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [],
 };
 
 // [pattern, apps, services] — first match wins.
