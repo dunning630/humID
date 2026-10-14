@@ -1,4 +1,4 @@
-// End to end: the Windows server program (all five services + the local edge
+// End to end: the Windows server program (all six services + the local edge
 // in one process), started the way its background task starts it, then the
 // deployment smoke test against it. Runs on any OS; CI also installs the real
 // package on Windows.
@@ -32,7 +32,7 @@ async function start() {
   throw new Error("the server didn't start");
 }
 const stop = (c) => new Promise((r) => { c.once("exit", r); c.kill(); });
-const smoke = (url) => execFileSync(process.execPath, [join(repo, "tests", "smoke.mjs"), url], { encoding: "utf8", env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+const smoke = (url, code = "") => execFileSync(process.execPath, [join(repo, "tests", "smoke.mjs"), url, code], { encoding: "utf8", env: { ...process.env, NODE_NO_WARNINGS: "1" } });
 
 let port;
 
@@ -42,6 +42,8 @@ test("init writes settings with a fresh internal key pair; set validates", async
   const env = readFileSync(join(root, "humid.env"), "utf8");
   assert.match(env, /^HUMID_INTERNAL_SK=\S{40,}/m);
   assert.match(env, /^HUMID_DEVICE_POLICY=attested/m);
+  assert.match(env, /^HUMID_REGISTRATION=pass/m);
+  assert.throws(() => host("set", "HUMID_REGISTRATION=free"), /pass or open/);
   assert.throws(() => host("set", "HUMID_DEVICE_POLICY=pin"), /attested, biometric, demo/);
   assert.doesNotMatch(host("show"), /SK=[^(]/, "show hides the secret key");
 });
@@ -50,7 +52,12 @@ test("default policy: the server refuses a device that can't prove a live check"
   const { child, info } = await start();
   assert.equal(info.localUrl, `http://127.0.0.1:${port}`);
   assert.equal(info.devicePolicy, "attested");
-  assert.match(smoke(info.localUrl), /device_not_proven/);
+  assert.equal(info.registration, "pass");
+  assert.match(smoke(info.localUrl), /pass_required/);
+  // `mint` works next to the running server; the pass is spent, the device refused, the pass refunded
+  const [code] = host("mint", "1", "test").trim().split("\n");
+  assert.match(code, /^HA-/);
+  assert.match(smoke(info.localUrl, code), /device_not_proven/);
   await stop(child);
 });
 
@@ -59,7 +66,8 @@ test("biometric policy: the whole flow works, and the server keeps its identity 
   host("set", "HUMID_DEVICE_POLICY=biometric");
   const { child, info } = await start();
   assert.equal(info.kid, before.kid, "same server key after a restart");
-  assert.match(smoke(info.localUrl), /SMOKE OK$/m);
+  const [code] = host("mint", "1", "test").trim().split("\n");
+  assert.match(smoke(info.localUrl, code), /blind-signed pass[\s\S]*SMOKE OK$/m);
   const log = readFileSync(join(root, "logs", "humid-server.log"), "utf8");
   assert.match(log, /"msg":"ready"/);
   assert.match(log, /"service":"gateway","msg":"listening".*"host":"127.0.0.1"/, "services bind to localhost only");

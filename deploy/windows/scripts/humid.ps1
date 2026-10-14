@@ -16,6 +16,7 @@
     humid status | start | stop | restart | logs [-Follow]
     humid set KEY=VALUE [KEY=VALUE ...]           change a setting, then restart
     humid show                                    print the settings (secret key hidden)
+    humid mint 50 [batch-name]                    print 50 new access codes to sell (cash or online)
     humid backup [-Path file.zip] | restore -Path file.zip
     humid uninstall [-RemoveData]
 
@@ -25,7 +26,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'backup', 'restore', 'expose', 'help')]
+  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'expose', 'help')]
   [string]$Command = 'help',
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
   [string[]]$Rest = @(),
@@ -517,6 +518,7 @@ switch ($Command) {
   'logs'      { Require-Admin; Do-Logs }
   'set'       { Do-Set }
   'show'      { Require-Admin; Require-Installed; Invoke-Server @('show', '--root', $DataRoot) }
+  'mint'      { Require-Admin; Require-Installed; Invoke-Server (@('mint', '--root', $DataRoot) + $Rest) }
   'backup'    { Do-Backup }
   'restore'   { Do-Restore }
   'expose'    { Do-Expose }

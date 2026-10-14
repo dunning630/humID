@@ -6,6 +6,7 @@ import { HtpClient, HtpError } from "@humid/htp/client";
 import { registerMessage, deviceMessage, loginMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
 import { verifyLedger, verifyCheckpoint } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
+import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
 
 export { HtpError, verifyLedger, verifyCheckpoint };
 
@@ -110,7 +111,7 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign, card, soleBiometric }) {
+  async register({ pub, commit, device, sign, card, soleBiometric, pass }) {
     await this.htp.connect();
     const th = this.htp.transcript;
     const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
@@ -121,9 +122,52 @@ export class HumidApi {
         // optional recovery card { tag, blob }, stored under this same live check
         ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
+        // an access pass (docs/ANONYMITY.md) when the server requires one
+        ...(pass ? { pass } : {}),
       },
     });
     return this.session;
+  }
+
+  /* ---------------- anonymous payment ---------------- */
+
+  /**
+   * Swap an access code for an access pass, signed blind (RFC 9474).
+   * Runs in a throwaway session of its own that never signs in, so nothing about it
+   * travels to the registration that later spends the pass.
+   *   saveDraft(draft)  called before the code is sent: persist it. If the app dies
+   *                     before the answer arrives, call again with { draft } and the
+   *                     same code: the server answers the same request again.
+   * Returns the pass, already checked against the server's published key.
+   */
+  async getPass(code, { saveDraft = async () => {}, draft = null } = {}) {
+    const parsed = parseAccessCode(code);
+    if (!parsed) throw new ApiError(400, "code_invalid", "That access code isn't valid. Check it and try again.");
+    const anon = new HtpClient({ baseUrl: this.htp.base, pinnedKid: this.htp.pinnedKid, fetch: this.htp.fetch });
+    const call = async (method, path, body) => {
+      const res = await anon.call(method, path, body ? { body } : undefined);
+      const j = res.json() || {};
+      if (!res.ok) throw new ApiError(res.status, j.error || "error", j.message || `Request failed (${res.status})`);
+      return j;
+    };
+    try {
+      let set;
+      try { set = importKeySet((await call("GET", "/pass/keys")).keys); }
+      catch (e) { if (e instanceof PassError) throw new ApiError(502, e.code, e.message); throw e; }
+      const key = draft ? set.keys.find((k) => k.id === draft.kid) : set.issuing;
+      if (!key) throw new ApiError(409, "key_changed", "The vault's pass key changed before your pass was finished. Contact support with your access code.");
+      let blinded;
+      if (draft) blinded = draft.blinded;
+      else {
+        const b = blind(key);
+        draft = b.draft;
+        blinded = draft.blinded;
+        await saveDraft(draft);
+      }
+      const out = await call("POST", "/pass/issue", { code: parsed, kid: key.id, blinded });
+      try { return finalize(key, draft, unb64u(out.blindSig)); }
+      catch (e) { if (e instanceof PassError) throw new ApiError(502, e.code, e.message); throw e; }
+    } finally { anon.close(); }
   }
 
   /**

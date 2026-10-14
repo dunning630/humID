@@ -24,6 +24,7 @@ it until that review and the items under *Before real data* are done.
 | **The server rewriting history** | Every ledger entry is a leaf of a public append-only Merkle log; phones check inclusion and consistency, and independent cosigners refuse forks. |
 | **The server substituting keys while you add a device or contact** | Every code you type is a hash of the public keys behind it. The app recomputes it from what the server returns and stops on a mismatch. |
 | **Tampering with your access history** | Each account's ledger is a SHA-3 hash chain with an ML-DSA-87-signed head, verified on the phone. Opening or deleting a document is refused if the ledger can't record it first. |
+| **Paying links you to your account** | The access code you buy is swapped for a pass the server signs blind (RFC 9474), in a session that never signs in; registration spends the pass. The access service, which keeps codes and spent passes, never sees an account, and stores days, not times. See [ANONYMITY.md](ANONYMITY.md). |
 | **Brute force** | Sign-ins are rate-limited per account, handshakes per IP, calls per session. |
 
 ## What it does not protect against yet
@@ -79,15 +80,21 @@ it until that review and the items under *Before real data* are done.
 - **Alerts appear in the app only.** There are no push or email alerts yet,
   so a recovery is noticed when you next open HumID.
 - **Metadata.** The server sees account and device ids, document sizes and
-  times, IP addresses at the edge, and which accounts protect which. It never
-  sees names, contents or keys. The public log reveals the total number of
+  times, IP addresses at the edge (not logged), and which accounts protect
+  which. It never sees names, contents or keys, and can't link a payment to an
+  account ([ANONYMITY.md](ANONYMITY.md) lists what that doesn't cover: network,
+  timing within a day, the seller). The public log reveals the total number of
   ledger events. The server holds a keyed hash of an anchored ID's stable
   fields, and its issuing country.
 - **Demo mode has no biometric.** It exists only in local development builds
   (`npm run dev`); release builds don't contain it, and servers refuse it
   unless `HUMID_DEVICE_POLICY=demo`.
-- **Server keys are files.** The gateway's HTP key and the ledger's signing
-  key live on the server's volumes, not in a hardware security module.
+- **Server keys are files.** The gateway's HTP key, the ledger's signing key
+  and the access service's pass keys live on the server's volumes, not in a
+  hardware security module.
+- **Pass keys aren't post-quantum.** Blind passes stay unlinkable forever, but
+  a quantum computer could forge them (free accounts, not unmasked ones). Keys
+  rotate yearly.
 
 ## Before real data
 

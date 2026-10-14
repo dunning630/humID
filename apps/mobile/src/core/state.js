@@ -4,7 +4,12 @@ import { DEMO_BUILD } from "@humid/gate";
 
 export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
 export const tab = signal("vault");          // vault | activity | security
-export const enrollStep = signal(0);         // 0 connect · 1 bind · 2 done + recovery card
+export const enrollStep = signal("connect"); // connect · access (when the server needs a pass) · bind · done + recovery card
+
+// Anonymous payment (docs/ANONYMITY.md). The access pass bought with an access code, kept
+// on this device until registration spends it: null | { state: "draft" | "ready", … }.
+export const pass = signal(null);
+export const passBusy = signal(false);
 
 // A new device joining an existing account (another device, a recovery card, or recovery contacts).
 export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
@@ -54,6 +59,8 @@ export const online = signal(typeof navigator === "undefined" ? true : navigator
 
 // Demo mode only in a local development build talking to a server whose policy is "demo".
 export const demoAllowed = computed(() => DEMO_BUILD && server.value?.policy?.devicePolicy === "demo");
+/** Does this server need an access pass to create a HumID? */
+export const passNeeded = computed(() => server.value?.policy?.registration === "pass");
 
 export const visibleItems = computed(() => {
   const q = query.value.trim().toLowerCase();
