@@ -7,6 +7,7 @@ name: CI
 #      stack with docker compose and run the smoke test against it over TLS
 #   4. build HumID Server for Windows, install it on a Windows runner from the
 #      zip (as a person would), smoke-test, back up, restore, update, uninstall
+#   5. "Scan an ID" in Chromium with a fake camera (tests/browser/idscan.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -128,6 +129,27 @@ jobs:
           cat pcsc-test.log
           echo "::error::$(grep -E 'error:|Error|expected|actual' pcsc-test.log | head -12 | tr '\n' ' ') pcscd: $(tail -8 pcscd.log | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", HUMID_REQUIRE_PCSC: "1" }
+
+  id-scan:
+    name: id-scan (browser)
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Chromium for the browser check
+        run: npm i --no-save --no-audit --no-fund playwright@1.56.0 && npx playwright install --with-deps chromium
+      - name: Scan an ID with a fake camera (barcode, live MRZ, simulated chip, seal, open)
+        run: |
+          node tests/browser/idscan.mjs > idscan.log 2>&1 && { grep -v '^{"t"' idscan.log; exit 0; }
+          grep -v '^{"t"' idscan.log | tail -60
+          echo "::error::$(grep -v '^{"t"' idscan.log | grep -E 'Error|expected|actual|assert' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
 
   images:
     needs: test

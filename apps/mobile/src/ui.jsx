@@ -322,11 +322,11 @@ const yymmdd = (iso) => (iso ? iso.slice(2, 4) + iso.slice(5, 7) + iso.slice(8, 
  * birth date, expiry), or an ID card's 6-digit CAN. Kept only in this form and
  * the read; never saved. onChange(access | null).
  */
-export function ChipAccess({ onChange, title = "Details from the document" }) {
+export function ChipAccess({ onChange, title = "Details from the document", initial = null, note = "These only open the chip. HumID doesn't keep them, and never reads your photo." }) {
   const [mode, setMode] = useState("mrz");
-  const [num, setNum] = useState("");
-  const [birth, setBirth] = useState("");
-  const [expiry, setExpiry] = useState("");
+  const [num, setNum] = useState(initial?.number || "");
+  const [birth, setBirth] = useState(initial?.birth || "");
+  const [expiry, setExpiry] = useState(initial?.expiry || "");
   const [can, setCan] = useState("");
   useEffect(() => {
     const n = num.toUpperCase().replace(/[^0-9A-Z]/g, "");
@@ -353,7 +353,7 @@ export function ChipAccess({ onChange, title = "Details from the document" }) {
           <span class="hint">Printed on the front of most European and many other ID cards.</span></div>
       )}
       {DEMO_SIM && <DemoChipFill onFill={(h) => { setMode("mrz"); setNum(h.number); setBirth(`19${h.birth.slice(0, 2)}-${h.birth.slice(2, 4)}-${h.birth.slice(4)}`); setExpiry(`20${h.expiry.slice(0, 2)}-${h.expiry.slice(2, 4)}-${h.expiry.slice(4)}`); }} />}
-      <p class="small muted" style={{ marginTop: 6 }}>These only open the chip. HumID doesn't keep them, and never reads your photo.</p>
+      <p class="small muted" style={{ marginTop: 6 }}>{note}</p>
     </div>
   );
 }

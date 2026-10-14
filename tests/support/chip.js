@@ -19,6 +19,7 @@ export function simulatedChip({ passport, access, can, pace = null, bac = true, 
   const files = new Map([[0x011e, tlv(0x60, concat(tlv(0x5f01, new TextEncoder().encode("0107")), tlv(0x5c, Uint8Array.of(0x61, 0x75, ...(passport.dg15 ? [0x6f] : []))))) ],
     [0x0101, Uint8Array.from(passport.dg1)], [0x011d, Uint8Array.from(passport.sod)]]);
   if (passport.dg15) files.set(0x010f, Uint8Array.from(passport.dg15));
+  if (passport.dg2) files.set(0x0102, Uint8Array.from(passport.dg2));
   const cardAccess = pace ? tlv(0x31, tlv(0x30, concat(tlv(0x06, oidBytes(pace.oid)), tlv(0x02, Uint8Array.of(2)), tlv(0x02, Uint8Array.of(pace.parameterId))))) : null;
 
   let applet = false, ef = null, sm = null, rndIc = null, ps = null;
@@ -48,6 +49,15 @@ export function simulatedChip({ passport, access, can, pace = null, bac = true, 
         const f = files.get(ef);
         if (off > f.length) return sw(0x6b00);
         return ok(f.subarray(off, off + (a.le || 256)));
+      }
+      case 0xb1: { // READ BINARY with an offset data object (files over 32 KB)
+        if (!sm) return sw(0x6982);
+        if (ef == null) return sw(0x6986);
+        const o = readTlvs(a.data).get(0x54);
+        const off = o ? o.reduce((x, y) => x * 256 + y, 0) : 0;
+        const f = files.get(ef);
+        if (off > f.length) return sw(0x6b00);
+        return ok(tlv(0x53, f.subarray(off, off + Math.max(0, (a.le || 256) - 4))));
       }
       case 0x84: if (!bac) return sw(0x6d00); rndIc = random(8); return ok(rndIc);
       case 0x82: {
@@ -123,17 +133,19 @@ export function simulatedChip({ passport, access, can, pace = null, bac = true, 
     if ((a.cla & 0x0c) !== 0x0c) { sm = null; return plain(a); } // a plain command ends the session
     increment(sm.ssc);
     const t = readTlvs(a.data);
-    const do87 = t.get(0x87), do97 = t.get(0x97), do8e = t.get(0x8e);
-    const m = concat(pad(Uint8Array.of(a.cla, a.ins, a.p1, a.p2), sm.block), do87 ? tlv(0x87, do87) : new Uint8Array(0), do97 ? tlv(0x97, do97) : new Uint8Array(0));
+    const do87 = t.get(0x87), do85 = t.get(0x85), do97 = t.get(0x97), do8e = t.get(0x8e);
+    const m = concat(pad(Uint8Array.of(a.cla, a.ins, a.p1, a.p2), sm.block), do87 ? tlv(0x87, do87) : do85 ? tlv(0x85, do85) : new Uint8Array(0), do97 ? tlv(0x97, do97) : new Uint8Array(0));
     if (!do8e || !equal(sm.mac(m), do8e)) { sm = null; return sw(0x6988); }
-    const data = do87 ? unpad(sm.decrypt(do87.subarray(1))) : new Uint8Array(0);
+    const data = do87 ? unpad(sm.decrypt(do87.subarray(1))) : do85 ? unpad(sm.decrypt(do85)) : new Uint8Array(0);
     const le = do97 ? (do97.length === 1 ? do97[0] || 256 : (do97[0] << 8) | do97[1]) : null;
     const r = plain({ cla: a.cla & ~0x0c, ins: a.ins, p1: a.p1, p2: a.p2, data, le });
     const s = sm; // (plain() may have ended it)
     if (!s) return r;
     increment(s.ssc);
     const body = r.subarray(0, r.length - 2), status = r.subarray(r.length - 2);
-    const r87 = body.length ? tlv(0x87, concat(Uint8Array.of(1), s.encrypt(pad(body, s.block)))) : new Uint8Array(0);
+    const r87 = !body.length ? new Uint8Array(0)
+      : a.ins & 1 ? tlv(0x85, s.encrypt(pad(body, s.block)))
+      : tlv(0x87, concat(Uint8Array.of(1), s.encrypt(pad(body, s.block))));
     const r99 = tlv(0x99, status);
     let mac = s.mac(concat(r87, r99));
     if (tamper === "mac" && ++count > 3) mac = mac.map((x) => x ^ 1);

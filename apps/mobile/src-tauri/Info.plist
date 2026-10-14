@@ -4,6 +4,6 @@
 <dict>
   <!-- macOS: merged into the app's Info.plist by Tauri. -->
   <key>NSCameraUsageDescription</key>
-  <string>HumID uses the camera only to scan HumID QR codes, such as a new device's code or a recovery code. Nothing is recorded.</string>
+  <string>HumID uses the camera to scan HumID QR codes and to photograph documents and IDs you add to your vault. Photos are sealed on this device; nothing is recorded otherwise.</string>
 </dict>
 </plist>

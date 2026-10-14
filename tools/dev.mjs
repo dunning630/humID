@@ -5,6 +5,7 @@
 // the gateway exactly as the Caddy edge does in production.
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -24,6 +25,8 @@ const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
 // so "Use a demo passport" works for anchoring, recovering and station checks. Every account can act
 // as a verification station here, so you can try the operator side too.
 const devCsca = testCsca("HumID Dev Country");
+// The demo chips carry a photo (DG2), so "Scan an ID" can copy it into the vault.
+const DEMO_PHOTO = readFileSync(new URL("../tests/fixtures/id/portrait.jpg", import.meta.url));
 const passports = new Map();
 const chips = new Map();
 const passportFor = (name) => {
@@ -31,7 +34,7 @@ const passportFor = (name) => {
   if (!passports.has(key)) {
     const [given, ...rest] = key.split(" ");
     const number = `D${String(passports.size + 1).padStart(8, "0")}`;
-    const p = testPassport({ csca: devCsca, mrz: { issuer: "UTO", nationality: "UTO", surname: rest.join(" ") || "PERSON", given, number } });
+    const p = testPassport({ csca: devCsca, mrz: { issuer: "UTO", nationality: "UTO", surname: rest.join(" ") || "PERSON", given, number }, photo: DEMO_PHOTO });
     p.access = { number, birth: "740812", expiry: "341231" };
     passports.set(key, p);
   }
@@ -43,7 +46,7 @@ const stack = await startStack({
 });
 const gw = new URL(stack.baseUrl);
 
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json" };
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json", ".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8" };
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
