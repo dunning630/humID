@@ -14,6 +14,7 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
+[docs/ID-DOCUMENTS.md](docs/ID-DOCUMENTS.md) (which IDs HumID can hold and prove genuine),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
 doesn't yet), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
 
@@ -75,7 +76,8 @@ packages/            independently versioned modules
   htp api recovery audit svc       transit protocol, API client, recovery crypto, ledger + public-log checks, service kit
   attest anchor                    phone attestation; passport / ID chip checks (server side)
   emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
-  idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
+  idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data, mobile IDs
+  mdoc                             mobile IDs (ISO 18013-5): US mobile licenses, EU PID; issuer + device authentication
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery

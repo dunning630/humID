@@ -19,6 +19,7 @@ const PKG_SERVICES = {
   svc: NODE_SERVICES,
   attest: ["identity", "vault", "gateway", "recovery"],
   anchor: ["recovery"],
+  mdoc: ["recovery"], // read in the app; verified again by @humid/anchor in the recovery service
   htp: NODE_SERVICES,
   crypto: ["vault", "recovery"],
   codec: ["vault", "recovery"],

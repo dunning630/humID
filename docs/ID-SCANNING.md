@@ -9,7 +9,8 @@ read on the phone; nothing about the document leaves it unencrypted.
 
 | Document | Camera | Chip (NFC) |
 |---|---|---|
-| US and Canadian driver's licenses and state IDs | Front photo; the PDF417 barcode on the back is read live (AAMVA DL/ID versions 1-10): name, number, dates, address, class, restrictions, endorsements, REAL ID flag, height, eyes | No chip |
+| US and Canadian driver's licenses and state IDs | Front photo; the PDF417 barcode on the back is read live (AAMVA DL/ID versions 1-10): name, number, dates, address, class, restrictions, endorsements, REAL ID flag, height, eyes | No chip. The **mobile** license or ID in the holder's wallet is shared over ISO 18013-5 instead: signed data and photo |
+| Mobile IDs (ISO 18013-5): US mobile licenses and state IDs, EU digital identity (PID), other countries' mDLs | The wallet's QR code starts the session | Issuer-signed data and photo over an encrypted session (BLE / NFC). Verification core done; transport and screen not yet (see [ID-DOCUMENTS.md](ID-DOCUMENTS.md#2-mobile-ids-signed-by-the-issuing-authority-isoiec-18013-5)) |
 | Passports | The photo page; the two machine-readable lines (MRZ, TD3) are read live | DG1 (the MRZ), DG2 (the photo) and EF.SOD, over BAC or PACE |
 | National ID cards, residence permits | Front photo; the back's barcode or three-line MRZ (TD1) | Same as passports, opened with the MRZ details or the 6-digit CAN |
 | Anything else | Front and back photos | — |
@@ -22,7 +23,7 @@ corrected before sealing.
 ## How sure the details are
 
 Each field remembers where it came from, and a better source replaces a
-weaker one: **typed** (the holder's correction) > **chip** > **barcode** >
+weaker one: **typed** (the holder's correction) > **chip** or **mobile ID** > **barcode** >
 **MRZ from a photo**. The record shows the strongest source:
 
 - **Chip.** The data groups are hashed and compared with the hashes the
@@ -31,6 +32,14 @@ weaker one: **typed** (the holder's correction) > **chip** > **barcode** >
   service does that, with the CSCA certificates the server trusts, when a chip
   *anchors* an identity (Security → ID chip). The chip's files stay in the
   record, so the check can be repeated.
+- **Mobile ID.** Every element is hashed and compared with the issuer's
+  signed Mobile Security Object; the signature is checked under the issuer's
+  Document Signer certificate and, when the app has the issuing authority's
+  IACA root, chained to it. The wallet signs (or MACs) the session transcript
+  with the device key the issuer bound into the document, so copied data
+  can't be replayed. The issuer's signed data is kept in the record so the
+  check can be repeated. See [ID-DOCUMENTS.md](ID-DOCUMENTS.md) for which
+  documents and states.
 - **Barcode.** Read exactly, but a barcode isn't signed: it proves what's
   printed, not that the card is genuine.
 - **MRZ from a photo.** OCR, checked with the ICAO check digits. A character
@@ -53,6 +62,7 @@ with its photos.
 | Where | What |
 |---|---|
 | `packages/idscan` | MRZ parsing and repair (`findMrz`, `MrzConsensus`), AAMVA (`parseAamva`), chip files (`readDg1`, `readDg2`, `checkIntegrity`), the record (`newRecord`, `applyMrz`, `applyAamva`, `applyChip`, `applyTyped`) |
+| `packages/mdoc` | ISO 18013-5 reader side: engagement QR (`readEngagement`), session keys and encryption (`ReaderSession`), `deviceRequest`, `verifyDeviceResponse` (issuer signature, IACA chain, digests, validity, device signature or MAC), `readVical`. `@humid/idscan`'s `applyMdoc` maps the verified elements into the record |
 | `packages/emrtd` | `readDocument(…, { photo: true })` also reads DG2, with long offsets (READ BINARY B1) for photos over 32 KB. Identity proofs never ask for the photo. |
 | `apps/mobile/src/core/scan.js` | Engines and image handling: zxing-cpp (WebAssembly) for PDF417; Tesseract (WebAssembly, in a worker) with an MRZ-trained OCR-B model ([vendor/ocr](../apps/mobile/vendor/ocr/README.md)); JPEG 2000 chip photos decoded with the PDF.js decoder |
 | `apps/mobile/src/screens/ids.jsx` | The camera (`DocCamera`), the flow (`IdSheet`) and the card view (`IdView`) |
@@ -64,6 +74,7 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 
 ## Testing
 
+- `node --test tests/mdoc.test.js`: a simulated issuing authority and wallet (node:crypto, independent of `@humid/mdoc`) through full sessions: signature and MAC device authentication, cloned and replayed responses, altered data, forged signatures, wrong signer purpose, untrusted or mismatched roots, lapsed signatures, selective disclosure, re-verifying the stored copy, VICAL, the record mapping and the server anchor.
 - `node --test tests/idscan.test.js`: ICAO MRZ specimens, OCR noise and
   voting, AAMVA versions (US and Canada), chip reads with the photo (BAC and
   PACE, over 32 KB, JPEG 2000), tampering, and the record.

@@ -26,6 +26,7 @@ import { parse, kids, int, octets, oid, readTLV, CLASS, TAG } from "@humid/attes
 import { parseMrz, stableIdentity, expiryDate, MrzError } from "./mrz.js";
 
 export { parseMrz, stableIdentity, checkDigit, expiryDate, MrzError } from "./mrz.js";
+export { mdocAuth, mdocAnchorOf, mdocStableIdentity, mdocAnchorSummary, loadIacas, MdocAnchorError } from "./mdoc.js";
 
 export class AnchorError extends Error {
   constructor(code, message) { super(message); this.code = code; }
