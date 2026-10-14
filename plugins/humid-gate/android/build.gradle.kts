@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 30 // Android 11: biometric-only, time-bound Keystore keys
         consumerProguardFiles("consumer-rules.pro")
     }
 

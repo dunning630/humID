@@ -1,9 +1,10 @@
 // Module-boundary tests: migrations, gate contract, suite registry, codec.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { migrateIdentity, IDENTITY_SCHEMA } from "../modules/store/src/migrations.js";
+import { migrateIdentity, IDENTITY_SCHEMA } from "../packages/store/src/migrations.js";
 import { suite, supportedSuites, suiteForEnvelope } from "@humid/crypto";
-import { adapter, GATE_CONTRACT, assertAdapter } from "@humid/gate";
+import { adapter, GATE_CONTRACT, assertAdapter, DEMO_BUILD } from "@humid/gate";
+import { demoAdapter } from "../packages/gate/src/adapters/demo.js";
 import { unpack, isEnvelope } from "@humid/codec";
 
 test("legacy hardware identity migrates to the gate layout", () => {
@@ -13,6 +14,9 @@ test("legacy hardware identity migrates to the gate layout", () => {
   assert.equal(record.schema, IDENTITY_SCHEMA);
   assert.deepEqual(record.gate, { adapter: "webauthn-prf", handle: { credId: "Q1JFRA==", prfSalt: "U0FMVA==" } });
   assert.equal(record.bindingId, "Q1JFRA==");
+  assert.equal(record.server, null); // schema 3: not yet registered with a vault server
+  assert.equal(record.device, null);  // schema 4: no device key yet, so it must be set up again
+  assert.equal(record.pending, null);
 });
 
 test("legacy demo identity keeps its secret", () => {
@@ -26,14 +30,21 @@ test("current records are left alone; future ones refuse to load", () => {
 });
 
 test("every shipped gate honours the contract", () => {
-  for (const id of ["native", "webauthn-prf", "demo"]) assertAdapter(adapter(id));
+  assertAdapter(adapter("native"));
+  assertAdapter(demoAdapter);
   assert.throws(() => assertAdapter({ id: "x", probe() {}, enroll() {}, release() {}, contract: GATE_CONTRACT + 1 }), /contract/);
 });
 
+test("release builds have no way to unlock without a live biometric", () => {
+  assert.equal(DEMO_BUILD, false);
+  assert.throws(() => adapter("demo"), (e) => e.code === "unknown_identity");
+  assert.throws(() => adapter("webauthn-prf"), (e) => e.code === "unknown_identity"); // passkeys can fall back to a PIN
+});
+
 test("demo gate round-trips its secret", async () => {
-  const demo = adapter("demo");
+  const demo = demoAdapter;
   const e = await demo.enroll();
-  const r = await demo.release(e.handle, "seal");
+  const r = await demo.release(e.handle, { purpose: "seal" });
   assert.deepEqual(r.secret, e.secret);
   assert.equal(r.interrupt.assurance, "none");
   assert.equal(r.interrupt.uv, false);
@@ -48,4 +59,10 @@ test("envelopes route to the suite that sealed them", async () => {
   assert.deepEqual(supportedSuites(), ["HUMID-PQ1"]);
   assert.throws(() => suite("HUMID-PQ9"), /Update HumID/);
   assert.throws(() => unpack(new Uint8Array(20)), /Not a HumID envelope/);
+});
+
+test("the native shell doesn't freeze Object.prototype (the UI's signals library assigns valueOf, so a frozen prototype leaves the app blank)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const conf = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  assert.notEqual(conf.app.security.freezePrototype, true);
 });

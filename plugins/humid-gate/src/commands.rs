@@ -9,8 +9,13 @@ pub(crate) async fn probe<R: Runtime>(app: AppHandle<R>) -> Result<Probe> {
 }
 
 #[command]
-pub(crate) async fn enroll<R: Runtime>(app: AppHandle<R>, prompt: Option<String>) -> Result<Enrolled> {
-    app.humid_gate().enroll(EnrollRequest { prompt }).await
+pub(crate) async fn enroll<R: Runtime>(
+    app: AppHandle<R>,
+    prompt: Option<String>,
+    challenge: Option<String>,
+    attest: Option<String>,
+) -> Result<Enrolled> {
+    app.humid_gate().enroll(EnrollRequest { prompt, challenge, attest }).await
 }
 
 #[command]
@@ -18,8 +23,10 @@ pub(crate) async fn release<R: Runtime>(
     app: AppHandle<R>,
     handle: Handle,
     prompt: Option<String>,
+    challenge: Option<String>,
+    attest: Option<String>,
 ) -> Result<Released> {
-    app.humid_gate().release(ReleaseRequest { handle, prompt }).await
+    app.humid_gate().release(ReleaseRequest { handle, prompt, challenge, attest }).await
 }
 
 #[command]

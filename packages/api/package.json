@@ -1,0 +1,22 @@
+{
+  "name": "@humid/api",
+  "version": "1.2.0",
+  "description": "App-side client for HumID services over HTP/1: enrolment, devices, recovery, sign-in, vault, ledger.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": {
+    "provides": {
+      "api": 2
+    },
+    "requires": {
+      "htp": 1,
+      "recovery": 2
+    }
+  },
+  "dependencies": {
+    "@humid/htp": "^1.1.0",
+    "@humid/audit": "^1.1.0",
+    "@humid/recovery": "^1.1.0"
+  },
+  "license": "UNLICENSED"
+}

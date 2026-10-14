@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-transceive"
+description = "Enables the transceive command without any pre-configured scope."
+commands.allow = ["transceive"]
+
+[[permission]]
+identifier = "deny-transceive"
+description = "Denies the transceive command without any pre-configured scope."
+commands.deny = ["transceive"]

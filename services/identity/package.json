@@ -1,0 +1,21 @@
+{
+  "name": "@humid/identity-service",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Public-key directory and signature verification for HumID identities.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "build": "node ../build-service.mjs identity"
+  },
+  "humid": {
+    "port": 8081
+  },
+  "dependencies": {
+    "@humid/svc": "^1.0.0",
+    "@humid/htp": "^1.1.0",
+    "@humid/attest": "^1.0.0"
+  },
+  "license": "UNLICENSED"
+}

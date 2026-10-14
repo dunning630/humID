@@ -1,62 +1,113 @@
 # Releasing HumID without forklift upgrades
 
-The goal: every change ships as the smallest possible release, and nothing a
-user already has (identities, sealed envelopes) ever needs a bulk conversion.
+Every change ships as the smallest possible release, and nothing a person
+already has (identities, sealed documents, recovery cards) ever needs a bulk
+conversion.
 
 ## 1. Seams that make small releases possible
 
 | Seam | Rule | What it allows |
 |---|---|---|
-| **Modules** (`modules/*`) | Own semver, own CHANGELOG; talk only through exported interfaces. | Fix the vault table without touching crypto. |
-| **Contracts** (`"humid": {provides, requires}`) | The shell build fails on a mismatch. | Modules release independently, safely. |
-| **Envelope format v1** (`@humid/codec`) | Frozen. A new layout gets a new magic version byte and a new parse branch. | Envelopes sealed today open in every future build. |
-| **Sealing suites** (`@humid/crypto`) | A suite is frozen once released. Changing any primitive means a new suite id (e.g. `HUMID-PQ2`) added beside PQ1. | Crypto agility: new seals use the new suite, old envelopes still open. |
-| **Gate contract v1** (`@humid/gate`) | Adapters implement probe / enroll / release / forget. | Add a gate (FIDO2, a new OS API) as one file. |
-| **Native plugin** (`plugins/humid-gate`) | Command names + response shapes are its API (`humid-gate@1`). Platform code is split per OS file. | A Windows Hello fix rebuilds and ships Windows only. |
-| **Identity schema** (`@humid/store`) | Records carry `schema`; one migration step per bump, run on read. Never edit a released step. | Data upgrades happen lazily per record, never as a bulk conversion. |
-| **Shell** (`shell/`) | Thin on purpose: hosts modules, one `save_bytes` command. | Rarely needs a release of its own. |
+| **Packages** (`packages/*`) | Own semver and CHANGELOG; talk only through exported interfaces. | Fix recovery codes without touching crypto. |
+| **Contracts** (`"humid": {provides, requires}`) | The app build fails on a mismatch. | Packages release independently, safely. |
+| **Services** (`services/*`) | Talk only over HTTP behind the gateway; each owns its database and migrates it at start-up. | Replace one container: `docker compose pull vault && docker compose up -d vault`. |
+| **HTP/1** (`packages/htp`) | Version and suite are checked on every handshake. A change to any primitive or label is a new version. | Servers can accept two versions during a migration. |
+| **Envelope format v1** (`@humid/codec`) | Frozen. A new layout gets a new version byte and a new parse branch. | Documents sealed today open in every future build. |
+| **Sealing suites** (`@humid/crypto`) | A suite is frozen once released. New primitives mean a new suite id beside HUMID-PQ1. | New seals use the new suite; old documents still open. |
+| **Gate contract v2** (`@humid/gate`) | Adapters implement probe / enroll / release / forget; enroll and release take a `challenge` (and `attest` when a device is added) and return the liveness signature. | Add a gate as one file. |
+| **Native plugin** (`plugins/humid-gate`) | Command names and request / response shapes are its API; its major version is the contract (`humid-gate@2`), read from `Cargo.toml` by the app build. Platform code is one file per OS. | A Windows fingerprint fix rebuilds Windows only. |
+| **Identity record** (`@humid/store`) | Records carry `schema`; one migration step per bump, run on read. Never edit a released step. | On-device data upgrades lazily, per record. |
 
 ## 2. Day-to-day flow
 
-1. Make the change in the module(s) that own it.
-2. `npx changeset`: tick only the modules you changed and choose patch / minor / major.
-3. Open a PR. CI runs the tests and compiles **only the affected platforms**
-   (`node tools/affected.mjs` shows what it decided).
-4. Merge. `npm run version-modules` bumps exactly the changed modules and
-   their dependents, and writes their CHANGELOG entries.
-
-## 3. Shipping apps
-
-- **One or a few platforms:** Actions → *Release apps* → platforms: `windows`
-  (or `ios,android`). Only those build and upload.
-- **Everything:** tag `app-vX.Y.Z` (bump `shell/package.json` first); a draft
-  GitHub release collects all five platforms' installers.
-- Each app embeds `modules.json` listing the module versions it contains, so a
-  bug report pins the exact combination.
+1. Change the package, service or app that owns the behaviour.
+2. `npx changeset`: tick only what you changed; choose patch / minor / major.
+3. Open a PR. CI runs every test, then builds only the affected app platforms
+   and service images, boots the stack with docker compose and runs the smoke
+   test (`node tools/affected.mjs origin/main` shows what it will build).
+4. Merge. Changed service images are published to
+   `ghcr.io/dunning630/humid-<service>:latest` and `:<commit>`.
+   `npm run version-modules` bumps the changed packages and writes their
+   CHANGELOG entries.
 
 ### What a change costs
 
-| You changed | Modules bumped | Apps rebuilt |
+| You changed | Images rebuilt | Apps rebuilt |
 |---|---|---|
-| `plugins/humid-gate/src/desktop/windows.rs` | humid-gate crate | Windows |
-| `plugins/humid-gate/android/**` | humid-gate crate | Android |
-| `modules/ui/**` | @humid/ui | all five (the UI ships inside each app) |
-| `modules/crypto/**` | @humid/crypto, @humid/ui | all five |
-| docs, tests, CI | none | none |
+| `services/vault/**` | vault | none |
+| `services/recovery/**` | recovery | none |
+| `packages/recovery/**` | recovery, edge | all |
+| `packages/htp/**` | every Node service, edge | all |
+| `apps/mobile/src/**` | edge (web app) | all |
+| `plugins/humid-gate/src/desktop/windows.rs` | none | Windows |
+| `plugins/humid-gate/android/**` | none | Android |
+| docs, tests | none | none |
 
-## 4. Versioning the native plugin
+## 3. Shipping apps
 
-The Rust crate's version lives in `plugins/humid-gate/Cargo.toml`. Bump it
-by hand with the same patch / minor / major meaning, and tag
-`humid-gate-vX.Y.Z`. A **major** bump (a renamed command or changed response
-shape) also needs `@humid/gate` to update its `requires.native-plugin`
-contract, which the shell build enforces.
+Every *Release apps* run also leaves one download, `HumID-<version>-<server>`:
+a `HumID <version>` folder with a folder per app (Android, iPhone, Mac,
+Windows, Linux, Windows Server), a README naming the server the apps are
+pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
+
+- Set repository variables `HUMID_SERVER_URL` and `HUMID_SERVER_KID` (printed
+  by `deploy/setup.sh`) so the apps pin your server.
+- **One or a few platforms:** Actions → *Release apps* → platforms: `android`
+  (or `ios,android`, or `all`).
+- **Everything:** bump `apps/mobile/package.json`, tag `app-vX.Y.Z`; a draft
+  GitHub release collects every platform's installers.
+- Each app embeds `modules.json` listing the package versions inside it, so a
+  bug report pins the exact combination.
+
+Signing secrets are listed at the top of `.github/workflows/release.yml`.
+Without them you still get an installable Android test APK (debug-signed) and
+Linux packages.
+
+**Live-check proof needs these on the server side** (`deploy/.env`):
+
+- **iPhone:** enable the *App Attest* capability on the `app.humid.vault` App
+  ID in your Apple Developer account. The release workflow adds the
+  `com.apple.developer.devicecheck.appattest-environment = production`
+  entitlement. Set `HUMID_IOS_APP_ID=<Team ID>.app.humid.vault` on the server.
+  TestFlight and App Store builds use App Attest's production environment;
+  Xcode debug builds use development (`HUMID_APP_ATTEST_ENV=development` on a
+  test server).
+- **Android:** the app needs Android 11 (API 30) or later. Set
+  `HUMID_ANDROID_CERT_DIGESTS` to the SHA-256 of your release signing
+  certificate (Play App Signing: the app-signing key's certificate) so only
+  your build can join. The debug-signed test APK works while it's empty.
+
+## 4. Shipping the server
+
+```bash
+cd deploy && docker compose pull && docker compose up -d
+```
+
+Pin a version with `HUMID_VERSION=<commit>` in `deploy/.env` to roll back.
+
+**HumID Server for Windows** (`deploy/windows/`) ships as a zip on the
+repository's Releases page, one release per version:
+
+1. Bump `deploy/windows/package.json` and add an entry to
+   `deploy/windows/CHANGELOG.md`.
+2. Either click **Actions → Release apps → Run workflow**, pick the branch,
+   set platforms to `server-windows` and tick the publish box, or tag the
+   commit yourself: `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
+
+*Release HumID Server for Windows* builds the zip on Windows, installs it and
+runs the smoke test there, then creates the release with the zip and the
+changelog entry. The tag must match the version. To update a laptop,
+download the new zip and run its installer; settings and data are kept.
 
 ## 5. Breaking changes, safely
 
 - **New envelope layout:** add a codec branch, keep v1 parsing forever.
-- **New crypto:** add a suite file and a registry line, then switch
-  `DEFAULT_SUITE`. Never modify a released suite.
+- **New crypto:** add a suite file and a registry line, then switch the
+  default. Never modify a released suite.
+- **New protocol version:** run HTP/1 and HTP/2 side by side on the gateway;
+  ship apps that speak HTP/2; retire HTP/1 when no app pins it.
 - **New identity fields:** add a migration step and bump `IDENTITY_SCHEMA`.
-  Older apps refuse to open newer records with a clear "update HumID" message
-  instead of corrupting them.
+  Older apps refuse newer records with a clear "update HumID" message instead
+  of corrupting them.
+- **Native plugin major:** bump `plugins/humid-gate/Cargo.toml`, tag
+  `humid-gate-vX.Y.Z`, and update `@humid/gate`'s `requires.native-plugin`.
