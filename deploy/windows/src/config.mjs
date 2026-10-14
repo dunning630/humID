@@ -10,6 +10,8 @@ export const DEFAULTS = [
   ["HUMID_BIND_HOST", "127.0.0.1", "Keep 127.0.0.1: nothing on your network can reach the server directly; only the tunnel can."],
   ["HUMID_PUBLIC_URL", "", "The https address phones use. Set by `humid.ps1 expose`."],
   ["HUMID_DEVICE_POLICY", "attested", "attested = phones whose secure chip proves every live face or fingerprint check · biometric = also biometric-only desktops · demo = testing only."],
+  ["HUMID_REGISTRATION", "pass", "pass = a new HumID needs an access pass, bought with an access code and signed blind so the payment can't be linked to the account (mint codes with `mint`) · open = anyone can create one."],
+  ["HUMID_PASS_BUY_URL", "", "https address where people buy access codes; the app links to it. Empty = no link."],
   ["HUMID_IOS_APP_ID", "", "<Apple Team ID>.app.humid.vault — needed to accept iPhones."],
   ["HUMID_APP_ATTEST_ENV", "production", "development only for Xcode debug builds."],
   ["HUMID_ANDROID_PACKAGES", "app.humid.vault", "Android package names accepted in key attestation."],
@@ -74,6 +76,8 @@ export function validate(cfg) {
   const problems = [];
   if (!cfg.HUMID_INTERNAL_SK || !cfg.HUMID_INTERNAL_PK) problems.push("HUMID_INTERNAL_SK / HUMID_INTERNAL_PK are missing (run `init`).");
   if (cfg.HUMID_DEVICE_POLICY && !VALID_POLICIES.includes(cfg.HUMID_DEVICE_POLICY)) problems.push(`HUMID_DEVICE_POLICY must be one of ${VALID_POLICIES.join(", ")}.`);
+  if (cfg.HUMID_REGISTRATION && !["pass", "open"].includes(cfg.HUMID_REGISTRATION)) problems.push("HUMID_REGISTRATION must be pass or open.");
+  if (cfg.HUMID_PASS_BUY_URL && !/^https:\/\//.test(cfg.HUMID_PASS_BUY_URL)) problems.push("HUMID_PASS_BUY_URL must start with https://.");
   const port = Number(cfg.HUMID_PORT || 8480);
   if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push("HUMID_PORT must be a port number.");
   if (cfg.HUMID_IOS_APP_ID && !/^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/.test(cfg.HUMID_IOS_APP_ID)) problems.push("HUMID_IOS_APP_ID must look like ABCDE12345.app.humid.vault (10-character Team ID, a dot, the bundle id).");

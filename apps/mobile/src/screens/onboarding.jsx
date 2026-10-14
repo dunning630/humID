@@ -1,4 +1,4 @@
-// Welcome → Enrol (connect · bind · done + recovery card) → Lock.
+// Welcome → Enrol (connect · access pass, when the server needs one · bind · done + recovery card) → Lock.
 // Welcome → Join (connect · choose · details · wait) for a new device of an existing HumID.
 import { Mark, Wordmark, Stars } from "../brand.jsx";
 import { Icon } from "../icons.jsx";
@@ -6,10 +6,12 @@ import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft, QrCode, ProofMeter, t
 import * as S from "../core/state.js";
 import {
   startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard, copyCard,
+  redeemAccessCode, resumePass, demoAccessCode,
   startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, DURESS_HOLD_MS,
 } from "../core/controller.js";
 import { useRef, useState } from "preact/hooks";
 import { parseCard } from "@humid/recovery";
+import { parseAccessCode } from "@humid/pass";
 import { serverHost, SERVER_URL, DEMO_BUILD } from "../core/config.js";
 
 export function Welcome() {
@@ -25,6 +27,7 @@ export function Welcome() {
         <div class="point"><span class="p-ico"><Icon name="fingerprint" /></span><div><strong>Opens only for you, live</strong><span>Every open, save or delete needs your face or fingerprint, right then.</span></div></div>
         <div class="point"><span class="p-ico"><Icon name="lock" /></span><div><strong>Sealed on your phone</strong><span>Documents are encrypted before they leave. The server can't read them, or even their names.</span></div></div>
         <div class="point"><span class="p-ico"><Icon name="chain" /></span><div><strong>Every access on the record</strong><span>A tamper-evident log your phone verifies for itself.</span></div></div>
+        <div class="point"><span class="p-ico"><Icon name="user" /></span><div><strong>No name, no email, no number</strong><span>Your HumID is a set of keys. Even paying for it doesn't tell us who you are.</span></div></div>
       </div>
       <div class="foot">
         <button class="btn primary block" onClick={startEnroll}><Icon name="sparkle" />Create my HumID</button>
@@ -112,16 +115,22 @@ export function Enroll() {
   const step = S.enrollStep.value;
   const hw = S.hwGate.value;
   const [sole, setSole] = useState(false);
-  const back = step < 2 ? () => (step === 0 ? (S.view.value = "welcome") : (S.enrollStep.value = step - 1)) : null;
+  // The access step appears only when this server needs a pass to create a HumID.
+  const steps = S.passNeeded.value ? ["connect", "access", "bind", "done"] : ["connect", "bind", "done"];
+  const at = Math.max(0, steps.indexOf(step));
+  const go = (i) => (S.enrollStep.value = steps[i]);
+  const back = step !== "done" ? () => (at === 0 ? (S.view.value = "welcome") : go(at - 1)) : null;
   return (
     <main class="screen">
-      <TopBar step={step} steps={3} onBack={back} />
+      <TopBar step={at} steps={steps.length} onBack={back} />
 
-      {step === 0 && <ConnectStep eyebrow="Step 1 · Your vault server" onNext={() => (S.enrollStep.value = 1)} />}
+      {step === "connect" && <ConnectStep eyebrow="Step 1 · Your vault server" onNext={() => go(1)} />}
 
-      {step === 1 && (
+      {step === "access" && <AccessStep eyebrow={`Step ${at + 1} · Your access pass`} onNext={() => go(at + 1)} />}
+
+      {step === "bind" && (
         <>
-          <div class="eyebrow">Step 2 · Bind to this device</div>
+          <div class="eyebrow">Step {at + 1} · Bind to this device</div>
           <h1 style={{ marginTop: 8 }}>Your body becomes the key</h1>
           <p class="lede" style={{ marginTop: 10 }}>Your keys are generated on this phone and locked behind {hw?.probe.available ? hw.probe.label : "your biometric"}. They never leave it, and HumID never sees your biometric.</p>
           <div class="hero" style={{ flex: "0 0 auto", margin: "26px 0 10px" }}><Mark size={170} /></div>
@@ -133,8 +142,55 @@ export function Enroll() {
         </>
       )}
 
-      {step === 2 && <EnrollDone />}
+      {step === "done" && <EnrollDone />}
     </main>
+  );
+}
+
+/**
+ * Step: pay without being identified. The access code someone bought (cash at a counter,
+ * or any online store) is swapped for an access pass the vault signs blind: when the
+ * pass is spent at registration, the vault can't tell which code or purchase it came from.
+ */
+function AccessStep({ eyebrow, onNext }) {
+  const [text, setText] = useState("");
+  const rec = S.pass.value;
+  const busy = S.passBusy.value;
+  const buyUrl = S.server.value?.policy?.passBuyUrl;
+  const demo = S.demoAllowed.value || S.server.value?.simulated;
+  const valid = !!parseAccessCode(text);
+  const typed = text.replace(/[^0-9a-z]/gi, "").length;
+  return (
+    <>
+      <div class="eyebrow">{eyebrow}</div>
+      <h1 style={{ marginTop: 8 }}>Pay without being known</h1>
+      <p class="lede" style={{ marginTop: 10 }}>Your access code becomes a pass the vault signs without seeing it. When you create your HumID, the vault can check the pass is real, but it can't tell which code, purchase or person it came from.</p>
+
+      {rec?.state === "ready" ? (
+        <div class="banner" style={{ marginTop: 22 }}><span class="b-ico"><Icon name="check" /></span><div><strong>Access pass ready</strong><span>Kept on this phone until you create your HumID. Your access code is no longer stored.</span></div></div>
+      ) : rec?.state === "draft" ? (
+        <div class="banner warn" style={{ marginTop: 22 }}><span class="b-ico"><Icon name="clock" /></span><div><strong>Finishing your pass</strong><span>Your code was sent but the answer didn't arrive. It's saved here, so nothing is lost.</span></div></div>
+      ) : (
+        <div class="field" style={{ marginTop: 22 }}>
+          <label for="access">Access code</label>
+          <input id="access" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HA-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+            value={text} onInput={(e) => setText(e.currentTarget.value)} disabled={busy} />
+          {valid && <span class="hint ok"><Icon name="check" />Code looks right</span>}
+          {!valid && typed >= 24 && <span class="hint warn">That code has a typo. Check each character.</span>}
+          {!typed && <span class="hint">{buyUrl ? <>Don't have one? <a href={buyUrl} target="_blank" rel="noopener noreferrer">Buy an access code</a>. Paying with cash leaves no trace at all.</> : "Bought with cash at a counter, or online. Either way, the pass can't be traced to it."}</span>}
+        </div>
+      )}
+
+      <div style={{ flex: 1 }} />
+      <div class="foot">
+        {rec?.state === "ready" ? <button class="btn primary block" onClick={onNext}>Continue</button>
+          : rec?.state === "draft" ? <button class="btn primary block" disabled={busy} onClick={resumePass}>{busy ? "Finishing…" : "Try again"}</button>
+          : <>
+              <button class="btn primary block" disabled={!valid || busy} onClick={async () => { if (await redeemAccessCode(text)) setText(""); }}><Icon name="key" />{busy ? "Getting your pass…" : "Get my access pass"}</button>
+              {demo && <button class="btn ghost block" disabled={busy} onClick={demoAccessCode}>Use a demo access code</button>}
+            </>}
+      </div>
+    </>
   );
 }
 
@@ -164,7 +220,7 @@ function EnrollDone() {
       ) : null}
 
       {code ? (
-        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: a second proof and a second device</strong><span>In Security, choose witnesses or anchor your ID, so recovery always needs two proofs that it's you. Adding another phone or laptop means you'll rarely need recovery at all.</span></div></div>
+        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: a second proof and a second device</strong><span>In Security, choose witnesses (they keep you anonymous) or anchor your ID, so recovery always needs two proofs that it's you. Adding another phone or laptop means you'll rarely need recovery at all.</span></div></div>
       ) : (
         <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No recovery set up yet</strong><span>In Security, set up two proofs (witnesses, your ID, a seal card), or add a second device, so losing this phone doesn't lose your vault.</span></div></div>
       )}

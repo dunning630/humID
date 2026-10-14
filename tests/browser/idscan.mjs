@@ -73,6 +73,10 @@ try {
   await page.goto(BASE);
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByRole("button", { name: "Trust this server" }).click();
+  // the dev server, like production, needs an access pass to create a HumID (docs/ANONYMITY.md)
+  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
+  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel(/Only my own face or fingerprints/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);

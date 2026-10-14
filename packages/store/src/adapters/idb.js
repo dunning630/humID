@@ -1,15 +1,18 @@
 // IndexedDB backend. Every webview HumID ships in (WKWebView, WebView2,
 // WebKitGTK, Android WebView) persists IndexedDB in the app's data directory.
-// Database layout matches the original web app: "humid" v1, stores
-// "identity" (out-of-line key) and "vault" (keyPath "id").
+// Database layout: "humid" v2, stores "identity" (out-of-line key), "vault"
+// (keyPath "id"), and "wallet" (v2: an access pass not yet spent; kept apart
+// from "identity" so erasing an identity never throws away a paid-for pass).
 
 export async function idbBackend() {
   const db = await new Promise((resolve) => {
     try {
-      const req = indexedDB.open("humid", 1);
+      const req = indexedDB.open("humid", 2);
       req.onupgradeneeded = () => {
-        req.result.createObjectStore("identity");
-        req.result.createObjectStore("vault", { keyPath: "id" });
+        const have = req.result.objectStoreNames;
+        if (!have.contains("identity")) req.result.createObjectStore("identity");
+        if (!have.contains("vault")) req.result.createObjectStore("vault", { keyPath: "id" });
+        if (!have.contains("wallet")) req.result.createObjectStore("wallet");
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);

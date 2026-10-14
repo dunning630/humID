@@ -43,6 +43,8 @@ const passportFor = (name) => {
 const stack = await startStack({
   recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), devicePolicy: process.env.HUMID_DEVICE_POLICY || "demo",
   cscas: [devCsca.pem], stations: ["*"], duressCoolOffMs: Number(process.env.HUMID_DURESS_COOLOFF_MS || 60_000),
+  // Like production, a new HumID needs an access pass; "Use a demo access code" mints one here.
+  registration: process.env.HUMID_REGISTRATION || "pass",
 });
 const gw = new URL(stack.baseUrl);
 
@@ -50,6 +52,10 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", "
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname === "/dev/access-code" && req.method === "POST") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ code: stack.access.mint(1, "dev")[0] }));
+  }
   if (url.pathname === "/dev/passport" && req.method === "POST") {
     const p = passportFor(url.searchParams.get("name"));
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
