@@ -23,6 +23,7 @@ export const DEFAULTS = [
   ["HUMID_TLOG_COSIGNERS", "", "name=base64url ML-DSA-87 public key, comma-separated: independent cosigners of the public log."],
   ["HUMID_DURESS_COOLOFF_MS", "86400000", "After a duress signal, how long it must stay calm before the owner can lift the lockdown (24 hours)."],
   ["VAULT_QUOTA_BYTES", "262144000", "Storage per account (250 MB)."],
+  ["HUMID_SHARE_RELEASES_PER_HOUR", "120", "Split keys: how many documents one account can open per hour, so a hijacked phone can't drain the vault."],
 ];
 
 const LINE = /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/;

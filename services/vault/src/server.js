@@ -144,6 +144,18 @@ export function createVault({
       return json(200, { deleted: r.id });
     }],
 
+    // The gateway couldn't store this upload's split key: undo the upload. Only for an
+    // object uploaded moments ago, so it can never delete an older document without a step-up.
+    ["DELETE", "/internal/objects/:id", ({ claims, params }) => {
+      if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
+      const owner = requireUser(claims);
+      const r = own(owner, params.id);
+      if (Date.now() - Date.parse(r.uploaded_at) > 120_000) throw new HttpError(409, "too_old", "Only a just-uploaded document can be undone.");
+      db.prepare("DELETE FROM objects WHERE id = ?").run(r.id);
+      if (!db.prepare("SELECT 1 FROM objects WHERE blob = ? LIMIT 1").get(r.blob)) try { unlinkSync(blobPath(r.blob)); } catch {}
+      return json(200, { undone: r.id });
+    }],
+
     // Erase everything (account closure). Needs a step-up like any destructive act.
     ["DELETE", "/objects", ({ claims }) => {
       const owner = requireUser(claims);

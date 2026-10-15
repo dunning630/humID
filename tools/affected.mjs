@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 
 const APPS = ["ios", "android", "macos", "windows", "linux"];
-const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery", "access"];
+const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery", "access", "keyshare"];
 const SERVICES = [...NODE_SERVICES, "edge"];
 
 // Which shared package feeds which service image. Every package also feeds the

@@ -8,7 +8,7 @@ face or fingerprint check. Three parts:
 |---|---|---|
 | **App** | `apps/mobile` | iOS and Android (Tauri 2), plus an installable web app. Brand: humidsecure.ai. |
 | **Transit** | `packages/htp` | HTP/1: hybrid ML-KEM-1024 + X25519 handshake, AES-256-GCM frames, biometric step-up proofs, inside TLS 1.3. |
-| **Server** | `services/` | Seven small services: edge, gateway, identity, vault, ledger, recovery, access. Docker compose. |
+| **Server** | `services/` | Eight small services: edge, gateway, identity, vault, ledger, recovery, access, keyshare. Docker compose. |
 
 Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
@@ -49,6 +49,9 @@ and "Use a demo access code" pays for a new HumID.
 - **Create** a HumID: bind it to your face or fingerprint, get a seal card.
   Every check is live: your phone's secure chip signs each one, and the server
   verifies it. A PIN or password never unlocks anything.
+- **Split keys:** every new document also needs its own key from a separate
+  service, released one document at a time inside a live check, so spyware
+  that copies your keys off the phone still opens nothing on its own.
 - **Seal** photos, PDFs and files; search and sort them by category. The
   server never learns their names.
 - **Scan an ID:** photograph a driver's license, passport or ID card and
@@ -84,7 +87,7 @@ packages/            independently versioned modules
   idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
-services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access
+services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare
 deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests
 tools/               dev server (with demo passports), change detection for CI, public-log cosigner

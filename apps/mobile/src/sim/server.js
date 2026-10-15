@@ -111,6 +111,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   const st = (await load("state")) || { accounts: {}, devices: {}, objects: {}, ledger: {}, leaves: [], checkpoints: {}, cards: {}, settings: {} };
   // Anonymous payment, as the access service does it: codes by hash, spent passes by hash, no accounts.
   st.access ||= { codes: {}, spent: {} };
+  // Split keys, as the keyshare service keeps them: by document, apart from the envelopes.
+  st.keyshare ||= {};
   let passJwk = await load("passKey");
   if (!passJwk) { passJwk = (await newSimIssuerKey()).jwk; await save("passKey", passJwk); }
   const passKey = simIssuerKey(passJwk);
@@ -378,7 +380,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     needStepUp(su, "Closing your identity");
     const a = account(s);
     let n = 0;
-    for (const o of Object.values(st.objects)) if (o.owner === a.id) { delete st.objects[o.id]; tx(db, "blobs", "readwrite", (b) => b.delete(o.id)); n++; }
+    for (const o of Object.values(st.objects)) if (o.owner === a.id) { delete st.objects[o.id]; delete st.keyshare[o.id]; tx(db, "blobs", "readwrite", (b) => b.delete(o.id)); n++; }
     record(a.id, "vault.erased", { count: n, proof: su.proof });
     delete st.cards[a.id];
     a.status = "closed";
@@ -415,11 +417,18 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       checks.push(pass("Sealed during a live biometric match", "the secure chip signed this exact ciphertext"));
     }
     const index = indexOf(headers);
+    let share = null;
+    if (headers["x-humid-share"]) {
+      try { share = unb64u(String(headers["x-humid-share"])); } catch {}
+      if (!share || share.length !== 32) throw fail(400, "bad_share", "A document key is 32 bytes.");
+      checks.push(pass("Its second key went to the keyshare service", "the vault never sees it; the account keys alone can't open this document"));
+    }
     if (usage(s.subject).bytes + body.length > QUOTA) throw fail(507, "quota_exceeded", "Your vault is full");
     const id = crypto.randomUUID(), t = iso();
+    if (share) st.keyshare[id] = { owner: s.subject, share: b64u(share) };
     await tx(db, "blobs", "readwrite", (b) => b.put(body, id));
     st.objects[id] = { id, owner: s.subject, size: body.length, index, sealedAt: v.manifest.created, uploadedAt: t, updatedAt: t, method: v.manifest.interrupt?.method || null, assurance: v.manifest.interrupt?.assurance || null };
-    record(s.subject, "object.sealed", { id, size: body.length, checks: checks.length });
+    record(s.subject, "object.sealed", { id, size: body.length, split: !!share, checks: checks.length });
     report("Document stored", checks, { kind: "seal" });
     return [201, objView(st.objects[id])];
   }, { auth: true });
@@ -427,9 +436,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   route(`GET`, `/vault/objects/${OBJ}`, async (s, r, su, m) => {
     needStepUp(su, "Opening a document");
     const o = own(s, m[1]);
-    record(s.subject, "object.opened", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance });
-    report("Document released", su.checks, { kind: "open", quiet: true });
-    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size) }];
+    const k = st.keyshare[o.id];
+    record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance });
+    report("Document released", [...su.checks, ...(k ? [pass("Its second key released for this document only", "inside this same live check")] : [])], { kind: "open", quiet: true });
+    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(k ? { "x-humid-share": k.share } : {}) }];
   }, { auth: true });
 
   route("PATCH", `/vault/objects/${OBJ}`, (s, r, su, m, body, headers) => {
@@ -443,6 +453,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     needStepUp(su, "Deleting a document");
     const o = own(s, m[1]);
     delete st.objects[o.id];
+    delete st.keyshare[o.id];
     await tx(db, "blobs", "readwrite", (b) => b.delete(o.id));
     record(s.subject, "object.deleted", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance });
     return [200, { deleted: o.id }];
@@ -585,7 +596,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   async function fetchFn(input, init = {}) {
     const path = new URL(String(input), "sim://humid").pathname;
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90)); // a little network latency
-    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass" } });
+    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass", splitKeys: true } });
     if (path.endsWith("/htp/v1/hello")) {
       try { return jsonRes(200, htp.hello(JSON.parse(init.body))); }
       catch (e) { return jsonRes(e.status || 400, { error: e.code || "handshake_failed", message: e.message }); }
