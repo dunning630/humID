@@ -63,6 +63,21 @@ test("seal, open and delete: envelope signature, live seal, and step-ups over th
   assert.equal((await phone.list()).items.length, 0);
 });
 
+test("split keys: the account keys alone open nothing; the key comes only with a step-up", async () => {
+  const { sealSplitFor } = await import("./e2e/holder.js");
+  const { splitUnwrap, isSplit } = await import("@humid/crypto");
+  assert.equal((await phone.server()).policy.splitKeys, true);
+  const s = await sealSplitFor(alice, "deed.txt", "the deed");
+  const id = (await phone.upload(s.envelope, s.index, s.share)).id;
+  assert.ok(last("seal").checks.some((c) => /second key/.test(c.label)));
+  await assert.rejects(phone.downloadWithShare(id), (e) => e.code === "step_up_required");
+  const got = await phone.downloadWithShare(id, alice.stepUp);
+  const outer = await alice.S.open(got.envelope, alice.keys);
+  assert.ok(isSplit(outer.meta));
+  assert.equal(new TextDecoder().decode((await splitUnwrap(outer.bytes, got.share)).bytes), "the deed");
+  await phone.remove(id, alice.stepUp);
+});
+
 test("history and the public log verify on the phone; duress locks sensitive changes", async () => {
   const l = await phone.ledger();
   assert.equal(l.ok, true, l.reason);

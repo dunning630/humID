@@ -22,3 +22,6 @@ export const suiteForEnvelope = (envelope) => suite(unpack(envelope).manifest.su
 export const supportedSuites = () => [...SUITES.keys()];
 
 export const random = (n) => globalThis.crypto.getRandomValues(new Uint8Array(n));
+
+// Split keys: documents that also need a per-document key from the keyshare service.
+export { splitWrap, splitUnwrap, isSplit, SPLIT_TYPE, SHARE_BYTES } from "./split.js";

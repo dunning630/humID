@@ -17,7 +17,7 @@
 
 import { batch } from "@preact/signals";
 import { toB64, fromB64, toHex, MEDIA_TYPE, EXTENSION } from "@humid/codec";
-import { suite, random } from "@humid/crypto";
+import { suite, random, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
 import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE, DEMO_BUILD } from "@humid/gate";
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
@@ -539,20 +539,30 @@ export async function addIdRecord(record, name) {
 async function sealAndStore({ bytes, type, name: finalName, category, extra = {} }) {
   const id = S.identity.value;
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
+  let share = null, prepared;
   try {
     // Encrypt first (public keys only), then one live check signs the ciphertext's hash
     // in hardware and releases the key that signs the envelope.
     const Suite = suite(id.suite);
-    const prepared = await Suite.prepareSeal({ bytes, name: finalName, type }, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
     const size = bytes.length;
+    const plainHash = toHex(Suite.sha3_512(bytes));
+    // Split keys: the document is first encrypted under its own key, which goes to the
+    // keyshare service and is forgotten here. The account keys alone then open nothing.
+    if (S.server.value?.policy?.splitKeys) {
+      const w = await splitWrap({ bytes, name: finalName, type });
+      wipe(bytes);
+      bytes = w.file.bytes; share = w.share;
+      prepared = await Suite.prepareSeal(w.file, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
+    } else prepared = await Suite.prepareSeal({ bytes, name: finalName, type }, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
     wipe(bytes); bytes = null;
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
-      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash: sealed.plainHash, ...extra });
+      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sheet.value = { ...S.sheet.value, stage: "upload" };
-    await api.upload(envelope, index);
+    await api.upload(envelope, index, share);
+    wipe(share); share = null;
     S.sheet.value = { ...S.sheet.value, stage: "done" };
     await refresh();
     await sleep(650);
@@ -560,7 +570,7 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
     toast(`${finalName} sealed. Only your face or fingerprint can open it.`);
     return true;
   } catch (e) {
-    wipe(bytes);
+    wipe(bytes, share);
     S.sheet.value = { ...S.sheet.value, stage: null };
     if (!cancelled(e)) toast(friendly(e), "error");
     return false;
@@ -571,9 +581,12 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
 async function fetchPlain(item, purpose, label) {
   return withStepUp("download", [item.id], purpose, label, async ({ keys, proof, Suite }) => {
     showInterrupt({ progress: 0.65, message: "Fetching sealed copy over HTP/1…" });
-    const env = await api.download(item.id, proof);
-    showInterrupt({ progress: 0.85, message: "Verifying ML-DSA-87 signature and decrypting…" });
-    return Suite.open(env, keys);
+    const { envelope, share } = await api.downloadWithShare(item.id, proof);
+    showInterrupt({ progress: 0.85, message: share ? "Verifying, then opening with both keys…" : "Verifying ML-DSA-87 signature and decrypting…" });
+    const out = await Suite.open(envelope, keys);
+    if (!isSplit(out.meta)) { wipe(share); return out; }
+    try { return await splitUnwrap(out.bytes, share); }
+    finally { wipe(out.bytes, share); }
   });
 }
 

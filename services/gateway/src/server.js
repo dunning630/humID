@@ -63,10 +63,12 @@ const ROUTES = [
   { m: "DELETE", p: re(`/identity/devices/(${DEV_RE})`), h: "removeDevice", auth: true, guard: true },
 
   { m: "GET", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true },
-  { m: "POST", p: re("/vault/objects"), to: "vault", path: "/objects", auth: true, event: "object.sealed" },
-  { m: "GET", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.opened", audited: true },
+  // Split keys: upload takes the document key off the request before the vault sees it;
+  // download adds it back from the keyshare service, after the access is in the ledger.
+  { m: "POST", p: re("/vault/objects"), h: "upload", auth: true },
+  { m: "GET", p: re(`/vault/objects/(${OBJ_RE})`), h: "download", auth: true },
   { m: "PATCH", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.updated" },
-  { m: "DELETE", p: re(`/vault/objects/(${OBJ_RE})`), to: "vault", path: "/objects/$1", auth: true, event: "object.deleted", audited: true },
+  { m: "DELETE", p: re(`/vault/objects/(${OBJ_RE})`), h: "removeObject", auth: true },
 
   { m: "GET", p: re("/ledger/events"), to: "ledger", path: "/events", auth: true },
   // the public transparency log, as the holder's phone checks it
@@ -118,6 +120,7 @@ const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try agai
 
 const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
+const SHARE_HEADER = "x-humid-share"; // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
 
 class Buckets {
   constructor(capacity, perMs) { this.capacity = capacity; this.perMs = perMs; this.m = new Map(); }
@@ -143,6 +146,7 @@ export function createGateway({
     ledger: env("LEDGER_URL", "http://ledger:8083"),
     recovery: env("RECOVERY_URL", "http://recovery:8084"),
     access: env("ACCESS_URL", "http://access:8085"),
+    keyshare: env("KEYSHARE_URL", "http://keyshare:8086"),
   },
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
@@ -231,7 +235,75 @@ export function createGateway({
 
   /* ---------- handlers (run inside the encrypted channel) ---------- */
 
+  const denied = (s, path, res) => recordQuietly(s.subject, "access.denied", { path: path.replace(/[0-9a-f-]{36}/, ":id"), reason: safeJson(res.body)?.error || "forbidden" });
+
   const handlers = {
+    // Seal: the envelope goes to the vault, its document key (if split) to keyshare. If the
+    // key can't be stored, the upload is undone: a document must never exist without its key.
+    async upload(s, body, stepUp, m, route, meta) {
+      const h = meta.h || {};
+      let share = null;
+      if (h[SHARE_HEADER]) {
+        try { share = unb64u(String(h[SHARE_HEADER])); } catch {}
+        if (!share || share.length !== 32) throw new HttpError(400, "bad_share", "A document key is 32 bytes.");
+      }
+      const claims = claimsFor(s, stepUp ? { stepUp } : {});
+      const headers = {};
+      for (const k of FORWARD_REQ_HEADERS) if (h[k]) headers[k] = String(h[k]);
+      const res = await internal("vault", "POST", "/objects", { claims, body, headers });
+      if (res.status !== 201) {
+        if (res.status === 403) await denied(s, "/vault/objects", res);
+        return res;
+      }
+      const out = safeJson(res.body);
+      if (share) {
+        const put = await internalJson("keyshare", "PUT", `/internal/shares/${out.id}`, { claims, json: { share: b64u(share) } }).catch(() => ({ status: 503 }));
+        share.fill(0);
+        if (put.status !== 201) {
+          await internalJson("vault", "DELETE", `/internal/objects/${out.id}`, { claims }).catch((e) => log.warn("upload rollback failed", { err: e.message }));
+          throw new HttpError(503, "keyshare_unavailable", "Your document's key couldn't be stored, so it wasn't saved. Try again.");
+        }
+      }
+      await recordQuietly(s.subject, "object.sealed", { id: out.id, size: body.length, split: !!share, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      return res;
+    },
+
+    // Open: the envelope from the vault and, for a split document, its key from keyshare,
+    // both under this one live step-up. Recorded in the ledger before either is released.
+    async download(s, body, stepUp, m) {
+      const id = m[1], path = `/vault/objects/${id}`;
+      const claims = claimsFor(s, stepUp ? { stepUp } : {});
+      const res = await internal("vault", "GET", `/objects/${id}`, { claims });
+      if (res.status !== 200) {
+        if (res.status === 403) await denied(s, path, res);
+        return res;
+      }
+      const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
+      if (ks.status !== 200 && ks.status !== 404) {
+        if (ks.status === 403) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
+        throw new HttpError(ks.status === 429 ? 429 : ks.status === 403 ? 403 : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+      }
+      const split = ks.status === 200;
+      await record(s.subject, "object.opened", { id, split, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      if (split) res.headers[SHARE_HEADER] = ks.data.share;
+      return res;
+    },
+
+    // Delete: the envelope, then its key, under the same step-up.
+    async removeObject(s, body, stepUp, m) {
+      const id = m[1], path = `/vault/objects/${id}`;
+      const claims = claimsFor(s, stepUp ? { stepUp } : {});
+      const res = await internal("vault", "DELETE", `/objects/${id}`, { claims });
+      if (res.status !== 200) {
+        if (res.status === 403) await denied(s, path, res);
+        return res;
+      }
+      await record(s.subject, "object.deleted", { id, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      const ks = await internalJson("keyshare", "DELETE", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
+      if (ks.status !== 200 && ks.status !== 404) log.warn("keyshare delete failed; the key is useless without its envelope", { status: ks.status });
+      return res;
+    },
+
     // The access service's published pass keys (at most two; the app checks).
     async passKeys() {
       const r = await internalJson("access", "GET", "/internal/keys");
@@ -359,6 +431,7 @@ export function createGateway({
       const wiped = await internalJson("vault", "DELETE", "/objects", { claims });
       if (wiped.status !== 200) return { status: wiped.status, json: wiped.data };
       await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
+      await internalJson("keyshare", "DELETE", "/shares", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
@@ -490,7 +563,7 @@ export function createGateway({
       throw busy();
     }
 
-    if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p), route);
+    if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p), route, meta);
 
     const headers = {};
     for (const k of FORWARD_REQ_HEADERS) if (meta.h?.[k]) headers[k] = String(meta.h[k]);
@@ -555,7 +628,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, ...(passBuyUrl ? { passBuyUrl } : {}) } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(passBuyUrl ? { passBuyUrl } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

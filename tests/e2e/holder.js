@@ -89,6 +89,17 @@ export async function sealFor(h, name, text) {
   return { envelope, index };
 }
 
+/** Like sealFor, but split: the document also needs its own key, which the caller sends with the upload. */
+export async function sealSplitFor(h, name, text) {
+  const { splitWrap } = await import("@humid/crypto");
+  const bytes = new TextEncoder().encode(text);
+  const { file, share } = await splitWrap({ bytes, name, type: "text/plain" });
+  const p = await h.S.prepareSeal(file, h.pub);
+  const { envelope } = h.S.finishSeal(p, h.keys, { identityCommit: h.commit, interrupt: h.sealInterrupt(p.ciphertextHash) });
+  const index = await h.S.sealIndex(h.indexKey, { name, type: "text/plain", size: bytes.length, category: "personal", split: true });
+  return { envelope, index, share };
+}
+
 /** Seal raw bytes (a seed, a share) to someone's KEM keys, signed by h's account key. */
 export async function sealBytes(h, bytes, to, name = "humid-key-material") {
   const { envelope } = await h.S.seal({ bytes, name, type: "application/x-humid-key" }, h.keys, to, { identityCommit: h.commit, interrupt: { ...h.interrupt, purpose: "handover", at: new Date().toISOString() } });
