@@ -2,6 +2,9 @@
 
 ## 1.2.0
 
+- **Anonymous payment for new accounts.** A new HumID needs an access pass, bought with an access code and signed blind, so no one, HumID included, can link the payment to the account. Print codes to sell with `humid mint 50 batch-name`; `humid set HUMID_PASS_BUY_URL=https://…` links the app to your shop; `humid set HUMID_REGISTRATION=open` turns payment off. See docs/ANONYMITY.md.
+- A sixth service, **access**, runs in the same background task with its own database (`data\access`): access-code hashes, pass keys and spent passes, dated by day, with no accounts.
+- **Upgrading from 1.1.0:** `humid install` adds the new settings with payment **on**. Mint codes before you tell anyone to sign up, or set `HUMID_REGISTRATION=open`.
 - The web app it serves is HumID 1.4.0, with **Scan an ID**: driver's license barcodes, passport and ID card MRZs, and chip copies with the photo, sealed as one vault record. See docs/ID-SCANNING.md.
 - The local edge allows WebAssembly (`'wasm-unsafe-eval'` in the content security policy) for the document scanners, and serves `.wasm` as `application/wasm`.
 
