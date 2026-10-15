@@ -1,6 +1,6 @@
 // Boots the seven HumID services on random local ports with throwaway data
 // directories — the same code that runs in the containers.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { newInternalKeys } from "@humid/svc";
@@ -18,8 +18,9 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
-export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120 } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "humid-e2e-"));
+export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "" } = {}) {
+  // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
+  const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
   const ik = newInternalKeys();
   const url = (svc) => `http://127.0.0.1:${svc.server.address().port}`;
   const identity = createIdentity({
@@ -47,7 +48,7 @@ export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolic
     async stop() {
       await Promise.all([gateway, identity, vault, ledger, recovery, access, keyshare].map((s) => s.stop()));
       access.close(); keyshare.close();
-      rmSync(root, { recursive: true, force: true });
+      if (!dataDir) rmSync(root, { recursive: true, force: true });
     },
   };
 }

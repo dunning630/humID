@@ -41,6 +41,7 @@ const passportFor = (name) => {
   return passports.get(key);
 };
 const stack = await startStack({
+  dataDir: process.env.HUMID_DEV_DATA || "", // keep accounts and the server key between runs
   recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), devicePolicy: process.env.HUMID_DEVICE_POLICY || "demo",
   cscas: [devCsca.pem], stations: ["*"], duressCoolOffMs: Number(process.env.HUMID_DURESS_COOLOFF_MS || 60_000),
   // Like production, a new HumID needs an access pass; "Use a demo access code" mints one here.
@@ -105,7 +106,7 @@ http.createServer(async (req, res) => {
     res.end(body);
   } catch { res.writeHead(404); res.end(); }
 }).listen(PORT, () => {
-  console.log(`HumID dev: http://localhost:${PORT}  (gateway ${stack.baseUrl}, server fingerprint ${stack.gateway.htp.fingerprint})`);
+  console.log(`HumID dev: http://localhost:${PORT}  (gateway ${stack.baseUrl}, server fingerprint ${stack.gateway.htp.fingerprint}, key id ${stack.gateway.htp.kid})`);
 });
 
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, async () => { await stack.stop(); process.exit(0); });
