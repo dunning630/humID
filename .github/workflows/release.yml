@@ -5,6 +5,8 @@ name: Release apps
 #
 #   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
 #   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
+#   Or tick "Publish apps" when you run it: a pre-release tagged app-v<apps/mobile version>
+#   on the run's commit, with each installer and the whole bundle as one zip.
 #   Every run also leaves one artifact, HumID-<version>-<server>: a "HumID <version>" folder
 #   with a folder per app (Android, iPhone, Mac, Windows, Linux, Windows Server).
 #
@@ -34,6 +36,10 @@ on:
         required: true
       publish_server:
         description: "With server-windows: publish it as a release (tag server-win-v<version>)"
+        type: boolean
+        default: false
+      publish_apps:
+        description: "Publish the apps as a pre-release (tag app-v<apps/mobile version> on this commit)"
         type: boolean
         default: false
       server_url:
@@ -287,6 +293,8 @@ jobs:
     needs: [plan, build, server-windows]
     if: always() && needs.plan.result == 'success' # bundle whatever built, even if one platform failed
     runs-on: ubuntu-22.04
+    outputs:
+      name: ${{ steps.bundle.outputs.name }}
     env:
       HUMID_SERVER_URL: ${{ inputs.server_url || vars.HUMID_SERVER_URL }}
       HUMID_SERVER_KID: ${{ inputs.server_kid || vars.HUMID_SERVER_KID }}
@@ -303,13 +311,45 @@ jobs:
           path: bundle/
 
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [plan, build, bundle]
+    # A tag push: a draft with every platform. "Publish apps": only if every platform built.
+    if: always() && needs.bundle.result == 'success' && (startsWith(github.ref, 'refs/tags/app-v') || (inputs.publish_apps == true && needs.build.result == 'success'))
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=$(node -p "require('./apps/mobile/package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
-        with: { path: dist, merge-multiple: true }
+        with: { pattern: "humid-*", path: dist, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ needs.bundle.outputs.name }}", path: "bundle" }
+      - name: The whole bundle as one zip
+        run: |
+          (cd bundle && zip -qr "../dist/${{ needs.bundle.outputs.name }}.zip" .)
+          ls -la dist
+      - name: Release notes
+        run: |
+          v='${{ steps.v.outputs.version }}'
+          notes=$(awk -v v="## $v" '$0==v{f=1;next} /^## /{f=0} f' apps/mobile/CHANGELOG.md)
+          cat > notes.md <<EOF
+          HumID apps $v, pinned to the server named in the bundle's README.
+
+          **Download:** \`${{ needs.bundle.outputs.name }}.zip\` has every app in its own folder, or take one installer below.
+          **Android:** open the \`.apk\` on the phone and allow installing from that app. **Windows:** run the \`-setup.exe\`.
+          **Linux:** \`.AppImage\`, \`.deb\` or \`.rpm\`. **Mac:** the unsigned \`.zip\` needs right-click > Open (Touch ID needs a signed build).
+          **iPhone:** not included until Apple signing is set up.
+
+          $notes
+
+          Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
+          EOF
+          cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: ${{ startsWith(github.ref, 'refs/tags/app-v') }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/app-v') }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/app-v') && github.ref_name || format('app-v{0}', steps.v.outputs.version) }}
+          target_commitish: ${{ github.sha }}
+          name: HumID apps ${{ steps.v.outputs.version }}
+          body_path: notes.md
           files: dist/*
