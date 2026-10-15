@@ -2,7 +2,7 @@
   "name": "@humid/windows-server",
   "version": "1.2.0",
   "private": true,
-  "description": "HumID Server for Windows: the five HumID services and a local edge in one background task, reached through a secure tunnel.",
+  "description": "HumID Server for Windows: the six HumID services and a local edge in one background task, reached through a secure tunnel.",
   "type": "module",
   "license": "UNLICENSED"
 }

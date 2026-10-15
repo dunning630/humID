@@ -62,8 +62,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID set HUMID_DEVICE_POLICY=biometric
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node tests/smoke.mjs http://127.0.0.1:8480
+          $code = (powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID mint 1 ci | Select-String 'HA-[0-9A-Z-]+' | Select-Object -Last 1).Matches.Value
+          if (-not $code) { throw "humid mint printed no access code" }
+          $out = node tests/smoke.mjs http://127.0.0.1:8480 $code
+          $out
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
           powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Log on failure
