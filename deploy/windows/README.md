@@ -21,7 +21,7 @@ and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
 
 | File | |
 |---|---|
-| `humid-server.mjs` | The six services (identity, vault, ledger, recovery, access, gateway) and a local edge, bundled into one file. The same service code as the Docker images. |
+| `humid-server.mjs` | The seven services (identity, vault, ledger, recovery, access, keyshare, gateway) and a local edge, bundled into one file. The same service code as the Docker images. |
 | `app/` | The web app the edge serves (release build: no demo mode). |
 | `humid.ps1` | Install, update, start / stop, status, logs, settings, backup / restore, expose, uninstall. Windows PowerShell 5.1 compatible. |
 | `Install HumID Server.cmd`, `Uninstall HumID Server.cmd` | Double-click launchers that ask for administrator rights. |

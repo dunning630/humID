@@ -227,14 +227,22 @@ export class HumidApi {
   list() { return this.#json("GET", "/vault/objects"); }
 
   /** Upload an envelope sealed on this device, plus its encrypted index entry. */
-  upload(envelope, indexBlob) {
-    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob) } });
+  /** Upload a sealed envelope. `share`: a split document's key (32 bytes), stored by the keyshare service, never the vault. */
+  upload(envelope, indexBlob, share) {
+    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob), ...(share ? { "x-humid-share": b64u(share) } : {}) } });
   }
 
   rename(id, indexBlob) { return this.#json("PATCH", `/vault/objects/${id}`, { headers: { "x-humid-index": b64u(indexBlob) } }); }
 
   /** Fetch ciphertext. stepUp({ message }) must run a fresh biometric check and return { sig, interrupt }. */
   async download(id, stepUp) { return (await this.#call("GET", `/vault/objects/${id}`, { stepUp })).body; }
+
+  /** Envelope plus, for a split document, its key, released under the same step-up. share is null for older documents. */
+  async downloadWithShare(id, stepUp) {
+    const r = await this.#call("GET", `/vault/objects/${id}`, { stepUp });
+    const h = r.headers?.["x-humid-share"];
+    return { envelope: r.body, share: h ? unb64u(String(h)) : null };
+  }
 
   remove(id, stepUp) { return this.#json("DELETE", `/vault/objects/${id}`, { stepUp }); }
 

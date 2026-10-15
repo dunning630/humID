@@ -15,7 +15,7 @@
 // create an account: pass an access code (argv[3] or HUMID_SMOKE_ACCESS_CODE),
 // minted with `docker compose run --rm access server.mjs mint 1 smoke`.
 import { HumidApi } from "@humid/api";
-import { suite } from "@humid/crypto";
+import { suite, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
 import { ml_dsa87, toHex, sha3_256, random } from "@humid/htp";
 import { newCard, cardTag, sealCard } from "@humid/recovery";
 
@@ -66,10 +66,13 @@ const s = await enrol();
 step(`registered ${s.id} on device ${s.device}`);
 
 const text = `smoke ${new Date().toISOString()}`;
-const { envelope } = await S.seal({ bytes: new TextEncoder().encode(text), name: "smoke.txt", type: "text/plain" }, keys, pub, { identityCommit: commit, interrupt });
+// Split keys when the server keeps them: the document also needs its own key from keyshare.
+const split = srv.policy?.splitKeys === true;
+const wrapped = split ? await splitWrap({ bytes: new TextEncoder().encode(text), name: "smoke.txt", type: "text/plain" }) : null;
+const { envelope } = await S.seal(wrapped ? wrapped.file : { bytes: new TextEncoder().encode(text), name: "smoke.txt", type: "text/plain" }, keys, pub, { identityCommit: commit, interrupt });
 const idx = await S.sealIndex(S.indexKey(seed), { name: "smoke.txt", type: "text/plain", category: "other" });
-const item = await api.upload(envelope, idx);
-step(`uploaded ${item.id} (${item.size} bytes sealed)`);
+const item = await api.upload(envelope, idx, wrapped?.share);
+step(`uploaded ${item.id} (${item.size} bytes sealed${split ? ", split: its key went to keyshare" : ""})`);
 
 const card = newCard();
 await api.setCard({ tag: cardTag(card.secret), blob: await sealCard(card.secret, seed, s.id) }, stepUpBy(phone));
@@ -89,10 +92,16 @@ const tabletKeys = S.deriveKeys(random(64));
 const t = await tablet.enrollDevice({ account: r.account, via: "link", device: device(tabletKeys), sign: async (m) => ({ sigAccount: sign(m, keys), sigDevice: sign(m, tabletKeys) }) });
 step(`second device ${t.device} joined with code ${code.slice(0, 4)}…`);
 
-const back = await tablet.download(item.id, stepUpBy(tabletKeys));
-const opened = await S.open(back, keys);
+const back = await tablet.downloadWithShare(item.id, stepUpBy(tabletKeys));
+let opened = await S.open(back.envelope, keys);
+if (split) {
+  if (!isSplit(opened.meta)) throw new Error("expected a split document");
+  // the account keys alone open only the sealed inner layer
+  if (new TextDecoder().decode(opened.bytes).includes(text)) throw new Error("split document opened with the account keys alone");
+  opened = await splitUnwrap(opened.bytes, back.share);
+}
 if (new TextDecoder().decode(opened.bytes) !== text) throw new Error("round trip mismatch");
-step("opened on the second device with a step-up proof and decrypted on the client");
+step(`opened on the second device with a step-up proof and decrypted on the client${split ? " with both keys" : ""}`);
 
 const l = await api.ledger();
 if (!l.ok) throw new Error(`ledger did not verify: ${l.reason}`);

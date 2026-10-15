@@ -7,8 +7,8 @@ Two ways:
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
 
-Seven small containers: **edge** (Caddy, the only one on the internet),
-**gateway**, **identity**, **vault**, **ledger**, **recovery** and **access**. They run on
+Eight small containers: **edge** (Caddy, the only one on the internet),
+**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access** and **keyshare**. They run on
 a private network with no route to the internet, read-only, as non-root.
 
 ## What you need
@@ -84,9 +84,11 @@ builds from the checked-out source instead.
 | `identity-data` | accounts and device public keys | Nobody can sign in. |
 | `ledger-data` | access history and the ledger signing key | History is gone; new history starts. |
 | `recovery-data` | seal-card pieces, witnesses' pieces, ID-anchor parts and `anchor-secret.bin` | Recovery stops working; devices still do. Without `anchor-secret.bin` no ID anchor opens. |
+| `keyshare-data` | each split document's key, and `share-key.bin` | **Every split document becomes unopenable, for good.** Back it up with the same care as the vault, but keep it on different storage from `vault-data`. |
 | `access-data` | access-code hashes, pass signing keys, spent passes | Unsold and unswapped codes stop working, and passes not yet spent are refused. |
 
-Back up all six volumes together, encrypted, and test a restore.
+Back up all seven volumes, encrypted, and test a restore. Keep `keyshare-data`'s
+backups apart from `vault-data`'s: together they're what split keys keep apart.
 
 ## Selling access (anonymous payment)
 

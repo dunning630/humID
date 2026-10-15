@@ -49,7 +49,9 @@ export class HtpClient {
     // Older servers don't say: they had no payment step, so "open".
     const registration = j.policy?.registration === "pass" ? "pass" : "open";
     const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(j.policy?.passBuyUrl || "")) ? j.policy.passBuyUrl : null;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl } };
+    // Split keys: only a server with a keyshare service keeps a document's second key. An older one would drop it.
+    const splitKeys = j.policy?.splitKeys === true;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys } };
     return this.server;
   }
 
