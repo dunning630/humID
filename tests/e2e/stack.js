@@ -1,4 +1,4 @@
-// Boots the six HumID services on random local ports with throwaway data
+// Boots the seven HumID services on random local ports with throwaway data
 // directories — the same code that runs in the containers.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { createLedger } from "../../services/ledger/src/server.js";
 import { createRecovery } from "../../services/recovery/src/server.js";
 import { createGateway } from "../../services/gateway/src/server.js";
 import { createAccess } from "../../services/access/src/server.js";
+import { createKeyshare } from "../../services/keyshare/src/server.js";
 import { ROOTS, IOS_APP_ID } from "./holder.js";
 
 /**
@@ -17,7 +18,7 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
-export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "" } = {}) {
+export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "humid-e2e-"));
   const ik = newInternalKeys();
   const url = (svc) => `http://127.0.0.1:${svc.server.address().port}`;
@@ -32,8 +33,9 @@ export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolic
   const ledger = createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, cosigners });
   const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations });
   const access = createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: passKeyBits });
-  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start()]);
-  const upstreams = { identity: url(identity), vault: url(vault), ledger: url(ledger), recovery: url(recovery), access: url(access) };
+  const keyshare = createKeyshare({ port: 0, dataDir: join(root, "keyshare"), internalPk: ik.pk, releasesPerHour: shareReleasesPerHour });
+  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start(), keyshare.start()]);
+  const upstreams = { identity: url(identity), vault: url(vault), ledger: url(ledger), recovery: url(recovery), access: url(access), keyshare: url(keyshare) };
   const gateway = createGateway({
     port, dataDir: join(root, "gateway"), internalSk: ik.sk,
     upstreams,
@@ -41,10 +43,10 @@ export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolic
   });
   await gateway.start();
   return {
-    baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, root, upstreams, internalSk: ik.sk,
+    baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, keyshare, root, upstreams, internalSk: ik.sk,
     async stop() {
-      await Promise.all([gateway, identity, vault, ledger, recovery, access].map((s) => s.stop()));
-      access.close();
+      await Promise.all([gateway, identity, vault, ledger, recovery, access, keyshare].map((s) => s.stop()));
+      access.close(); keyshare.close();
       rmSync(root, { recursive: true, force: true });
     },
   };

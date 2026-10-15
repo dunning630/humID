@@ -22,8 +22,10 @@ check on one of the holder's devices. Three parts:
 │   ├──► ledger     signed hash-chained log         (SQLite)    │
 │   ├──► recovery   device links, card + contact    (SQLite)    │
 │   │               backups, timed releases                     │
-│   └──► access     access codes, blind-signed      (SQLite)    │
-│                   passes, spent passes: no accounts           │
+│   ├──► access     access codes, blind-signed      (SQLite)    │
+│   │               passes, spent passes: no accounts           │
+│   └──► keyshare   each split document's second    (SQLite)    │
+│                   key; never sees envelopes                   │
 │       internal network: no internet egress                   │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -112,6 +114,7 @@ capabilities dropped.
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
 | **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
+| **keyshare** | gateway | one encrypted 256-bit key per split document, under `share-key.bin` | which documents exist and when each was opened. Never an envelope, name or account key. See [SECURITY.md](SECURITY.md#a-compromised-phone). |
 | **access** | gateway | access-code hashes, pass keys, spent-pass hashes, all dated by day | which codes were used, and how many passes were spent. Never an account. See [ANONYMITY.md](ANONYMITY.md). |
 
 **Internal trust.** The gateway signs a short-lived Ed25519 assertion (30 s,
@@ -119,6 +122,10 @@ audience-bound) for every internal call, naming the account, the device,
 key fingerprints and any step-up. Identity, vault, ledger and recovery verify
 it and accept nothing else, so a compromised edge can reach them on the
 network but cannot get them to do anything.
+
+**Split keys.** Since split keys, each document also needs its own key from
+keyshare, released inside the same live step-up that releases its envelope. A
+copy of the account keys opens nothing alone ([SECURITY.md](SECURITY.md#a-compromised-phone)).
 
 **Zero knowledge in the vault.** The vault checks each upload's ML-DSA-87
 signature, that the signer is the signed-in account, and that the recipient

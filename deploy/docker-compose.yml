@@ -45,6 +45,7 @@ services:
       LEDGER_URL: http://ledger:8083
       RECOVERY_URL: http://recovery:8084
       ACCESS_URL: http://access:8085
+      KEYSHARE_URL: http://keyshare:8086
       TRUST_PROXY: "1"
       # Which devices may join and sign in. Every check is a live face or fingerprint; never a PIN.
       #   attested  (default) phones whose secure chip proves each check (Android key attestation, Apple App Attest)
@@ -68,6 +69,7 @@ services:
       ledger: { condition: service_healthy }
       recovery: { condition: service_healthy }
       access: { condition: service_healthy }
+      keyshare: { condition: service_healthy }
 
   identity:
     <<: *service
@@ -141,6 +143,22 @@ services:
       <<: *health
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8085/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
+  # Split keys: each document's second key, released one document at a time inside a live
+  # step-up. Never sees envelopes; the vault never sees these keys. Put its volume on
+  # different storage from vault-data (docs/SECURITY.md#compromised-phone).
+  keyshare:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-keyshare:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: keyshare } }
+    environment:
+      <<: *env
+      PORT: "8086"
+      HUMID_SHARE_RELEASES_PER_HOUR: ${HUMID_SHARE_RELEASES_PER_HOUR:-120}
+    volumes: [keyshare-data:/data]
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8086/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
 networks:
   public: {}
   internal: { internal: true }
@@ -154,3 +172,4 @@ volumes:
   ledger-data: {}
   recovery-data: {}
   access-data: {}
+  keyshare-data: {}

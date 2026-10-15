@@ -1,4 +1,4 @@
-// HumID Server for Windows: the six HumID services and a local edge in one
+// HumID Server for Windows: the seven HumID services and a local edge in one
 // Node process, so a single background task runs the whole vault.
 //
 //   node humid-server.mjs run   [--root DIR] [--service]   run the server
@@ -29,6 +29,7 @@ import { createLedger } from "../../../services/ledger/src/server.js";
 import { createRecovery } from "../../../services/recovery/src/server.js";
 import { createGateway } from "../../../services/gateway/src/server.js";
 import { createAccess } from "../../../services/access/src/server.js";
+import { createKeyshare } from "../../../services/keyshare/src/server.js";
 import { readEnvFile, updateEnvFile, initialEnvText, validate, DEFAULTS } from "./config.mjs";
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
@@ -131,12 +132,15 @@ async function run({ service }) {
   // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
   const recovery = createRecovery({ port: 0, dataDir: data("recovery"), internalPk: pk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
   const access = createAccess({ port: 0, dataDir: data("access"), internalPk: pk });
-  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start()]);
+  // Split keys. On one PC the keyshare data sits beside the vault's: a stolen disk has both
+  // halves. The Docker deployment can keep it on separate storage (docs/SECURITY.md).
+  const keyshare = createKeyshare({ port: 0, dataDir: data("keyshare"), internalPk: pk });
+  await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start(), keyshare.start()]);
   const url = (s) => `http://${host.includes(":") ? `[${host}]` : host}:${s.server.address().port}`;
   const local = (s) => `http://127.0.0.1:${s.server.address().port}`;
   const gateway = createGateway({
     port: 0, dataDir: data("gateway"), internalSk: process.env.HUMID_INTERNAL_SK,
-    upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery), access: local(access) },
+    upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery), access: local(access), keyshare: local(keyshare) },
     trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
   });
   await gateway.start();

@@ -1,5 +1,13 @@
 # HumID Server for Windows
 
+## 1.3.0
+
+- **Split keys**, against spyware that reads a phone's memory during a face or fingerprint check. Every new document also needs its own key, kept by a seventh service, **keyshare** (`data\keyshare`), and released one document at a time inside the same live check that opens it. Copied account keys open nothing on their own. See docs/SECURITY.md, "A compromised phone".
+- `humid set HUMID_SHARE_RELEASES_PER_HOUR=120` caps how many documents one account can open per hour.
+- The web app it serves is HumID 1.5.0.
+- **Back up `data\keyshare` with the vault** (`humid backup` includes it): without it, split documents can't be opened. On one PC both halves sit on the same disk; the Docker deployment can keep them apart.
+- Documents sealed before this version keep opening as before; they aren't split.
+
 ## 1.2.0
 
 - **Anonymous payment for new accounts.** A new HumID needs an access pass, bought with an access code and signed blind, so no one, HumID included, can link the payment to the account. Print codes to sell with `humid mint 50 batch-name`; `humid set HUMID_PASS_BUY_URL=https://…` links the app to your shop; `humid set HUMID_REGISTRATION=open` turns payment off. See docs/ANONYMITY.md.

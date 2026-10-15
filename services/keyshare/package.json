@@ -1,0 +1,20 @@
+{
+  "name": "@humid/keyshare-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Split keys: the per-document key every split document also needs, released one document at a time inside a live step-up. Never sees envelopes.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "build": "node ../build-service.mjs keyshare"
+  },
+  "humid": {
+    "port": 8086
+  },
+  "dependencies": {
+    "@humid/svc": "^1.0.0",
+    "@humid/htp": "^1.1.0"
+  },
+  "license": "UNLICENSED"
+}
