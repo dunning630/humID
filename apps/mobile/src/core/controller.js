@@ -96,7 +96,13 @@ export function holdComplete() { holdWaiter?.resolve(); holdWaiter = null; }
 export function holdCancel() { holdWaiter?.reject(new Error(CANCELLED)); holdWaiter = null; }
 const waitForHold = (gate) => gate.needsHold ? new Promise((resolve, reject) => { holdWaiter = { resolve, reject }; }) : null;
 
+/** A short buzz when a check passes, a distinct one when it fails (Android; iPhones have no web vibration). */
+function haptic(ok) {
+  try { globalThis.navigator?.vibrate?.(ok ? 18 : [40, 70, 40]); } catch {}
+}
+
 async function endInterrupt(ok, message, ms) {
+  if (ok || message !== "The biometric check was cancelled.") haptic(ok);
   showInterrupt({ state: ok ? "verified" : "failed", needsHold: false, progress: 1, message });
   await sleep(ms);
   S.interrupt.value = null;
@@ -248,7 +254,18 @@ const gateClaim = (gate) => (gate.needsHold
 
 /* ---------------- enrolment: the first device ---------------- */
 
-export function startEnroll() { S.enrollStep.value = "connect"; S.view.value = "enroll"; if (!S.server.value) connectServer(); }
+/**
+ * App builds pin their server at build time, so there's no trust decision to ask a person
+ * to make: skip that step when the server answering is the pinned one. (Web and
+ * self-hosted builds without a pin still show it.)
+ */
+export const serverPinned = () => !!PINNED_KID && String(S.server.value?.kid || "").toLowerCase() === PINNED_KID.toLowerCase();
+
+export function startEnroll() {
+  S.enrollStep.value = serverPinned() ? (S.passNeeded.value ? "access" : "bind") : "connect";
+  S.view.value = "enroll";
+  if (!S.server.value) connectServer();
+}
 
 /* ---------------- anonymous payment: access code → access pass ---------------- */
 // The pass is signed blind (RFC 9474): the vault signs it without seeing it, so when
@@ -274,8 +291,7 @@ export async function redeemAccessCode(input) {
         saved = true;
       },
     });
-    await keepPass(pass);
-    toast("Access pass ready. It isn't linked to your access code, or to you.");
+    await keepPass(pass); // the screen shows "Access pass ready"; no toast on top of it
     return true;
   } catch (e) {
     // A definite refusal: nothing was signed, so the saved request is worthless.
@@ -933,7 +949,7 @@ export async function cancelRecovery(alert) {
 // Finishing is one more live check, in which the secure chip makes and
 // attests a fresh liveness key for the session that adds the device.
 
-export function startJoin() { S.joinStep.value = 0; S.joinMethod.value = null; S.joinStatus.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
+export function startJoin() { S.joinStep.value = serverPinned() ? 1 : 0; S.joinMethod.value = null; S.joinStatus.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
 
 /**
  * Bind this device and start the chosen route.

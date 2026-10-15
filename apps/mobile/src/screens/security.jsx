@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
   AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft,
-  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess,
+  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT,
 } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
@@ -102,7 +102,7 @@ export function Security() {
         <p class="small muted" style={{ marginTop: 8 }}>Lost a phone? Remove it here. It can't reach your vault after that, and nothing on it opens without your biometric.</p>
       </div>
 
-      <div class="card">
+      <div class="card" id="recovery">
         <div class="c-head"><h3>Recovery</h3>{rec && (rec.ready ? <span class="pill mint"><Icon name="check" />Ready</span> : <span class="pill amber">Needs {2 - Object.values(rec.proofs).filter(Boolean).length} more</span>)}</div>
         <p class="small muted" style={{ marginTop: 4 }}>If you lose every device, any two of these three prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
         {rec && <ProofMeter have={PROOFS.map((p) => p.id).filter((k) => rec.proofs[k])} />}
@@ -299,6 +299,7 @@ function CardInfoSheet() {
 }
 
 function CardSheet({ code }) {
+  const [ok, setOk] = useState(false);
   return (
     <Sheet onClose={close} label="Your recovery card">
       <div class="eyebrow">Your new seal card</div>
@@ -306,10 +307,13 @@ function CardSheet({ code }) {
       <p class="lede" style={{ marginTop: 10 }}>This is the only time HumID shows it. Your old card, if you had one, no longer works.</p>
       <CardBox code={code} />
       <div class="split" style={{ marginTop: 12 }}>
+        {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
         <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
         <button class="btn quiet sm" onClick={() => copyCard(code)}><Icon name="file" />Copy</button>
       </div>
-      <div class="actions"><button class="btn secure block" onClick={close}>I've stored it safely</button></div>
+      <CardConfirm code={code} onChange={setOk} />
+      <PrintableCard code={code} />
+      <div class="actions"><button class="btn secure block" disabled={!ok} onClick={close}>I've stored it safely</button></div>
     </Sheet>
   );
 }

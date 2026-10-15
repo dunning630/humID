@@ -8,6 +8,7 @@ import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
 import { DEMO_BUILD } from "@humid/gate";
 import { setDemoHolder, demoChipHint } from "./core/nfc.js";
+import { IN_APP } from "./core/config.js";
 
 export const fmtSize = (n) => n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 export const fmtDate = (t) => new Date(t).toLocaleDateString([], { month: "short", day: "numeric", year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
@@ -62,7 +63,7 @@ export function InterruptOverlay() {
 
 export function Toasts() {
   return (
-    <div class="toasts" role="status" aria-live="polite">
+    <div class={`toasts${S.view.value === "app" ? " above-tabs" : ""}`} role="status" aria-live="polite">
       {S.toasts.value.map((t) => (
         <div class="toast" data-kind={t.kind} key={t.id}>
           <Icon name={t.kind === "error" ? "alert" : t.kind === "warn" ? "info" : "check"} />
@@ -178,6 +179,48 @@ export function CardBox({ code }) {
     <div class="cardbox" role="group" aria-label="Recovery card">
       <div class="eyebrow">Recovery card</div>
       <div class="cardcode"><b>{prefix}</b>{groups.map((g, i) => <span key={i}>{g}</span>)}</div>
+    </div>
+  );
+}
+
+/**
+ * Checks the person really has a copy of their seal card: type back one random group.
+ * The usual pattern for recovery codes, and it catches a slip before it matters.
+ */
+export function CardConfirm({ code, onChange }) {
+  const groups = (code || "").split("-").slice(1);
+  const [n] = useState(() => 1 + Math.floor(Math.random() * Math.max(1, groups.length)));
+  const [v, setV] = useState("");
+  // Crockford base32: O reads as 0, I and L as 1, so a handwriting slip still matches.
+  const norm = (s) => String(s || "").toUpperCase().replace(/[^0-9A-Z]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
+  const ok = groups.length > 0 && norm(v) === norm(groups[n - 1]);
+  useEffect(() => { onChange?.(ok); }, [ok]);
+  return (
+    <div class="field" style={{ marginTop: 14 }}>
+      <label for="card-check">To check your copy, type group {n} of {groups.length}</label>
+      <input id="card-check" class="mono up" maxLength={7} autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXXX"
+        value={v} onInput={(e) => setV(e.currentTarget.value)} />
+      {ok ? <span class="hint ok"><Icon name="check" />That matches</span>
+        : norm(v).length >= 5 ? <span class="hint warn">That isn't group {n}. Check what you wrote.</span>
+        : <span class="hint">Write it down or print it. A saved file or a copy can sync to your cloud.</span>}
+    </div>
+  );
+}
+
+/** Printing works in a browser and in the Windows and Linux apps; phones and the Mac app have no print dialog here. */
+const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+export const CAN_PRINT = typeof window !== "undefined" && typeof window.print === "function"
+  && !/iPhone|iPad|iPod|Android/.test(ua) && !(IN_APP && /Macintosh/.test(ua));
+
+/** The card as it prints: only this shows on paper (see @media print in app.css). */
+export function PrintableCard({ code }) {
+  return (
+    <div class="print-sheet" aria-hidden="true">
+      <h1>HumID seal card</h1>
+      <p class="pc-code">{code}</p>
+      <p>One of the proofs that bring your vault back if you lose every device. On its own it opens nothing:
+        recovery also needs your witnesses or your ID chip, then waits while your devices can veto.</p>
+      <p>Keep it somewhere safe and offline, away from your ID. Printed {new Date().toLocaleDateString()}.</p>
     </div>
   );
 }

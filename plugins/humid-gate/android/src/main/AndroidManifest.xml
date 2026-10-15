@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- A short buzz when a face or fingerprint check passes, a distinct one when it fails. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- The camera: HumID QR codes (device links, recovery codes) and photos of documents and IDs,
          taken in the app. Optional: codes can be typed and photos chosen from the gallery. -->
     <uses-permission android:name="android.permission.CAMERA" />
