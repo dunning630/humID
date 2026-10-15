@@ -2,11 +2,11 @@
 // Welcome → Join (connect · choose · details · wait) for a new device of an existing HumID.
 import { Mark, Wordmark, Stars } from "../brand.jsx";
 import { Icon } from "../icons.jsx";
-import { AssurancePill, CodeBox, CardBox, useNow, fmtLeft, QrCode, ProofMeter, tierText, ChipAccess } from "../ui.jsx";
+import { AssurancePill, CodeBox, CardBox, CardConfirm, PrintableCard, CAN_PRINT, useNow, fmtLeft, QrCode, ProofMeter, tierText, ChipAccess } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
   startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard, copyCard,
-  redeemAccessCode, resumePass, demoAccessCode,
+  redeemAccessCode, resumePass, demoAccessCode, serverPinned,
   startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, DURESS_HOLD_MS,
 } from "../core/controller.js";
 import { useRef, useState } from "preact/hooks";
@@ -46,7 +46,7 @@ function TopBar({ step, steps, onBack }) {
         <div class="grow" />
         <Wordmark small />
       </div>
-      <div class="stepper" aria-label={`Step ${step + 1} of ${steps}`}>{Array.from({ length: steps }, (_, i) => <i class={i <= step ? "on" : ""} />)}</div>
+      <div class="stepper" role="progressbar" aria-label="Setup progress" aria-valuemin={1} aria-valuemax={steps} aria-valuenow={step + 1} aria-valuetext={`Step ${step + 1} of ${steps}`}>{Array.from({ length: steps }, (_, i) => <i class={i <= step ? "on" : ""} />)}</div>
     </>
   );
 }
@@ -115,18 +115,21 @@ export function Enroll() {
   const step = S.enrollStep.value;
   const hw = S.hwGate.value;
   const [sole, setSole] = useState(false);
-  // The access step appears only when this server needs a pass to create a HumID.
-  const steps = S.passNeeded.value ? ["connect", "access", "bind", "done"] : ["connect", "bind", "done"];
-  const at = Math.max(0, steps.indexOf(step));
+  // The trust step only when the server isn't pinned by the build; the access step only when
+  // this server needs a pass to create a HumID.
+  const steps = [...(serverPinned() ? [] : ["connect"]), ...(S.passNeeded.value ? ["access"] : []), "bind", "done"];
+  const idx = steps.indexOf(step);
+  const at = Math.max(0, idx);
   const go = (i) => (S.enrollStep.value = steps[i]);
-  const back = step !== "done" ? () => (at === 0 ? (S.view.value = "welcome") : go(at - 1)) : null;
+  const next = () => go(Math.min(idx + 1, steps.length - 1));
+  const back = step !== "done" ? () => (idx <= 0 ? (S.view.value = "welcome") : go(idx - 1)) : null;
   return (
     <main class="screen">
       <TopBar step={at} steps={steps.length} onBack={back} />
 
-      {step === "connect" && <ConnectStep eyebrow="Step 1 · Your vault server" onNext={() => go(1)} />}
+      {step === "connect" && <ConnectStep eyebrow="Step 1 · Your vault server" onNext={next} />}
 
-      {step === "access" && <AccessStep eyebrow={`Step ${at + 1} · Your access pass`} onNext={() => go(at + 1)} />}
+      {step === "access" && <AccessStep eyebrow={`Step ${at + 1} · Your access pass`} onNext={next} />}
 
       {step === "bind" && (
         <>
@@ -209,24 +212,34 @@ function EnrollDone() {
           <p class="small muted" style={{ marginTop: 6 }}>One of two proofs that bring your vault back if you lose every device. On its own it opens nothing: recovery also needs your witnesses or your ID, then waits while your devices can veto.</p>
           <CardBox code={code} />
           <div class="split" style={{ marginTop: 12 }}>
+            {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
             <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
             <button class="btn quiet sm" onClick={() => copyCard(code)}><Icon name="file" />Copy</button>
           </div>
-          <label class="check" style={{ marginTop: 14 }}>
-            <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.currentTarget.checked)} />
-            <span>I've stored my card somewhere safe and offline</span>
-          </label>
+          <CardConfirm code={code} onChange={setSaved} />
+          <PrintableCard code={code} />
         </div>
       ) : null}
 
       {code ? (
-        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: a second proof and a second device</strong><span>In Security, choose witnesses (they keep you anonymous) or anchor your ID, so recovery always needs two proofs that it's you. Adding another phone or laptop means you'll rarely need recovery at all.</span></div></div>
+        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: finish protecting it</strong><span>Your vault shows what's left, with a button for each: a second proof (witnesses keep you anonymous) and a second device, so a lost phone is never an emergency.</span></div></div>
       ) : (
         <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No recovery set up yet</strong><span>In Security, set up two proofs (witnesses, your ID, a seal card), or add a second device, so losing this phone doesn't lose your vault.</span></div></div>
       )}
 
       <div style={{ flex: 1 }} />
-      <div class="foot"><button class="btn secure block" disabled={code && !saved} onClick={finishEnroll}><Icon name="vault" />Open my vault</button></div>
+      <div class="foot">
+        {/* Never a dead grey button: until the card is checked, it says why and takes you to the check. */}
+        <button class={`btn secure block${code && !saved ? " waiting" : ""}`}
+          onClick={() => {
+            if (!(code && !saved)) return finishEnroll();
+            const f = document.getElementById("card-check");
+            f?.scrollIntoView({ block: "center", behavior: "smooth" });
+            f?.focus({ preventScroll: true });
+          }}>
+          <Icon name="vault" />{code && !saved ? "Check your card to continue" : "Open my vault"}
+        </button>
+      </div>
     </>
   );
 }
@@ -246,7 +259,7 @@ export function Join() {
   const step = S.joinStep.value;
   const method = S.joinMethod.value;
   const [old, setOld] = useState(false);
-  const back = step === 0 ? () => (S.view.value = "welcome") : step < 3 ? () => (S.joinStep.value = step - 1) : null;
+  const back = step === 0 || (step === 1 && serverPinned()) ? () => (S.view.value = "welcome") : step < 3 ? () => (S.joinStep.value = step - 1) : null;
   return (
     <main class="screen">
       <TopBar step={step} steps={4} onBack={back} />
