@@ -257,14 +257,18 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Smoke test, default policy (refuses devices without hardware proof)
         run: node tests/smoke.mjs http://127.0.0.1:8480
-      - name: Smoke test, full flow (humid set HUMID_DEVICE_POLICY=biometric)
+      - name: Smoke test, full flow (humid set HUMID_DEVICE_POLICY=biometric; humid mint pays for the account)
         shell: pwsh
         run: |
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID set HUMID_DEVICE_POLICY=biometric
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node tests/smoke.mjs http://127.0.0.1:8480
+          $code = (powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID mint 1 ci | Select-String 'HA-[0-9A-Z-]+' | Select-Object -Last 1).Matches.Value
+          if (-not $code) { throw "humid mint printed no access code" }
+          $out = node tests/smoke.mjs http://127.0.0.1:8480 $code
+          $out
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed on restart" }
       - name: Backup, restore, and update in place keep the server's identity
