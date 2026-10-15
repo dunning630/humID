@@ -147,6 +147,12 @@ jobs:
           grep -v '^{"t"' idscan.log | tail -60
           echo "::error::$(grep -v '^{"t"' idscan.log | grep -E 'Error|expected|actual|assert' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots" }
+      - name: Getting set up (small phones, seal-card check, protection checklist, 44 px targets, pinned server)
+        run: |
+          node tests/browser/setup.mjs > setup.log 2>&1 && { grep -v '^{"t"' setup.log; exit 0; }
+          grep -v '^{"t"' setup.log | tail -60
+          echo "::error::$(grep -v '^{"t"' setup.log | grep -E 'Error|expected|actual|assert|off screen|under 44' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/setup" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }

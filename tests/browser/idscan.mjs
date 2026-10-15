@@ -80,7 +80,10 @@ try {
   await page.getByLabel(/Only my own face or fingerprints/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
-  await page.getByLabel(/stored my card somewhere safe/).check();
+  // confirm the seal card by typing back the group the app asks for
+  const ask = await page.locator('label[for="card-check"]').innerText();
+  const groups = await page.locator(".cardcode span").allInnerTexts();
+  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
