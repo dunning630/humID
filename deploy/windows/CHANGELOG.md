@@ -1,5 +1,10 @@
 # HumID Server for Windows
 
+## 1.4.0
+
+- The web app it serves is HumID 1.6.0: setup buttons stay on screen on small phones, the seal card is checked by typing back part of it (and can be printed), and the vault shows what's left to protect a new HumID, with a button for each step.
+- No server changes: installing over 1.3.0 keeps all data and settings.
+
 ## 1.3.0
 
 - **Split keys**, against spyware that reads a phone's memory during a face or fingerprint check. Every new document also needs its own key, kept by a seventh service, **keyshare** (`data\keyshare`), and released one document at a time inside the same live check that opens it. Copied account keys open nothing on their own. See docs/SECURITY.md, "A compromised phone".
