@@ -71,6 +71,10 @@ and "Use a demo access code" pays for a new HumID.
   veto. See [docs/CONTINUITY.md](docs/CONTINUITY.md).
 - **Duress gesture:** unlock into a decoy view while the server silently locks
   sensitive changes and slows recoveries.
+- **Offline, read only:** with no connection, the same live check still
+  opens your document list, Activity and Security as of the last sync.
+  Documents themselves open only with the vault. See
+  [docs/SECURITY.md](docs/SECURITY.md#offline).
 - **Continuity:** your ledger is published in a public append-only log that
   your phone and independent cosigners check.
 

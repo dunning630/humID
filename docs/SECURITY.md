@@ -161,6 +161,42 @@ and the second device shows what is really being approved); account-key
 rotation (stolen keys stop working; also removes the "older documents" gap);
 a security-patch gate (refuse phones whose attested patch level is stale).
 
+## Offline
+
+With no connection, or with the vault server down, Unlock still works: the same live
+check opens a **read-only copy kept on the device**. It holds what the app last showed
+online: the document list (each entry still sealed under the index key), devices,
+recovery and duress status, and the verified Activity ledger. It never holds a document
+or a document's key, so nothing opens offline: opening needs the vault and both halves
+of a split key, exactly as online, under the same per-hour cap, recorded in the ledger.
+
+| | Online | Offline |
+|---|---|---|
+| Unlock | live check, signed in to the vault | the same live check, on the device only |
+| See the list, Activity, Security | live | as of the last sync, marked "Offline · read only" |
+| Open, save, rename, delete, add | each with its own live check | refused until it reconnects |
+| Duress gesture | decoys only, server locks down | decoys only; the server is told at reconnect |
+
+How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suites/pq1.js),
+[`apps/mobile/src/core/controller.js`](../apps/mobile/src/core/controller.js)):
+
+- **Sealed.** AES-256-GCM under `offlineKey`, derived (HKDF-SHA3-256) from the account
+  seed, which only a live check releases. The key is held while unlocked and wiped on
+  lock. What's on disk reads as random bytes; the account id is the only label.
+- **No new secrets.** Everything in the copy is something an unlocked phone already
+  shows. Spyware that can read the screen gains nothing new from it, and stolen
+  account keys can't use it to open a document.
+- **Duress.** A duress session never writes the copy. Offline, the duress gesture shows
+  only the decoy documents, as online; reconnecting from that session reports duress,
+  so the server locks down then.
+- **Removal.** Erasing the device's vault erases the copy. When the server says the
+  device was removed (or isn't the server it trusted), the copy is deleted at that
+  moment. Until a removed device reconnects, its owner's live check still shows its
+  copy: a list, not documents.
+
+What offline mode doesn't do: open documents. Keeping a document readable offline
+would mean its key on the device, which is what split keys exist to prevent.
+
 ## Before real data
 
 1. Independent review of HTP/1, the envelope format and the recovery flows.

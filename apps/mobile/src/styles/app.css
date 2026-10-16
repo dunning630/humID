@@ -234,6 +234,8 @@ p { margin: 0; }
 .banner.warn { border-color: rgba(218,147,74,.35); background: var(--amber-wash); }
 .banner.warn .b-ico { color: var(--amber-hi); background: rgba(218,147,74,.18); }
 .banner strong { display: block; font-weight: 600; }
+.banner.offline { grid-template-columns: 40px minmax(0, 1fr) auto; margin-bottom: 14px; }
+@media (max-width: 380px) { .banner.offline { grid-template-columns: 40px minmax(0, 1fr); } .banner.offline .btn { grid-column: 1 / -1; } }
 .banner span { color: var(--sage); font-size: var(--t-sm); }
 
 /* ---------- timeline ---------- */
@@ -334,6 +336,7 @@ p { margin: 0; }
   -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 18px); mask-image: linear-gradient(180deg, transparent 0, #000 18px);
 }
 .fine { color: var(--muted); font-size: var(--t-xs); text-align: center; line-height: 1.5; }
+.fine.offline-note { color: var(--amber-hi); margin-bottom: 4px; }
 .lockmark { background: none; border: 0; padding: 0; border-radius: 50%; }
 
 /* ---------- enrol steps ---------- */

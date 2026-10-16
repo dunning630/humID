@@ -56,6 +56,9 @@ export const viewer = signal(null);          // decrypted preview
 export const toasts = signal([]);
 export const idleDeadline = signal(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);
+// Offline: the app is showing the read-only copy kept on this device ({ savedAt }), or null.
+export const offline = signal(null);
+export const offlineReady = signal(false);   // there's an offline copy on this device to open
 
 // Demo mode only in a local development build talking to a server whose policy is "demo".
 export const demoAllowed = computed(() => DEMO_BUILD && server.value?.policy?.devicePolicy === "demo");
