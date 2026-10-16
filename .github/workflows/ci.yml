@@ -135,6 +135,7 @@ jobs:
     name: id-scan (browser)
     needs: test
     runs-on: ubuntu-22.04
+    timeout-minutes: 20 # the three checks take ~4 min; a stuck browser fails fast instead of holding the run
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -225,6 +225,8 @@ try {
   await bar.getByText("Can't reach your vault").waitFor({ timeout: 15_000 });
   await bar.getByText(/Trying again in \d+ s|Reconnecting…/).waitFor();
   await shot(page, "9-server-gone");
+  assert.equal(await page.getByText("Public log check failed").count(), 0, "an unreachable server isn't reported as tampering");
+  assert.equal(await page.locator(".toast", { hasText: "Can't reach your vault server" }).count(), 0, "the bar says it; no toast on top");
   const attemptsBefore = await page.evaluate(() => document.querySelector(".linkbar")?.textContent);
   assert.ok(attemptsBefore);
   step("the server stops: the bar says HumID is retrying, with Try now");
