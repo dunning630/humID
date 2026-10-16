@@ -321,7 +321,7 @@ export function Scanner({ onCode, onCancel, expect }) {
     <div class="scanner">
       {err ? <div class="banner warn"><span class="b-ico"><Icon name="info" /></span><div><strong>Can't scan</strong><span>{err}</span></div></div>
         : <div class="scan-frame"><video ref={video} playsInline muted /><i /></div>}
-      <button class="btn ghost block" style={{ marginTop: 12 }} onClick={onCancel}>Type the code instead</button>
+      <button class="btn ghost block" style={{ marginTop: 12 }} data-back onClick={onCancel}>Type the code instead</button>
     </div>
   );
 }
@@ -449,7 +449,7 @@ export function ChipReadOverlay() {
       <h2 id="chip-title">{r.stage === "waiting" ? "Hold your document to read it" : r.stage === "error" ? "Couldn't read the chip" : r.stage === "done" ? "Chip read" : "Reading your chip"}</h2>
       <p>{r.message}</p>
       {r.stage === "reading" && <div class="bar" aria-label={`${pct}%`}><i style={{ width: `${pct}%` }} /></div>}
-      {r.stage === "error" && <button class="btn primary" onClick={dismissChipRead}>Close</button>}
+      {r.stage === "error" && <button class="btn primary" data-back onClick={dismissChipRead}>Close</button>}
     </div>
   );
 }

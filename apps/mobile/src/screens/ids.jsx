@@ -11,7 +11,7 @@ import {
   KINDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyTyped, setImage, title as recordTitle, status as idStatus,
   provenance, fullName, niceName, countryName, regionName, parseAamva, MrzConsensus,
 } from "@humid/idscan";
-import { barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage } from "../core/scan.js";
+import { barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank } from "../core/scan.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,27 +48,58 @@ async function readStill(c, read, shape) {
   return out;
 }
 
+/** The document frame in the video's pixels, or the whole frame if the layout gives nothing usable. */
+function frameRect(v, el, pad) {
+  const r = el ? frameInVideo(v, el, pad) : null;
+  return r && r.w >= 64 && r.h >= 40 ? r : null;
+}
+
+/** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
+const buzz = () => { try { globalThis.navigator?.vibrate?.(14); } catch {} };
+
 /**
  * Full-screen camera with a document-shaped frame.
  *   shape   "id1" (cards), "td3" (passport photo page) or "full" (any document)
  *   read    { barcode, mrz } — what to look for while the camera runs; it captures
  *           by itself the moment it reads one, or when the shutter is pressed
- *   onDone({ canvas, barcode, mrz, consensus, how })
+ *   onDone({ canvas, barcode, mrz, consensus, how }) — may be async: the camera stays
+ *           open (showing "Saving…") until it settles, shows a tick when it succeeds,
+ *           and goes back to live with the reason if it throws, so a photo is never
+ *           silently lost
+ *   saved   { text, img } — what the previous step saved, shown briefly at the top
  */
-export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDone, onCancel, onSkip }) {
+export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
   const video = useRef(null), frame = useRef(null), file = useRef(null);
-  const [phase, setPhase] = useState("starting"); // starting | live | reading | error
+  const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(hint || "");
   const [torch, setTorch] = useState(null);
+  const [toldSaved, setToldSaved] = useState(!!saved);
   const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null }).current;
+  useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
-  const finish = (result) => {
+  const stopStream = () => { L.stream?.getTracks().forEach((t) => t.stop()); };
+  async function finish(result) {
     if (L.done) return;
-    L.done = true; L.stop = true;
-    L.stream?.getTracks().forEach((t) => t.stop());
-    onDone(result);
-  };
+    L.done = true; L.stop = true; L.paused = true;
+    setPhase("reading");
+    let then;
+    try {
+      then = await onDone(result);
+      buzz();
+      setPhase("saved");
+      await sleep(450);
+      stopStream();
+    } catch (e) {
+      // Keep the camera open and say why: never drop back to the list as if nothing happened.
+      L.done = false; L.paused = false;
+      setStatus(e?.message || "Couldn't keep that photo. Try again.");
+      setPhase(L.stream ? "live" : "error");
+      if (L.stream && (read.barcode || read.mrz)) { L.stop = false; loop(); }
+      return;
+    }
+    if (typeof then === "function") then();
+  }
 
   async function loop() {
     const consensus = new MrzConsensus();
@@ -89,14 +120,14 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDo
           const r = await bc;
           if (!r) continue;
           const [text] = await r.read(imageData(grab(v, rect, 2200)), { harder: false });
-          if (text && !L.stop) { finish({ canvas: grab(v, frameInVideo(v, frame.current, 0.02)), barcode: text, how: "live" }); return; }
+          if (text && !L.stop) { finish({ canvas: grab(v, frameRect(v, frame.current, 0.02)), barcode: text, how: "live" }); return; }
         } else if (read.mrz) {
           const r = await ocr;
           if (!r) { setStatus(hint || ""); continue; }
           const res = consensus.add(await r.read(mrzBand(grab(v, rect), shape)));
           if (res.best && !sawMrz) { sawMrz = true; setStatus("Reading… hold still"); }
           if (!res.best && !sawMrz) setStatus(hint || "");
-          if (res.stable && !L.stop) { finish({ canvas: grab(v, frameInVideo(v, frame.current, 0.02)), mrz: res.result, consensus: true, how: "live" }); return; }
+          if (res.stable && !L.stop) { finish({ canvas: grab(v, frameRect(v, frame.current, 0.02)), mrz: res.result, consensus: true, how: "live" }); return; }
         }
       } catch { /* a bad frame: keep looking */ }
     }
@@ -125,12 +156,27 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDo
 
   async function shoot() {
     const v = video.current;
-    if (!v || v.readyState < 2) return;
+    if (!v || L.done) return;
     L.paused = true;
     setPhase("reading");
-    const c = shape === "full" ? grab(v, null) : grab(v, frameInVideo(v, frame.current, 0.02));
-    const r = read.barcode || read.mrz ? await readStill(c, read, shape) : {};
-    finish({ canvas: c, ...r, how: "shutter" });
+    try {
+      // Android can report a frame before it has one to give, or give a black one: wait briefly, try again.
+      let c = null;
+      for (let i = 0; i < 6 && !c; i++) {
+        if (v.readyState >= 2 && v.videoWidth) {
+          const got = shape === "full" ? grab(v, null) : grab(v, frameRect(v, frame.current, 0.02));
+          if (!looksBlank(got)) c = got;
+        }
+        if (!c) await sleep(150);
+      }
+      if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
+      const r = read.barcode || read.mrz ? await readStill(c, read, shape) : {};
+      await finish({ canvas: c, ...r, how: "shutter" });
+    } catch (e) {
+      L.paused = false;
+      setStatus(e?.message || "Couldn't take the photo. Try again.");
+      setPhase(L.stream ? "live" : "error");
+    }
   }
 
   async function onFile(e) {
@@ -142,7 +188,7 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDo
     try {
       const c = await fileToCanvas(f);
       const r = read.barcode || read.mrz ? await readStill(c, read, shape) : {};
-      finish({ canvas: c, ...r, how: "file" });
+      await finish({ canvas: c, ...r, how: "file" });
     } catch {
       L.paused = false;
       setPhase(L.stream ? "live" : "error");
@@ -154,8 +200,8 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDo
     try { await L.track.applyConstraints({ advanced: [{ torch: !torch }] }); setTorch(!torch); } catch { setTorch(null); }
   }
 
-  const cancel = () => { L.stop = true; L.stream?.getTracks().forEach((t) => t.stop()); onCancel(); };
-  const skip = () => { L.stop = true; L.stream?.getTracks().forEach((t) => t.stop()); onSkip(); };
+  const cancel = () => { L.stop = true; stopStream(); onCancel(); };
+  const skip = () => { L.stop = true; stopStream(); onSkip(); };
 
   return (
     <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase}>
@@ -165,18 +211,25 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, onDo
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {read.mrz && <span class="dc-mrz" data-shape={shape} />}
           {phase === "reading" && <span class="dc-busy"><i /></span>}
+          {phase === "saved" && <span class="dc-busy dc-saved" role="status" aria-label="Photo saved"><Icon name="check" /></span>}
         </div>
       </div>
+      {toldSaved && saved && (
+        <div class="dc-saved-chip" role="status">
+          {saved.img && <img src={imageUrl(saved.img)} alt="" />}
+          <span><Icon name="check" />{saved.text}</span>
+        </div>
+      )}
       <header class="dc-top">
-        <button class="icon-btn" aria-label="Close the camera" onClick={cancel}><Icon name="x" /></button>
+        <button class="icon-btn" aria-label="Close the camera" data-back onClick={cancel}><Icon name="x" /></button>
         <div class="grow">{eyebrow && <div class="eyebrow">{eyebrow}</div>}<strong>{title}</strong></div>
         {torch != null && <button class="icon-btn" aria-label={torch ? "Turn the light off" : "Turn the light on"} aria-pressed={torch} onClick={toggleTorch}><Icon name="torch" /></button>}
       </header>
       <div class="dc-status" aria-live="polite">
-        {phase === "error" ? error : phase === "reading" ? "Reading the photo…" : status}
+        {phase === "error" ? error : phase === "reading" ? (read.barcode || read.mrz ? "Reading the photo…" : "Saving the photo…") : phase === "saved" ? "Saved" : status}
       </div>
       <footer class="dc-bottom">
-        <button class="dc-side" onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
+        <button class="dc-side" disabled={phase === "reading" || phase === "saved"} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
         <button class="dc-shutter" aria-label="Take the photo" disabled={phase !== "live"} onClick={shoot}><i /></button>
         {onSkip ? <button class="dc-side" onClick={skip}><Icon name="chevron" /><span>Skip</span></button> : <span class="dc-side" aria-hidden="true" />}
       </footer>
@@ -223,6 +276,7 @@ export function IdSheet() {
   const [, redraw] = useReducer((n) => n + 1, 0);
   const [step, setStep] = useState("kind");      // kind | capture | chip | review
   const [cam, setCam] = useState(null);         // the plan entry the camera is open for
+  const [saved, setSaved] = useState(null);     // { text, img } the camera shows for the side just taken
   const [note, setNote] = useState(null);       // { tone, text } about the last capture
   const [nfc, setNfc] = useState(null);
   const [access, setAccess] = useState(null);
@@ -243,10 +297,17 @@ export function IdSheet() {
     if (KINDS[kind].chip) chipReader().then(setNfc).catch(() => setNfc({ available: false }));
   };
 
+  /**
+   * The camera took a photo. Keep it (if this throws, the camera stays open and says
+   * why), then return what happens once the camera has shown its tick: straight on to
+   * the next side, or back to the sheet when everything's in or a read needs a look.
+   */
   async function captured(p, { canvas, barcode, mrz, consensus }) {
-    setCam(null);
     const rc = rec.current;
-    setImage(rc, p.side, await jpeg(canvas));
+    let img;
+    try { img = await jpeg(canvas); }
+    catch { throw new Error("Couldn't save that photo. Try again, or choose one with Photo."); }
+    setImage(rc, p.side, img);
     let n = null;
     if (barcode) {
       const a = parseAamva(barcode);
@@ -263,7 +324,11 @@ export function IdSheet() {
     if (!n) n = { tone: "ok", text: `${p.title} saved.` };
     setNote(n);
     redraw();
-    afterCapture();
+    const left = (PLAN[rc.kind] || PLAN.other).find((x) => !rc.images[x.side] && !rc.skipped?.includes(x.side));
+    if (left && n.tone === "ok") {
+      return () => { setSaved({ text: p.side === "front" ? "Front saved. Now turn it over." : `${p.title} saved.`, img }); setCam(left); };
+    }
+    return () => { setSaved(null); setCam(null); afterCapture(); };
   }
 
   function afterCapture() {
@@ -354,7 +419,7 @@ export function IdSheet() {
       </Sheet>
       {cam && (
         <DocCamera key={cam.side + (r?.images[cam.side] ? "-again" : "")} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
-          onCancel={() => setCam(null)} onSkip={cam.optional ? () => skipSide(cam) : null} onDone={(res) => captured(cam, res)} />
+          saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
       )}
     </>
   );

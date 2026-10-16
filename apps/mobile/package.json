@@ -25,6 +25,7 @@
     "@humid/recovery": "^1.1.0",
     "@humid/store": "^1.4.0",
     "@preact/signals": "2.11.3",
+    "@tauri-apps/api": "2.12.4",
     "jpeg2000": "1.1.1",
     "jsqr": "1.4.0",
     "preact": "10.29.8",

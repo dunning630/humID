@@ -42,7 +42,7 @@ function TopBar({ step, steps, onBack }) {
   return (
     <>
       <div class="topbar">
-        {onBack && <button class="icon-btn" aria-label="Back" onClick={onBack}><Icon name="back" /></button>}
+        {onBack && <button class="icon-btn" aria-label="Back" data-back onClick={onBack}><Icon name="back" /></button>}
         <div class="grow" />
         <Wordmark small />
       </div>
@@ -540,7 +540,7 @@ export function Lock() {
           {!confirm && <button class="btn ghost block" onClick={() => setConfirm(true)}>Set up HumID again</button>}
           {confirm && <button class="btn danger block" onClick={resetLocal}>Remove this identity from this phone</button>}
           {confirm && <p class="fine">Your documents stay in your vault. Get back in with another device, your recovery card or your contacts.</p>}
-          <button class="btn primary block" onClick={() => { S.lockIssue.value = null; setConfirm(false); }}>Back</button>
+          <button class="btn primary block" data-back onClick={() => { S.lockIssue.value = null; setConfirm(false); }}>Back</button>
         </div>
       </main>
     );
