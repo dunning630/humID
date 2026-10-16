@@ -255,7 +255,14 @@ jobs:
           python3 tools/android-signing.py $APP/build.gradle.kts
       - name: Android · signed release .apk + .aab
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
-        run: npm run tauri -- android build --apk --aab
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run tauri -- android build --apk --aab 2>&1 | tee android-build.log; then
+            # the run's logs aren't always reachable: put what went wrong in the annotations too
+            echo "::error::$(grep -E 'What went wrong|error:|e: |ERROR|Execution failed|FAILURE|Caused by' android-build.log | head -25 | tr '\n' ' ' | cut -c1-3500)"
+            exit 1
+          fi
       # No debug builds, ever: a debug APK is debuggable (adb run-as reads the app's data),
       # has WebView remote debugging on, allows cleartext HTTP, and logs to logcat. Without
       # the release key there is no Android build.
