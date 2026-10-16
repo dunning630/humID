@@ -56,6 +56,8 @@ export const viewer = signal(null);          // decrypted preview
 export const toasts = signal([]);
 export const idleDeadline = signal(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);
+// The connection to the vault server (core/link.js): { state: "up" | "down", attempt, nextAt, since, reason }.
+export const link = signal({ state: "up", attempt: 0, nextAt: 0, since: 0, reason: null });
 // Offline: the app is showing the read-only copy kept on this device ({ savedAt }), or null.
 export const offline = signal(null);
 export const offlineReady = signal(false);   // there's an offline copy on this device to open

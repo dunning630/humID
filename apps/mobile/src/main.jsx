@@ -5,7 +5,7 @@ import { render } from "preact";
 import * as S from "./core/state.js";
 import { boot } from "./core/controller.js";
 import { wireBack } from "./core/back.js";
-import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet } from "./ui.jsx";
+import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet, ConnectionBar } from "./ui.jsx";
 import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
 import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
@@ -37,6 +37,7 @@ function App() {
           <Viewer />
         </>
       )}
+      <ConnectionBar />
       {SIM && <ChecksSheet />}
       <ChipReadOverlay />
       <InterruptOverlay />

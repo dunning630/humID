@@ -205,6 +205,42 @@ try {
   await page.getByText(/walnut desk goes to Sam/).waitFor({ timeout: 20_000 });
   await shot(page, "7-reconnected-open");
   step("Reconnect: one live check, back online, and the document opens");
+  await page.getByRole("button", { name: "Close and wipe" }).click();
+
+  /* ---------------- 4. signed in: the connection drops and comes back ---------------- */
+  const bar = page.locator(".linkbar");
+  await ctx.setOffline(true);
+  await bar.getByText("No internet connection").waitFor({ timeout: 10_000 });
+  await shot(page, "8-no-internet");
+  await ctx.setOffline(false);
+  await bar.waitFor({ state: "detached", timeout: 15_000 });
+  await tab(page, "Activity");
+  await page.getByText(/Sealed Last will/).waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".banner.offline").count(), 0, "still signed in, not the offline copy");
+  step("a network drop: the bar says so, and when it's back the same session carries on");
+
+  /* ---------------- 5. signed in: the server goes away, and comes back having forgotten the session ---------------- */
+  await current.stop();
+  await page.getByRole("button", { name: "Refresh" }).click(); // any request notices
+  await bar.getByText("Can't reach your vault").waitFor({ timeout: 15_000 });
+  await bar.getByText(/Trying again in \d+ s|Reconnecting…/).waitFor();
+  await shot(page, "9-server-gone");
+  const attemptsBefore = await page.evaluate(() => document.querySelector(".linkbar")?.textContent);
+  assert.ok(attemptsBefore);
+  step("the server stops: the bar says HumID is retrying, with Try now");
+  // the restarted server has no record of the session: the app locks, the usual way back in
+  const ended = page.getByText(/Your session ended/).waitFor({ timeout: 80_000 });
+  current = await startDev({ HUMID_DEV_DATA: data });
+  await bar.getByRole("button", { name: "Try now" }).click({ timeout: 35_000 }).catch(() => {}); // or the next retry gets there first
+  await ended;
+  await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 10_000 });
+  await bar.waitFor({ state: "detached", timeout: 10_000 });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.locator(".tabbar").waitFor({ timeout: 20_000 });
+  await tab(page, "Vault");
+  await page.locator(".list .item").first().waitFor({ timeout: 20_000 });
+  step("the server is back: reconnected by itself; its forgotten session asks for one live check");
 
   await ctx.close();
   console.log("ok — offline mode checks pass");
