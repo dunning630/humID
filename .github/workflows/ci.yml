@@ -7,7 +7,8 @@ name: CI
 #      stack with docker compose and run the smoke test against it over TLS
 #   4. build HumID Server for Windows, install it on a Windows runner from the
 #      zip (as a person would), smoke-test, back up, restore, update, uninstall
-#   5. "Scan an ID" in Chromium with a fake camera (tests/browser/idscan.mjs)
+#   5. the app in Chromium: "Scan an ID" with a fake camera, getting set up, and
+#      offline mode (tests/browser/idscan.mjs, setup.mjs, offline.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -153,6 +154,12 @@ jobs:
           grep -v '^{"t"' setup.log | tail -60
           echo "::error::$(grep -v '^{"t"' setup.log | grep -E 'Error|expected|actual|assert|off screen|under 44' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/setup" }
+      - name: Offline, read only (sealed copy, no network, server down, duress, reconnect)
+        run: |
+          node tests/browser/offline.mjs > offline.log 2>&1 && { grep -v '^{"t"' offline.log; exit 0; }
+          grep -v '^{"t"' offline.log | tail -60
+          echo "::error::$(grep -v '^{"t"' offline.log | grep -E 'Error|expected|actual|assert|readable' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/offline" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }

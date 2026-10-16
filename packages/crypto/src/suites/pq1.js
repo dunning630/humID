@@ -181,3 +181,20 @@ export async function sealIndex(key, entry) {
 export async function openIndex(key, blob) {
   return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
 }
+
+/* ---------- offline copy (added in @humid/crypto 1.4.0) ----------
+ * What the app shows while it can't reach the vault: the document list (each
+ * entry still sealed under the index key), devices, recovery status and recent
+ * activity. Never a document or a document key. Kept on the device under a key
+ * derived from the identity seed, so it reads only after a live check.
+ */
+export const offlineKey = (seed) => kdf(seed, undefined, "HUMID-PQ1 offline-copy");
+
+export async function sealOffline(key, value) {
+  const nonce = random(12);
+  return concat(nonce, await aesEncrypt(key, nonce, encodeJSON(value), utf8("HUMID-OFFLINE-v1")));
+}
+
+export async function openOffline(key, blob) {
+  return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-OFFLINE-v1")));
+}

@@ -9,7 +9,8 @@
       "suites": [
         "HUMID-PQ1"
       ],
-      "split": 1
+      "split": 1,
+      "offline": 1
     },
     "requires": {
       "envelope-format": 1
