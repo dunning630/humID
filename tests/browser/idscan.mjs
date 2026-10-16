@@ -22,6 +22,9 @@ const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 const profile = mkdtempSync(join(tmpdir(), "humid-idscan-"));
 const step = (s) => console.log(`· ${s}`);
+// A stuck browser must fail the run, not hold it: the whole check takes well under a minute.
+setTimeout(() => { console.error("Error: idscan timed out after 6 minutes"); process.exit(1); }, 6 * 60_000).unref();
+const contexts = [];
 
 /* ---------------- the dev server (whole stack, demo mode, simulated chips) ---------------- */
 
@@ -44,6 +47,7 @@ async function launch(cameraFile) {
     permissions: ["camera", "clipboard-read", "clipboard-write"],
     args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${cameraFile}`],
   });
+  contexts.push(ctx);
   const page = ctx.pages()[0] || await ctx.newPage();
   page.on("pageerror", (e) => console.error("page error:", e.message));
   page.on("console", (m) => { if (m.type() === "error") console.error("console:", m.text()); });
@@ -194,6 +198,9 @@ try {
   console.error(devLog.split("\n").slice(-20).join("\n"));
   process.exitCode = 1;
 } finally {
+  // an open browser keeps node alive: close everything, then exit with the result
+  for (const c of contexts) await c.close().catch(() => {});
   dev.kill("SIGTERM");
   rmSync(profile, { recursive: true, force: true });
+  process.exit(process.exitCode ?? 0);
 }
