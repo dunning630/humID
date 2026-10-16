@@ -15,7 +15,7 @@ export const DEFAULTS = [
   ["HUMID_IOS_APP_ID", "", "<Apple Team ID>.app.humid.vault — needed to accept iPhones."],
   ["HUMID_APP_ATTEST_ENV", "production", "development only for Xcode debug builds."],
   ["HUMID_ANDROID_PACKAGES", "app.humid.vault", "Android package names accepted in key attestation."],
-  ["HUMID_ANDROID_CERT_DIGESTS", "", "SHA-256 of your Android release signing certificate; empty accepts any signer."],
+  ["HUMID_ANDROID_CERT_DIGESTS", "", "The official HumID Android app is always accepted. Add the SHA-256 of your own signing certificate here only if you build and sign the app yourself."],
   ["HUMID_REQUIRE_LOCKED_BOOT", "1", "1 refuses rooted / unlocked-bootloader Android phones."],
   ["RECOVERY_DELAY_MS", "259200000", "Base recovery wait (72 hours). Two-proof recoveries wait a third of it with a station, the whole of it with witnesses, 7/3 of it with a card and an ID chip alone; twice that after a duress signal."],
   ["HUMID_CSCA_DIR", "", "Folder of country signing certificates (CSCA, PEM or DER) for ID chips. Empty = the csca folder next to data."],

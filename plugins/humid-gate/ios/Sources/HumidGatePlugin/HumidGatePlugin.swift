@@ -195,7 +195,8 @@ class HumidGatePlugin: Plugin {
   /// One Face ID / Touch ID check. No passcode fallback: the button is hidden
   /// and the policy is biometrics-only, so a lockout is an error, not a passcode prompt.
   private static func evaluate(_ prompt: String) throws -> LAContext {
-    let ctx = LAContext()
+    let ctx = LAContext()                               // a fresh context for every check, never reused
+    ctx.touchIDAuthenticationAllowableReuseDuration = 0 // no "unlocked a moment ago" reuse
     ctx.localizedFallbackTitle = ""
     ctx.localizedCancelTitle = "Cancel"
     var canErr: NSError?
