@@ -27,12 +27,16 @@ function cameraError(e) {
 }
 
 /** Read a still photo: barcode (tried hard) and the MRZ from a few versions of the image, voting. */
-async function readStill(c, read, shape) {
+async function readStill(c, read, shape, wide = null) {
   const out = { barcode: null, mrz: null, consensus: false };
   if (read.barcode) {
     try {
       const bc = await barcodeReader();
-      out.barcode = (await bc.read(imageData(grab(c, null, 2400))))[0] || null;
+      // the wider shot first (the barcode may run past the frame), then the framed one
+      for (const src of wide ? [wide, c] : [c]) {
+        out.barcode = (await bc.read(imageData(grab(src, null, 2400))))[0] || null;
+        if (out.barcode) break;
+      }
     } catch { /* reported as not found */ }
   }
   if (read.mrz && !out.barcode) {
@@ -66,6 +70,9 @@ function lookAround(v, el) {
   const im = toGray(imageData(grab(v, outer, 320)));
   return { im, guide: { x0: (inner.x - outer.x) / outer.w, y0: (inner.y - outer.y) / outer.h, x1: (inner.x + inner.w - outer.x) / outer.w, y1: (inner.y + inner.h - outer.y) / outer.h } };
 }
+
+/** Said when a reader couldn't start, instead of watching for a code it can never read. */
+const NO_READER = "The reader couldn't start on this phone. Take the photo with the shutter and type the details.";
 
 /** With a barcode or MRZ to read: if a document has sat lined up this long and still no read, take the photo anyway. */
 const FALLBACK_MS = 9000;
@@ -170,12 +177,15 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
       try {
         if (barcodeTurn) {
           const r = await bc;
-          if (!r) continue;
-          const [text] = await r.read(imageData(grab(v, rect, 2200)), { harder: false });
+          if (!r) { setStatus(NO_READER); continue; }
+          // a wider area than the frame (a hand-held card is rarely exactly in it); every
+          // fourth try, the reader tries harder (rotations, more scanning)
+          const wide = frameInVideo(v, frame.current, 0.15) || rect;
+          const [text] = await r.read(imageData(grab(v, wide, 2400)), { harder: turn % 8 === 0 });
           if (text && !L.stop) { finish({ canvas: grab(v, frameRect(v, frame.current, 0.02)), barcode: text, how: "live" }); return; }
         } else if (read.mrz) {
           const r = await ocr;
-          if (!r) { setStatus(hint || ""); continue; }
+          if (!r) { setStatus(NO_READER); continue; }
           const res = consensus.add(await r.read(mrzBand(grab(v, rect), shape)));
           if (res.best && !sawMrz) { sawMrz = true; setStatus("Reading… hold still"); }
           if (!res.best && !sawMrz) setStatus(hint || "");
@@ -224,7 +234,8 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
         if (!c) await sleep(150);
       }
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
-      const r = codes ? await readStill(c, read, shape) : {};
+      const wide = read.barcode && shape !== "full" ? grab(v, frameRect(v, frame.current, 0.15)) : null;
+      const r = codes ? await readStill(c, read, shape, wide) : {};
       await finish({ canvas: c, ...r, how });
     } catch (e) {
       L.paused = false;

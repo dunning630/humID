@@ -52,6 +52,22 @@ test("a card lined up in the frame, lit, sharp and steady: take it", () => {
   assert.equal(r.ok, true);
 });
 
+test("hand-held: a little small, a little off-centre, with sensor noise between looks — still takes it", () => {
+  const a = scene({ scale: 0.9, dx: 8, dy: -6, seed: 3 }), b = scene({ scale: 0.9, dx: 9, dy: -5, seed: 4 });
+  const r = look(b, { prev: a });
+  assert.equal(r.ok, true, JSON.stringify({ hint: r.hint, cov: r.coverage, sharp: r.sharpness, motion: r.motion }));
+});
+
+test("one side lost against a table of the same colour: three sides are enough", () => {
+  const im = scene();
+  const gd = guideFor("id1");
+  // paint the table below the card the card's colour, so the bottom border disappears
+  for (let y = Math.round(gd.y1 * H); y < H; y++) for (let x = 0; x < W; x++) im.g[y * W + x] = 226;
+  const r = look(im);
+  assert.equal(r.found, true);
+  assert.equal(r.ok, true, r.hint);
+});
+
 test("a passport page uses its own shape; a card where a passport is expected doesn't fit", () => {
   assert.equal(look(scene({ shape: "td3" }), { shape: "td3" }).ok, true);
   assert.equal(look(scene({ shape: "id1" }), { shape: "td3" }).aligned, false);

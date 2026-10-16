@@ -49,6 +49,11 @@ const stack = await startStack({
 });
 const gw = new URL(stack.baseUrl);
 
+// The page runs under the same content security policy as the phone and desktop apps
+// (src-tauri/tauri.conf.json), so a policy that blocks something in the app blocks it
+// here, and the browser tests catch it.
+const APP_CSP = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8")).app.security.csp;
+
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json", ".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8" };
 
 http.createServer(async (req, res) => {
@@ -102,7 +107,7 @@ http.createServer(async (req, res) => {
   catch { file = join(dist, "index.html"); }
   try {
     const body = await readFile(file);
-    res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream", "cache-control": "no-store" });
+    res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream", "cache-control": "no-store", ...(extname(file) === ".html" ? { "content-security-policy": APP_CSP } : {}) });
     res.end(body);
   } catch { res.writeHead(404); res.end(); }
 }).listen(PORT, () => {
