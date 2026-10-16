@@ -488,6 +488,13 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .dc-frame .br { bottom: -2px; right: -2px; border-left: 0; border-top: 0; border-radius: 0 0 16px 0; }
 .dc-mrz { position: absolute; left: 3%; right: 3%; bottom: 3%; height: 24%; border: 1.5px dashed rgba(218,147,74,.85); border-radius: 8px; background: rgba(218,147,74,.06); }
 .dc-mrz[data-shape="id1"] { height: 32%; }
+/* auto-capture: the corners say how close it is; a fill sweeps across as it's about to take the photo */
+.dc-frame .c { transition: border-color .2s var(--ease); }
+.doccam[data-look="searching"] .dc-frame .c { border-color: rgba(255,255,255,.75); }
+.doccam[data-look="close"] .dc-frame .c { border-color: var(--amber-hi); }
+.doccam[data-look="ok"] .dc-frame .c { border-color: var(--mint); }
+.dc-fill { position: absolute; inset: 0; border-radius: 16px; border: 3px solid var(--mint); opacity: calc(.25 + .75 * var(--p, 0)); box-shadow: inset 0 0 0 9999px rgba(138,201,136, calc(.12 * var(--p, 0))); transition: opacity .1s linear; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .dc-frame .c, .dc-fill { transition: none; } }
 .dc-busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(4,14,10,.45); border-radius: 16px; }
 .dc-busy i { width: 42px; height: 42px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--mint); animation: spin .9s linear infinite; }
 .dc-saved { background: rgba(4,14,10,.55); animation: fade .15s var(--ease) both; }
