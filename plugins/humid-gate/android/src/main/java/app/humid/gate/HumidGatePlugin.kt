@@ -23,6 +23,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
+import android.security.keystore.UserNotAuthenticatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.biometric.BiometricManager
@@ -162,6 +163,10 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
         val (secretKey, live) = try {
             val k = loadSecretKey(secretAlias(h.id))
             if (k == null) { invoke.reject(INVALIDATED); return }
+            // Find out now, not after the person has looked at the sensor, whether
+            // Android has invalidated the key (biometrics changed since it was made).
+            try { Cipher.getInstance(TRANSFORM).init(Cipher.DECRYPT_MODE, k, GCMParameterSpec(128, unb64(iv))) }
+            catch (_: UserNotAuthenticatedException) { /* expected: it opens only after the check */ }
             Pair(k, prepareLive(h.id, args.challenge, args.attest))
         } catch (e: KeyPermanentlyInvalidatedException) {
             invoke.reject(INVALIDATED); return
@@ -327,7 +332,9 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                     val s = result.cryptoObject?.signature
                     if (signature != null && s == null) { onFail(); invoke.reject("The biometric prompt returned no key."); return }
-                    try { invoke.resolve(onAuth(s)) } catch (e: Exception) { onFail(); invoke.reject("Biometric key error: ${e.message}") }
+                    try { invoke.resolve(onAuth(s)) }
+                    catch (e: KeyPermanentlyInvalidatedException) { onFail(); invoke.reject(INVALIDATED) }
+                    catch (e: Exception) { onFail(); invoke.reject("Biometric key error: ${e.message}") }
                 }
                 override fun onAuthenticationError(code: Int, msg: CharSequence) {
                     onFail()
