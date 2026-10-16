@@ -11,9 +11,9 @@ src = open(path).read()
 if "keystore.properties" in src:
     sys.exit(0)
 
-header = '''import java.io.FileInputStream
-import java.util.Properties
-'''
+# Newer Tauri templates already import java.util.Properties; a second import of the
+# same name is a Kotlin error ("Conflicting import"). Add only what's missing.
+header = "".join(f"{line}\n" for line in ("import java.io.FileInputStream", "import java.util.Properties") if line not in src)
 
 signing = '''
     signingConfigs {
