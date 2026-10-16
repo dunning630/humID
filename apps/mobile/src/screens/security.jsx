@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
   AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft,
-  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT,
+  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT, OfflineBanner,
 } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
@@ -48,6 +48,8 @@ export function Security() {
   return (
     <main class="screen with-tabs">
       <div class="topbar"><div class="grow"><h1>Security</h1><div class="sub"><Icon name="shield" />How your HumID is protected</div></div></div>
+
+      <OfflineBanner />
 
       {S.alerts.value.map((a) => (
         <div class="banner bad" style={{ marginBottom: 12 }}>
@@ -182,7 +184,7 @@ export function Security() {
           <div class="row"><span class="k">Vault server</span><span class="v">{serverHost(srv?.url)}</span></div>
           <div class="row" style={{ display: "block" }}><div class="k" style={{ marginBottom: 8 }}>Pinned server key</div><div class="kid">{(srv?.fingerprint || "").split("-").map((g) => <span>{g}</span>)}</div></div>
           <div class="row"><span class="k">Channel</span><span class="v mono" style={{ fontSize: 12 }}>HTP/1 · ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
-          <div class="row"><span class="k">Session</span><span class="v">{sess ? <span class="pill mint"><Icon name="signal" />Active · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : "—"}</span></div>
+          <div class="row"><span class="k">Session</span><span class="v">{sess ? <span class="pill mint"><Icon name="signal" />Active · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : S.offline.value ? <span class="pill amber"><Icon name="signal" />Offline · read only · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : "—"}</span></div>
         </div>
       </div>
 

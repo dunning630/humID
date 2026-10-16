@@ -52,6 +52,9 @@ const localChallenge = (purpose) => concat(utf8(`HUMID-LOCAL-v1 ${purpose} `), r
 let store = null;
 let api = null;
 let indexKey = null;        // decrypts item names while unlocked; wiped on lock
+let offlineKey = null;      // seals this device's offline copy while unlocked; wiped on lock
+let offline = null;         // the offline copy, as last saved (in memory while unlocked)
+let offlineWrite = Promise.resolve();
 let busy = false;
 let picking = false;
 let idleTimer = null;
@@ -70,6 +73,7 @@ export function toast(text, kind = "ok") {
 const friendly = (e) => {
   if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
+  if (e?.code === "offline") return "You're offline. Opening or changing anything needs a connection to your vault.";
   if (e instanceof TypeError || e?.code === "server_unreachable") return "Can't reach your vault server. Check your connection.";
   return e?.message || "Something went wrong.";
 };
@@ -155,6 +159,7 @@ async function withKeys(purpose, label, fn, { keepOpen = false, challenge, attes
  * fn gets withKeys' arguments plus `proof`, to pass as the API call's stepUp.
  */
 async function withStepUp(op, args, purpose, label, fn) {
+  needVault();
   const ticket = await api.ticket(op, ...args);
   return withKeys(purpose, label, (k) => fn({
     ...k,
@@ -195,6 +200,7 @@ export async function boot() {
   probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
   try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
+  try { S.offlineReady.value = !!(await store.getOffline()); } catch { S.offlineReady.value = false; }
   const id = S.identity.value;
   api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, ...(SIM ? { fetch: (await startSim()).fetch } : {}) });
   api.onSignedOut = (why) => { if (S.view.value === "app") lock(why === "expired" ? "Your session ended. Unlock to continue." : null); };
@@ -389,7 +395,7 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       server: serverRecord(srv, { id: sess.id, registeredAt: new Date().toISOString() }),
     };
     await store.putIdentity(record);
-    indexKey = Suite.indexKey(seed);
+    sessionKeys(Suite, seed);
     batch(() => {
       S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
@@ -447,11 +453,15 @@ export async function copyCard(code) {
  * protection): the session opens exactly the same way, then shows only decoy documents,
  * while the server silently locks sensitive changes. Every unlock reports presence, so
  * the two look the same on the wire.
+ *
+ * With no connection, the same live check opens the offline copy instead (unlockOffline).
  */
 export async function unlock(duress = false) {
   const id = S.identity.value;
   duress = !!duress && !!id?.duress?.enabled;
   if (!id?.server?.id) return toast("This identity is not registered with a vault server.", "error");
+  const wasOffline = !!S.offline.value;
+  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(duress);
   try {
     showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
     const sess = await api.login({
@@ -459,22 +469,124 @@ export async function unlock(duress = false) {
       device: id.device?.id || "dev_" + "0".repeat(24),
       // The secure chip signs the server's sign-in challenge during the live check.
       sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
-        indexKey = Suite.indexKey(seed);
+        sessionKeys(Suite, seed);
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
     await reportPresence(duress);
-    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.decoy.value = duress; S.view.value = "app"; });
-    await endInterrupt(true, "Welcome back.", 500);
+    offline = duress ? null : await readOffline();
+    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.offline.value = null; S.decoy.value = duress; S.view.value = "app"; });
+    await endInterrupt(true, wasOffline ? "Back online." : "Welcome back.", 500);
     refresh();
     loadAlerts();
+    if (wasOffline) reloadTab();
   } catch (e) {
-    wipe(indexKey); indexKey = null;
-    if (["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven"].includes(e?.code)) S.lockIssue.value = e.code;
+    const issue = ["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven"].includes(e?.code);
+    // This device was removed, or the server isn't the one it trusted: its offline copy goes too.
+    if (issue) { await store.clearOffline().catch(() => {}); S.offlineReady.value = false; }
+    if (wasOffline && !issue) {
+      // Reconnecting failed: stay in the offline copy (its keys are still needed to show it).
+      if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, cancelled(e) ? friendly(e) : "Still can't reach your vault server.", 1400);
+      else if (!S.interrupt.value && !cancelled(e)) toast("Still can't reach your vault server.", "warn");
+      return;
+    }
+    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    if (wasOffline) lock();
+    if (issue) S.lockIssue.value = e.code;
+    // No connection: open the offline copy with a live check of its own.
+    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(duress); }
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e)) toast(friendly(e), "error");
   }
+}
+
+/** The vault didn't answer at all (as opposed to answering "no"). */
+const unreachable = (e) => e instanceof TypeError || e?.code === "server_unreachable" || e?.name === "AbortError" || [502, 503, 504].includes(e?.status);
+
+/* ---------------- offline ---------------- */
+// While HumID can't reach the vault, a live check still opens a read-only copy kept on
+// this device: the document list (each entry still sealed under the index key), devices,
+// recovery status, duress status and recent activity, as of the last time it was online.
+// Never a document, and never a document's key: opening one needs the vault, and both
+// halves of a split key, exactly as before. The copy is sealed under a key derived from
+// the account seed, so it reads only inside a live check. It's never written during a
+// duress session, and it's deleted when the server says this device was removed.
+
+function sessionKeys(Suite, seed) {
+  wipe(indexKey, offlineKey);
+  indexKey = Suite.indexKey(seed);
+  offlineKey = Suite.offlineKey ? Suite.offlineKey(seed) : null;
+}
+
+/** The offline copy for this account, opened with the session's key; null if there's none (or it doesn't open). */
+async function readOffline() {
+  try {
+    const rec = await store.getOffline();
+    if (!rec || !offlineKey || rec.account !== S.identity.value?.server?.id) return null;
+    const copy = await suite(S.identity.value?.suite).openOffline(offlineKey, rec.blob);
+    return copy?.v === 1 && copy.account === rec.account ? copy : null;
+  } catch { return null; }
+}
+
+/** Update part of the offline copy. Only from a real, online session. */
+function keepOffline(patch) {
+  const account = S.identity.value?.server?.id;
+  if (S.offline.value || S.decoy.value || !offlineKey || !account || !store) return;
+  offline = { ...(offline || {}), ...patch, v: 1, account, savedAt: new Date().toISOString() };
+  const copy = offline, key = offlineKey.slice();
+  offlineWrite = offlineWrite.then(async () => {
+    try {
+      const blob = await suite(S.identity.value?.suite).sealOffline(key, copy);
+      if (S.identity.value?.server?.id !== account) return; // erased or reset meanwhile
+      await store.putOffline(blob, account);
+      S.offlineReady.value = true;
+    }
+    catch { /* best effort: the vault is still the source of truth */ }
+    finally { wipe(key); }
+  });
+}
+
+/** Read-only, from the copy on this device, after a live check on this device. */
+async function unlockOffline(duress) {
+  try {
+    await withKeys("launch", "Unlock HumID (offline)", async ({ seed, Suite }) => {
+      showInterrupt({ progress: 0.7, message: "No connection to your vault. Opening the copy saved on this device…" });
+      sessionKeys(Suite, seed);
+    });
+    const copy = await readOffline();
+    if (!copy) {
+      wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+      return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
+    }
+    offline = copy;
+    batch(() => {
+      S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
+      S.offline.value = { savedAt: copy.savedAt };
+      S.view.value = "app";
+    });
+    refresh();
+    loadAlerts();
+  } catch (e) {
+    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
+  }
+}
+
+/** Back online: one live check signs in and replaces the offline copy with the vault. */
+export function reconnect() { return unlock(S.decoy.value); }
+
+/** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
+function needVault() {
+  if (S.offline.value) throw Object.assign(new Error("offline"), { code: "offline" });
+}
+
+/** After reconnecting, load what the open tab shows from the vault instead of the copy. */
+function reloadTab() {
+  if (S.tab.value === "activity") loadLedger();
+  if (S.tab.value === "security") { loadRecovery(); loadDuress(); }
+  loadDevices();
+  if (S.tab.value === "vault" && !S.decoy.value) loadRecovery();
 }
 
 async function reportPresence(duress) {
@@ -485,8 +597,8 @@ async function reportPresence(duress) {
 
 export function lock(reason) {
   if (S.view.value !== "app") return;
-  api.logout();
-  wipe(indexKey); indexKey = null;
+  if (!S.offline.value) api.logout();
+  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null;
   clearTimeout(idleTimer);
   batch(() => {
     S.view.value = "locked";
@@ -501,6 +613,7 @@ export function lock(reason) {
     S.duressInfo.value = null;
     S.continuity.value = null;
     S.decoy.value = false;
+    S.offline.value = null;
     S.sheet.value = null;
     closeViewer();
   });
@@ -519,7 +632,8 @@ export async function refresh() {
   if (!indexKey) return;
   S.loading.value = true;
   try {
-    const { items, usage } = await api.list();
+    const { items, usage } = S.offline.value ? { items: offline?.items || [], usage: offline?.usage || null } : await api.list();
+    keepOffline({ items, usage });
     const decoded = await Promise.all(items.map(async (it) => {
       const meta = await decodeIndex(it.index);
       knownNames.set(it.id, meta.name);
@@ -554,6 +668,7 @@ export async function addIdRecord(record, name) {
 /** Encrypt on this device, one live check signs it, upload. The sheet shows the stages. */
 async function sealAndStore({ bytes, type, name: finalName, category, extra = {} }) {
   const id = S.identity.value;
+  if (S.offline.value) { toast(friendly({ code: "offline" }), "warn"); return false; }
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
   let share = null, prepared;
   try {
@@ -608,6 +723,7 @@ async function fetchPlain(item, purpose, label) {
 
 export async function openItem(item) {
   try {
+    needVault();
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     const type = meta.type || item.type || "application/octet-stream";
     let url = null, text = null, idRecord = null;
@@ -629,6 +745,7 @@ export function closeViewer() {
 
 export async function saveCopy(item) {
   try {
+    needVault();
     const v = S.viewer.value;
     if (v?.item?.id === item.id && v.bytes) {
       await saveBytes(v.bytes, v.name, v.type);
@@ -643,6 +760,7 @@ export async function saveCopy(item) {
 
 export async function exportSealed(item) {
   try {
+    needVault();
     const env = await withStepUp("download", [item.id], "export", `Export sealed ${item.name}`, async ({ proof }) => api.download(item.id, proof));
     await saveBytes(env, `${item.name}${EXTENSION}`, MEDIA_TYPE);
     toast("Exported the sealed envelope. It stays encrypted.");
@@ -658,6 +776,7 @@ const indexEntry = (item, patch = {}) => ({
 export async function setDecoy(item, on) {
   if (S.decoy.value) return toast("Updated.");
   try {
+    needVault();
     const entry = indexEntry(item);
     if (on) entry.decoy = true; else delete entry.decoy;
     await api.rename(item.id, await suite().sealIndex(indexKey, entry));
@@ -668,6 +787,7 @@ export async function setDecoy(item, on) {
 
 export async function renameItem(item, name, category) {
   try {
+    needVault();
     const idx = await suite().sealIndex(indexKey, indexEntry(item, { name: name.trim().slice(0, 120) || item.name, category }));
     await api.rename(item.id, idx);
     await refresh();
@@ -698,7 +818,8 @@ function decoyView(l) {
 export async function loadLedger() {
   S.ledgerLoading.value = true;
   try {
-    const l = await api.ledger({ limit: 300 });
+    const l = S.offline.value ? (offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await api.ledger({ limit: 300 });
+    keepOffline({ ledger: l });
     for (const it of S.items.value) knownNames.set(it.id, it.name);
     S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l) : l), names: new Map(knownNames) };
     checkContinuity();
@@ -712,6 +833,7 @@ export async function loadLedger() {
  */
 export async function checkContinuity() {
   const id = S.identity.value;
+  if (S.offline.value) { S.continuity.value = { ok: false, pending: true, reason: "Checked when you're back online" }; return; }
   try {
     const r = await api.continuity({ previous: id?.tlog || null });
     S.continuity.value = r;
@@ -729,13 +851,14 @@ export async function checkContinuity() {
 /* ---------------- devices ---------------- */
 
 export async function loadDevices() {
+  if (S.offline.value) { S.devices.value = offline?.devices || null; return; }
   const me = await quietly(api.me());
-  if (me) S.devices.value = me.devices;
+  if (me) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
 }
 
 /** Look up the code a new device is showing. The API checks the code against the keys. */
 export async function findLink(code) {
-  try { return await api.getLink(code); }
+  try { needVault(); return await api.getLink(code); }
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 
@@ -767,6 +890,7 @@ export async function removeDevice(d) {
 /* ---------------- recovery card & contacts (owner) ---------------- */
 
 export async function loadRecovery() {
+  if (S.offline.value) { S.recovery.value = offline?.recovery || null; return; }
   const [card, contacts, anchor, settings] = await Promise.all([quietly(api.card()), quietly(api.contacts()), quietly(api.anchor()), quietly(api.settings())]);
   if (!card || !contacts) return;
   const names = [];
@@ -787,6 +911,7 @@ export async function loadRecovery() {
     contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names, scheme: contacts.scheme },
     proofs, ready: Object.values(proofs).filter(Boolean).length >= 2, legacy,
   };
+  keepOffline({ recovery: S.recovery.value });
   if (!S.decoy.value) {
     api.protectingAlerts().then((a) => { S.protecting.value = a; }).catch(() => {});
     api.station().then((st) => { S.station.value = st; }).catch(() => {});
@@ -828,7 +953,7 @@ export async function removeCard() {
 
 /** Look up a contact code someone showed you. The API checks it against their keys. */
 export async function findContact(code) {
-  try { return await api.getOffer(code); }
+  try { needVault(); return await api.getOffer(code); }
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 
@@ -879,19 +1004,21 @@ export async function removeContacts() {
 export async function offerToBeContact() {
   const p = S.identity.value.pub;
   try {
+    needVault();
     const r = await api.offerContact({ kemPk: fromB64(p.kemPk), xPk: fromB64(p.xPk), dsaPk: fromB64(p.dsaPk) });
     S.sheet.value = { type: "offer", code: r.code, expiresAt: r.expiresAt };
   } catch (e) { toast(friendly(e), "error"); }
 }
 
 export async function findHelpRequest(code) {
-  try { return await api.getHelp(code); }
+  try { needVault(); return await api.getHelp(code); }
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 
 /** Live check 1: open the pieces you hold to see whose they are. Only names leave the check. */
 export async function whoDoIProtect() {
   try {
+    needVault();
     return await withKeys("help", "See who you protect", async ({ keys, Suite }) => {
       const held = await api.protecting();
       const people = [];
@@ -927,6 +1054,7 @@ export async function releasePiece(req, person) {
 
 export async function loadAlerts() {
   if (S.decoy.value) { S.alerts.value = []; return; } // a decoy session sees a calm account
+  if (S.offline.value) return; // recoveries in progress are a live question: shown once back online
   const a = await api.alerts().catch(() => null);
   if (a) S.alerts.value = a;
   api.protectingAlerts().then((p) => { S.protecting.value = p; }).catch(() => {});
@@ -1120,7 +1248,7 @@ async function finishJoin(st) {
     };
     delete record.schema;
     await store.putIdentity(record);
-    indexKey = Suite.indexKey(seed);
+    sessionKeys(Suite, seed);
     batch(() => {
       S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
@@ -1242,7 +1370,7 @@ export async function eraseEverything() {
   try { await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
   await store.clearIdentity();
   await store.clearVault();
-  wipe(indexKey); indexKey = null;
+  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null; S.offlineReady.value = false;
   batch(() => {
     S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null;
     S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
@@ -1259,6 +1387,7 @@ export async function resetLocal() {
   try { if (id) await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
   await store.clearIdentity();
   await store.clearVault();
+  S.offlineReady.value = false;
   api.htp.close();
   api.htp.pinnedKid = PINNED_KID;
   api.htp.server = null;
@@ -1363,8 +1492,10 @@ export async function saveDuress({ enabled, gesture }) {
 
 export async function loadDuress() {
   if (S.decoy.value) { S.duressInfo.value = { lockdown: false }; return; }
+  if (S.offline.value) { S.duressInfo.value = offline?.duress || { lockdown: false }; return; }
   const [st, settings] = await Promise.all([api.duressStatus().catch(() => null), api.settings().catch(() => null)]);
   S.duressInfo.value = { ...(st || {}), alert: !!settings?.duressAlert };
+  if (st && settings) keepOffline({ duress: S.duressInfo.value });
 }
 
 export async function setWitnessAlert(on) {
@@ -1386,7 +1517,7 @@ export async function clearLockdown() {
 /* ---------------- verification station (operators) ---------------- */
 
 export async function stationLookup(code) {
-  try { return await api.stationRequest(code); }
+  try { needVault(); return await api.stationRequest(code); }
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 

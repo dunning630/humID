@@ -555,6 +555,9 @@ export function Lock() {
       </div>
       <div class="foot">
         <button class="btn primary block" {...g.button}><Icon name="fingerprint" />Unlock</button>
+        {(!S.online.value || S.serverError.value) && S.offlineReady.value && (
+          <p class="fine offline-note" role="status">No connection. You can still unlock to see your vault, read only.</p>
+        )}
         <p class="fine">{id?.mode === "demo" ? "Demo identity · no hardware sensor" : "Keys stay sealed until a live biometric check"}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>
     </main>

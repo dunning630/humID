@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { guessCategory } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill } from "../ui.jsx";
+import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, loadRecovery, loadDevices } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
@@ -22,6 +22,8 @@ export function Vault() {
         </div>
         <button class="icon-btn" aria-label="Lock now" onClick={lockNow}><Icon name="lock" /></button>
       </div>
+
+      <OfflineBanner />
 
       {S.alerts.value.length > 0 && (
         <button class="banner bad alert-banner" onClick={() => { S.tab.value = "security"; window.scrollTo({ top: 0 }); }}>
@@ -54,8 +56,8 @@ export function Vault() {
           <Mark />
           <h3>Your vault is empty</h3>
           <p>Scan your license or passport, or add any document. It's sealed on this phone before it goes anywhere.</p>
-          <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>
-          <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>
+          {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>}
+          {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>}
         </div>
       )}
 
@@ -65,7 +67,7 @@ export function Vault() {
         {list.map((it) => <ItemRow item={it} key={it.id} />)}
       </div>
 
-      {all.length > 0 && (
+      {all.length > 0 && !S.offline.value && (
         <button class="fab" aria-label="Add a document" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" /></button>
       )}
     </main>
@@ -107,7 +109,7 @@ export function ProtectionCard() {
   const decoy = S.decoy.value;
   useEffect(() => { if (!decoy) { loadRecovery(); loadDevices(); } }, [decoy]);
   const rec = S.recovery.value, devices = S.devices.value, id = S.identity.value;
-  if (decoy || !rec || !devices) return null;
+  if (decoy || S.offline.value || !rec || !devices) return null; // offline: nothing here could be done until it reconnects
   const items = [
     { done: !!rec.proofs?.card, icon: "idcard", label: "Seal card", todo: "Make the card that's one of your proofs", target: "cardInfo" },
     { done: !!(rec.proofs?.witness || rec.proofs?.anchor), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, or your ID chip", target: "#recovery" },
@@ -230,6 +232,7 @@ export function ItemSheet() {
   if (!item) return null;
   const c = categoryOf(item.category);
   const close = () => (S.sheet.value = null);
+  const off = !!S.offline.value;
 
   return (
     <Sheet onClose={close} label={item.name}>
@@ -247,18 +250,24 @@ export function ItemSheet() {
             <div class="row"><span class="k">Encryption</span><span class="v mono" style={{ fontSize: 12 }}>ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
             <div class="row"><span class="k">Signature</span><span class="v mono" style={{ fontSize: 12 }}>ML-DSA-87 ✓ verified by vault</span></div>
           </div>
+          {off && (
+            <div class="banner warn" role="note" style={{ marginTop: 14 }}>
+              <span class="b-ico"><Icon name="signal" /></span>
+              <div><strong>Opening needs a connection</strong><span>The document itself and its key are only in your vault. Nothing here can open it offline.</span></div>
+            </div>
+          )}
           <div class="actions">
-            <button class="btn secure block" onClick={() => openItem(item)}><Icon name="eye" />Open</button>
+            <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
             <div class="split">
-              <button class="btn quiet" onClick={() => saveCopy(item)}><Icon name="download" />Save copy</button>
-              <button class="btn quiet" onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
+              <button class="btn quiet" disabled={off} onClick={() => saveCopy(item)}><Icon name="download" />Save copy</button>
+              <button class="btn quiet" disabled={off} onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
             </div>
             <div class="split">
-              <button class="btn quiet" onClick={() => exportSealed(item)}><Icon name="lock" />Sealed copy</button>
-              <button class="btn danger" onClick={() => setMode("confirm")}><Icon name="trash" />Delete</button>
+              <button class="btn quiet" disabled={off} onClick={() => exportSealed(item)}><Icon name="lock" />Sealed copy</button>
+              <button class="btn danger" disabled={off} onClick={() => setMode("confirm")}><Icon name="trash" />Delete</button>
             </div>
           </div>
-          {S.identity.value?.duress?.enabled && !S.decoy.value && (
+          {S.identity.value?.duress?.enabled && !S.decoy.value && !off && (
             <label class="toggle" style={{ marginTop: 12 }}>
               <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
               <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
