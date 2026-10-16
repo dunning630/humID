@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { X509Certificate, randomBytes, generateKeyPairSync } from "node:crypto";
 import {
   readAndroidAttestation, checkAndroidPolicy, verifyAndroidKey, verifyAppAttest, verifyLiveKey, verifyLiveSig,
-  appAttestClientData, decodeCbor, GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT,
+  appAttestClientData, decodeCbor, GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, parseStatusList, revocationList, serialKey,
 } from "@humid/attest";
 import { testRoot, androidChain, appAttestation, liveKey } from "./support/pki.js";
 
@@ -31,7 +31,8 @@ test("Google's sample keys don't qualify as liveness keys: they need no authenti
   const chain = chainOf("algorithm_EC_SecurityLevel_StrongBox");
   const root = new X509Certificate(chain[chain.length - 1]).toString();
   const r = readAndroidAttestation({ chain, roots: [root], now: new Date("2019-06-01") });
-  assert.throws(() => checkAndroidPolicy(r, { challenge: Buffer.from("abc"), requireLockedBoot: false }), (e) => e.code === "no_biometric");
+  // they're also VERIFY keys, and need no authentication: either refusal is right
+  assert.throws(() => checkAndroidPolicy(r, { challenge: Buffer.from("abc"), requireLockedBoot: false, packageNames: ["android"], allowAnySigner: true }), (e) => ["no_biometric", "bad_key"].includes(e.code));
 });
 
 test("the pinned production roots are Google's two roots and Apple's App Attest root", () => {
@@ -55,10 +56,11 @@ test("a chain from an unknown root is refused even if everything else is perfect
 /* ---------------- Android: HumID's rules ---------------- */
 
 const root = testRoot();
+const SIGNER = "01".repeat(32); // the test chains' app signing certificate digest
 const ok = (over = {}, policy = {}) => {
   const challenge = randomBytes(32);
   const { chain, pub } = androidChain({ root, challenge, ...over });
-  return () => ({ pub, ...verifyAndroidKey({ chain, challenge: policy.challenge ?? challenge, roots: [root.pem], packageNames: ["app.humid.vault"], ...policy }) });
+  return () => ({ pub, ...verifyAndroidKey({ chain, challenge: policy.challenge ?? challenge, roots: [root.pem], packageNames: ["app.humid.vault"], signatureDigests: [SIGNER], ...policy }) });
 };
 
 test("android: a biometric-only, per-use key in secure hardware is accepted", () => {
@@ -87,6 +89,73 @@ test("android: software keys, wrong session, wrong app and unlocked phones are r
   assert.throws(ok({ deviceLocked: false }), (e) => e.code === "unlocked_device");
   assert.throws(ok({ bootState: 2 }), (e) => e.code === "unlocked_device");
   assert.throws(ok({ purposes: [3] }), (e) => e.code === "bad_key");
+});
+
+test("android: only the release-signed HumID app counts; the server must know its certificate", () => {
+  assert.throws(ok({ signer: Buffer.alloc(32, 9) }), (e) => e.code === "wrong_app", "a re-signed copy");
+  assert.throws(ok({}, { signatureDigests: [] }), (e) => e.code === "not_configured", "no certificate configured: refuse, don't accept anyone");
+  assert.throws(ok({}, { packageNames: [] }), (e) => e.code === "not_configured");
+  assert.equal(ok({ signer: Buffer.alloc(32, 9) }, { signatureDigests: [], allowAnySigner: true })().proof, "android-tee", "test builds only, by explicit choice");
+});
+
+test("android: both security levels must be TEE or StrongBox; the key is for signing only", () => {
+  assert.throws(ok({ kmLevel: 0 }), (e) => e.code === "software_key");
+  assert.throws(ok({ level: 100, kmLevel: 100 }), (e) => e.code === "software_key", "KeyMint's KEYSTORE level isn't hardware");
+  assert.throws(ok({ purposes: [2, 3] }), (e) => e.code === "bad_key", "sign and verify");
+  assert.throws(ok({ purposes: [2, 7] }), (e) => e.code === "bad_key", "sign and attest-key");
+  const r = ok({ level: 2, kmLevel: 2 })();
+  assert.equal(r.level, "strongbox");
+  assert.equal(r.keymasterLevel, "strongbox");
+  assert.equal(r.unlockedDeviceRequired, true);
+});
+
+test("android: an optional minimum security patch", () => {
+  assert.equal(ok({ osPatch: 202609 }, { minPatchLevel: 202601 })().osPatchLevel, 202609);
+  assert.throws(ok({ osPatch: 202301 }, { minPatchLevel: 202601 }), (e) => e.code === "old_patch");
+  assert.throws(ok({ osPatch: null }, { minPatchLevel: 202601 }), (e) => e.code === "old_patch");
+});
+
+test("android: an expired intermediate, or an issuer that isn't a CA, breaks the chain", () => {
+  assert.throws(ok({ interNotAfter: new Date(Date.now() - 86400e3) }), (e) => e.code === "bad_attestation");
+  assert.throws(ok({ interCa: false }), (e) => e.code === "bad_attestation");
+});
+
+test("android: a certificate on Google's revocation list is refused", () => {
+  const challenge = randomBytes(32);
+  const { chain } = androidChain({ root, challenge });
+  const inter = new X509Certificate(Buffer.from(chain[1]));
+  const revoked = new Set([serialKey(inter.serialNumber)]);
+  assert.throws(() => verifyAndroidKey({ chain, challenge, roots: [root.pem], packageNames: ["app.humid.vault"], signatureDigests: [SIGNER], revokedSerials: revoked }), (e) => e.code === "revoked");
+});
+
+test("Google's status list: revoked and suspended count, leading zeros don't matter", async () => {
+  const s = parseStatusList({ entries: { "00Ab12": { status: "REVOKED", reason: "KEY_COMPROMISE" }, "77": { status: "SUSPENDED" }, "88": { status: "VALID" } } });
+  assert.deepEqual([...s].sort(), ["77", "ab12"]);
+  assert.equal(serialKey("00AB12"), "ab12");
+  assert.throws(() => parseStatusList({}));
+  // the live copy: fetched, refreshed, and "required" refuses until there is one
+  let body = { entries: { "1f": { status: "REVOKED" } } }, fail = true;
+  const fetch = async () => (fail ? Promise.reject(new Error("offline")) : { ok: true, json: async () => body });
+  const req = revocationList({ url: "https://example.test/status", fetch, required: true, refreshMs: 1e9 });
+  await new Promise((r) => setImmediate(r));
+  assert.throws(() => req.serials(), (e) => e.code === "status_unavailable");
+  fail = false;
+  await req.refresh();
+  assert.ok(req.serials().has("1f"));
+  fail = true;
+  await req.refresh(); // a failed refresh keeps the last copy
+  assert.ok(req.serials().has("1f"));
+  req.stop();
+  const opt = revocationList({ url: "https://example.test/status", fetch: async () => Promise.reject(new Error("x")), refreshMs: 1e9 });
+  assert.equal(opt.serials().size, 0, "not required: an empty list until one arrives");
+  opt.stop();
+});
+
+test("android: malformed attestation data is a refusal, never a crash", () => {
+  const cfg = { roots: { android: [root.pem] }, androidPackages: ["app.humid.vault"], androidDigests: [SIGNER] };
+  const k = liveKey();
+  assert.throws(() => verifyLiveKey({ pub: k.pub, attestation: { kind: "android-key", chain: [Buffer.from([0x30, 0x82, 0xff]), Buffer.from([1])] } }, randomBytes(32), cfg), (e) => e.code === "bad_attestation");
+  assert.throws(() => verifyLiveKey({ pub: k.pub, attestation: { kind: "apple-app-attest", object: Buffer.from([0xbf, 0xff]) } }, randomBytes(32), { ...cfg, iosAppId: APP, roots: { apple: [apple.pem] } }), (e) => typeof e.code === "string");
 });
 
 test("android: a tampered certificate breaks the chain", () => {
@@ -128,7 +197,7 @@ test("apple: wrong session, app, environment, counter, key id or root are refuse
 test("verifyLiveKey binds the attested key to the one the device presents", () => {
   const challenge = randomBytes(32);
   const a = androidChain({ root, challenge });
-  const cfg = { roots: { android: [root.pem], apple: [apple.pem] }, androidPackages: ["app.humid.vault"], iosAppId: APP };
+  const cfg = { roots: { android: [root.pem], apple: [apple.pem] }, androidPackages: ["app.humid.vault"], androidDigests: [SIGNER], iosAppId: APP };
   assert.equal(verifyLiveKey({ pub: a.pub, attestation: { kind: "android-key", chain: a.chain } }, challenge, cfg).proof, "android-tee");
   const other = liveKey();
   assert.throws(() => verifyLiveKey({ pub: other.pub, attestation: { kind: "android-key", chain: a.chain } }, challenge, cfg), (e) => e.code === "bad_attestation");

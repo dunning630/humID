@@ -85,6 +85,7 @@ const authList = (entries) => seq(...entries.sort((a, b) => a[0] - b[0]).map(([t
 export function keyDescription({
   challenge, level = 1, userAuthType = 2, noAuthRequired = false, authTimeout, allowWhileOnBody = false,
   packageName = "app.humid.vault", deviceLocked = true, bootState = 0, curve = 1, purposes = [2], algorithm = 3,
+  kmLevel = level, osPatch = 202609, signer = Buffer.alloc(32, 1), unlockedDeviceRequired = true,
 }) {
   const hw = [
     [1, set(...purposes.map(int))], [2, int(algorithm)], [3, int(256)], [5, set(int(4))],
@@ -93,17 +94,19 @@ export function keyDescription({
     ...(userAuthType == null ? [] : [[504, int(userAuthType)]]),
     ...(authTimeout == null ? [] : [[505, int(authTimeout)]]),
     ...(allowWhileOnBody ? [[506, nul()]] : []),
+    ...(unlockedDeviceRequired ? [[509, nul()]] : []),
+    ...(osPatch == null ? [] : [[706, int(osPatch)]]),
     [704, seq(octet(Buffer.alloc(32, 7)), bool(deviceLocked), enumerated(bootState), octet(Buffer.alloc(32, 9)))],
   ];
-  const appId = seq(set(seq(octet(Buffer.from(packageName)), int(1))), set(octet(Buffer.alloc(32, 1))));
+  const appId = seq(set(seq(octet(Buffer.from(packageName)), int(1))), set(octet(signer)));
   const sw = [[701, int(Date.now())], [709, octet(appId)]];
-  return seq(int(200), enumerated(level), int(200), enumerated(level), octet(challenge), octet(Buffer.alloc(0)), authList(sw), authList(hw));
+  return seq(int(200), enumerated(level), int(200), enumerated(kmLevel), octet(challenge), octet(Buffer.alloc(0)), authList(sw), authList(hw));
 }
 
 /** An Android-shaped chain for a fresh liveness key: [leaf, intermediate, root] DER. */
-export function androidChain({ root, challenge, liveKey = ecKeys("P-256"), ...kd }) {
+export function androidChain({ root, challenge, liveKey = ecKeys("P-256"), interCa = true, interNotAfter, ...kd }) {
   const inter = ecKeys("P-256");
-  const interDer = certificate({ subject: "HumID Test StrongBox CA", issuer: root.cn, publicKey: inter.publicKey, signingKey: root.privateKey, ca: true });
+  const interDer = certificate({ subject: "HumID Test StrongBox CA", issuer: root.cn, publicKey: inter.publicKey, signingKey: root.privateKey, ca: interCa, ...(interNotAfter ? { notAfter: interNotAfter } : {}) });
   const leafDer = certificate({
     subject: "Android Keystore Key", issuer: "HumID Test StrongBox CA", publicKey: liveKey.publicKey, signingKey: inter.privateKey,
     extensions: [extension("1.3.6.1.4.1.11129.2.1.17", keyDescription({ challenge, ...kd }))],

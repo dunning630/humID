@@ -4,7 +4,7 @@
 
 import { clientHello, clientFinish, keyId, fingerprint } from "./handshake.js";
 import { sealFrame, openFrame, parseHeader, DIR, MEDIA_TYPE } from "./frame.js";
-import { stepUpMessage, liveMessage } from "./proofs.js";
+import { stepUpMessage, liveMessage, actionBytes } from "./proofs.js";
 import { unb64u, toHex, equal, wipe, utf8, fromUtf8 } from "./primitives.js";
 
 export class HtpError extends Error {
@@ -89,11 +89,20 @@ export class HtpClient {
    */
   async ticket(method, path) {
     if (!this.connected) await this.connect();
-    const s = this.session;
     const m = method.toUpperCase();
+    // the server issues the approval: this action, this device, a single-use nonce, an expiry
+    const res = await this.call("POST", "/auth/step-up", { body: { m, p: path } });
+    if (!res.ok) {
+      const e = res.json() || {};
+      throw new HtpError(e.error || "step_up_refused", e.message || `Step-up refused (${res.status})`, res.status);
+    }
+    const a = res.json();
+    const action = { method: m, path, device: String(a.device), nonce: unb64u(String(a.nonce)), exp: Number(a.exp) };
+    const s = this.session;
     const seq = ++this.seq;
     const at = Date.now();
-    return { sid: s.sidText, seq, at, method: m, path, live: liveMessage(s.th, seq, m, path, at) };
+    const bytes = actionBytes(action);
+    return { sid: s.sidText, seq, at, method: m, path, action, actionBytes: bytes, live: liveMessage(s.th, seq, m, path, at, bytes) };
   }
 
   /**
@@ -119,9 +128,9 @@ export class HtpClient {
       if (!this.session || t.sid !== this.session.sidText) throw new HtpError("session_changed", "The session ended before this request was approved. Try again.");
       if (t.method !== meta.m || t.path !== path) throw new HtpError("ticket_mismatch", "This approval was for a different request.");
       seq = t.seq;
-      const message = stepUpMessage(this.session.th, seq, meta.m, path, bytes, t.at);
+      const message = stepUpMessage(this.session.th, seq, meta.m, path, bytes, t.at, t.actionBytes);
       const { sig, interrupt, live } = await sign(message);
-      meta.proof = { at: t.at, sig: b64(sig), interrupt, ...(live ? { live: b64(live) } : {}) };
+      meta.proof = { at: t.at, sig: b64(sig), interrupt, nonce: b64(t.action.nonce), exp: t.action.exp, ...(live ? { live: b64(live) } : {}) };
     } else {
       seq = ++this.seq;
     }

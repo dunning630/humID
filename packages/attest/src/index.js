@@ -10,7 +10,8 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { verifyAndroidKey, AttestationError } from "./android.js";
 import { verifyAppAttest } from "./apple.js";
 
-export { verifyAndroidKey, readAndroidAttestation, checkAndroidPolicy, parseKeyDescription, AttestationError, KEY_DESCRIPTION_OID } from "./android.js";
+export { verifyAndroidKey, readAndroidAttestation, checkAndroidPolicy, parseKeyDescription, AttestationError, KEY_DESCRIPTION_OID, serialKey } from "./android.js";
+export { revocationList, parseStatusList, STATUS_URL } from "./status.js";
 export { verifyAppAttest } from "./apple.js";
 export { GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT } from "./roots.js";
 export { decodeCbor } from "./cbor.js";
@@ -42,6 +43,15 @@ export const appAttestClientData = (challenge, spkiDer) => createHash("sha256").
  * Returns { proof, detail }.
  */
 export function verifyLiveKey(live, challenge, config = {}) {
+  try { return verifyLiveKeyInner(live, challenge, config); }
+  catch (e) {
+    // anything malformed in what the phone sent (bad DER, bad CBOR) is a refusal, not a server error
+    if (e instanceof AttestationError) throw e;
+    throw new AttestationError("bad_attestation", "The attestation can't be read.");
+  }
+}
+
+function verifyLiveKeyInner(live, challenge, config) {
   const pub = Buffer.from(live.pub);
   p256(pub);
   const a = live.attestation;
@@ -49,8 +59,9 @@ export function verifyLiveKey(live, challenge, config = {}) {
   if (a.kind === "android-key") {
     const r = verifyAndroidKey({
       chain: a.chain, challenge, roots: config.roots?.android, now: config.now,
-      packageNames: config.androidPackages, signatureDigests: config.androidDigests,
-      requireLockedBoot: config.requireLockedBoot ?? true, revokedSerials: config.revokedSerials,
+      packageNames: config.androidPackages, signatureDigests: config.androidDigests, allowAnySigner: config.allowAnySigner === true,
+      requireLockedBoot: config.requireLockedBoot ?? true, minPatchLevel: config.minPatchLevel,
+      revokedSerials: typeof config.revokedSerials === "function" ? config.revokedSerials() : config.revokedSerials,
     });
     if (!r.pub.equals(pub)) throw new AttestationError("bad_attestation", "The attested key is not the liveness key.");
     const { pub: _p, proof, ...detail } = r;

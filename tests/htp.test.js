@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 import { HtpClient } from "@humid/htp/client";
 import { HtpServer, createStatics } from "@humid/htp/server";
 import {
-  ml_dsa87, stepUpMessage, loginMessage, verify, ReplayWindow, MEDIA_TYPE,
+  ml_dsa87, stepUpMessage, actionBytes, loginMessage, verify, ReplayWindow, MEDIA_TYPE,
 } from "@humid/htp";
 
+const ISSUED = { nonce: new Uint8Array(16).fill(5), exp: Date.now() + 60_000, device: "dev_test" };
 function wire(server, { tamper } = {}) {
   const log = [];
   const fetch = async (url, init = {}) => {
@@ -22,7 +23,10 @@ function wire(server, { tamper } = {}) {
         log.push(frame);
         if (tamper) frame = tamper(frame);
         const { session, seq, meta, body } = await server.open(frame);
-        const reply = { echo: meta, bodyLen: body.length, proof: meta.proof || null, th: Buffer.from(session.th).toString("hex") };
+        // a step-up approval, as the gateway issues it
+        const reply = meta.p === "/auth/step-up"
+          ? { nonce: Buffer.from(ISSUED.nonce).toString("base64url"), exp: ISSUED.exp, device: ISSUED.device }
+          : { echo: meta, bodyLen: body.length, proof: meta.proof || null, th: Buffer.from(session.th).toString("hex") };
         return new Response(await server.seal(session, seq, 200, { "content-type": "application/json" }, new TextEncoder().encode(JSON.stringify(reply))), { headers: { "content-type": MEDIA_TYPE } });
       }
       return json(404, { error: "not_found" });
@@ -129,12 +133,19 @@ test("step-up proofs are bound to session, request and body", async () => {
   const { proof, th } = res.json();
   const sig = Buffer.from(proof.sig, "base64url");
   const thB = Buffer.from(th, "hex");
-  assert.ok(verify(sig, stepUpMessage(thB, 1, "GET", "/vault/objects/42", body, proof.at), holder.publicKey));
-  // Same signature does not verify for another request, body or session.
-  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", body, proof.at), holder.publicKey));
-  assert.ok(!verify(sig, stepUpMessage(thB, 1, "GET", "/vault/objects/43", body, proof.at), holder.publicKey));
-  assert.ok(!verify(sig, stepUpMessage(thB, 1, "GET", "/vault/objects/42", new Uint8Array([1]), proof.at), holder.publicKey));
-  assert.ok(!verify(sig, stepUpMessage(new Uint8Array(32), 1, "GET", "/vault/objects/42", body, proof.at), holder.publicKey));
+  const action = (over = {}) => actionBytes({ method: "GET", path: "/vault/objects/42", device: ISSUED.device, nonce: ISSUED.nonce, exp: ISSUED.exp, ...over });
+  // slot 1 went to fetching the approval; the request itself is slot 2
+  assert.ok(verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", body, proof.at, action()), holder.publicKey));
+  assert.equal(proof.nonce, Buffer.from(ISSUED.nonce).toString("base64url"));
+  assert.equal(proof.exp, ISSUED.exp);
+  // Same signature does not verify for another request, body, session, device, nonce or expiry.
+  assert.ok(!verify(sig, stepUpMessage(thB, 3, "GET", "/vault/objects/42", body, proof.at, action()), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/43", body, proof.at, action()), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", new Uint8Array([1]), proof.at, action()), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(new Uint8Array(32), 2, "GET", "/vault/objects/42", body, proof.at, action()), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", body, proof.at, action({ device: "dev_other" })), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", body, proof.at, action({ nonce: new Uint8Array(16) })), holder.publicKey));
+  assert.ok(!verify(sig, stepUpMessage(thB, 2, "GET", "/vault/objects/42", body, proof.at, action({ exp: ISSUED.exp + 1 })), holder.publicKey));
 });
 
 test("login proofs from one session do not verify in another", () => {
