@@ -191,6 +191,21 @@ try {
   assert.ok(tb.y + tb.height <= bar.y + 1, "and above the tab bar");
   await shot(page, "small-toast");
   step("a lease is filed under Home; the toast shows at the bottom, above the tab bar");
+
+  // the phone deleted HumID's key (fingerprints changed, or a reinstall restored old data):
+  // a clear screen and a way to start again, not an unlock that fails forever
+  await page.getByRole("button", { name: "Lock now" }).first().click();
+  await page.evaluate(() => { globalThis.__humidDemoKeyGone = true; });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.getByRole("heading", { name: "This phone's HumID key is gone" }).waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".toast.error, .toast[data-kind=error]").count(), 0, "no error toast over the screen's buttons");
+  await shot(page, "small-key-gone");
+  await page.evaluate(() => { globalThis.__humidDemoKeyGone = false; });
+  await page.getByRole("button", { name: "Set up HumID again" }).click();
+  await page.getByRole("button", { name: "Remove this identity from this phone" }).click();
+  await page.getByRole("button", { name: "Create my HumID" }).waitFor({ timeout: 15_000 });
+  step("a deleted biometric key: says so, and setting up again starts from Welcome");
   await ctx.close();
   await dev.stop();
 
