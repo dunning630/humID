@@ -73,6 +73,7 @@ export function toast(text, kind = "ok") {
 const friendly = (e) => {
   if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
+  if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
   if (e?.code === "offline") return "You're offline. Opening or changing anything needs a connection to your vault.";
   if (e instanceof TypeError || e?.code === "server_unreachable") return "Can't reach your vault server. Check your connection.";
   return e?.message || "Something went wrong.";
@@ -144,6 +145,7 @@ async function withKeys(purpose, label, fn, { keepOpen = false, challenge, attes
     return out;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1600);
+    if (e?.code === "key_invalidated") keyGone();
     throw e;
   } finally {
     wipe(secret, both);
@@ -482,7 +484,7 @@ export async function unlock(duress = false) {
     loadAlerts();
     if (wasOffline) reloadTab();
   } catch (e) {
-    const issue = ["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven"].includes(e?.code);
+    const issue = ["unknown_identity", "server_identity_changed", "device_removed", "device_not_proven", "key_invalidated"].includes(e?.code);
     // This device was removed, or the server isn't the one it trusted: its offline copy goes too.
     if (issue) { await store.clearOffline().catch(() => {}); S.offlineReady.value = false; }
     if (wasOffline && !issue) {
@@ -497,8 +499,22 @@ export async function unlock(duress = false) {
     // No connection: open the offline copy with a live check of its own.
     if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(duress); }
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
-    else if (!S.interrupt.value && !cancelled(e)) toast(friendly(e), "error");
+    else if (!S.interrupt.value && !cancelled(e) && !issue) toast(friendly(e), "error"); // an issue has its own screen
   }
+}
+
+/**
+ * Android or iOS deleted this device's biometric key (its fingerprints or face changed,
+ * or HumID was reinstalled and its data came back from a backup). Nothing can unlock
+ * this identity here again, so say so and offer to set this device up again, instead
+ * of failing every unlock with the same error.
+ */
+function keyGone() {
+  store?.clearOffline().catch(() => {});
+  S.offlineReady.value = false;
+  if (S.view.value === "app") lock();
+  if (S.view.value === "join") { clearTimeout(joinTimer); S.view.value = "locked"; }
+  S.lockIssue.value = "key_invalidated";
 }
 
 /** The vault didn't answer at all (as opposed to answering "no"). */
