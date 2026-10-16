@@ -127,6 +127,11 @@ network but cannot get them to do anything.
 keyshare, released inside the same live step-up that releases its envelope. A
 copy of the account keys opens nothing alone ([SECURITY.md](SECURITY.md#a-compromised-phone)).
 
+**Offline.** The app keeps a read-only copy of what it shows (the sealed index entries,
+devices, recovery and duress status, the verified ledger), sealed under a key derived
+from the account seed. With no connection, a live check opens that copy instead of
+signing in; nothing that needs the vault works until it reconnects ([SECURITY.md](SECURITY.md#offline)).
+
 **Zero knowledge in the vault.** The vault checks each upload's ML-DSA-87
 signature, that the signer is the signed-in account, and that the recipient
 is the account's own KEM key. It cannot decrypt anything. Item names and

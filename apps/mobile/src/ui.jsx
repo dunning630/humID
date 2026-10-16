@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark } from "./brand.jsx";
 import { Icon } from "./icons.jsx";
 import * as S from "./core/state.js";
-import { holdComplete, holdCancel, dismissChipRead } from "./core/controller.js";
+import { holdComplete, holdCancel, dismissChipRead, reconnect } from "./core/controller.js";
 import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
 import { DEMO_BUILD } from "@humid/gate";
@@ -100,6 +100,26 @@ const TABS = [
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "security", label: "Security", icon: "shield" },
 ];
+
+/**
+ * Shown at the top of each tab while the app is showing the copy kept on this device.
+ * "Reconnect" appears once the device is back online (one live check signs in).
+ */
+export function OfflineBanner() {
+  const o = S.offline.value;
+  useNow(30_000);
+  if (!o) return null;
+  return (
+    <div class="banner warn offline" role="status">
+      <span class="b-ico"><Icon name="signal" /></span>
+      <div>
+        <strong>Offline · read only</strong>
+        <span>Your vault as it was {o.savedAt ? fmtAgo(o.savedAt) : "last time you were online"}. Opening or changing anything needs a connection.</span>
+      </div>
+      {S.online.value && <button class="btn sm primary" onClick={reconnect}>Reconnect</button>}
+    </div>
+  );
+}
 
 export function TabBar() {
   return (

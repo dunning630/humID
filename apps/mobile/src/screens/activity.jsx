@@ -1,7 +1,7 @@
 // Activity: the holder's own access ledger, verified on this device.
 import { useEffect } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { dayLabel, fmtTime, fmtAgo } from "../ui.jsx";
+import { dayLabel, fmtTime, fmtAgo, OfflineBanner } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { loadLedger } from "../core/controller.js";
 
@@ -85,12 +85,14 @@ export function Activity() {
         <button class="icon-btn" aria-label="Refresh" onClick={loadLedger}><Icon name="activity" /></button>
       </div>
 
+      <OfflineBanner />
+
       {S.ledgerLoading.value && !l && <p class="muted small">Verifying your ledger…</p>}
 
       {l && (l.ok ? (
         <div class="banner">
           <span class="b-ico"><Icon name="shield" /></span>
-          <div><strong>Ledger verified on this phone</strong><span>{l.entries.length} events · hash chain intact · head signed with ML-DSA-87 · key <span class="mono">{l.keyFp?.slice(0, 8)}</span></span></div>
+          <div><strong>{S.offline.value ? "Ledger as verified when last online" : "Ledger verified on this phone"}</strong><span>{l.entries.length} events · hash chain intact · head signed with ML-DSA-87 · key <span class="mono">{l.keyFp?.slice(0, 8)}</span></span></div>
         </div>
       ) : (
         <div class="banner bad">

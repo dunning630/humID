@@ -28,6 +28,13 @@ export async function openStore() {
     delItem: (id) => backend.del("vault", id),
     clearVault: () => backend.clear("vault"),
 
+    // The offline copy: what the app shows when it can't reach the vault. Sealed
+    // under a key from the identity seed (opens only after a live check), and kept
+    // in "vault", so every path that erases this device's vault erases it too.
+    getOffline: () => backend.get("vault", "offline").then((r) => (r?.blob ? r : null)),
+    putOffline: (blob, account) => backend.put("vault", "offline", { id: "offline", v: 1, account, blob }),
+    clearOffline: () => backend.del("vault", "offline"),
+
     // An access pass between buying and spending it (docs/ANONYMITY.md). Survives
     // clearIdentity on purpose: it was paid for. Removed once the account exists.
     getPass: () => backend.get("wallet", "pass").then((p) => p || null),
