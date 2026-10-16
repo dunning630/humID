@@ -2,7 +2,7 @@
 // backoff forever while the app is on screen, and recovers once — with a fake clock.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createLink, backoff, BACKOFF_MS, HEARTBEAT_MS, isNetworkFailure } from "../apps/mobile/src/core/link.js";
+import { createLink, backoff, BACKOFF_MS, SLOW_CHECK_MS, isNetworkFailure } from "../apps/mobile/src/core/link.js";
 
 function rig({ serverUp = true } = {}) {
   let t = 0;
@@ -37,7 +37,6 @@ test("backoff doubles from 1 s and stays at 30 s, with ±20% jitter", () => {
 
 test("a failed request starts retries that never give up, and one success ends them", async () => {
   const r = rig({ serverUp: false });
-  r.link.setActive(true);
   r.link.down("unreachable");
   assert.equal(r.link.state.state, "down");
   const delays = [];
@@ -52,27 +51,27 @@ test("a failed request starts retries that never give up, and one success ends t
   assert.equal(r.link.state.state, "up");
   assert.equal(r.ups.length, 1, "recovered once");
   assert.equal(r.ups[0].downFor, r.now());
-  // back to the heartbeat
-  assert.equal(r.pending().length, 1);
-  assert.equal(r.pending()[0].at - r.now(), HEARTBEAT_MS);
+  // healthy again: nothing scheduled, nothing sent
+  assert.equal(r.pending().length, 0);
 });
 
-test("the heartbeat notices a drop while nothing is being tapped", async () => {
-  const r = rig();
-  r.link.setActive(true);
-  await r.tick(); // heartbeat, server fine
-  assert.equal(r.link.state.state, "up");
-  r.serverUp = false;
-  await r.tick(); // heartbeat fails
-  assert.equal(r.link.state.state, "down");
-  assert.equal(r.pending()[0].at - r.now(), 1000, "first retry after 1 s");
-});
-
-test("no heartbeat while nothing uses the server; any answered request keeps it up", () => {
+test("while the connection is fine, nothing is ever sent just to check", async () => {
   const r = rig();
   r.link.up(); r.link.up();
-  assert.equal(r.pending().length, 0);
+  r.link.visible(false); r.link.visible(true);
+  r.link.online(true);
+  await new Promise((res) => setImmediate(res));
+  assert.equal(r.pending().length, 0, "no timers");
+  // online(true) checks once in case it was down; that's the only probe, and only on that event
+  assert.ok(r.probes <= 1);
   assert.equal(r.states.length, 0, "no churn while up");
+});
+
+test("a failed request is what notices a drop; the first retry follows after 1 s", () => {
+  const r = rig({ serverUp: false });
+  r.link.down("unreachable");
+  assert.equal(r.link.state.state, "down");
+  assert.equal(r.pending()[0].at - r.now(), 1000);
 });
 
 test("off the screen it pauses; back on the screen it tries at once", async () => {
@@ -91,14 +90,14 @@ test("no network: waits for the online event instead of hammering, then checks a
   const r = rig({ serverUp: false });
   r.link.online(false);
   assert.equal(r.link.state.reason, "offline");
-  assert.equal(r.pending()[0].at - r.now(), HEARTBEAT_MS, "a slow check only");
+  assert.equal(r.pending()[0].at - r.now(), SLOW_CHECK_MS, "a slow check only");
   r.serverUp = true;
   r.link.online(true);
   await new Promise((res) => setImmediate(res));
   assert.equal(r.link.state.state, "up");
 });
 
-test("Try now skips the wait; repeated failures while down don't reset the count", async () => {
+test("Reconnect now skips the wait; repeated failures while down don't reset the count", async () => {
   const r = rig({ serverUp: false });
   r.link.down();
   await r.tick(); await r.tick();
