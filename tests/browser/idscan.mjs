@@ -91,9 +91,22 @@ try {
   await page.getByRole("button", { name: /Driver's license/ }).click();
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   await shot(page, "1-camera-front");
+  // A photo that can't be saved (Android ran out of memory encoding it, say) keeps the
+  // camera open and says so, instead of dropping back to "Scan the front" as if nothing happened.
+  await page.evaluate(() => {
+    const real = HTMLCanvasElement.prototype.toBlob;
+    let fail = 2; // jpeg() tries twice (full size, then smaller)
+    HTMLCanvasElement.prototype.toBlob = function (cb, ...a) { if (fail-- > 0) return setTimeout(() => cb(null)); return real.call(this, cb, ...a); };
+  });
   await page.locator(".doccam .dc-shutter").click();
-  await page.getByRole("button", { name: /Now the back/ }).click();
-  step("front photographed; back camera open, reading the barcode live…");
+  await page.getByText(/Couldn't save that photo/).waitFor({ timeout: 10_000 });
+  assert.ok(await page.locator(".doccam").isVisible(), "the camera stays open after a failed save");
+  step("a photo that can't be saved: the camera stays open and says so");
+  await page.locator(".doccam .dc-shutter:not([disabled])").click();
+  // saved: a tick, then straight on to the back, with the front shown as done
+  await page.locator(".dc-saved-chip", { hasText: "Front saved. Now turn it over." }).waitFor({ timeout: 10_000 });
+  await shot(page, "1b-front-saved");
+  step("front photographed and confirmed; back camera open, reading the barcode live…");
   await page.locator(".doccam").waitFor();
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 45_000 });
   await page.getByText("Check the details").waitFor({ timeout: 10_000 });

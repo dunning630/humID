@@ -19,6 +19,11 @@ frames agree on an MRZ whose check digits all pass. The shutter and **Photo**
 (pick an existing picture) always work too, and every field can be typed or
 corrected before sealing.
 
+Each photo is kept before the camera closes: a tick confirms it, and the camera
+moves straight on to the other side. If a photo can't be kept (a blank frame from
+the camera, or not enough memory to encode it), the camera stays open and says
+so. On Android, back closes the camera, then the sheet, and never leaves HumID.
+
 ## How sure the details are
 
 Each field remembers where it came from, and a better source replaces a
