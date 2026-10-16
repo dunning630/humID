@@ -91,10 +91,6 @@ try {
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  await scanIdButton(page);
-  await page.getByRole("button", { name: /Driver's license/ }).click();
-  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await shot(page, "1-camera-front");
   // A photo that can't be saved (Android ran out of memory encoding it, say) keeps the
   // camera open and says so, instead of dropping back to "Scan the front" as if nothing happened.
   await page.evaluate(() => {
@@ -102,13 +98,15 @@ try {
     let fail = 2; // jpeg() tries twice (full size, then smaller)
     HTMLCanvasElement.prototype.toBlob = function (cb, ...a) { if (fail-- > 0) return setTimeout(() => cb(null)); return real.call(this, cb, ...a); };
   });
-  await page.locator(".doccam .dc-shutter").click();
-  await page.getByText(/Couldn't save that photo/).waitFor({ timeout: 10_000 });
+  await scanIdButton(page);
+  await page.getByRole("button", { name: /Driver's license/ }).click();
+  await shot(page, "1-camera-front");
+  // nobody presses the shutter: the card is lined up, so the camera takes it by itself
+  await page.getByText(/Couldn't save that photo/).waitFor({ timeout: 20_000 });
   assert.ok(await page.locator(".doccam").isVisible(), "the camera stays open after a failed save");
-  step("a photo that can't be saved: the camera stays open and says so");
-  await page.locator(".doccam .dc-shutter:not([disabled])").click();
-  // saved: a tick, then straight on to the back, with the front shown as done
-  await page.locator(".dc-saved-chip", { hasText: "Front saved. Now turn it over." }).waitFor({ timeout: 10_000 });
+  step("auto-capture took the front; the save failed, and the camera stayed open and said so");
+  // …then, after a pause to read that, takes it again; saved: a tick, then straight on to the back
+  await page.locator(".dc-saved-chip", { hasText: "Front saved. Now turn it over." }).waitFor({ timeout: 20_000 });
   await shot(page, "1b-front-saved");
   step("front photographed and confirmed; back camera open, reading the barcode live…");
   await page.locator(".doccam").waitFor();
@@ -191,6 +189,24 @@ try {
   assert.match(pview, /From the chip/);
   assert.match(pview, /P<UTOPERSON<<DEMO/);
   step("passport sealed and opened, with the chip photo");
+  await ctx.close();
+
+  /* ---------------- 3. nothing but a table in view: it never takes a photo by itself ---------------- */
+  ({ ctx, page } = await launch(fixture("camera-empty.mjpeg")));
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /^Unlock$/ }).click();
+  await hold(page);
+  await page.locator(".item").first().waitFor({ timeout: 20_000 });
+  await scanIdButton(page);
+  await page.getByRole("button", { name: /Another card/ }).click();
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.waitForTimeout(5000);
+  assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
+  assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
+  await page.getByText(/Fit the document in the frame/).waitFor();
+  await shot(page, "8-empty-table");
+  await page.getByRole("button", { name: "Close the camera" }).click();
+  step("an empty table: the camera keeps waiting and says what it needs");
   await ctx.close();
   console.log("ok — Scan an ID works end to end in the browser");
 } catch (e) {
