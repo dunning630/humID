@@ -220,3 +220,8 @@ test("liveness signatures verify only for the exact message and key", () => {
   const p384 = generateKeyPairSync("ec", { namedCurve: "P-384" }).publicKey.export({ type: "spki", format: "der" });
   assert.equal(verifyLiveSig(p384, m, sig), false);
 });
+
+test("servers know the official HumID Android app's signing certificate", async () => {
+  const { HUMID_ANDROID_RELEASE_CERT } = await import("@humid/attest");
+  assert.match(HUMID_ANDROID_RELEASE_CERT, /^[0-9a-f]{64}$/);
+});

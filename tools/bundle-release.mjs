@@ -4,7 +4,7 @@
 //   HumID 1.1.0/
 //     README.txt          what's inside, which server the apps are pinned to, how to install
 //     SHA256SUMS.txt
-//     Android/            HumID-1.1.0-android.apk (or -android-test.apk when debug-signed), .aab
+//     Android/            HumID-<version>-android.apk (release-signed), .aab
 //     iPhone/  Mac/  Windows/  Linux/
 //     Windows Server/     HumID-Server-Windows-<server version>.zip
 //
@@ -30,7 +30,7 @@ if (!commit) { try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: 
 
 // artifact name -> folder, and how to name what's in it
 const APPS = [
-  { artifact: "humid-android", folder: "Android", rename: (f) => /\.apk$/.test(f) ? `HumID-${appVersion}-android${/debug/i.test(f) ? "-test" : ""}.apk` : /\.aab$/.test(f) ? `HumID-${appVersion}-android.aab` : f },
+  { artifact: "humid-android", folder: "Android", rename: (f) => /\.apk$/.test(f) ? `HumID-${appVersion}-android.apk` : /\.aab$/.test(f) ? `HumID-${appVersion}-android.aab` : f },
   { artifact: "humid-ios", folder: "iPhone", rename: (f) => /\.ipa$/.test(f) ? `HumID-${appVersion}-iphone.ipa` : f },
   { artifact: "humid-macos", folder: "Mac" },
   { artifact: "humid-windows", folder: "Windows" },
@@ -41,7 +41,6 @@ const HOWTO = {
   "Android": [
     "Android 11 or later, with a fingerprint or face unlock set up.",
     "Copy the .apk to the phone and open it; allow installing from that source when Android asks.",
-    "A file ending -test.apk is debug-signed: fine for a pilot, not for the Play Store.",
   ],
   "iPhone": ["Installs through TestFlight / App Store Connect (needs the Apple signing secrets)."],
   "Mac": ["Open the .dmg and drag HumID to Applications."],

@@ -19,7 +19,7 @@
 
 import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
-import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL } from "@humid/attest";
+import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
 export const ATTEST_MAX_AGE_MS = 5 * 60_000;
@@ -44,7 +44,8 @@ export function createIdentity({
   statusRequired = env("HUMID_ATTESTATION_STATUS_REQUIRED", "0") === "1",
   attest = {
     androidPackages: list(env("HUMID_ANDROID_PACKAGES", "app.humid.vault")),
-    androidDigests: list(env("HUMID_ANDROID_CERT_DIGESTS", "")).map((d) => d.toLowerCase().replace(/:/g, "")),
+    // the official HumID app's signing certificate, plus any the operator adds (their own builds)
+    androidDigests: [HUMID_ANDROID_RELEASE_CERT, ...list(env("HUMID_ANDROID_CERT_DIGESTS", "")).map((d) => d.toLowerCase().replace(/:/g, ""))],
     // Test builds only: accept an Android app signed by anyone. Never in production.
     allowAnySigner: env("HUMID_ANDROID_ALLOW_ANY_SIGNER", "0") === "1",
     // YYYYMM: refuse phones whose security patch is older (empty: no minimum).

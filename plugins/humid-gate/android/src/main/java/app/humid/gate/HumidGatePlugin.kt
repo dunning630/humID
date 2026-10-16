@@ -231,6 +231,7 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
                 .setUserAuthenticationRequired(true)
                 .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG) // per use, biometric only
                 .setInvalidatedByBiometricEnrollment(true)
+                .setUnlockedDeviceRequired(true) // never while the phone is locked
                 .setAttestationChallenge(attestationChallenge)
             if (strongBox) b.setIsStrongBoxBacked(true)
             return b.build()
@@ -258,6 +259,7 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
                 .setUserAuthenticationRequired(true)
                 .setUserAuthenticationParameters(SECRET_WINDOW_S, KeyProperties.AUTH_BIOMETRIC_STRONG)
                 .setInvalidatedByBiometricEnrollment(true)
+                .setUnlockedDeviceRequired(true)
             if (strongBox) b.setIsStrongBoxBacked(true)
             return b.build()
         }
