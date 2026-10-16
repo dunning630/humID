@@ -270,7 +270,7 @@ function reconnected({ downFor }) {
   if (S.pass.value?.state === "draft" && !S.identity.value) resumePass();
 }
 
-/** "Try now" on the connection bar. */
+/** "Reconnect now" on the connection bar. */
 export const retryConnection = () => link?.retryNow();
 
 export async function connectServer() {
@@ -300,9 +300,8 @@ function wireGlobalEvents() {
   addEventListener("focus", () => setTimeout(() => { picking = false; }, 1200));
   addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
   addEventListener("offline", () => { S.online.value = false; link?.online(false); });
-  // the monitor checks the server while the app is on screen, and pauses while it isn't
+  // retries pause while HumID is off the screen, and resume when it's back
   document.addEventListener("visibilitychange", () => link?.visible(!document.hidden));
-  S.view.subscribe((v) => link?.setActive(v !== "boot"));
   if (!S.online.value) link?.online(false);
 }
 
