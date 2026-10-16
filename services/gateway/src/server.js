@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, loginMessage, stepUpMessage, liveMessage, verify, proofHash, STEP_UP_MAX_AGE_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, loginMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
 const ID_RE = "hid_[0-9a-f]{40}";
@@ -55,6 +55,8 @@ const ROUTES = [
   { m: "POST", p: re("/auth/logout"), h: "logout" },
   // duress: every unlock reports presence the same way; only the flag inside differs
   { m: "POST", p: re("/auth/presence"), h: "presence", auth: true },
+  // a step-up approval for one action: the device signs it during the live check
+  { m: "POST", p: re("/auth/step-up"), h: "stepUpNonce", auth: true },
   { m: "GET", p: re("/auth/duress"), h: "duressStatus", auth: true },
   { m: "POST", p: re("/auth/duress/clear"), h: "clearDuress", auth: true },
 
@@ -337,7 +339,7 @@ export function createGateway({
       let reg;
       try {
         reg = await internalJson("identity", "POST", "/internal/register", {
-          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), device: r.device, policy: devicePolicy },
+          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy },
         });
       } catch (e) { await refund(); throw e; }
       if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
@@ -361,7 +363,7 @@ export function createGateway({
     async enrollDevice(s, body) {
       const r = parseJson(body) || {};
       if (!re(ID_RE).test(String(r.account))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), via: r.via, device: r.device, policy: devicePolicy } });
+      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, via: r.via, device: r.device, policy: devicePolicy } });
       if (add.status >= 300) fail(add);
       bindSession(s, add.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       // Continuity: every device carries the evidence that let it in.
@@ -481,6 +483,27 @@ export function createGateway({
     // Every unlock reports presence the same way. d = 1 means the owner used their duress
     // gesture: this session becomes a decoy, the account is locked down, recoveries slow down.
     // The work happens after the reply, so the answer looks and times the same either way.
+    /**
+     * Issue an approval for one request: method and path (which carry the target ids), for
+     * this device, with a single-use nonce that expires in 60 s. The device's secure chip
+     * signs exactly this during the live check; the request is refused if anything differs.
+     */
+    async stepUpNonce(s, body) {
+      const r = parseJson(body) || {};
+      const m = String(r.m || "").toUpperCase(), p = String(r.p || "");
+      if (!["GET", "POST", "PUT", "DELETE"].includes(m) || !p.startsWith("/") || p.length > 512) throw new HttpError(400, "bad_action", "Unknown action");
+      const route = ROUTES.find((x) => x.m === m && x.p.test(new URL(p, "http://inner").pathname));
+      if (!route) throw new HttpError(404, "not_found", "No such endpoint");
+      s.stepUps ||= new Map();
+      const now = Date.now();
+      for (const [k, v] of s.stepUps) if (v.exp < now) s.stepUps.delete(k);
+      while (s.stepUps.size >= 8) s.stepUps.delete(s.stepUps.keys().next().value); // a few outstanding at most
+      const nonce = random(16);
+      const exp = now + STEP_UP_NONCE_MS;
+      s.stepUps.set(b64u(nonce), { m, p, exp });
+      return json(200, { nonce: b64u(nonce), exp, device: s.deviceId });
+    },
+
     async presence(s, body) {
       const r = parseJson(body) || {};
       if (r.d === 1 && !s.duress) {
@@ -537,10 +560,18 @@ export function createGateway({
     let stepUp = null;
     if (meta.proof) {
       if (!s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
-      const at = Number(meta.proof.at);
-      if (!Number.isSafeInteger(at) || Math.abs(Date.now() - at) > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_stale", "Biometric check is too old. Try again.");
+      const at = Number(meta.proof.at), now = Date.now();
+      if (!Number.isSafeInteger(at) || now - at > STEP_UP_MAX_AGE_MS || at - now > CLOCK_SKEW_MS) throw new HttpError(403, "step_up_stale", "Biometric check is too old. Try again.");
+      // The approval the server issued for this action: used once, here, whatever happens next.
+      const nonceKey = typeof meta.proof.nonce === "string" ? meta.proof.nonce : "";
+      const issued = nonceKey && s.stepUps?.get(nonceKey);
+      if (!issued) throw new HttpError(403, "step_up_unknown", nonceKey ? "That approval was already used or never issued. Try again." : "Update HumID to approve this.");
+      s.stepUps.delete(nonceKey);
+      if (issued.m !== meta.m || issued.p !== meta.p) throw new HttpError(403, "step_up_mismatch", "That approval was for a different action.");
+      if (issued.exp < now || Number(meta.proof.exp) !== issued.exp) throw new HttpError(403, "step_up_stale", "Biometric check is too old. Try again.");
+      const action = actionBytes({ method: meta.m, path: meta.p, device: s.deviceId, nonce: unb64u(nonceKey), exp: issued.exp });
       const sig = unb64u(String(meta.proof.sig));
-      if (!verify(sig, stepUpMessage(s.th, seq, meta.m, meta.p, body, at), s.dsaPk)) {
+      if (!verify(sig, stepUpMessage(s.th, seq, meta.m, meta.p, body, at, action), s.dsaPk)) {
         await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "bad_step_up" });
         throw new HttpError(401, "bad_proof", "Biometric proof was rejected.");
       }
@@ -548,7 +579,7 @@ export function createGateway({
       if (s.livePub) {
         let live = null;
         try { live = meta.proof.live ? unb64u(String(meta.proof.live)) : null; } catch {}
-        if (!verifyLiveSig(s.livePub, liveMessage(s.th, seq, meta.m, meta.p, at), live)) {
+        if (!verifyLiveSig(s.livePub, liveMessage(s.th, seq, meta.m, meta.p, at, action), live)) {
           await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "no_live_biometric" });
           throw new HttpError(401, "bad_live_proof", "This needs a live face or fingerprint check on this device.");
         }

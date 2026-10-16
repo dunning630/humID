@@ -7,6 +7,10 @@
 import { ml_dsa87, sha3_256, concat, lp, u64, utf8, toHex, fromHex } from "./primitives.js";
 
 export const STEP_UP_MAX_AGE_MS = 60 * 1000;
+/** A step-up approval the server hands out is good for this long, and for one request. */
+export const STEP_UP_NONCE_MS = 60 * 1000;
+/** How far ahead of the server's clock a device's clock may be. */
+export const CLOCK_SKEW_MS = 5 * 1000;
 
 /** Server-side identity id, derived from the holder's ML-DSA-87 public key. */
 export const identityId = (dsaPk) => "hid_" + toHex(sha3_256(dsaPk)).slice(0, 40);
@@ -29,16 +33,27 @@ export const deviceMessage = (th, accountId, deviceDsaPk) =>
 export const loginMessage = (th, id, challenge) =>
   concat(utf8("HTP/1 login"), lp(th, utf8(id), challenge));
 
-export const stepUpMessage = (th, seq, method, path, body, at) =>
-  concat(utf8("HTP/1 step-up"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), sha3_256(body || new Uint8Array(0)), u64(at)));
+/**
+ * The action being approved, as the server issued it (POST /auth/step-up), in one
+ * canonical encoding: what it does (method), to what (the path carries the target
+ * ids: document, device, recovery request…), from which device, the server's
+ * single-use nonce, and when the approval expires (at most 60 s on).
+ */
+export const actionBytes = ({ method, path, device, nonce, exp }) =>
+  concat(utf8("HTP/1 action v2"), lp(utf8(method.toUpperCase()), utf8(path), utf8(device), nonce, u64(exp)));
+
+/** The device key's step-up signature: the session, the slot, the request with its body, the time, and the action. */
+export const stepUpMessage = (th, seq, method, path, body, at, action) =>
+  concat(utf8("HTP/1 step-up v2"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), sha3_256(body || new Uint8Array(0)), u64(at), action));
 
 /**
- * What a device's hardware liveness key signs for a step-up: this session,
- * this request slot, the method, the path and the time. The body is covered
- * by the ML-DSA-87 step-up signature made with the same biometric check.
+ * What a device's hardware liveness key signs for a step-up, during the live check:
+ * this session, this request slot, the method, the path, the time and the action the
+ * server issued. (The body is chosen with keys that check releases, so it's covered
+ * by the ML-DSA-87 step-up signature made in the same check.)
  */
-export const liveMessage = (th, seq, method, path, at) =>
-  concat(utf8("HTP/1 live"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), u64(at)));
+export const liveMessage = (th, seq, method, path, at, action) =>
+  concat(utf8("HTP/1 live v2"), lp(th, u64(seq), utf8(method.toUpperCase()), utf8(path), u64(at), action));
 
 /** What the liveness key signs when a document is sealed: the ciphertext's SHA3-512 (hex in the manifest). */
 export const sealLiveMessage = (ciphertextSha3Hex) => concat(utf8("HUMID-SEAL-v1"), fromHex(ciphertextSha3Hex));

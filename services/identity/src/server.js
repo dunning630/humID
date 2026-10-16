@@ -19,7 +19,10 @@
 
 import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
-import { verifyLiveKey, verifyLiveSig, AttestationError } from "@humid/attest";
+import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL } from "@humid/attest";
+
+/** An attestation is made for one enrolment, in a session at most this old. */
+export const ATTEST_MAX_AGE_MS = 5 * 60_000;
 
 const SIZES = { kemPk: 1568, dsaPk: 2592, xPk: 32 };
 const VIA = new Set(["register", "link", "card", "contacts", "quorum"]);
@@ -36,9 +39,16 @@ export function createIdentity({
   internalPk = env("HUMID_INTERNAL_PK"),
   // After a duress signal the account stays locked down until its owner clears it, calmly, at least this long after the last signal.
   duressCoolOffMs = Number(env("HUMID_DURESS_COOLOFF_MS", String(24 * 3600_000))),
+  // Google's list of revoked or suspended attestation certificates ("" turns it off).
+  statusUrl = env("HUMID_ATTESTATION_STATUS_URL", STATUS_URL),
+  statusRequired = env("HUMID_ATTESTATION_STATUS_REQUIRED", "0") === "1",
   attest = {
     androidPackages: list(env("HUMID_ANDROID_PACKAGES", "app.humid.vault")),
     androidDigests: list(env("HUMID_ANDROID_CERT_DIGESTS", "")).map((d) => d.toLowerCase().replace(/:/g, "")),
+    // Test builds only: accept an Android app signed by anyone. Never in production.
+    allowAnySigner: env("HUMID_ANDROID_ALLOW_ANY_SIGNER", "0") === "1",
+    // YYYYMM: refuse phones whose security patch is older (empty: no minimum).
+    minPatchLevel: Number(env("HUMID_ANDROID_MIN_PATCH", "")) || undefined,
     iosAppId: env("HUMID_IOS_APP_ID", "") || undefined,             // "<Apple Team ID>.app.humid.vault"
     appAttestEnvironment: env("HUMID_APP_ATTEST_ENV", "production"),  // or "development" for Xcode builds
     requireLockedBoot: env("HUMID_REQUIRE_LOCKED_BOOT", "1") !== "0",
@@ -71,7 +81,13 @@ export function createIdentity({
     // Duress: a silent lockdown of sensitive changes (devices, recovery, closing), set by the owner's duress gesture.
     `ALTER TABLE identities ADD COLUMN lockdown_at TEXT;
      ALTER TABLE identities ADD COLUMN last_duress_at TEXT`,
+    // Each attestation challenge (a session's transcript hash) enrols at most one device.
+    `CREATE TABLE attest_challenges (th TEXT PRIMARY KEY, device_id TEXT NOT NULL, used_at TEXT NOT NULL)`,
   ]);
+  const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, required: statusRequired, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
+  if (status) attest = { ...attest, revokedSerials: () => status.serials() };
+  const usedChallenge = db.prepare("SELECT device_id FROM attest_challenges WHERE th = ?");
+  const useChallenge = db.prepare("INSERT OR IGNORE INTO attest_challenges (th, device_id, used_at) VALUES (?, ?, ?)");
 
   const getAccount = db.prepare("SELECT * FROM identities WHERE id = ?");
   const getDevice = db.prepare("SELECT * FROM device_keys WHERE id = ?");
@@ -93,20 +109,31 @@ export function createIdentity({
       : "This device can't prove a live face or fingerprint check.");
   }
 
-  /** Check the liveness key: its attestation, and its signature over this enrolment. */
-  function liveness(live, th, message) {
+  /**
+   * Check the liveness key: its attestation, and its signature over this enrolment.
+   * An attestation's challenge is the session transcript: it must be fresh (a session
+   * opened in the last few minutes) and enrol one device only.
+   */
+  function liveness(live, th, message, deviceIdHex, sessionAgeMs) {
     if (!live) return { proof: "none", livePub: null, detail: null };
     const livePub = unb64u(String(live.pub || ""));
     if (!verifyLiveSig(livePub, message, unb64u(String(live.sig || "")))) {
       throw new HttpError(401, "bad_live_proof", "The device's secure chip did not sign this enrolment.");
     }
     if (!live.attestation) return { proof: "unattested-key", livePub, detail: null };
+    if (!(Number.isFinite(sessionAgeMs) && sessionAgeMs >= 0 && sessionAgeMs <= ATTEST_MAX_AGE_MS)) {
+      throw new HttpError(403, "attestation_stale", "The device's proof is too old. Start adding it again.");
+    }
+    const thHex = toHex(th);
+    const used = usedChallenge.get(thHex);
+    if (used && used.device_id !== deviceIdHex) throw new HttpError(409, "challenge_used", "This proof was already used to add another device.");
     const a = live.attestation;
     const att = a.kind === "android-key"
       ? { kind: a.kind, chain: (Array.isArray(a.chain) ? a.chain : []).slice(0, 10).map((c) => unb64u(String(c))) }
       : { kind: a.kind, object: unb64u(String(a.object || "")) };
     try {
       const { proof, detail } = verifyLiveKey({ pub: livePub, attestation: att }, th, attest);
+      useChallenge.run(thHex, deviceIdHex, new Date().toISOString());
       return { proof, livePub, detail };
     } catch (e) {
       if (e instanceof AttestationError) throw new HttpError(403, e.code, e.message);
@@ -132,7 +159,7 @@ export function createIdentity({
   };
 
   /** Add a device after checking both signatures over deviceMessage, its liveness key and the policy. */
-  function addDevice(account, th, d, via, policy) {
+  function addDevice(account, th, d, via, policy, sessionAgeMs) {
     if (!VIA.has(via)) throw new HttpError(400, "bad_via", "Unknown enrolment route");
     const dsaPk = key(d?.dsaPk, "device dsaPk", SIZES.dsaPk);
     const msg = deviceMessage(th, account.id, dsaPk);
@@ -143,9 +170,9 @@ export function createIdentity({
       throw new HttpError(401, "bad_proof", "Proof of possession failed for the device key.");
     }
     const gateMethod = String(d.gateMethod || "unknown").slice(0, 64);
-    const live = liveness(d.live, th, msg);
-    allowed(policy, live.proof, gateMethod);
     const id = deviceId(dsaPk);
+    const live = liveness(d.live, th, msg, id, sessionAgeMs);
+    allowed(policy, live.proof, gateMethod);
     const existing = getDevice.get(id);
     if (existing) {
       if (existing.account_id !== account.id) throw new HttpError(409, "device_taken", "This device key belongs to another account.");
@@ -185,7 +212,7 @@ export function createIdentity({
           db.prepare("INSERT INTO identities (id, kem_pk, dsa_pk, x_pk, commit_hex, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .run(id, keys.kemPk, keys.dsaPk, keys.xPk, commit, new Date().toISOString());
         }
-        const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy);
+        const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy, Number(r.sessionAgeMs));
         db.exec("COMMIT");
         return respondWithDevice(existing ? 200 : 201, getAccount.get(id), device);
       } catch (e) { db.exec("ROLLBACK"); throw e; }
@@ -196,7 +223,7 @@ export function createIdentity({
       gatewayOnly(claims);
       const r = parseJson(body);
       const account = active(String(r.account));
-      const { device, created } = addDevice(account, unb64u(String(r.th)), r.device, String(r.via), r.policy);
+      const { device, created } = addDevice(account, unb64u(String(r.th)), r.device, String(r.via), r.policy, Number(r.sessionAgeMs));
       return respondWithDevice(created ? 201 : 200, account, device);
     }],
 
@@ -261,7 +288,7 @@ export function createIdentity({
     // Close the account. Public keys stay on file (closed) so old ledger proofs remain checkable.
     ["DELETE", "/me", ({ claims }) => {
       active(claims.sub);
-      if (!claims.stepUp) throw new HttpError(403, "step_up_required", "Closing an identity needs a fresh biometric check.");
+      if (!claims.stepUp || Date.now() - claims.stepUp.at > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_required", "Closing an identity needs a fresh biometric check.");
       const now = new Date().toISOString();
       db.prepare("UPDATE identities SET status = 'closed' WHERE id = ?").run(claims.sub);
       db.prepare("UPDATE device_keys SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL").run(now, claims.sub);

@@ -64,6 +64,39 @@ test("an attestation made for another session can't be replayed", async () => {
   await assert.rejects(api.register({ pub: bot.pub, commit: bot.commit, device: bot.device, sign }), code("wrong_challenge"));
 });
 
+test("an attestation is good for a few minutes only: an old session can't enrol", async () => {
+  const p = makeHolder("slowpoke");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  const real = api.htp.connect.bind(api.htp);
+  api.htp.connect = async () => { const s = await real(); stack.gateway.htp.sessions.get(s.sidText).createdAt -= 6 * 60_000; return s; };
+  await assert.rejects(api.register({ pub: p.pub, commit: p.commit, device: p.device, sign: p.registerSign }), code("attestation_stale"));
+});
+
+test("one attestation challenge enrols one device: a second device in the same session is refused", async () => {
+  const first = makeHolder("first");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  await api.register({ pub: first.pub, commit: first.commit, device: first.device, sign: first.registerSign });
+  // keep the same session (and so the same challenge) for a second, different device
+  const same = api.htp.session;
+  api.htp.connect = async () => same;
+  const second = makeHolder("second");
+  await assert.rejects(api.register({ pub: second.pub, commit: second.commit, device: second.device, sign: second.registerSign }), code("challenge_used"));
+});
+
+test("a phone whose attestation certificate Google revoked is refused", async () => {
+  const p = makeHolder("revoked-phone");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  const { X509Certificate } = await import("node:crypto");
+  const { serialKey } = await import("@humid/attest");
+  const sign = async (m) => {
+    const r = await p.registerSign(m);
+    for (const c of r.live.attestation.chain.slice(1, -1)) stack.revoked.add(serialKey(new X509Certificate(Buffer.from(c)).serialNumber));
+    return r;
+  };
+  try { await assert.rejects(api.register({ pub: p.pub, commit: p.commit, device: p.device, sign }), code("revoked")); }
+  finally { stack.revoked.clear(); }
+});
+
 test("an enrolment the liveness key didn't sign is refused", async () => {
   const bot = makeHolder("unsigned");
   const api = new HumidApi({ baseUrl: stack.baseUrl });
