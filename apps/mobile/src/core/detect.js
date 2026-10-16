@@ -29,8 +29,8 @@ const at = (im, x, y) => im.g[Math.min(im.h - 1, Math.max(0, y)) * im.w + Math.m
 const avgV = (im, x, y) => (at(im, x - 1, y) + at(im, x, y) + at(im, x + 1, y)) / 3;
 const avgH = (im, x, y) => (at(im, x, y - 1) + at(im, x, y) + at(im, x, y + 1)) / 3;
 
-const CONTRAST = 22;    // grey levels across a border that count as an edge
-const COVERAGE = 0.6;   // share of a side's length that must show that edge
+const CONTRAST = 16;    // grey levels across a border that count as an edge (a pale card on a pale table is subtle)
+const COVERAGE = 0.5;   // share of a side's length that must show that edge
 const SPAN = 0.76;      // the middle of each side is checked (corners are rounded)
 
 /**
@@ -81,21 +81,27 @@ function findEdge(im, side, expected, from, to, band) {
  */
 export function analyzeFrame(im, { guide, shape = "id1", prev = null } = {}) {
   const gx0 = guide.x0 * im.w, gx1 = guide.x1 * im.w, gy0 = guide.y0 * im.h, gy1 = guide.y1 * im.h;
-  const bandX = (gx1 - gx0) * 0.1, bandY = (gy1 - gy0) * 0.12;
+  // a hand-held document is rarely exactly on the frame: look a fair way either side of it
+  const bandX = (gx1 - gx0) * 0.16, bandY = (gy1 - gy0) * 0.2;
   const top = findEdge(im, "top", gy0, gx0, gx1, bandY);
   const bottom = findEdge(im, "bottom", gy1, gx0, gx1, bandY);
   const left = findEdge(im, "left", gx0, gy0, gy1, bandX);
   const right = findEdge(im, "right", gx1, gy0, gy1, bandX);
   const sides = [top, right, bottom, left];
   const seen = sides.filter((s) => s.coverage >= COVERAGE).length;
-  const found = seen === 4;
+  // Three clear sides are enough (one often vanishes against a table of the same colour,
+  // or under a thumb); the missing one is taken to be where the frame is.
+  const found = seen >= 3;
+  if (found) {
+    for (const [s, at] of [[top, gy0], [bottom, gy1], [left, gx0], [right, gx1]]) if (s.coverage < COVERAGE) { s.pos = Math.round(at); s.assumed = true; }
+  }
 
   // the four edges must make the document's shape, and fill most of the frame
   const w = right.pos - left.pos, h = bottom.pos - top.pos;
   const aspect = h > 0 ? w / h : 0;
   const want = ASPECT[shape] || ASPECT.id1;
   const fill = (w * h) / ((gx1 - gx0) * (gy1 - gy0));
-  const aligned = found && Math.abs(aspect / want - 1) < 0.08 && fill > 0.72;
+  const aligned = found && Math.abs(aspect / want - 1) < 0.1 && fill > 0.6;
 
   // light and glare, inside the document
   let sum = 0, bright = 0, n = 0;
@@ -108,8 +114,9 @@ export function analyzeFrame(im, { guide, shape = "id1", prev = null } = {}) {
   const glare = n ? bright / n > 0.4 : false;
 
   // focus: a crisp border has most of its contrast in one or two pixels
-  const sharpness = found ? sides.reduce((t, s) => t + s.sharp, 0) / 4 : 0;
-  const sharp = sharpness >= 0.38;
+  const real = sides.filter((s) => !s.assumed);
+  const sharpness = found ? real.reduce((t, s) => t + s.sharp, 0) / real.length : 0;
+  const sharp = sharpness >= 0.3;
 
   // steadiness: hardly anything moved since the last look
   let motion = 0;
@@ -118,14 +125,14 @@ export function analyzeFrame(im, { guide, shape = "id1", prev = null } = {}) {
     for (let i = 0; i < im.g.length; i += 7) { d += Math.abs(im.g[i] - prev.g[i]); k++; }
     motion = d / k;
   }
-  const steady = !prev || motion < 7;
+  const steady = !prev || motion < 10; // a hand is never perfectly still, and sensors add noise
 
   // Glare is advice, not a veto: near-white card stock and barcode areas look the same
   // to a brightness count, and a photo with a little glare is still worth keeping.
   const ok = aligned && light && sharp && steady;
   const hint = ok ? "Hold still…"
     : !found ? (seen >= 2 ? "Line the edges up with the frame" : "Fit the document in the frame")
-    : !aligned ? (fill <= 0.72 ? "Move a little closer" : "Line the edges up with the frame")
+    : !aligned ? (fill <= 0.6 ? "Move a little closer" : "Line the edges up with the frame")
     : glare ? "Glare: tilt the document a little"
     : !light ? (mean < 45 ? "Find a little more light" : "Too bright: move out of direct light")
     : !steady ? "Hold still…"
