@@ -150,13 +150,13 @@ export function AddSheet() {
   const pick = useRef(null);
   const close = () => { if (!st.stage) S.sheet.value = null; };
   const choose = (input) => { markPicking(); input.current.click(); };
+  // Keep the photo before the camera closes; if it can't be encoded, the camera stays open and says so.
   const photographed = async ({ canvas }) => {
-    setCamera(false);
     const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
-    if (!blob) return;
+    if (!blob) throw new Error("Couldn't save that photo. Try again.");
     const when = new Date();
-    setFile(new File([blob], `Photo ${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.jpg`, { type: "image/jpeg" }));
-    setName(`Photo ${when.toLocaleDateString()}`);
+    const f = new File([blob], `Photo ${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.jpg`, { type: "image/jpeg" });
+    return () => { setCamera(false); setFile(f); setName(`Photo ${when.toLocaleDateString()}`); };
   };
   const onFile = (e) => {
     const f = e.currentTarget.files?.[0];
@@ -312,7 +312,7 @@ export function Viewer() {
   if (v.idRecord) return (
     <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
       <header>
-        <button class="icon-btn" aria-label="Close and wipe" onClick={closeViewer}><Icon name="x" /></button>
+        <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
         <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
       </header>
       <div class="body id-body"><IdView record={v.idRecord} item={v.item} /></div>
@@ -322,7 +322,7 @@ export function Viewer() {
   return (
     <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
       <header>
-        <button class="icon-btn" aria-label="Close and wipe" onClick={closeViewer}><Icon name="x" /></button>
+        <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
         <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
         <button class="icon-btn" aria-label="Save a copy" onClick={() => saveCopy(v.item)}><Icon name="download" /></button>
       </header>

@@ -97,14 +97,33 @@ export function grab(src, rect, maxW = Infinity) {
 }
 export const imageData = (c) => ctx2d(c).getImageData(0, 0, c.width, c.height);
 
-const b64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
+// Small chunks: spreading tens of thousands of arguments can overflow the stack on phones.
+const b64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x1000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x1000)); return btoa(s); };
 const toBlob = (c, type, q) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't encode the photo."))), type, q));
 
 /** A canvas as a JPEG for the record: { type, data (base64), width, height, size }. */
 export async function jpeg(c, { maxW = 1600, quality = 0.86 } = {}) {
   const src = c.width > maxW ? grab(c, null, maxW) : c;
-  const bytes = new Uint8Array(await (await toBlob(src, "image/jpeg", quality)).arrayBuffer());
+  let blob;
+  try { blob = await toBlob(src, "image/jpeg", quality); }
+  catch { blob = await toBlob(src.width > 1000 ? grab(src, null, 1000) : src, "image/jpeg", 0.8); } // low memory: smaller
+  const bytes = new Uint8Array(await blob.arrayBuffer());
   return { type: "image/jpeg", data: b64(bytes), width: src.width, height: src.height, size: bytes.length };
+}
+
+/**
+ * Did the camera hand back a real picture? Some Android WebViews give a black (or
+ * one-colour) frame for the first moments after the camera starts, or after the app
+ * comes back to the screen. Checks a small copy for any variation at all.
+ */
+export function looksBlank(c) {
+  const w = 48, h = Math.max(1, Math.round((48 * c.height) / Math.max(1, c.width)));
+  const small = canvas(w, h);
+  ctx2d(small).drawImage(c, 0, 0, w, h);
+  const d = ctx2d(small).getImageData(0, 0, w, h).data;
+  let min = 255, max = 0;
+  for (let i = 0; i < d.length; i += 4) { const y = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8; if (y < min) min = y; if (y > max) max = y; }
+  return max - min < 12;
 }
 export const imageUrl = (img) => (img ? `data:${img.type};base64,${img.data}` : null);
 export const imageBytes = (img) => Uint8Array.from(atob(img.data), (ch) => ch.charCodeAt(0));

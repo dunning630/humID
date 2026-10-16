@@ -4,6 +4,7 @@ import "./styles/app.css";
 import { render } from "preact";
 import * as S from "./core/state.js";
 import { boot } from "./core/controller.js";
+import { wireBack } from "./core/back.js";
 import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet } from "./ui.jsx";
 import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
@@ -46,6 +47,7 @@ function App() {
 
 render(<App />, document.getElementById("app"));
 boot();
+wireBack();
 
 // Installable web app: cache the app shell so it opens offline (vault data always comes over HTP/1).
 if ("serviceWorker" in navigator && !globalThis.__TAURI_INTERNALS__ && location.protocol === "https:") {

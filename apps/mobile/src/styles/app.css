@@ -483,6 +483,13 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .dc-mrz[data-shape="id1"] { height: 32%; }
 .dc-busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(4,14,10,.45); border-radius: 16px; }
 .dc-busy i { width: 42px; height: 42px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--mint); animation: spin .9s linear infinite; }
+.dc-saved { background: rgba(4,14,10,.55); animation: fade .15s var(--ease) both; }
+.dc-saved svg { width: 56px; height: 56px; padding: 10px; border-radius: 50%; color: var(--ground); background: var(--mint); box-shadow: 0 0 0 8px rgba(138,201,136,.25); }
+.dc-saved-chip { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 70px); display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 6px; border-radius: 999px; background: rgba(10,24,17,.88); border: 1px solid rgba(138,201,136,.45); font-size: var(--t-sm); white-space: nowrap; animation: fade .2s var(--ease) both; }
+.dc-saved-chip img { width: 46px; height: 29px; object-fit: cover; border-radius: 6px; }
+.dc-saved-chip span { display: flex; align-items: center; gap: 6px; }
+.dc-saved-chip svg { width: 16px; height: 16px; color: var(--mint); }
+.dc-side:disabled { opacity: .4; }
 .dc-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: calc(var(--safe-t) + 10px) 10px 10px; background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0)); }
 .dc-top .grow { flex: 1; min-width: 0; }
 .dc-top strong { display: block; font-size: var(--t-lg); font-weight: 600; }

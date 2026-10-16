@@ -148,6 +148,33 @@ try {
   await targets(page, "Security");
   step("vault checklist: 1 of 3, and each button opens the right place in Security");
 
+  // Android's back button / edge swipe (wired to the same handler): closes what's on top, never leaves HumID
+  const back = () => page.evaluate(() => globalThis.__humidBack());
+  assert.equal(await back(), "tab", "back from Security goes to the Vault tab");
+  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault");
+  assert.equal(await back(), "stay", "back at the Vault stays in HumID");
+  assert.ok(await page.locator("section.protect").isVisible());
+  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.locator(".sheet").waitFor();
+  assert.equal(await back(), "sheet");
+  await page.locator(".sheet").waitFor({ state: "detached" });
+  await page.locator("section.protect button.proof-row", { hasText: "A second device" }).click();
+  await page.locator(".sheet").waitFor();
+  assert.equal(await back(), "sheet", "back closes a sheet opened from another tab");
+  await page.locator(".sheet").waitFor({ state: "detached" });
+  assert.equal(await back(), "tab");
+  // the camera: back closes the camera first, then the sheet behind it
+  await page.getByRole("button", { name: /Scan an ID/ }).first().click().catch(async () => { await page.locator("button.fab").click(); await page.getByRole("button", { name: /Scan an ID/ }).click(); });
+  await page.getByRole("button", { name: /Driver's license/ }).click();
+  await page.locator(".doccam").waitFor();
+  assert.equal(await back(), ".doccam");
+  await page.locator(".doccam").waitFor({ state: "detached" });
+  assert.ok(await page.locator(".sheet").isVisible(), "the ID sheet is still open behind the camera");
+  assert.equal(await back(), "sheet");
+  await page.locator(".sheet").waitFor({ state: "detached" });
+  assert.equal(await page.locator(".tabbar").count(), 1, "still in the app");
+  step("back gesture: camera, then sheet, then tab; at the Vault it stays put");
+
   // a document's category is suggested from its name; the toast sits at the bottom
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
   await page.getByRole("button", { name: "Add a document" }).first().click();
@@ -175,7 +202,7 @@ try {
   await p2.page.getByText("Pay without being known").waitFor({ timeout: 15_000 });
   assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "3", "access, bind, done");
   assert.match(await p2.page.locator(".eyebrow").first().innerText(), /Step 1/i);
-  await p2.page.getByRole("button", { name: "Back" }).click();
+  assert.equal(await p2.page.evaluate(() => globalThis.__humidBack()), "screen", "the back gesture does what the Back button does");
   await p2.page.getByRole("button", { name: "I already have HumID" }).click();
   await p2.page.getByText("How do you want to get in?").waitFor({ timeout: 15_000 });
   await p2.page.getByRole("button", { name: "Back" }).click();
