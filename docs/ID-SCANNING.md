@@ -14,8 +14,15 @@ read on the phone; nothing about the document leaves it unencrypted.
 | National ID cards, residence permits | Front photo; the back's barcode or three-line MRZ (TD1) | Same as passports, opened with the MRZ details or the 6-digit CAN |
 | Anything else | Front and back photos | — |
 
-The camera captures by itself once it has read the barcode, or once several
-frames agree on an MRZ whose check digits all pass. The shutter and **Photo**
+The camera captures by itself. For a side with something to read, that's once
+it has read the barcode, or once several frames agree on an MRZ whose check digits
+all pass. For a side without (the front of a card), it's once a document of the
+right shape is lined up with the frame, lit, in focus and steady for about half a
+second (`apps/mobile/src/core/detect.js`: edges, light, sharpness and motion,
+measured on a small grey copy of the frame, on the phone). The frame's corners turn
+amber when a document is close and green when it's about to take the photo. A side
+with a code that won't read is photographed anyway after the document has sat lined
+up for nine seconds. The shutter and **Photo**
 (pick an existing picture) always work too, and every field can be typed or
 corrected before sealing.
 
