@@ -32,6 +32,7 @@ import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
 import { parseAccessCode } from "@humid/pass";
 import { probeNfc, openChip } from "./nfc.js";
+import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
@@ -60,22 +61,30 @@ let picking = false;
 let idleTimer = null;
 let holdWaiter = null;
 let joinTimer = null;
+let link = null;            // the connection monitor (core/link.js)
 const knownNames = new Map(); // object id -> name, so the activity log can show names of deleted items
 
 /* ---------------- toasts ---------------- */
 
 export function toast(text, kind = "ok") {
+  if (!text) return; // e.g. a lost session: the lock screen says it once, not every failed request
+  if (text === UNREACHABLE && S.link.value.state === "down") return; // the connection bar already says so
   const id = Math.random().toString(36).slice(2);
   S.toasts.value = [...S.toasts.value, { id, text, kind }].slice(-3);
   setTimeout(() => { S.toasts.value = S.toasts.value.filter((t) => t.id !== id); }, kind === "error" ? 5200 : 3600);
 }
 
+const UNREACHABLE = "Can't reach your vault server. Check your connection.";
+// The server has forgotten this session (it expired or restarted). The app locks with
+// "Your session ended"; the requests that hit it say nothing more.
+const SESSION_LOST = new Set(["session_unknown", "session_expired", "sign_in_required"]);
 const friendly = (e) => {
+  if (SESSION_LOST.has(e?.code)) return null;
   if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
   if (e?.code === "offline") return "You're offline. Opening or changing anything needs a connection to your vault.";
-  if (e instanceof TypeError || e?.code === "server_unreachable") return "Can't reach your vault server. Check your connection.";
+  if (e instanceof TypeError || e?.code === "server_unreachable") return UNREACHABLE;
   return e?.message || "Something went wrong.";
 };
 const cancelled = (e) => e?.name === "NotAllowedError" || e?.message === CANCELLED;
@@ -204,14 +213,65 @@ export async function boot() {
   try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
   try { S.offlineReady.value = !!(await store.getOffline()); } catch { S.offlineReady.value = false; }
   const id = S.identity.value;
-  api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, ...(SIM ? { fetch: (await startSim()).fetch } : {}) });
-  api.onSignedOut = (why) => { if (S.view.value === "app") lock(why === "expired" ? "Your session ended. Unlock to continue." : null); };
+  const raw = SIM ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
+  api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, fetch: watchConnection(raw) });
+  // The server no longer knows this session (it expired, or the server restarted and the
+  // reconnected channel isn't signed in): either way, one live check signs back in.
+  api.onSignedOut = () => { if (S.view.value === "app" && !S.offline.value) lock("Your session ended. Unlock to continue."); };
   connectServer();
   if (S.pass.value?.state === "draft" && !id) resumePass(); // an access code was sent but the answer never arrived
   if (id?.pending) { S.joinMethod.value = id.pending.method; S.joinStep.value = 3; S.view.value = "join"; pollJoin(); }
   else S.view.value = id ? "locked" : "welcome";
   wireGlobalEvents();
 }
+
+/* ---------------- the connection to the server ---------------- */
+
+/**
+ * Every request the app makes goes through here, so the connection monitor hears
+ * about each answer and each failure as it happens. 502-504 is a proxy saying the
+ * server behind it didn't answer, so it counts as down too.
+ */
+function watchConnection(raw) {
+  const unanswered = (r) => r.status >= 502 && r.status <= 504;
+  link = createLink({
+    // the server's public key bundle: unauthenticated, cheap, and touches no session
+    probe: () => raw(`${api.htp.base}/htp/v1/keys`, { cache: "no-store", headers: { accept: "application/json" } })
+      .then((r) => { if (unanswered(r)) throw new Error(`HTTP ${r.status}`); }),
+    onChange: (st) => { S.link.value = st; },
+    onUp: reconnected,
+  });
+  return (...args) => raw(...args).then(
+    (r) => { if (unanswered(r)) link.down("unreachable"); else link.up(); return r; },
+    (e) => { if (isNetworkFailure(e)) link.down(S.online.value ? "unreachable" : "offline"); throw e; },
+  );
+}
+
+/** Back in touch with the server: pick up where things were, without asking for anything. */
+function reconnected({ downFor }) {
+  if (!S.server.value) connectServer();
+  const v = S.view.value;
+  if (v === "app" && S.offline.value) {
+    // the read-only copy is open: signing back in needs a live check, so offer it rather than start one
+    toast("Your vault is reachable again. Tap Reconnect to sign back in.");
+  } else if (v === "app" && S.session.value) {
+    // the same session carries on; if the server restarted and forgot it, the first call
+    // ends it the usual way (locked, "Unlock to continue")
+    // one request first: if the server forgot the session, that's the only one to find out
+    refresh().then(() => {
+      if (S.view.value !== "app" || !S.session.value) return;
+      loadAlerts();
+      reloadTab();
+      if (downFor > 3000) toast("Reconnected to your vault.");
+    });
+  } else if (v === "join") {
+    pollJoin();
+  }
+  if (S.pass.value?.state === "draft" && !S.identity.value) resumePass();
+}
+
+/** "Try now" on the connection bar. */
+export const retryConnection = () => link?.retryNow();
 
 export async function connectServer() {
   S.serverError.value = null;
@@ -238,8 +298,12 @@ function wireGlobalEvents() {
     if (document.hidden && S.view.value === "app" && !busy && !picking) lock("Locked when HumID left the screen.");
   });
   addEventListener("focus", () => setTimeout(() => { picking = false; }, 1200));
-  addEventListener("online", () => { S.online.value = true; if (!S.server.value) connectServer(); });
-  addEventListener("offline", () => { S.online.value = false; });
+  addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
+  addEventListener("offline", () => { S.online.value = false; link?.online(false); });
+  // the monitor checks the server while the app is on screen, and pauses while it isn't
+  document.addEventListener("visibilitychange", () => link?.visible(!document.hidden));
+  S.view.subscribe((v) => link?.setActive(v !== "boot"));
+  if (!S.online.value) link?.online(false);
 }
 
 export const markPicking = () => { picking = true; };
@@ -860,6 +924,8 @@ export async function checkContinuity() {
       S.identity.value = { ...record, schema: id.schema ?? 4 };
     }
   } catch (e) {
+    // Not reaching the server is not evidence of tampering: check again once it's back.
+    if (isNetworkFailure(e) || SESSION_LOST.has(e?.code)) { S.continuity.value = { ok: false, pending: true, reason: "Checked when your vault is reachable" }; return; }
     S.continuity.value = { ok: false, reason: e?.code === "not_in_log" ? "Not published yet" : friendly(e), pending: e?.code === "not_in_log" };
   }
 }
@@ -1380,7 +1446,7 @@ export async function eraseEverything() {
     await withStepUp("closeIdentity", [], "erase", "Close HumID and erase vault", async ({ proof }) => api.closeIdentity(proof));
   } catch (e) {
     if (cancelled(e)) return;
-    toast(`${friendly(e)} Local data was kept.`, "error");
+    toast(`${friendly(e) || "Your session ended."} Local data was kept.`, "error");
     return;
   }
   try { await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
