@@ -218,6 +218,16 @@ try {
   await page.getByText(/Sealed Last will/).waitFor({ timeout: 15_000 });
   assert.equal(await page.locator(".banner.offline").count(), 0, "still signed in, not the offline copy");
   step("a network drop: the bar says so, and when it's back the same session carries on");
+  // healthy and idle: HumID sends nothing just to check the connection
+  await page.waitForTimeout(3000); // let Activity finish loading (the public-log check follows the ledger)
+  let sent = 0;
+  const urls = [];
+  const count = (req) => { if (req.url().startsWith(BASE)) { sent++; urls.push(`${req.method()} ${req.url().slice(BASE.length)}`); } };
+  page.on("request", count);
+  await page.waitForTimeout(35_000); // longer than any old heartbeat interval
+  page.off("request", count);
+  assert.equal(sent, 0, `idle and healthy, yet ${sent} requests went to the server: ${urls.join(", ")}`);
+  step("idle and connected: no requests at all for 35 s");
 
   /* ---------------- 5. signed in: the server goes away, and comes back having forgotten the session ---------------- */
   await current.stop();
@@ -229,11 +239,11 @@ try {
   assert.equal(await page.locator(".toast", { hasText: "Can't reach your vault server" }).count(), 0, "the bar says it; no toast on top");
   const attemptsBefore = await page.evaluate(() => document.querySelector(".linkbar")?.textContent);
   assert.ok(attemptsBefore);
-  step("the server stops: the bar says HumID is retrying, with Try now");
+  step("the server stops: the bar says HumID is retrying, with Reconnect now");
   // the restarted server has no record of the session: the app locks, the usual way back in
   const ended = page.getByText(/Your session ended/).waitFor({ timeout: 80_000 });
   current = await startDev({ HUMID_DEV_DATA: data });
-  await bar.getByRole("button", { name: "Try now" }).click({ timeout: 35_000 }).catch(() => {}); // or the next retry gets there first
+  await bar.getByRole("button", { name: "Reconnect now" }).click({ timeout: 35_000 }).catch(() => {}); // or the next retry gets there first
   await ended;
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 10_000 });
   await bar.waitFor({ state: "detached", timeout: 10_000 });
