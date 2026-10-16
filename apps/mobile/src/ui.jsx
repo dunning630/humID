@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark } from "./brand.jsx";
 import { Icon } from "./icons.jsx";
 import * as S from "./core/state.js";
-import { holdComplete, holdCancel, dismissChipRead, reconnect } from "./core/controller.js";
+import { holdComplete, holdCancel, dismissChipRead, reconnect, retryConnection } from "./core/controller.js";
 import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
 import { DEMO_BUILD } from "@humid/gate";
@@ -116,7 +116,30 @@ export function OfflineBanner() {
         <strong>Offline · read only</strong>
         <span>Your vault as it was {o.savedAt ? fmtAgo(o.savedAt) : "last time you were online"}. Opening or changing anything needs a connection.</span>
       </div>
-      {S.online.value && <button class="btn sm primary" onClick={reconnect}>Reconnect</button>}
+      {S.online.value && <button class="btn sm primary" onClick={reconnect}>{S.link.value.state === "up" ? "Reconnect" : "Try to reconnect"}</button>}
+    </div>
+  );
+}
+
+/**
+ * Shown while the vault server can't be reached (core/link.js keeps trying in the
+ * background). Not for blips: it appears after 1.5 s down. Not over the offline
+ * copy, whose own banner says it's offline.
+ */
+export function ConnectionBar() {
+  const l = S.link.value;
+  const now = useNow(1000);
+  if (l.state !== "down" || now - l.since < 1500 || S.offline.value || S.view.value === "boot") return null;
+  const wait = Math.max(0, Math.ceil((l.nextAt - now) / 1000));
+  const noNet = l.reason === "offline" || !S.online.value;
+  return (
+    <div class="linkbar" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true" />
+      <span class="grow">
+        <strong>{noNet ? "No internet connection" : "Can't reach your vault"}</strong>
+        <span>{noNet ? "HumID reconnects by itself when you're back online." : wait > 0 ? `Trying again in ${wait} s` : "Reconnecting…"}</span>
+      </span>
+      {!noNet && <button class="btn sm quiet" onClick={retryConnection} disabled={wait === 0}>Try now</button>}
     </div>
   );
 }
