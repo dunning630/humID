@@ -139,7 +139,7 @@ export function ConnectionBar() {
         <strong>{noNet ? "No internet connection" : "Can't reach your vault"}</strong>
         <span>{noNet ? "HumID reconnects by itself when you're back online." : wait > 0 ? `Trying again in ${wait} s` : "Reconnecting…"}</span>
       </span>
-      {!noNet && <button class="btn sm quiet" onClick={retryConnection} disabled={wait === 0}>Try now</button>}
+      {!noNet && <button class="btn sm quiet" onClick={retryConnection} disabled={wait === 0}>Reconnect now</button>}
     </div>
   );
 }

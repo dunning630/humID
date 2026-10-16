@@ -4,13 +4,13 @@
 //   Listening    every request the app makes reports whether the server answered
 //                (any HTTP status but 502-504 counts as an answer); the browser's
 //                online/offline events and the app coming back to the screen
-//                count too; and while the server is in use, a small heartbeat
-//                (the server's public key bundle, no session involved) checks
-//                every 30 seconds, so a drop is seen even when nothing is tapped.
-//   Re-trying    after a drop it probes again with exponential backoff and
-//                jitter (1 s, 2 s, 4 s … at most 30 s), forever, pausing only
-//                while HumID is off the screen; "online" and coming back to the
-//                screen try at once. "Try now" does too.
+//                count too. Nothing is sent just to check: while the connection is
+//                fine and nothing is happening, HumID uses no network at all.
+//   Re-trying    only after a drop: it probes (the server's public key bundle, no
+//                session involved) with exponential backoff and jitter (1 s, 2 s,
+//                4 s … at most 30 s) until the server answers, pausing while HumID
+//                is off the screen; "online" and coming back to the screen try at
+//                once, and so does "Reconnect now".
 //   Recovering   onUp runs once per recovery: the controller refreshes what is
 //                on screen. A session the server has forgotten (it restarted)
 //                still ends the way it always has: a live check signs back in.
@@ -19,7 +19,8 @@
 // without a network (tests/link.test.js).
 
 export const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000, 30000];
-export const HEARTBEAT_MS = 30_000;
+/** With no network at all, check this rarely: the "online" event is what wakes it. */
+export const SLOW_CHECK_MS = 30_000;
 
 /** Delay before retry number `attempt` (0-based), with ±20% jitter so many phones don't retry in step. */
 export function backoff(attempt, random = Math.random) {
@@ -31,7 +32,7 @@ export function backoff(attempt, random = Math.random) {
 export const isNetworkFailure = (e) => e instanceof TypeError || e?.name === "AbortError" || e?.name === "TimeoutError" || e?.code === "server_unreachable";
 
 /**
- * createLink({ probe, onChange, onUp, … }) → { up, down, check, retryNow, setActive, visible, online, stop, state }
+ * createLink({ probe, onChange, onUp, … }) → { up, down, check, retryNow, visible, online, stop, state }
  *   probe()      resolves if the server answered, rejects if not
  *   onChange(s)  every state change: { state: "up" | "down", attempt, nextAt, since, reason }
  *   onUp(info)   once each time it comes back: { downFor }
@@ -39,23 +40,20 @@ export const isNetworkFailure = (e) => e instanceof TypeError || e?.name === "Ab
 export function createLink({
   probe, onChange = () => {}, onUp = () => {},
   now = () => Date.now(), setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-  random = Math.random, heartbeatMs = HEARTBEAT_MS,
+  random = Math.random,
 } = {}) {
   let s = { state: "up", attempt: 0, nextAt: 0, since: now(), reason: null };
-  let timer = null, probing = false, active = false, shown = true, net = true, stopped = false;
+  let timer = null, probing = false, shown = true, net = true, stopped = false;
 
   const emit = () => onChange({ ...s });
   const clear = () => { if (timer) clearTimer(timer); timer = null; };
   const plan = () => {
     clear();
     if (stopped || !shown) return; // off the screen: wait for it to come back
-    if (s.state === "down") {
-      const ms = net ? backoff(s.attempt, random) : heartbeatMs; // no network at all: the "online" event wakes it sooner
-      s.nextAt = now() + ms; emit();
-      timer = setTimer(check, ms);
-    } else if (active) {
-      timer = setTimer(check, heartbeatMs);
-    }
+    if (s.state !== "down") return; // healthy: nothing scheduled, nothing sent
+    const ms = net ? backoff(s.attempt, random) : SLOW_CHECK_MS;
+    s.nextAt = now() + ms; emit();
+    timer = setTimer(check, ms);
   };
 
   function up() {
@@ -66,7 +64,7 @@ export function createLink({
       emit();
       plan();
       onUp({ downFor });
-    } else if (!timer) plan();
+    }
   }
 
   function down(reason = "unreachable") {
@@ -92,12 +90,10 @@ export function createLink({
 
   return {
     up, down, check,
-    /** "Try now": skip the wait. */
+    /** "Reconnect now": skip the wait. */
     retryNow: () => { if (s.state === "down") check(); },
-    /** Heartbeat only while the server is in use (signed in, setting up, joining). */
-    setActive(v) { active = !!v; if (s.state === "up") { if (active && !timer) plan(); if (!active) clear(); } },
-    /** The app went off or came back to the screen. */
-    visible(v) { shown = !!v; if (!shown) clear(); else check(); },
+    /** The app went off or came back to the screen: pause, or (if it was down) try at once. */
+    visible(v) { shown = !!v; if (!shown) clear(); else if (s.state === "down") check(); },
     /** The browser's online / offline events. */
     online(v) { net = !!v; if (net) check(); else down("offline"); },
     stop() { stopped = true; clear(); },
