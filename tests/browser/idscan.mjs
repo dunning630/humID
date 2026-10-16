@@ -113,9 +113,9 @@ try {
   await page.locator(".dc-saved-chip", { hasText: "Front saved. Now turn it over." }).waitFor({ timeout: 20_000 });
   await shot(page, "1b-front-saved");
   step("front photographed and confirmed; back camera open, reading the barcode live…");
-  await page.locator(".doccam").waitFor();
-  await page.locator(".doccam").waitFor({ state: "detached", timeout: 45_000 });
-  await page.getByText("Check the details").waitFor({ timeout: 10_000 });
+  // the back camera is open (the chip above is in it); the barcode may read at once, so
+  // wait for the result rather than for the camera to be seen
+  await page.getByText("Check the details").waitFor({ timeout: 45_000 });
   await shot(page, "2-license-review");
   const val = (id) => page.locator(`#idf-${id}`).inputValue();
   assert.equal(await val("surname"), "SPECIMEN");
@@ -159,7 +159,7 @@ try {
   await scanIdButton(page);
   await page.getByRole("button", { name: /^Passport/ }).click();
   step("passport camera open, reading the MRZ live…");
-  await page.locator(".doccam").waitFor();
+  await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {}); // may already be done
   await shot(page, "4-camera-passport");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 90_000 });
   await page.getByText("Read the chip").first().waitFor({ timeout: 10_000 });
