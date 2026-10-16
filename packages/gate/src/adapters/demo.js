@@ -25,6 +25,9 @@ export const demoAdapter = {
   },
 
   async release(handle, { purpose } = {}) {
+    // Tests (development builds only): act as if the phone deleted its key, the way
+    // Android does when its fingerprints change, to exercise the "key is gone" path.
+    if (globalThis.__humidDemoKeyGone) throw Object.assign(new Error("The device biometric key is gone or was invalidated by a biometric change. This identity can no longer be unlocked here."), { code: "key_invalidated" });
     return { secret: fromB64(handle.demoSecret), interrupt: interruptRecord(METHOD, purpose, ASSURANCE.NONE), live: null };
   },
 

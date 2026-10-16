@@ -21,6 +21,9 @@ const NOT_APP = "HumID checks your face or fingerprint with your phone's secure 
 function mapError(e) {
   const msg = typeof e === "string" ? e : e?.message || String(e);
   if (/cancel/i.test(msg)) return new Error(CANCELLED);
+  // The OS deleted or invalidated this device's key (biometrics changed, app reinstalled,
+  // data restored from a backup): nothing can unlock this identity here any more.
+  if (/invalidated|key is gone/i.test(msg)) return Object.assign(new Error(msg), { code: "key_invalidated" });
   return new Error(msg);
 }
 
