@@ -12,6 +12,8 @@ import {
   provenance, fullName, niceName, countryName, regionName, parseAamva, MrzConsensus,
 } from "@humid/idscan";
 import { barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank } from "../core/scan.js";
+import { analyzeFrame, autoShutter, toGray } from "../core/detect.js";
+import { DEMO_BUILD } from "@humid/gate";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -54,6 +56,20 @@ function frameRect(v, el, pad) {
   return r && r.w >= 64 && r.h >= 40 ? r : null;
 }
 
+/**
+ * A small grey copy of the area around the on-screen frame (15% margin), and where
+ * the frame sits in it, for the auto-capture check (core/detect.js).
+ */
+function lookAround(v, el) {
+  const outer = frameInVideo(v, el, 0.15), inner = frameInVideo(v, el, 0);
+  if (!outer || !inner || inner.w < 64 || inner.h < 40) return null;
+  const im = toGray(imageData(grab(v, outer, 320)));
+  return { im, guide: { x0: (inner.x - outer.x) / outer.w, y0: (inner.y - outer.y) / outer.h, x1: (inner.x + inner.w - outer.x) / outer.w, y1: (inner.y + inner.h - outer.y) / outer.h } };
+}
+
+/** With a barcode or MRZ to read: if a document has sat lined up this long and still no read, take the photo anyway. */
+const FALLBACK_MS = 9000;
+
 /** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
 const buzz = () => { try { globalThis.navigator?.vibrate?.(14); } catch {} };
 
@@ -62,20 +78,27 @@ const buzz = () => { try { globalThis.navigator?.vibrate?.(14); } catch {} };
  *   shape   "id1" (cards), "td3" (passport photo page) or "full" (any document)
  *   read    { barcode, mrz } — what to look for while the camera runs; it captures
  *           by itself the moment it reads one, or when the shutter is pressed
+ *   auto    take the photo by itself once a document of this shape is lined up, lit,
+ *           sharp and steady (core/detect.js). On by default for cards and passport
+ *           pages; with a barcode or MRZ to read, it waits for the read, and takes the
+ *           photo anyway after a document has sat lined up for a while without one
  *   onDone({ canvas, barcode, mrz, consensus, how }) — may be async: the camera stays
  *           open (showing "Saving…") until it settles, shows a tick when it succeeds,
  *           and goes back to live with the reason if it throws, so a photo is never
  *           silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
  */
-export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
+export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(hint || "");
   const [torch, setTorch] = useState(null);
   const [toldSaved, setToldSaved] = useState(!!saved);
-  const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null }).current;
+  const [look, setLook] = useState(null);      // the last auto-capture check: { ok, aligned, found, hint, progress }
+  const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null, looping: false, holdUntil: 0 }).current;
+  const codes = !!(read.barcode || read.mrz);
+  const watching = auto || codes;
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
   const stopStream = () => { L.stream?.getTracks().forEach((t) => t.stop()); };
@@ -93,28 +116,57 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
     } catch (e) {
       // Keep the camera open and say why: never drop back to the list as if nothing happened.
       L.done = false; L.paused = false;
+      L.holdUntil = Date.now() + 2500; // let the reason be read before trying again by itself
       setStatus(e?.message || "Couldn't keep that photo. Try again.");
+      setTimeout(() => setStatus(hint || ""), 2600);
       setPhase(L.stream ? "live" : "error");
-      if (L.stream && (read.barcode || read.mrz)) { L.stop = false; loop(); }
+      if (L.stream && watching) { L.stop = false; loop(); }
       return;
     }
     if (typeof then === "function") then();
   }
 
   async function loop() {
+    if (L.looping) return;
+    L.looping = true;
+    try { await watch(); } finally { L.looping = false; }
+  }
+
+  async function watch() {
     const consensus = new MrzConsensus();
     const bc = read.barcode ? barcodeReader().catch(() => null) : null;
     const ocr = read.mrz ? mrzReader().catch(() => null) : null;
     if (read.mrz) setStatus("Getting the reader ready…");
-    let turn = 0, sawMrz = false;
+    const shutter = autoShutter({ need: 4 });
+    let turn = 0, sawMrz = false, prev = null, linedUpSince = 0;
     while (!L.stop) {
-      await sleep(read.mrz ? 60 : 160);
+      await sleep(read.mrz ? 60 : codes ? 140 : 110);
       const v = video.current;
       if (L.paused || !v || v.readyState < 2 || !frame.current) continue;
       const rect = frameInVideo(v, frame.current, 0.05);
       if (!rect) continue;
-      const barcodeTurn = read.barcode && (!read.mrz || turn % 2 === 0);
       turn++;
+      // Is a document lined up? Every look when there's nothing to read; every third otherwise.
+      if (auto && (!codes || turn % 3 === 0) && Date.now() >= L.holdUntil) {
+        try {
+          const a = lookAround(v, frame.current);
+          if (a) {
+            const r = analyzeFrame(a.im, { guide: a.guide, shape, prev });
+            if (DEMO_BUILD) globalThis.__humidLook = r; // development builds: tests can see why it waits
+            prev = a.im;
+            const fire = shutter.feed(r);
+            setLook({ ok: r.ok, aligned: r.aligned, found: r.found, hint: r.hint, progress: shutter.progress });
+            if (!codes) {
+              if (fire && !L.stop) { L.stop = true; shoot("auto"); return; }
+            } else {
+              linedUpSince = r.aligned ? linedUpSince || Date.now() : 0;
+              if (r.ok && linedUpSince && Date.now() - linedUpSince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
+            }
+          }
+        } catch { /* a bad frame: keep looking */ }
+        if (!codes) continue;
+      }
+      const barcodeTurn = read.barcode && (!read.mrz || turn % 2 === 0);
       try {
         if (barcodeTurn) {
           const r = await bc;
@@ -148,17 +200,19 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
         setPhase("live");
-        if (read.barcode || read.mrz) loop();
+        if (watching) loop();
       } catch (e) { setPhase("error"); setError(cameraError(e)); }
     })();
     return () => { L.stop = true; L.stream?.getTracks().forEach((t) => t.stop()); };
   }, []);
 
-  async function shoot() {
+  /** The shutter, or the auto-capture (how = "auto"). */
+  async function shoot(how = "shutter") {
     const v = video.current;
     if (!v || L.done) return;
     L.paused = true;
     setPhase("reading");
+    if (how === "auto") buzz();
     try {
       // Android can report a frame before it has one to give, or give a black one: wait briefly, try again.
       let c = null;
@@ -170,12 +224,15 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
         if (!c) await sleep(150);
       }
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
-      const r = read.barcode || read.mrz ? await readStill(c, read, shape) : {};
-      await finish({ canvas: c, ...r, how: "shutter" });
+      const r = codes ? await readStill(c, read, shape) : {};
+      await finish({ canvas: c, ...r, how });
     } catch (e) {
       L.paused = false;
+      L.holdUntil = Date.now() + 2500;
       setStatus(e?.message || "Couldn't take the photo. Try again.");
+      setTimeout(() => setStatus(hint || ""), 2600);
       setPhase(L.stream ? "live" : "error");
+      if (L.stream && watching) { L.stop = false; loop(); }
     }
   }
 
@@ -204,12 +261,14 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
   const skip = () => { L.stop = true; stopStream(); onSkip(); };
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase}
+      data-look={phase !== "live" || !look ? undefined : look.ok ? "ok" : look.aligned || look.found ? "close" : "searching"}>
       <video ref={video} playsInline muted autoplay />
       <div class="dc-stage">
         <div class="dc-frame" data-shape={shape} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {read.mrz && <span class="dc-mrz" data-shape={shape} />}
+          {phase === "live" && look?.ok && <span class="dc-fill" style={{ "--p": look.progress }} aria-hidden="true" />}
           {phase === "reading" && <span class="dc-busy"><i /></span>}
           {phase === "saved" && <span class="dc-busy dc-saved" role="status" aria-label="Photo saved"><Icon name="check" /></span>}
         </div>
@@ -226,7 +285,8 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
         {torch != null && <button class="icon-btn" aria-label={torch ? "Turn the light off" : "Turn the light on"} aria-pressed={torch} onClick={toggleTorch}><Icon name="torch" /></button>}
       </header>
       <div class="dc-status" aria-live="polite">
-        {phase === "error" ? error : phase === "reading" ? (read.barcode || read.mrz ? "Reading the photo…" : "Saving the photo…") : phase === "saved" ? "Saved" : status}
+        {phase === "error" ? error : phase === "reading" ? (codes ? "Reading the photo…" : "Saving the photo…") : phase === "saved" ? "Saved"
+          : auto && !codes && look && status === (hint || "") ? look.hint : status}
       </div>
       <footer class="dc-bottom">
         <button class="dc-side" disabled={phase === "reading" || phase === "saved"} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
@@ -244,20 +304,20 @@ export function DocCamera({ shape = "id1", read = {}, eyebrow, title, hint, save
 const PLAN = {
   passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Fit the photo page in the frame, the two lines of <<< along the bottom." }],
   driver_license: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Fit the card in the frame, then take the photo." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Fit the card in the frame. It takes the photo by itself." },
     { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Fill the frame with the back. The barcode reads by itself." },
   ],
   id_card: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Fit the card in the frame, then take the photo." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Fit the card in the frame. It takes the photo by itself." },
     { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Fill the frame with the back. A barcode or the lines of <<< read by themselves.", optional: true },
   ],
   residence_permit: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Fit the card in the frame, then take the photo." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Fit the card in the frame. It takes the photo by itself." },
     { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "The three lines of <<< read by themselves.", optional: true },
   ],
   other: [
-    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Fit the card in the frame, then take the photo." },
-    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Fit the card in the frame, then take the photo.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Fit the card in the frame. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Fit the card in the frame. It takes the photo by itself.", optional: true },
   ],
 };
 
