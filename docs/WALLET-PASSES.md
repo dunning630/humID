@@ -21,15 +21,18 @@ Neither wallet lets another app read what's in it, so a pass comes in as a file:
 A pass is refused, with the reason, unless all of these hold. They are the checks
 Apple Wallet itself makes, so HumID keeps a pass only if Wallet would trust it.
 
-1. **The archive.** Unzipped with limits: at most 64 files, 10 MB each, 20 MB in
+1. **The archive.** Unzipped with limits: at most 256 files (folders aside), 10 MB each, 20 MB in
    all, sizes checked before anything is inflated and inflating stopped at the
    claimed size (no zip bombs). No names that climb out of the folder, absolute
    paths, control characters or duplicates; every file's CRC must match.
-2. **The manifest.** `manifest.json` lists every file with its SHA-1 (or SHA-256).
-   Every file must be listed and match, and nothing listed may be missing.
+2. **The manifest.** `manifest.json` lists every file with its SHA-1 (or SHA-256,
+   one algorithm throughout). Every file must be listed and match, and nothing
+   listed may be missing.
 3. **The signature.** `signature` is a detached CMS signature over the manifest.
    Its message digest must match the manifest, and its signer's key must have
-   signed it (RSA or ECDSA, checked with Web Crypto).
+   signed it (RSA up to 4096 bits, or ECDSA, checked with Web Crypto). The wrapper
+   may use BER indefinite lengths, as several signing tools write it; what's signed
+   (the signed attributes, the certificates) must be DER. At most 8 certificates.
 4. **Who signed it.** The signer's certificate must be a Pass Type ID certificate
    (Apple's extension 1.2.840.113635.100.6.1.16) and not a CA. It must chain,
    through the intermediates the signature carries (Apple Worldwide Developer
@@ -42,9 +45,18 @@ Apple Wallet itself makes, so HumID keeps a pass only if Wallet would trust it.
 
    These match Apple's published list ("List of available root certificates",
    support.apple.com). The package refuses to load if its copy doesn't match.
-   Every certificate must have been valid when the pass was signed (a pass signed
-   while its certificate was valid stays genuine after the certificate expires),
-   and each intermediate must be a CA.
+   Every certificate must have been valid when the pass was signed, each
+   intermediate must be a CA allowed to sign certificates, and the signer's key
+   must be for signatures. Every candidate intermediate is tried, so an expired and
+   a renewed WWDR certificate with the same name don't trip it up.
+
+   **Expired certificates.** A pass signed while its certificate was valid stays
+   genuine after the certificate expires, as in Wallet. But the signing time is the
+   signer's own claim, so once the certificate has expired HumID shows the pass as
+   "genuine, certificate since expired" rather than plainly verified. A signing
+   time in the future is ignored. A pass that states no signing time is judged, on
+   later opens, at the time HumID first checked it. HumID doesn't query Apple's
+   revocation service (OCSP).
 5. **The pass is the one the certificate is for.** `pass.json`'s
    `passTypeIdentifier` and `teamIdentifier` must equal the certificate's UID and
    OU, so one issuer can't sign passes in another's name.
@@ -55,8 +67,11 @@ A pass that fails can still be kept as an ordinary file, labelled as such.
 
 - The vault keeps the **signed original**, sealed like any document, so it can go
   back into Wallet unchanged ("Save the pass").
-- The encrypted index (the vault list) carries the kind, the issuer, the team, the
-  date and expiry: never the barcode or the back of the pass.
+- The encrypted index (the vault list) carries the kind, who signed it (the
+  organisation in the certificate Apple issued, not the pass's own text, which
+  anyone with a developer certificate can set), the team, the date and expiry:
+  never the barcode or the back of the pass.
+- The file that was checked is the file that's sealed (not re-read afterwards).
 - Opening a pass checks it again, then shows its fields as text and its QR code.
   Links in a pass are text, never opened, and nothing in a pass runs. Other
   barcode formats (PDF417, Aztec, Code 128) are shown as their text, with the pass

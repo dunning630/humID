@@ -1,11 +1,14 @@
 // Just enough DER for X.509 certificates and a CMS signature. Strict: lengths must fit
-// their parent, no indefinite lengths, small tag and length forms only. Anything else
-// is a WalletError, never an out-of-range read.
+// their parent, small tag and length forms only. Indefinite lengths (BER) only where a
+// caller allows them: the CMS wrapper, which some pass-signing tools write that way;
+// never the bytes a signature covers. Anything else is a WalletError, never an
+// out-of-range read.
 import { WalletError } from "./zip.js";
 
 const bad = (m = "The pass's signature can't be read.") => { throw new WalletError("bad_signature", m); };
 
-export function readTLV(b, pos = 0) {
+export function readTLV(b, pos = 0, ber = false, depth = 0) {
+  if (depth > 32) bad();
   const start = pos;
   if (pos >= b.length) bad();
   let t = b[pos++];
@@ -22,6 +25,17 @@ export function readTLV(b, pos = 0) {
   }
   if (pos >= b.length) bad();
   let len = b[pos++];
+  if (len === 0x80) {
+    // indefinite length: constructed only, children until an end-of-contents (00 00)
+    if (!ber || !constructed) bad();
+    let p = pos;
+    for (;;) {
+      if (p + 2 > b.length) bad();
+      if (b[p] === 0 && b[p + 1] === 0) break;
+      p = readTLV(b, p, true, depth + 1).end;
+    }
+    return { cls, constructed, tag, value: b.subarray(pos, p), raw: b.subarray(start, p + 2), end: p + 2, ber, indefinite: true };
+  }
   if (len & 0x80) {
     const n = len & 0x7f;
     if (n < 1 || n > 4 || pos + n > b.length) bad();
@@ -29,11 +43,12 @@ export function readTLV(b, pos = 0) {
     for (let i = 0; i < n; i++) len = len * 256 + b[pos++];
   }
   if (pos + len > b.length) bad();
-  return { cls, constructed, tag, value: b.subarray(pos, pos + len), raw: b.subarray(start, pos + len), end: pos + len };
+  return { cls, constructed, tag, value: b.subarray(pos, pos + len), raw: b.subarray(start, pos + len), end: pos + len, ber };
 }
 
-export function parse(b) {
-  const t = readTLV(b, 0);
+/** One element covering all of b. ber: allow indefinite lengths (inherited by kids()). */
+export function parse(b, ber = false) {
+  const t = readTLV(b, 0, ber);
   if (t.end !== b.length) bad();
   return t;
 }
@@ -41,7 +56,7 @@ export function parse(b) {
 export function kids(t) {
   if (!t?.constructed) bad();
   const out = [];
-  for (let p = 0; p < t.value.length;) { const c = readTLV(t.value, p); out.push(c); p = c.end; }
+  for (let p = 0; p < t.value.length;) { const c = readTLV(t.value, p, !!t.ber); out.push(c); p = c.end; }
   return out;
 }
 

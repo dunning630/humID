@@ -108,7 +108,7 @@ function ItemRow({ item }) {
         <span class="ico" data-cat={cat.id}><Icon name="ticket" /></span>
         <span style={{ minWidth: 0 }}>
           <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-          <div class="meta">{STYLE_LABEL[pi.style] || "Pass"} · {pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</div>
+          <div class="meta">{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</div>
         </span>
         <span class="end"><Icon name="chevron" /></span>
       </button>
@@ -238,6 +238,7 @@ export function AddSheet() {
   const [busy, setBusy] = useState(false);
   const [passCheck, setPassCheck] = useState(null); // a Wallet pass: null | { state: "checking" } | { ok, result | reason }
   const chooser = useRef(null);
+  const current = useRef(null); // the file on screen: a check that finishes for another one is dropped
   const place = usePlaceStamp();
   const close = () => { if (!st.stage) S.sheet.value = null; };
   const choose = (input) => { markPicking(); input.current.click(); };
@@ -263,9 +264,11 @@ export function AddSheet() {
     setName(f.name.replace(/\.[a-z0-9]{1,6}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
     setCat(guessCategory(f.name, f.type)); // a suggestion; the person can change it
     setPassCheck(null);
+    current.current = f;
     if (looksLikePass(f)) {
       setPassCheck({ state: "checking" });
       checkPass(f).then((r) => {
+        if (current.current !== f) return;
         setPassCheck(r);
         if (r.ok) setName(r.result.pass.description || r.result.pass.organization || "Pass");
       });
@@ -284,15 +287,19 @@ export function AddSheet() {
     if (busy) return;
     setBusy(true);
     try {
-      if (passCheck?.ok) await addPass({ file, name, checked: passCheck.result, place: place.take() });
-      else await addDocument({ file: await toSeal(), name, category: cat, place: place.take() });
+      if (passCheck?.ok) await addPass({ checked: passCheck, name, place: place.take() });
+      else {
+        // a pass that failed its check is kept as an ordinary file, never under the pass type
+        const f = file && looksLikePass(file) ? new File([file], file.name, { type: "application/octet-stream" }) : await toSeal();
+        await addDocument({ file: f, name, category: cat, place: place.take() });
+      }
     }
     catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
     finally { setBusy(false); }
   }
   const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
   const have = file || shot;
-  const reset = () => { setFile(null); setShot(null); setPassCheck(null); };
+  const reset = () => { setFile(null); setShot(null); setPassCheck(null); current.current = null; };
   const plainFile = () => { setPassCheck(null); setCat("other"); }; // keep a pass that failed its check as an ordinary file
 
   return (

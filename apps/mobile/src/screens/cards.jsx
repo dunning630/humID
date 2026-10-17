@@ -19,6 +19,7 @@ const IOS = PLATFORM.startsWith("iOS");
 export function CardSheet() {
   const st = S.sheet.value;
   const rec = useRef(newCard());
+  const pendingCvv = useRef(null); // a code read from an American Express front: kept only if the holder chooses
   const [, redraw] = useReducer((n) => n + 1, 0);
   const [step, setStep] = useState("how"); // how | review
   const [cam, setCam] = useState(null);     // null | "front" | "back"
@@ -49,9 +50,10 @@ export function CardSheet() {
       setImage(rec.current, "front", img);
       if (r?.pan) {
         try {
-          if (r.cvv) setStoreCvv(rec.current, true); // American Express prints its code on the front
-          applyRead(rec.current, r, "camera");
-          setNote({ tone: "ok", text: `Read ${brandOf(r.pan).name} ending ${r.pan.slice(-4)}${r.expiry ? ", its expiry" : ""}${r.name ? " and the name" : ""}. Check them, then scan the back for the security code.` });
+          applyRead(rec.current, { ...r, cvv: null }, "camera"); // a code read here isn't kept unless the holder says so
+          pendingCvv.current = r.cvv || null;
+          const amex = brandOf(r.pan).id === "amex";
+          setNote({ tone: "ok", text: `Read ${brandOf(r.pan).name} ending ${r.pan.slice(-4)}${r.expiry ? ", its expiry" : ""}${r.name ? " and the name" : ""}. Check them.${amex ? r.cvv ? " The 4-digit security code is on the front: switch on Keep the security code below to keep it." : "" : " Then scan the back for the security code."}` });
         } catch { setNote({ tone: "warn", text: "Couldn't read the number clearly. Type it below." }); }
       } else setNote({ tone: "warn", text: "Couldn't read the number from the photo. Type it below, or try again in better light." });
       setStep("review");
@@ -64,11 +66,12 @@ export function CardSheet() {
     const { r } = await readEitherWay(canvas, "back", (x) => !!(x?.cvv || x?.phone));
     return () => {
       setCam(null);
-      if (r?.cvv) setStoreCvv(rec.current, true); // scanning the back is asking HumID to keep the code
+      // Scanning the back is asking HumID for the code; the switch below stays the holder's to turn off.
+      if (r?.cvv) setStoreCvv(rec.current, true);
       applyRead(rec.current, { cvv: r?.cvv, phone: r?.phone }, "camera");
       const got = [r?.cvv && "the security code", r?.phone && "the bank's phone number"].filter(Boolean);
       setNote(got.length
-        ? { tone: "ok", text: `Read ${got.join(" and ")} from the back. The photo of the back wasn't kept.` }
+        ? { tone: "ok", text: `Read ${got.join(" and ")} from the back. The photo of the back wasn't kept.${r?.cvv ? " The code will be kept; switch off Keep the security code to drop it." : ""}` }
         : { tone: "warn", text: "Couldn't read the back clearly. Type the security code below if you want to keep it." });
       redraw();
     };
@@ -114,7 +117,7 @@ export function CardSheet() {
         )}
         {step === "review" && (busy
           ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
-          : <CardForm rec={rec.current} note={note} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} />)}
+          : <CardForm rec={rec.current} note={note} pending={pendingCvv} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} />)}
       </Sheet>
       {cam === "front" && <DocCamera shape="id1" eyebrow="Card · front" title="The front of the card" hint="Fit the card in the frame, number side up." onCancel={() => setCam(null)} onDone={front} />}
       {cam === "back" && <DocCamera shape="id1" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
@@ -126,7 +129,7 @@ function CardNote({ tone, text }) {
   return <div class={`banner ${tone === "warn" ? "warn" : ""}`} role="status" style={{ marginTop: 10 }}><span class="b-ico"><Icon name={tone === "warn" ? "info" : "check"} /></span><div><span>{text}</span></div></div>;
 }
 
-function CardForm({ rec, note, onRetake, onBack, onChange }) {
+function CardForm({ rec, note, pending, onRetake, onBack, onChange }) {
   const f = rec.fields;
   const [v, setV] = useState({ pan: f.pan ? formatPan(f.pan) : "", expiry: showExpiry(f.expiry), name: f.name || "", nickname: "", bank: "", phone: f.phone || "", notes: "", cvv: f.cvv || "" });
   const [keepCvv, setKeepCvv] = useState(!!rec.policy.storeCvv);
@@ -145,9 +148,20 @@ function CardForm({ rec, note, onRetake, onBack, onChange }) {
   const brand = c ? brandOf(c.pan) : null;
   const panHint = !c ? null : c.ok ? brand.name : c.problems.includes("luhn") && c.pan.length >= brand.lengths[0] ? "That number has a typo" : null;
 
+  // The switch is the holder's: it sets the record's policy at once (off deletes a code already read).
+  const keep = (on) => {
+    setKeepCvv(on);
+    setStoreCvv(rec, on);
+    if (on && !v.cvv && pending?.current) setV((x) => ({ ...x, cvv: pending.current }));
+    if (!on) setV((x) => ({ ...x, cvv: "" }));
+  };
+  const amex = brand?.id === "amex";
+
   const save = async () => {
     try {
       setStoreCvv(rec, keepCvv);
+      // American Express prints the code on the front: the front photo goes with the code, or not at all
+      if (amex && !keepCvv) delete rec.images.front;
       const typed = Object.fromEntries(Object.entries(v).filter(([k]) => k !== "cvv" || keepCvv).map(([k, x]) => [k, String(x).trim()]));
       applyTyped(rec, typed);
       onChange();
@@ -173,9 +187,10 @@ function CardForm({ rec, note, onRetake, onBack, onChange }) {
         <div class="field id-field"><label for="cf-name">Name on card</label><input id="cf-name" class="up" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={40} value={v.name} onInput={set("name")} /></div>
         <label class="toggle" style={{ marginTop: 12 }}>
           <span><strong>Keep the security code</strong><span>The 3 digits on the back (4 on the front of an American Express card). Sealed like the number, shown only when you reveal the card.</span></span>
-          <input type="checkbox" role="switch" checked={keepCvv} onChange={(e) => setKeepCvv(e.currentTarget.checked)} />
+          <input type="checkbox" role="switch" checked={keepCvv} onChange={(e) => keep(e.currentTarget.checked)} />
           <i aria-hidden="true" />
         </label>
+        {amex && rec.images.front && !keepCvv && <p class="small muted" style={{ marginTop: 6 }}>American Express prints the code on the front, so the photo of the front is kept only if you keep the code.</p>}
         {keepCvv && <div class="field id-field"><label for="cf-cvv">Security code</label><input id="cf-cvv" class="mono" type="password" inputMode="numeric" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={4} value={v.cvv} onInput={set("cvv")} /></div>}
         <button class="btn quiet block" style={{ marginTop: 10 }} onClick={onBack}><Icon name="camera" />{f.cvv || f.phone ? "Scan the back again" : "Scan the back: security code and bank phone"}</button>
         <div class="split">

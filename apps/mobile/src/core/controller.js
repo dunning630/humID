@@ -812,20 +812,24 @@ const passRoots = () => (DEMO_BUILD && Array.isArray(globalThis.__humidExtraPass
   ? [...APPLE_ROOTS, ...globalThis.__humidExtraPassRoots.map((d, i) => ({ name: `Test root ${i + 1}`, der: fromB64(d) }))]
   : APPLE_ROOTS);
 
-/** Check a .pkpass: its files, its issuer's signature, Apple's chain. → { ok, result } | { ok: false, reason } */
+/**
+ * Check a .pkpass: its files, its issuer's signature, Apple's chain.
+ * → { ok, result, bytes } (the exact bytes checked, which are what gets sealed) | { ok: false, reason }
+ */
 export async function checkPass(file) {
   try {
     if (file.size > 20 * 1024 * 1024) return { ok: false, reason: "That pass is too big." };
-    return { ok: true, result: await readPkpass(await readFile(file), { roots: passRoots() }) };
+    const bytes = await readFile(file);
+    return { ok: true, result: await readPkpass(bytes, { roots: passRoots() }), bytes };
   } catch (e) {
     return { ok: false, reason: e instanceof WalletError ? e.message : "That pass can't be read." };
   }
 }
 
-/** Seal a checked pass: the original .pkpass (so it can go back into Wallet), with its summary in the encrypted index. */
-export async function addPass({ file, name, checked, place = null }) {
-  const bytes = await readFile(file);
-  return sealAndStore({ bytes, type: PASS_TYPE, name: (name || checked.pass.description || "Pass").trim().slice(0, 120), category: "passes", extra: { passInfo: passIndex(checked.pass, checked.issuer) }, place });
+/** Seal a checked pass: exactly the bytes that were checked (the signed original, so it can go back into Wallet), with its summary in the encrypted index. */
+export async function addPass({ checked, name, place = null }) {
+  const { result, bytes } = checked;
+  return sealAndStore({ bytes: Uint8Array.from(bytes), type: PASS_TYPE, name: (name || result.pass.description || "Pass").trim().slice(0, 120), category: "passes", extra: { passInfo: passIndex(result.pass, result.issuer) }, place });
 }
 
 /**
@@ -909,7 +913,9 @@ export async function openItem(item) {
       wipe(bytes); // the card lives only in the viewer, masked until revealed
     } else if (type === PASS_TYPE) {
       // checked again on every open: what's shown is what the issuer signed
-      try { pass = await readPkpass(bytes, { roots: passRoots(), now: new Date() }); }
+      // a pass that states no signing time is judged at the time it was first checked, not today
+      const at = Date.parse(item.passInfo?.checkedAt || "");
+      try { pass = await readPkpass(bytes, { roots: passRoots(), now: Number.isNaN(at) ? new Date() : new Date(Math.min(at, Date.now())) }); }
       catch (e) { passError = e instanceof WalletError ? e.message : "This pass can't be read."; }
     } else if (type.startsWith("text/") || type === "application/json") { text = new TextDecoder().decode(bytes); wipe(bytes); }
     else url = URL.createObjectURL(new Blob([bytes], { type }));

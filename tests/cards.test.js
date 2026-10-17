@@ -170,6 +170,9 @@ test("the back of a card: security code and bank phone, never the photo", () => 
   const amex = readCardText("AMERICAN EXPRESS\n  1234\n3782 822463 10005\nVALID THRU 09/29\nJANE Q SAMPLE");
   assert.equal(amex.pan, "378282246310005");
   assert.equal(amex.cvv, "1234");
+  // a "member since" year or the number's own first digits aren't taken for the code
+  assert.equal(readCardText("3782 822463 10005\nMEMBER SINCE 2015\nVALID THRU 12/28\nJOHN SMITH").cvv, null);
+  assert.equal(readCardText("3782\n3782 822463 10005\nVALID THRU 12/28").cvv, null);
 
   // the record keeps a code that was read only if the holder turned that on, at the network's length
   const rec = newCard();

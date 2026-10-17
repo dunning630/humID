@@ -16,7 +16,7 @@
 import { sha1 } from "@noble/hashes/legacy.js";
 import { sha256, sha384, sha512 } from "@noble/hashes/sha2.js";
 import { readZip, WalletError, LIMITS } from "./zip.js";
-import { parseCert, verifyWith, issuedBy, validAt } from "./x509.js";
+import { parseCert, verifyWith, issuedBy, validAt, OID } from "./x509.js";
 import { parseSignature, CONTENT_DATA } from "./cms.js";
 import { same } from "./der.js";
 import { APPLE_ROOTS } from "./roots.js";
@@ -26,7 +26,7 @@ const fail = (code, message) => { throw new WalletError(code, message); };
 const HASH = { "SHA-1": sha1, "SHA-256": sha256, "SHA-384": sha384, "SHA-512": sha512 };
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const json = (bytes, what) => {
-  try { const j = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); if (j && typeof j === "object" && !Array.isArray(j)) return j; }
+  try { const j = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "")); if (j && typeof j === "object" && !Array.isArray(j)) return j; }
   catch { /* below */ }
   return fail("bad_pass", `The pass's ${what} can't be read.`);
 };
@@ -66,29 +66,34 @@ export function summarizePass(p) {
 }
 
 /** What the encrypted vault index carries (shown in the list without opening): no barcode, no back fields. */
-export const passIndex = (s, issuer) => ({
+export const passIndex = (s, issuer, checkedAt = new Date()) => ({
   style: s.style, organization: s.organization, description: s.description,
-  team: issuer.team, passType: issuer.passType, relevant: s.relevantDate || "", expires: s.expirationDate || "", voided: s.voided || undefined,
+  // who signed it, from the certificate Apple issued (not the pass's own text)
+  issuer: issuer.organization || "", team: issuer.team, passType: issuer.passType,
+  relevant: s.relevantDate || "", expires: s.expirationDate || "", voided: s.voided || undefined,
+  checkedAt: checkedAt.toISOString(),
 });
 
+// keyUsage bits (first byte of the BIT STRING): digitalSignature 0x80, keyCertSign 0x04.
+const mayIssue = (c) => c.ext.ca && (!c.ext.keyUsage || (c.ext.keyUsage[0] & 0x04) !== 0);
+const maySign = (c) => !c.ext.keyUsage || (c.ext.keyUsage[0] & 0x80) !== 0;
+
+/**
+ * From the signer up to a pinned root, through the intermediates the signature carries.
+ * Every candidate is tried (an expired and a renewed intermediate can share a name),
+ * those valid at `when` first; at most 4 links.
+ */
 async function chainToApple(signer, pool, roots, when) {
   const anchors = roots.map((r) => ({ ...parseCert(r.der), name: r.name }));
-  const path = [signer];
-  let cur = signer;
-  for (let depth = 0; depth < 4; depth++) {
-    for (const a of anchors) if (await issuedBy(cur, a)) {
-      if (!validAt(a, when)) fail("untrusted", "Apple's root certificate wasn't valid when the pass was signed.");
-      return { path, root: a };
-    }
+  async function up(cur, path) {
+    for (const a of anchors) if (validAt(a, when) && (await issuedBy(cur, a))) return { path, root: a };
+    if (path.length > 4) return null;
     const next = [];
-    for (const c of pool) if (!path.includes(c) && (await issuedBy(cur, c))) next.push(c);
-    if (!next.length) break;
-    cur = next[0];
-    if (!cur.ext.ca) fail("untrusted", "The pass's certificate chain has a certificate that isn't allowed to issue others.");
-    if (!validAt(cur, when)) fail("untrusted", "A certificate in the pass's chain wasn't valid when it was signed.");
-    path.push(cur);
+    for (const c of pool) if (!path.includes(c) && mayIssue(c) && validAt(c, when) && (await issuedBy(cur, c))) next.push(c);
+    for (const c of next) { const found = await up(c, [...path, c]); if (found) return found; }
+    return null;
   }
-  return fail("untrusted", "The pass isn't signed through Apple's certificate chain, so Apple Wallet wouldn't trust it either.");
+  return (await up(signer, [signer])) || fail("untrusted", "The pass isn't signed through Apple's certificate chain, so Apple Wallet wouldn't trust it either.");
 }
 
 /**
@@ -110,6 +115,7 @@ export async function readPkpass(bytes, { roots = APPLE_ROOTS, now = new Date(),
     if (typeof want !== "string") fail("tampered", `The pass has a file its signature doesn't cover (${name.slice(0, 40)}).`);
     const a = want.length === 40 ? "SHA-1" : want.length === 64 ? "SHA-256" : null;
     if (!a || !/^[0-9a-f]+$/i.test(want)) fail("bad_pass", "The pass's manifest is malformed.");
+    if (alg && a !== alg) fail("bad_pass", "The pass's manifest mixes hash algorithms.");
     alg ||= a;
     if (hex(HASH[a](data)) !== want.toLowerCase()) fail("tampered", `A file in the pass was changed after it was signed (${name.slice(0, 40)}).`);
   }
@@ -119,6 +125,7 @@ export async function readPkpass(bytes, { roots = APPLE_ROOTS, now = new Date(),
   const sig = parseSignature(sigBytes);
   const s = sig.signer;
   const pool = sig.certs.map(parseCert);
+  for (const c of pool) if (c.keyAlg === OID.rsa && c.spki.length > 600) fail("bad_signature", "A key in the pass's signature is too large."); // over 4096-bit RSA
   const signer = pool.find((c) => (s.sid.ski ? c.ext.ski && same(c.ext.ski, s.sid.ski) : same(c.issuerRaw, s.sid.issuerRaw) && same(c.serial, s.sid.serial)));
   if (!signer) fail("bad_signature", "The pass's signature doesn't include its signer's certificate.");
   let signed;
@@ -130,8 +137,12 @@ export async function readPkpass(bytes, { roots = APPLE_ROOTS, now = new Date(),
   if (!(await verifyWith(signer, s.sigAlg, s.signature, signed, s.digest))) fail("bad_signature", "The pass's signature doesn't verify.");
 
   // 4. who signed it: a Pass Type ID certificate, through Apple's chain
-  const signedAt = s.attrs.signingTime && s.attrs.signingTime <= new Date(now.getTime() + 5 * 60_000) ? s.attrs.signingTime : now;
-  if (!signer.ext.passbook || signer.ext.ca) fail("untrusted", "The pass wasn't signed with a Wallet pass certificate.");
+  // When it was signed: the time it states (no later than now), else now. A pass signed while its
+  // certificate was valid stays genuine after the certificate expires (as in Wallet); that state is
+  // reported (certExpired) rather than shown as plain "verified", since a signing time is the signer's word.
+  const stated = s.attrs.signingTime && s.attrs.signingTime <= new Date(now.getTime() + 5 * 60_000) ? s.attrs.signingTime : null;
+  const signedAt = stated || now;
+  if (!signer.ext.passbook || signer.ext.ca || !maySign(signer)) fail("untrusted", "The pass wasn't signed with a Wallet pass certificate.");
   if (!validAt(signer, signedAt)) fail("untrusted", "The pass's certificate wasn't valid when it was signed.");
   const { root } = await chainToApple(signer, pool.filter((c) => c !== signer), roots, signedAt);
 
@@ -145,8 +156,11 @@ export async function readPkpass(bytes, { roots = APPLE_ROOTS, now = new Date(),
   const pick = (base) => files.get(`${base}@3x.png`) || files.get(`${base}@2x.png`) || files.get(`${base}.png`) || null;
   return {
     pass: summarizePass(p),
-    issuer: { team, passType, organization: signer.subject.O || "", name: signer.subject.CN || "", root: root.name, certExpires: signer.notAfter.toISOString() },
-    signedAt: s.attrs.signingTime ? s.attrs.signingTime.toISOString() : null,
+    issuer: {
+      team, passType, organization: signer.subject.O || "", name: signer.subject.CN || "", root: root.name,
+      certExpires: signer.notAfter.toISOString(), certExpired: signer.notAfter < now,
+    },
+    signedAt: stated ? stated.toISOString() : null,
     files: files.size, manifestHash: alg,
     images: { icon: pick("icon"), logo: pick("logo"), strip: pick("strip"), thumbnail: pick("thumbnail") },
   };

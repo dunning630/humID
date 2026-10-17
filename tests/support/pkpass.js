@@ -25,7 +25,7 @@ export function passChain({ passType = "pass.com.example.ticket", team = "TEAM12
     extensions: [extension("2.5.29.15", keyUsage(0), true), ...(passbook ? [extension("1.2.840.113635.100.6.1.16", nul())] : [])],
     ...(signerNotAfter ? { notAfter: signerNotAfter } : {}), ...(signerNotBefore ? { notBefore: signerNotBefore } : {}),
   });
-  return { root: { der: new Uint8Array(rootDer), name: "Test Root CA" }, rootDer, interDer, signerDer, key, rsa, interName, serialNumber };
+  return { root: { der: new Uint8Array(rootDer), name: "Test Root CA" }, rootDer, interDer, signerDer, key, rsa, interName, serialNumber, inter, rootKey: root };
 }
 
 /** A detached CMS signature over `content`, by the chain's signer. */

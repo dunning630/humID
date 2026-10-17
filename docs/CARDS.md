@@ -44,6 +44,13 @@ or derives a security code, and returns only the number, expiry, name,
 network and issuing country. Service codes and track discretionary data are
 dropped where they're read.
 
+A code read from the front of an American Express card is offered, not kept: it's
+kept only if the holder switches on "Keep the security code". "Member since" years
+and the number's own first digits aren't taken for it. Because American Express
+prints the code on the front, the photo of the front is kept only with the code.
+Scanning the back is asking for the code, so it's kept (the switch can still turn
+it off before sealing).
+
 ## Showing
 
 Every platform follows `HANDLING`:

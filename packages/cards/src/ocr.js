@@ -61,7 +61,8 @@ export function readCardText(text, { now = new Date() } = {}) {
     const groups = new Set();
     for (const line of String(text).split(/\r?\n/)) {
       if (digits(fixDigits(line)).includes(pan.pan.slice(0, 8))) continue; // the number's own line
-      for (const m of line.matchAll(/(?<![\d/])(\d{4})(?![\d/])/g)) groups.add(m[1]);
+      if (/SINCE|MEMBER|VALID|THRU|EXP|GOOD|FROM|YEAR/i.test(line)) continue; // a "member since" year, a date
+      for (const m of line.matchAll(/(?<![\d/])(\d{4})(?![\d/])/g)) if (m[1] !== pan.pan.slice(0, 4)) groups.add(m[1]);
     }
     if (groups.size === 1) cvv = [...groups][0];
   }
