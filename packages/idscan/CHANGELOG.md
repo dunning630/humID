@@ -1,5 +1,27 @@
 # @humid/idscan
 
+## 1.0.2
+
+### Patch Changes
+
+- A **Settings** tab: how HumID looks and behaves on this device.
+  
+  - **Appearance:** Night (default), Day, or match the device; larger text; animations
+    on or off; haptics on or off.
+  - **Locking:** auto-lock after 1, 2 or 5 minutes of no activity. 5 minutes is the
+    longest allowed, and leaving the screen always locks; unlocking is always a face
+    or fingerprint. These are shown in Settings but can't be changed.
+  - **Vault:** which tab HumID opens on, and how items are sorted (newest, oldest,
+    name, or IDs expiring first). **Pin** any item to the top from its details; the
+    pin is sealed inside the item's encrypted index entry, so it shows on all your
+    devices and the server can't see what's pinned.
+  - **Reminders:** how early an ID counts as expiring (30 days to 6 months).
+  - **This device** and **Connection** moved here from Security.
+  
+  Settings are kept on each device; stored values are checked on load, so a tampered
+  setting can't stretch the lock beyond 5 minutes. `@humid/idscan`: `status()` takes the
+  warning window as an optional third argument (default 90 days).
+
 ## 1.0.1
 
 ### Patch Changes

@@ -192,6 +192,60 @@ try {
   await shot(page, "small-toast");
   step("a lease is filed under Home; the toast shows at the bottom, above the tab bar");
 
+  // Settings: how it looks and locks, kept on this device; pins sealed with the item
+  await page.locator(".tabbar button", { hasText: "Settings" }).click();
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
+  await targets(page, "Settings");
+  const html = (k) => page.evaluate((key) => document.documentElement.dataset[key], k);
+  assert.equal(await html("theme"), "dark", "night by default");
+  await page.locator('[data-pref="theme:light"]').click();
+  assert.equal(await html("theme"), "light");
+  await page.locator('[data-pref="text:large"]').click();
+  assert.equal(await html("text"), "large");
+  await page.locator('[data-pref="motion"]').uncheck({ force: true });
+  assert.equal(await html("motion"), "reduced");
+  await page.locator('[data-pref="idle:60000"]').click();
+  await page.locator('[data-pref="startTab:settings"]').click();
+  await page.locator('[data-pref="sort:name"]').click();
+  assert.equal(await page.locator('[data-pref="idle:600000"]').count(), 0, "no lock time longer than 5 minutes is offered");
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("humid.prefs.v1")));
+  assert.deepEqual([saved.theme, saved.text, saved.motion, saved.idleMs, saved.startTab, saved.sort], ["light", "large", false, 60000, "settings", "name"]);
+  assert.match(await page.locator("main").innerText(), /auto-locks in 0?[01]:/, "the session shows the shorter lock");
+  await shot(page, "small-settings-day");
+  step("settings: day theme, larger text, animations off, 1-minute lock, open on Settings, sort by name");
+
+  // a second document, so there's an order to change
+  await page.locator(".tabbar button", { hasText: "Vault" }).click();
+  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.locator('input[type="file"]').setInputFiles({ name: "Zoo membership.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%zoo\n") });
+  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await hold(page);
+  const rows = page.locator(".list .item");
+  await page.waitForFunction(() => document.querySelectorAll(".list .item").length === 2, null, { timeout: 30_000 });
+  assert.deepEqual((await rows.locator(".name").allInnerTexts()).map((t) => t.trim()), ["Apartment lease", "Zoo membership"], "sorted by name");
+  const last = 1, lastName = "Zoo membership";
+  await rows.nth(last).click();
+  await page.getByText("Pin to the top").click();
+  await page.locator(".list .item[data-pinned]").first().waitFor({ timeout: 10_000 });
+  await page.evaluate(() => globalThis.__humidBack());
+  assert.equal((await rows.first().locator(".name").innerText()).trim(), lastName, "a pinned item goes to the top");
+  await shot(page, "small-vault-pinned-day");
+  step("a pinned item moves to the top of the vault");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });
+  assert.equal(await html("theme"), "light", "the theme is there before unlocking");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Settings", "opens on the chosen tab");
+  await page.locator(".tabbar button", { hasText: "Vault" }).click();
+  await page.locator(".list .item[data-pinned]").first().waitFor({ timeout: 10_000 });
+  step("after a restart: same look, opens on Settings, the pin came back from the vault");
+  await page.locator(".tabbar button", { hasText: "Settings" }).click();
+  await page.locator('[data-pref="theme:dark"]').click();
+  await page.locator('[data-pref="text:standard"]').click();
+
   // the phone deleted HumID's key (fingerprints changed, or a reinstall restored old data):
   // a clear screen and a way to start again, not an unlock that fails forever
   await page.getByRole("button", { name: "Lock now" }).first().click();
