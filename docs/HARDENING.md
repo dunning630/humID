@@ -66,7 +66,7 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 
 | Item | Where | Status |
 |---|---|---|
-| Versioned format, purpose, expiry | `packages/recovery/src/index.js:357-386` | ✅ `HUMID:2:KIND:CODE:EXPIRY` |
+| Versioned format, purpose, expiry | `packages/recovery/src/index.js:338-383` | ✅ `HUMID:2:KIND:CODE:EXPIRY` |
 | Signed / verified before acting | The 12-character code is a commitment to the keys behind it | ✅ see below. The scanning device recomputes it from the keys the server returns (`api/src/index.js` `getLink`/`getOffer`/`getHelp`), and now the **displaying** device does too, so a server can't hand back a code for keys of its own (`api/src/index.js:280,312,376`) |
 | Strict parser: size cap, unknown fields and versions | `parseQr` | ✅ 48 characters; one canonical spelling; unknown versions, kinds and extra fields refused; no bare codes from the camera; the scanner takes only the kind it asked for (`ui.jsx` `Scanner`) |
 | Never a URL or deep link | Never opened | ➖ (and URLs don't parse) |
@@ -108,7 +108,7 @@ then confirms which account the new device is joining.
 | Input fields: no suggestions or learning | ✅ `autocorrect`, `autocomplete` and `spellcheck` off on every text field. ◑ a WebView can't set `IME_FLAG_NO_PERSONALIZED_LEARNING`; with these attributes Chromium asks the keyboard for no suggestions |
 | Clipboard | ✅ removed: the seal card and ID numbers can't be copied (save or print the card instead) |
 | Accessibility-service warning (optional) | ⬜ |
-| iOS: block third-party keyboards, hide the app-switcher snapshot, react to screen capture | ✅ in code (`HumidGatePlugin.swift:105-150`): a cover in the app switcher and while the screen is recorded or mirrored; third-party keyboards refused. 🔒 needs a signed iPhone build to confirm |
+| iOS: block third-party keyboards, hide the app-switcher snapshot, react to screen capture | ✅ in code (`HumidGatePlugin.swift:95-152`): a cover in the app switcher and while the screen is recorded or mirrored; third-party keyboards refused. 🔒 needs a signed iPhone build to confirm |
 
 ## P2 — WebView and shell
 
