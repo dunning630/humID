@@ -198,3 +198,19 @@ export async function sealOffline(key, value) {
 export async function openOffline(key, blob) {
   return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-OFFLINE-v1")));
 }
+
+/* ---------- device settings (added in @humid/crypto 1.5.0) ----------
+ * Settings that must not sit on the device in the clear (which duress gesture
+ * is set), sealed under a key derived from the identity seed, so they read only
+ * after a live check. The app decides what to do with them after the check.
+ */
+export const settingsKey = (seed) => kdf(seed, undefined, "HUMID-PQ1 device-settings");
+
+export async function sealSetting(key, value) {
+  const nonce = random(12);
+  return concat(nonce, await aesEncrypt(key, nonce, encodeJSON(value), utf8("HUMID-SETTING-v1")));
+}
+
+export async function openSetting(key, blob) {
+  return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-SETTING-v1")));
+}
