@@ -66,10 +66,10 @@ async function hold(page) {
   await page.waitForTimeout(1500);
   await page.keyboard.up(" ");
 }
-async function addCard(page) {
-  // one way in: the + button (or the empty vault's one primary), then the choice
+/** One way in: the + button (or the empty vault's one primary) opens the camera at once. */
+async function openAdd(page) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.getByRole("button", { name: /Add a payment card/ }).click();
+  await page.locator(".doccam").waitFor({ timeout: 10_000 });
 }
 
 try {
@@ -81,24 +81,27 @@ try {
   await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
   await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
+  await page.getByRole("button", { name: "I've saved it" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  await addCard(page);
-  await page.getByRole("button", { name: /Scan the card/ }).click();
-  // nobody presses the shutter: the card is in the frame, so the camera takes it by itself
+  await openAdd(page);
+  // nobody presses the shutter, and nobody says what it is: the camera finds the card, takes
+  // the photo by itself, reads the number on it and opens the card review
+  await page.locator(".dc-label").getByText(/Looks like a card/).waitFor({ timeout: 20_000 });
   await page.locator("#cf-pan").waitFor({ timeout: 90_000 });
+  assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "card", "routed by the card number");
   await page.waitForFunction(() => document.querySelector("#cf-pan")?.value.replace(/\s/g, "").length >= 16, null, { timeout: 30_000 });
   assert.equal((await page.inputValue("#cf-pan")).replace(/\s/g, ""), "4111111111111111", "the number, read on this device");
   assert.equal(await page.inputValue("#cf-exp"), "08/29", "the expiry");
   assert.equal(await page.inputValue("#cf-name"), "JANE SPECIMEN", "the name");
-  assert.match(await page.locator(".sheet [role=status]").first().innerText(), /Read Visa ending 1111/);
+  assert.match(await page.locator(".pushed [role=status]").first().innerText(), /Read Visa ending 1111/);
   await page.getByLabel("Nickname").fill("Travel card");
   await shot(page, "1-front-read");
   await page.getByRole("button", { name: "Seal", exact: true }).click();
@@ -117,8 +120,9 @@ try {
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: "Travel card" }).waitFor({ timeout: 30_000 });
-  await addCard(page);
-  await page.getByRole("button", { name: /Type it/ }).click();
+  await openAdd(page);
+  await page.locator(".dc-tools").getByRole("button", { name: /Type a card/ }).click();
+  await page.locator(".doccam").waitFor({ state: "detached" });
   await page.fill("#cf-pan", "4111 1111 1111 1112");
   assert.ok(await page.getByText("That number has a typo").isVisible(), "a typo is caught");
   assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a bad number can't be sealed");
@@ -130,25 +134,27 @@ try {
   assert.equal(await page.inputValue("#cf-cvv"), "123", "the security code, read from the back");
   assert.equal(await page.inputValue("#cf-phone"), "1-800-555-0123", "the bank's phone number");
   assert.ok(await page.locator('label.toggle:has-text("Keep the security code") input').isChecked(), "kept, because the back was scanned");
-  assert.match(await page.locator(".sheet [role=status]").first().innerText(), /photo of the back wasn't kept/);
+  assert.match(await page.locator(".pushed [role=status]").first().innerText(), /photo of the back wasn't kept/);
   assert.equal(await page.locator(".id-thumbs figure").count(), 0, "no photo of the back on screen");
   await shot(page, "3-back-read");
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: "Backup card" }).click();
-  await page.getByRole("button", { name: "Open", exact: true }).click();
+  // the item screen: the masked number with one "Show the number" (one check), never the number itself
+  assert.equal((await page.locator('.pushed [data-card="number"]').innerText()).trim(), "•••• 1111");
+  await page.locator(".pushed").getByRole("button", { name: "Show the number", exact: true }).click();
   await hold(page);
-  await page.locator(".pay-card").waitFor({ timeout: 30_000 });
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "•••• 1111");
-  assert.equal((await page.locator('[data-card="cvv"]').innerText()).trim(), "•••");
+  await page.locator(".viewer .pay-card").waitFor({ timeout: 30_000 });
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "•••• 1111");
+  assert.equal((await page.locator('.viewer [data-card="cvv"]').innerText()).trim(), "•••");
   assert.match(await page.locator(".viewer").innerText(), /1-800-555-0123/);
   await page.getByRole("button", { name: /Show the number and code/ }).click();
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "4111 1111 1111 1111");
-  assert.equal((await page.locator('[data-card="cvv"]').innerText()).trim(), "123");
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "4111 1111 1111 1111");
+  assert.equal((await page.locator('.viewer [data-card="cvv"]').innerText()).trim(), "123");
   await shot(page, "4-card-revealed");
   assert.equal(await page.getByRole("button", { name: /Copy/ }).count(), 0, "no copy buttons: the clipboard isn't safe");
   await page.getByRole("button", { name: /Hide now/ }).click();
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "•••• 1111");
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "•••• 1111");
   step("the back: security code and bank phone read, the photo not kept; masked until revealed; no copying");
 
   /* ---------------- 3. a Wallet pass ---------------- */
@@ -158,18 +164,23 @@ try {
   writeFileSync(forged, makePass(chain, { change: { "pass.json": Buffer.from(JSON.stringify(passJson({ description: "Free entry" }))) } }));
   await page.locator("button[aria-label*=Close]").first().click();
   await page.evaluate((der) => { globalThis.__humidExtraPassRoots = [der]; }, Buffer.from(chain.root.der).toString("base64"));
+  // File from the camera's bar: a .pkpass goes to the pass check
   const addPassFile = async (path) => {
-    await page.locator("button.fab").click();
-    await page.locator('.sheet input[type=file]').setInputFiles(path);
+    await openAdd(page);
+    await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+    await page.locator("#add-file").setInputFiles(path);
   };
   await addPassFile(forged);
   await page.getByText("HumID won't add this as a Wallet pass").waitFor({ timeout: 20_000 });
-  assert.match(await page.locator(".sheet [role=alert]").innerText(), /changed after it was signed/);
+  assert.match(await page.locator(".pushed [role=alert]").innerText(), /changed after it was signed/);
   assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a forged pass can't be sealed as a pass");
   await shot(page, "5-pass-forged");
   await page.getByRole("button", { name: "Choose another file" }).waitFor();
-  await page.keyboard.press("Escape").catch(() => {});
-  await page.locator(".sheet button[aria-label=Close]").first().click().catch(() => {});
+  // Back leaves the pass review for the camera; Back again closes Add
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
+  await page.locator(".doccam").waitFor();
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), ".doccam");
+  await page.locator(".doccam").waitFor({ state: "detached" });
   await addPassFile(good);
   await page.getByText(/verified through Apple/).waitFor({ timeout: 20_000 });
   assert.match(await page.locator(".pass-face").innerText(), /The Specimen Tour/);
@@ -180,6 +191,11 @@ try {
   const passRow = page.locator(".item", { hasText: "Concert ticket" });
   await passRow.waitFor({ timeout: 30_000 });
   assert.match(await passRow.innerText(), /Ticket · Example Events/);
+  assert.equal(await passRow.getAttribute("data-kind"), "pass");
+  assert.deepEqual((await page.locator(".chips[aria-label='Filter by kind'] .chip").allInnerTexts()).map((t) => t.replace(/\s*\d+$/, "").trim()), ["All", "Cards", "Passes"], "the chip row shows the kinds that exist");
+  await page.locator(".chips[aria-label='Filter by kind'] .chip", { hasText: "Cards" }).click();
+  assert.equal(await page.locator(".list .item").count(), 2, "Cards shows the two cards");
+  await page.locator(".chips[aria-label='Filter by kind'] .chip", { hasText: "All" }).click();
   await passRow.click();
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await hold(page);

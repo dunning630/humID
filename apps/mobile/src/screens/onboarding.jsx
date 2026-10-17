@@ -84,11 +84,18 @@ function ConnectStep({ eyebrow, onNext }) {
  * Adding anyone later destroys this device's keys (they're tied to the enrolled set).
  */
 function SoleBiometric({ checked, onChange }) {
+  const hw = S.hwGate.value;
+  const what = hw?.probe.label && !/demo/i.test(hw.probe.label) ? hw.probe.label : "Face ID / fingerprint";
+  const [why, setWhy] = useState(false);
   return (
-    <label class="check" style={{ marginBottom: 14 }}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.currentTarget.checked)} />
-      <span>Only my own face or fingerprints are set up on this device. If anyone else's are added later, this device's HumID keys are destroyed.</span>
-    </label>
+    <div class="sole" style={{ marginBottom: 14 }}>
+      <label class="check">
+        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.currentTarget.checked)} />
+        <span>Only I use {what} on this phone.</span>
+      </label>
+      <button class="linklike" type="button" aria-expanded={why} onClick={() => setWhy(!why)}>What does this mean?</button>
+      {why && <p class="small muted" style={{ marginTop: 8 }}>HumID can't see whose faces or fingers this phone knows, only that a live match happened. If anyone else's face or fingerprint is enrolled, they could open your vault, so HumID asks once and records your answer with this device in your record. If another one is added later, this device's HumID keys are destroyed.</p>}
+    </div>
   );
 }
 
@@ -117,12 +124,12 @@ export function Enroll() {
   const [sole, setSole] = useState(false);
   // The trust step only when the server isn't pinned by the build; the access step only when
   // this server needs a pass to create a HumID.
-  const steps = [...(serverPinned() ? [] : ["connect"]), ...(S.passNeeded.value ? ["access"] : []), "bind", "done"];
+  const steps = [...(serverPinned() ? [] : ["connect"]), ...(S.passNeeded.value ? ["access"] : []), "bind", "done", "in"];
   const idx = steps.indexOf(step);
   const at = Math.max(0, idx);
   const go = (i) => (S.enrollStep.value = steps[i]);
   const next = () => go(Math.min(idx + 1, steps.length - 1));
-  const back = step !== "done" ? () => (idx <= 0 ? (S.view.value = "welcome") : go(idx - 1)) : null;
+  const back = step !== "done" && step !== "in" ? () => (idx <= 0 ? (S.view.value = "welcome") : go(idx - 1)) : null;
   return (
     <main class="screen">
       <TopBar step={at} steps={steps.length} onBack={back} />
@@ -145,7 +152,8 @@ export function Enroll() {
         </>
       )}
 
-      {step === "done" && <EnrollDone />}
+      {step === "done" && <RecoveryCardStep onNext={() => go(steps.indexOf("in"))} />}
+      {step === "in" && <YoureIn />}
     </main>
   );
 }
@@ -197,47 +205,62 @@ function AccessStep({ eyebrow, onNext }) {
   );
 }
 
-function EnrollDone() {
+/**
+ * Step: the recovery card, on its own screen. The card, Print / Save, the type-back
+ * check, then "I've saved it". Without a card (the server didn't issue one), it says what
+ * to set up instead and goes straight on.
+ */
+function RecoveryCardStep({ onNext }) {
   const code = S.cardCode.value;
   const [saved, setSaved] = useState(false);
   return (
     <>
-      <div class="hero" style={{ flex: "0 0 auto", marginTop: 4 }}><Mark state="verified" size={110} /></div>
-      <h1 style={{ textAlign: "center", marginTop: 10 }}>You're all set</h1>
-      <p class="lede" style={{ textAlign: "center", margin: "8px auto 0" }}>Your HumID is live and locked to this device. <AssurancePill assurance={S.identity.value?.assurance} /></p>
-
+      <div class="eyebrow">Your recovery card</div>
+      <h1 style={{ marginTop: 8 }}>{code ? "Save your recovery card" : "No recovery set up yet"}</h1>
       {code ? (
-        <div class="card" style={{ marginTop: 18 }}>
-          <h3>Save your recovery card</h3>
-          <p class="small muted" style={{ marginTop: 6 }}>One of two proofs that bring your vault back if you lose every device. On its own it opens nothing: recovery also needs your witnesses or your ID, then waits while your devices can veto.</p>
-          <CardBox code={code} />
-          <div class="split" style={{ marginTop: 12 }}>
-            {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
-            <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
+        <>
+          <p class="lede" style={{ marginTop: 10 }}>One of two proofs that bring your vault back if you lose every device. On its own it opens nothing: recovery also needs your witnesses or your ID chip, then waits while your devices can veto.</p>
+          <div class="card" style={{ marginTop: 18 }}>
+            <CardBox code={code} />
+            <div class="split" style={{ marginTop: 12 }}>
+              {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
+              <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
+            </div>
+            <CardConfirm code={code} onChange={setSaved} />
+            <PrintableCard code={code} />
           </div>
-          <CardConfirm code={code} onChange={setSaved} />
-          <PrintableCard code={code} />
-        </div>
-      ) : null}
-
-      {code ? (
-        <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Next: finish protecting it</strong><span>Your vault shows what's left, with a button for each: a second proof (witnesses keep you anonymous) and a second device, so a lost phone is never an emergency.</span></div></div>
+        </>
       ) : (
-        <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>No recovery set up yet</strong><span>Under You, set up two proofs (witnesses, your ID chip, a recovery card), or add a second device, so losing this phone doesn't lose your vault.</span></div></div>
+        <div class="banner warn" style={{ marginTop: 18 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Set it up under You</strong><span>Two proofs (witnesses, your ID chip, a recovery card), or a second device, so losing this phone doesn't lose your vault.</span></div></div>
       )}
-
       <div style={{ flex: 1 }} />
       <div class="foot">
         {/* Never a dead grey button: until the card is checked, it says why and takes you to the check. */}
-        <button class={`btn secure block${code && !saved ? " waiting" : ""}`}
+        <button class={`btn primary block${code && !saved ? " waiting" : ""}`}
           onClick={() => {
-            if (!(code && !saved)) return finishEnroll();
+            if (!(code && !saved)) return onNext();
             const f = document.getElementById("card-check");
             f?.scrollIntoView({ block: "center", behavior: "smooth" });
             f?.focus({ preventScroll: true });
           }}>
-          <Icon name="vault" />{code && !saved ? "Check your card to continue" : "Open my vault"}
+          <Icon name={code ? "check" : "chevron"} />{code && !saved ? "Check your card to continue" : code ? "I've saved it" : "Continue"}
         </button>
+      </div>
+    </>
+  );
+}
+
+/** Step: you're in. One line, and the vault. */
+function YoureIn() {
+  return (
+    <>
+      <div class="hero" style={{ flex: "0 0 auto", marginTop: 4 }}><Mark state="verified" size={150} /></div>
+      <h1 style={{ textAlign: "center", marginTop: 10 }}>You're in</h1>
+      <p class="lede" style={{ textAlign: "center", margin: "8px auto 0" }}>Your HumID is live and locked to this phone. <AssurancePill assurance={S.identity.value?.assurance} /></p>
+      <div style={{ flex: 1 }} />
+      <div class="foot">
+        <button class="btn secure block" onClick={finishEnroll}><Icon name="vault" />Open my vault</button>
+        <p class="fine">Next, under You: a second proof and a second device, so a lost phone is never an emergency.</p>
       </div>
     </>
   );

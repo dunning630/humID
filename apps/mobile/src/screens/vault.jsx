@@ -1,20 +1,21 @@
-// Vault: list, search, categories, add, item details, preview.
-import { useEffect, useRef, useState } from "preact/hooks";
-import { guessCategory } from "../core/categories.js";
+// Vault: list, search, kinds and tags, item details, preview.
+import { useState } from "preact/hooks";
+import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
-import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
+import { Icon, kindIcon } from "../icons.jsx";
+import { Sheet, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
 import { openExternal } from "../core/external.js";
-import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned } from "../core/controller.js";
-import { DocCamera, IdView } from "./ids.jsx";
+import { openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, lockNow, setDecoy, setPinned } from "../core/controller.js";
+import { IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 import { CardView } from "./cards.jsx";
 import { BRANDS, expiryStatus, showExpiry } from "@humid/cards";
-import { looksLikePass, STYLE_LABEL } from "@humid/wallet";
-import { PassView, PassCheck } from "./passes.jsx";
+import { STYLE_LABEL } from "@humid/wallet";
+import { PassView } from "./passes.jsx";
+import { TagPicker, Push } from "./review.jsx";
+import { openAdd } from "./add.jsx";
 
 export function Vault() {
   const list = S.visibleItems.value;
@@ -45,12 +46,13 @@ export function Vault() {
             <Icon name="search" />
             <input autocorrect="off" spellcheck={false} id="vault-search" type="search" placeholder="Search your vault" value={S.query.value} onInput={(e) => (S.query.value = e.currentTarget.value)} autocomplete="off" />
           </label>
-          <div class="chips" role="group" aria-label="Filter by category">
+          <div class="chips" role="group" aria-label="Filter by kind">
             <button class="chip" aria-pressed={S.filter.value === "all"} onClick={() => (S.filter.value = "all")}>All <span class="count">{S.counts.value.all}</span></button>
-            {CATEGORIES.filter((c) => S.counts.value[c.id]).map((c) => (
-              <button class="chip" aria-pressed={S.filter.value === c.id} onClick={() => (S.filter.value = c.id)}><Icon name={c.icon} />{c.label} <span class="count">{S.counts.value[c.id]}</span></button>
+            {KINDS.filter((k) => S.counts.value[k.id]).map((k) => (
+              <button class="chip" aria-pressed={S.filter.value === k.id} onClick={() => (S.filter.value = k.id)}><Icon name={k.icon} />{k.label} <span class="count">{S.counts.value[k.id]}</span></button>
             ))}
           </div>
+          <TagFilters />
         </>
       )}
 
@@ -61,7 +63,7 @@ export function Vault() {
           <Mark />
           <h3>Nothing here yet</h3>
           <p>Your IDs, cards and documents, sealed on this phone before they go anywhere.</p>
-          {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add to your vault</button>}
+          {!S.offline.value && <button class="btn primary" onClick={openAdd}><Icon name="plus" />Add to your vault</button>}
         </div>
       )}
 
@@ -72,278 +74,77 @@ export function Vault() {
       </div>
 
       {all.length > 0 && !S.offline.value && (
-        <button class="fab" aria-label="Add to your vault" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" /></button>
+        <button class="fab" aria-label="Add to your vault" onClick={openAdd}><Icon name="plus" /></button>
       )}
     </main>
   );
 }
 
-const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+/** The secondary row: filter by tag, offered only when something carries a tag. */
+function TagFilters() {
+  const [open, setOpen] = useState(false);
+  const tc = S.tagCounts.value;
+  const used = TAGS.filter((t) => tc[t.id]);
+  if (!used.length) { if (S.tagFilter.value) S.tagFilter.value = null; return null; }
+  const on = S.tagFilter.value;
+  return (
+    <div class="tagfilters" data-open={open || on ? "1" : "0"}>
+      {!open && !on && <button class="linklike" onClick={() => setOpen(true)}>More filters</button>}
+      {(open || on) && (
+        <div class="chips" role="group" aria-label="Filter by tag">
+          <button class="chip" aria-pressed={!on} onClick={() => { S.tagFilter.value = null; setOpen(false); }}>Any tag</button>
+          {used.map((t) => (
+            <button class="chip" aria-pressed={on === t.id} onClick={() => (S.tagFilter.value = on === t.id ? null : t.id)}><Icon name={t.icon} />{t.label} <span class="count">{tc[t.id]}</span></button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-function ItemRow({ item }) {
-  const cat = categoryOf(item.category);
+export const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+
+/** The small tag labels after an item's facts. */
+export function TagLabels({ tags }) {
+  const list = (tags || []).map(tagOf).filter(Boolean);
+  if (!list.length) return null;
+  return <>{list.map((t) => <span class="tag" key={t.id}>{t.label}</span>)}</>;
+}
+
+/** One line of facts about an item, as the list and the item screen show it. */
+export function itemMeta(item) {
   const card = item.cardInfo;
   if (card) {
     const cs = expiryStatus(card.expiry);
-    return (
-      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-        <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
-        <span style={{ minWidth: 0 }}>
-          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-          <div class="meta">{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
-        </span>
-        <span class="end"><Icon name="chevron" /></span>
-      </button>
-    );
+    return <>{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</>;
   }
   const pi = item.passInfo;
   if (pi) {
     const when = pi.relevant || pi.expires;
     const gone = pi.voided || (pi.expires && Date.parse(pi.expires) < Date.now());
-    return (
-      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-        <span class="ico" data-cat={cat.id}><Icon name="ticket" /></span>
-        <span style={{ minWidth: 0 }}>
-          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-          <div class="meta">{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</div>
-        </span>
-        <span class="end"><Icon name="chevron" /></span>
-      </button>
-    );
+    return <>{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</>;
   }
   const id = item.idInfo;
-  const st = id ? idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays) : null;
+  if (id) {
+    const st = idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays);
+    return <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>;
+  }
+  return <>{kindOf(item.kind).one} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>;
+}
+
+/** The icon for an item: its kind's, or the file type's for a file. */
+export const itemIcon = (item) => item.idInfo ? (item.idInfo.kind === "passport" ? "passport" : "idcard") : item.kind === "file" ? kindIcon(item.type) : kindOf(item.kind).icon;
+
+function ItemRow({ item }) {
   return (
-    <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-      <span class="ico" data-cat={cat.id}><Icon name={id ? (id.kind === "passport" ? "passport" : "idcard") : item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
+    <button class="item" data-kind={item.kind} data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+      <span class="ico" data-kind={item.kind}><Icon name={itemIcon(item)} /></span>
       <span style={{ minWidth: 0 }}>
         <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-        <div class="meta">{id
-          ? <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>
-          : <>{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>}</div>
+        <div class="meta">{itemMeta(item)}<TagLabels tags={item.tags} /></div>
       </span>
       <span class="end"><Icon name="chevron" /></span>
     </button>
-  );
-}
-
-/* ---------------- add ---------------- */
-
-const canvasBlob = (c, q = 0.9) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't save that photo. Try again."))), "image/jpeg", q));
-
-/** How much of a page must look like paper for the clean scan to be the suggested version. */
-const PAPER_SHARE = 0.45;
-
-/** The canvas for a choice: "clean" (the clean scan), "proposed" (straightened) or "original", turned `turn` (not the original). */
-const versionOf = (shot, which, turn) =>
-  which === "original" ? shot.original : rotateCanvas(which === "clean" && shot.clean ? shot.clean : shot.canvas, turn);
-
-/**
- * A photo from the camera, in up to three versions: a clean scan (the page straightened,
- * turned the way it reads, and evened out to look like it came off a flatbed scanner:
- * shadows gone, paper white, ink crisp), the straightened photo with its true colours
- * and light, or the photo exactly as taken. The clean scan is suggested when the page
- * looks like paper; otherwise the straightened photo is. Either can be turned by hand if
- * the guess was wrong. Shows the chosen one; onChange({ which, turn }).
- */
-function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
-  const [url, setUrl] = useState(null);
-  const [more, setMore] = useState(false); // "Looks wrong?" opened: the other versions, turning, retake
-  useEffect(() => {
-    let gone = false, made = null;
-    const c = versionOf(shot, which, turn);
-    // a small preview: the full photo is only encoded once, when it's sealed
-    const s = Math.min(1, 900 / Math.max(c.width, c.height));
-    const small = document.createElement("canvas");
-    small.width = Math.round(c.width * s); small.height = Math.round(c.height * s);
-    small.getContext("2d").drawImage(c, 0, 0, small.width, small.height);
-    canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
-    return () => { gone = true; if (made) URL.revokeObjectURL(made); };
-  }, [shot, which, turn]);
-  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
-  const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
-  const note = !shot.changed ? "As taken: no document edges were found to straighten."
-    : which === "original" ? "The photo exactly as the camera took it."
-    : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
-    : "Straightened, keeping its true colours and light.";
-  return (
-    <div class="photo-choice" data-more={more ? "1" : "0"}>
-      {more && shot.changed && (
-        <div class="seg" data-n={shot.clean ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
-          {shot.clean && (
-            <button role="radio" aria-checked={which === "clean"} onClick={() => onChange({ which: "clean", turn })}>
-              <Icon name="sparkle" /><span>Clean scan</span>{tag("clean")}
-            </button>
-          )}
-          <button role="radio" aria-checked={which === "proposed"} onClick={() => onChange({ which: "proposed", turn })}>
-            <Icon name="scan" /><span>Straightened</span>{tag("proposed")}
-          </button>
-          <button role="radio" aria-checked={which === "original"} onClick={() => onChange({ which: "original", turn })}><Icon name="image" /><span>Original</span></button>
-        </div>
-      )}
-      <figure class="photo-preview" data-which={which}>
-        {url ? <img src={url} alt={which === "original" ? "The photo as taken" : which === "clean" ? "The document as a clean scan" : "The document, straightened"} /> : <span class="photo-wait" />}
-        {more && which !== "original" && (
-          <div class="photo-turn">
-            <button class="icon-btn" aria-label="Turn left" onClick={() => onChange({ which, turn: (turn + 270) % 360 })}><Icon name="turn" /></button>
-            <button class="icon-btn" aria-label="Turn right" onClick={() => onChange({ which, turn: (turn + 90) % 360 })}><Icon name="turn" /></button>
-          </div>
-        )}
-      </figure>
-      <p class="fine photo-note">
-        {note}
-        {" "}{more ? <button class="linklike" onClick={onRetake}>Retake</button> : <button class="linklike" onClick={() => setMore(true)}>Looks wrong?</button>}
-      </p>
-    </div>
-  );
-}
-
-export function AddSheet() {
-  const st = S.sheet.value;
-  const [file, setFile] = useState(null);
-  const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed, clean, cleanSuggested }
-  const [pick, setPick] = useState({ which: "proposed", turn: 0 });
-  const [name, setName] = useState("");
-  const [cat, setCat] = useState("other");
-  const [camera, setCamera] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [passCheck, setPassCheck] = useState(null); // a Wallet pass: null | { state: "checking" } | { ok, result | reason }
-  const chooser = useRef(null);
-  const current = useRef(null); // the file on screen: a check that finishes for another one is dropped
-  const place = usePlaceStamp();
-  const close = () => { if (!st.stage) S.sheet.value = null; };
-  const choose = (input) => { markPicking(); input.current.click(); };
-  const when = useRef(null);
-  // Keep the photo before the camera closes. Encoding waits for Seal, so it's quick.
-  const photographed = async (res) => {
-    when.current = new Date();
-    // a straightened page also gets a clean scan, made while the camera shows "Saving…"
-    if (res.straightened) {
-      await new Promise((r) => setTimeout(r, 0));
-      try { const c = cleanCanvas(res.canvas); res = { ...res, clean: c.canvas, cleanSuggested: c.paper >= PAPER_SHARE }; }
-      catch { /* low memory: the straightened photo is still offered */ }
-    }
-    return () => {
-      setCamera(false);
-      setShot(res);
-      setPick({ which: !res.changed ? "original" : res.cleanSuggested ? "clean" : "proposed", turn: 0 });
-      setFile(null);
-      setName(`Photo ${when.current.toLocaleDateString()}`);
-    };
-  };
-  const onFile = (e) => {
-    const f = e.currentTarget.files?.[0];
-    e.currentTarget.value = "";
-    e.currentTarget.accept = ""; // "Add a Wallet pass" narrows the chooser for one pick
-    if (!f) return;
-    setShot(null);
-    setFile(f);
-    setName(f.name.replace(/\.[a-z0-9]{1,6}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
-    setCat(guessCategory(f.name, f.type)); // a suggestion; the person can change it
-    setPassCheck(null);
-    current.current = f;
-    if (looksLikePass(f)) {
-      setPassCheck({ state: "checking" });
-      checkPass(f).then((r) => {
-        if (current.current !== f) return;
-        setPassCheck(r);
-        if (r.ok) setName(r.result.pass.description || r.result.pass.organization || "Pass");
-      });
-    }
-  };
-  /** The file to seal: the chosen version of a camera photo, or the chosen file. */
-  async function toSeal() {
-    if (!shot) return file;
-    const c = versionOf(shot, pick.which, pick.turn);
-    const blob = await canvasBlob(c, 0.9);
-    const t = when.current || new Date();
-    const tag = { original: "", clean: " (scan)", proposed: " (straightened)" }[pick.which] ?? "";
-    return new File([blob], `Photo ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${tag}.jpg`, { type: "image/jpeg" });
-  }
-  async function seal() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      if (passCheck?.ok) await addPass({ checked: passCheck, name, place: place.take() });
-      else {
-        // a pass that failed its check is kept as an ordinary file, never under the pass type
-        const f = file && looksLikePass(file) ? new File([file], file.name, { type: "application/octet-stream" }) : await toSeal();
-        await addDocument({ file: f, name, category: cat, place: place.take() });
-      }
-    }
-    catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
-    finally { setBusy(false); }
-  }
-  const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
-  const have = file || shot;
-  const reset = () => { setFile(null); setShot(null); setPassCheck(null); current.current = null; };
-  const plainFile = () => { setPassCheck(null); setCat("other"); }; // keep a pass that failed its check as an ordinary file
-
-  return (
-    <Sheet onClose={close} label="Add a document">
-      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{have ? "Check it, then seal it" : "Add to your vault"}</h2></div>
-        {!st.stage && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
-
-      <input ref={chooser} type="file" hidden onChange={onFile} />
-
-      {!have && (
-        <>
-          <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
-            <span class="ico"><Icon name="idcard" /></span>
-            <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the ID chip where there is one.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
-            <span class="ico"><Icon name="card" /></span>
-            <span><strong>Add a payment card</strong><span>Credit or debit. Scan both sides, tap it, or type it. Never the PIN.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <button class="kind" style={{ marginTop: 10 }} onClick={() => { chooser.current.accept = ".pkpass,application/vnd.apple.pkpass"; choose(chooser); }}>
-            <span class="ico"><Icon name="ticket" /></span>
-            <span><strong>Add a Wallet pass</strong><span>A boarding pass, ticket or membership card shared from Apple Wallet as a .pkpass file. HumID checks it's genuinely from its issuer.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <div class="source" style={{ marginTop: 10 }}>
-            <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card. HumID finds it and straightens it.</span></button>
-            <button onClick={() => { chooser.current.accept = ""; choose(chooser); }}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
-          </div>
-        </>
-      )}
-      {camera && <DocCamera shape="full" title="Take a photo" hint="Point the camera at the document. It finds the edges by itself." onCancel={() => setCamera(false)} onDone={photographed} />}
-
-      {have && st.stage == null && (
-        <>
-          {passCheck ? <PassCheck check={passCheck} onPlain={plainFile} onAnother={() => { reset(); choose(chooser); }} />
-            : shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
-            : (
-              <div class="doc-hero">
-                <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-cat={cat}><Icon name={kindIcon(file.type)} /></span></span>
-                <div style={{ minWidth: 0 }}><div class="name" style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{file.name}</div><div class="muted small">{fmtSize(file.size)} · {file.type || "file"}</div></div>
-              </div>
-            )}
-          <div class="field">
-            <label for="doc-name">Name</label>
-            <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
-          </div>
-          {!passCheck && <div class="field">
-            <label>Category</label>
-            <div class="cats">
-              {CATEGORIES.map((c) => <button aria-pressed={cat === c.id} onClick={() => setCat(c.id)}><Icon name={c.icon} />{c.label}</button>)}
-            </div>
-          </div>}
-          {place.element}
-          <div class="actions">
-            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />Seal</button>
-            <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
-          </div>
-          <p class="fine" style={{ marginTop: 12 }}>One check seals it on this phone. {shot ? "Only the version shown is kept." : "The original file isn't kept."} The location stamp is sealed with it, so your vault server can't read it. <HowProtectedLink /></p>
-        </>
-      )}
-
-      {have && st.stage != null && (
-        <Steps current={stageIdx} steps={SEAL_STEPS} />
-      )}
-    </Sheet>
   );
 }
 
@@ -362,88 +163,109 @@ function SealedAt({ place }) {
 
 /* ---------------- item ---------------- */
 
-export function ItemSheet() {
+/**
+ * An item, pushed over the vault: the preview first (a locked placeholder with one Open;
+ * a card's masked number; a pass's summary), then the facts, then an overflow menu
+ * (Rename · Pin · Show in decoy · Export sealed · Delete). Save a copy lives in the
+ * opened Viewer, which has its own check. Open, Export and Delete are each one check.
+ */
+export function Item() {
   const st = S.sheet.value;
   const item = S.items.value.find((i) => i.id === st.id);
-  const [mode, setMode] = useState("view"); // view | edit
+  const [mode, setMode] = useState("view"); // view | menu | edit | delete
   const [name, setName] = useState(item?.name || "");
-  const [cat, setCat] = useState(item?.category || "other");
+  const [tags, setTags] = useState(item?.tags || []);
   if (!item) return null;
-  const c = categoryOf(item.category);
+  const k = kindOf(item.kind);
   const close = () => (S.sheet.value = null);
   const off = !!S.offline.value;
+  const card = item.cardInfo, pi = item.passInfo, id = item.idInfo;
+  const decoyOffered = S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off;
 
   return (
-    <Sheet onClose={close} label={item.name}>
-      <div class="doc-hero">
-        <span class="ico" data-cat={c.id} style={{ display: "grid", placeItems: "center", borderRadius: 18, width: 64, height: 64, background: "var(--surface-3)" }}><Icon name={kindIcon(item.type)} /></span>
-        <div style={{ minWidth: 0 }}><div class="eyebrow">{c.label}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
-      </div>
-
-      {mode === "view" && (
-        <>
-          <div class="card" style={{ marginTop: 14 }}>
-            <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
-            <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
-            <SealedAt place={item.place} />
-            <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
-          </div>
-          {off && (
-            <div class="banner warn" role="note" style={{ marginTop: 14 }}>
-              <span class="b-ico"><Icon name="signal" /></span>
-              <div><strong>Opening needs a connection</strong><span>The document itself and its key are only in your vault. Nothing here can open it offline.</span></div>
+    <>
+      <Push label={item.name} eyebrow={k.one} title={item.name} onBack={close} right={!off && mode !== "edit" && mode !== "delete" && <button class="icon-btn" aria-label="More" aria-haspopup="menu" onClick={() => setMode("menu")}><Icon name="more" /></button>}>
+        {mode !== "edit" && mode !== "delete" && (
+          <>
+            <div class="item-hero" data-kind={item.kind}>
+              {card ? (
+                <>
+                  <div class={`pay-card brand-${card.brand}`} aria-label={`${brandName(card.brand)} card`}>
+                    <div class="pc-top"><span class="pc-brand">{brandName(card.brand)}</span>{expiryStatus(card.expiry).state === "expired" && <span class="pc-flag">Expired</span>}</div>
+                    <div class="pc-number mono" data-card="number">•••• {card.last4}</div>
+                    <div class="pc-bottom"><span>{card.nickname || " "}</span><span class="mono">{showExpiry(card.expiry)}</span></div>
+                  </div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Show the number</button>
+                </>
+              ) : pi ? (
+                <>
+                  <span class="big" data-kind="pass"><Icon name="ticket" /></span>
+                  <div><div style={{ fontWeight: 600 }}>{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}</div><div class="muted small">{pi.voided ? "Voided" : pi.expires ? `${Date.parse(pi.expires) < Date.now() ? "Expired" : "Expires"} ${fmtDate(pi.expires)}` : pi.relevant ? fmtDate(pi.relevant) : "Checked against its issuer when it was added"}</div></div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
+                </>
+              ) : (
+                <>
+                  <span class="big" data-kind={item.kind}><Icon name={itemIcon(item)} /></span>
+                  <div class="muted small">{id ? `${kindLabel(id.kind)} · sealed with its photos` : "Sealed. Nothing here can show it until a check opens it."}</div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
+                </>
+              )}
             </div>
-          )}
-          <div class="actions">
-            <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
-            <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => saveCopy(item)}><Icon name="download" />Save a copy</button>
-              <button class="btn quiet" disabled={off} onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
+            {off && (
+              <div class="banner warn" role="note" style={{ marginTop: 14 }}>
+                <span class="b-ico"><Icon name="signal" /></span>
+                <div><strong>Opening needs a connection</strong><span>The document itself and its key are only in your vault. Nothing here can open it offline.</span></div>
+              </div>
+            )}
+            <div class="card" style={{ marginTop: 14 }}>
+              <div class="row"><span class="k">Kind</span><span class="v">{k.one}</span></div>
+              {item.tags?.length > 0 && <div class="row"><span class="k">Tags</span><span class="v"><TagLabels tags={item.tags} /></span></div>}
+              <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
+              <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
+              <SealedAt place={item.place} />
+              {(id?.expiry || card?.expiry || pi?.expires) && <div class="row"><span class="k">Expires</span><span class="v">{id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)}</span></div>}
+              <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
             </div>
-            <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => exportSealed(item)}><Icon name="lock" />Export sealed</button>
-              <button class="btn danger" disabled={off} onClick={() => setMode("delete")}><Icon name="trash" />Delete</button>
+            <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh check. Every one is recorded in Activity.</p>
+          </>
+        )}
+
+        {mode === "edit" && (
+          <>
+            <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
+            <TagPicker tags={tags} onChange={setTags} />
+            <div class="actions">
+              <button class="btn primary block" onClick={() => renameItem(item, name, tags)}>Save changes</button>
+              <button class="btn ghost block" data-back onClick={() => setMode("view")}>Cancel</button>
             </div>
-          </div>
-          {!off && (
-            <label class="toggle" style={{ marginTop: 12 }}>
-              <span><strong>Pin to the top</strong><span>Sealed with the item, so it's pinned on all your devices.</span></span>
-              <input type="checkbox" role="switch" checked={!!item.pinned} onChange={(e) => setPinned(item, e.currentTarget.checked)} />
-              <i aria-hidden="true" />
-            </label>
-          )}
-          {S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off && (
-            <label class="toggle" style={{ marginTop: 12 }}>
-              <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
-              <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
-              <i aria-hidden="true" />
-            </label>
-          )}
-          <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh check. Every one is recorded in Activity.</p>
-        </>
-      )}
+          </>
+        )}
 
-      {mode === "edit" && (
-        <>
-          <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
-          <div class="field"><label>Category</label><div class="cats">{CATEGORIES.map((x) => <button aria-pressed={cat === x.id} onClick={() => setCat(x.id)}><Icon name={x.icon} />{x.label}</button>)}</div></div>
-          <div class="actions">
-            <button class="btn primary block" onClick={() => renameItem(item, name, cat)}>Save changes</button>
-            <button class="btn ghost block" onClick={() => setMode("view")}>Cancel</button>
-          </div>
-        </>
-      )}
+        {mode === "delete" && (
+          <>
+            <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete {item.name}?</strong><span>It's gone from your vault for good. Copies you saved elsewhere stay.</span></div></div>
+            <div class="actions">
+              <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Delete</button>
+              <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
+            </div>
+          </>
+        )}
+      </Push>
 
-      {mode === "delete" && (
-        <>
-          <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete {item.name}?</strong><span>It's gone from your vault for good. Copies you saved elsewhere stay.</span></div></div>
-          <div class="actions">
-            <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Delete</button>
-            <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
+      {mode === "menu" && (
+        <Sheet onClose={() => setMode("view")} label="More">
+          <div class="s-head"><div class="grow"><div class="eyebrow">{k.one}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
+            <button class="icon-btn" aria-label="Close" data-back onClick={() => setMode("view")}><Icon name="x" /></button></div>
+          <div class="menu" role="menu">
+            <button role="menuitem" onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
+            <button role="menuitem" onClick={() => { setMode("view"); setPinned(item, !item.pinned); }}><Icon name="pushpin" />{item.pinned ? "Unpin" : "Pin to the top"}</button>
+            {decoyOffered && <button role="menuitem" onClick={() => { setMode("view"); setDecoy(item, !item.decoy); }}><Icon name="eye" />{item.decoy ? "Hide from the decoy view" : "Show in decoy view"}</button>}
+            <button role="menuitem" onClick={() => { setMode("view"); exportSealed(item); }}><Icon name="lock" />Export sealed</button>
+            <button role="menuitem" class="danger" onClick={() => setMode("delete")}><Icon name="trash" />Delete</button>
           </div>
-        </>
+        </Sheet>
       )}
-    </Sheet>
+    </>
   );
 }
 
