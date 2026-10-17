@@ -14,9 +14,10 @@ import {
 } from "@humid/idscan";
 import {
   barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank,
-  grayOf, cornersIn, develop as developPhoto, straighten, rotateCanvas,
+  grayOf, cornersIn, develop as developPhoto, straighten, rotateCanvas, canvas as newCanvas,
 } from "../core/scan.js";
 import { lookAt, tracker, scaleQuad } from "../core/docfind.js";
+import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../core/barcodefind.js";
 import { DEMO_BUILD } from "@humid/gate";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,11 +42,17 @@ async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) 
   if (read.barcode) {
     try {
       const bc = await barcodeReader();
-      // the wider shot first (the barcode may run past the card's edge), then the card
-      for (const src of wide ? [wide, c] : [c]) {
-        out.barcode = (await bc.read(imageData(grab(src, null, 2400))))[0] || null;
+      // where the barcode is, cropped and laid flat, first; then the wider shot (the
+      // barcode may run past the card's edge), then the card. A license barcode wins
+      // over any other barcode in the picture.
+      let other = null;
+      for (const src of [...barcodeSpots(wide || c), ...(wide ? [wide, c] : [c])]) {
+        const texts = await bc.read(imageData(grab(src, null, 2400)));
+        out.barcode = texts.find((t) => parseAamva(t)) || null;
+        other ||= texts[0] || null;
         if (out.barcode) break;
       }
+      out.barcode ||= other;
     } catch { /* reported as not found */ }
   }
   if (read.mrz && !out.barcode) {
@@ -66,6 +73,67 @@ async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) 
     } catch { /* reported as not found */ }
   }
   return out;
+}
+
+/** A canvas drawn `k` times bigger (a far-away barcode's bars made wide enough to read). */
+function enlarge(c, k) {
+  if (k <= 1) return c;
+  const out = newCanvas(c.width * k, c.height * k);
+  const g = out.getContext("2d");
+  g.imageSmoothingQuality = "high";
+  g.drawImage(c, 0, 0, out.width, out.height);
+  return out;
+}
+
+/**
+ * Part of a video frame or picture around a found barcode, turned so its bars stand
+ * exactly upright (even a slight tilt stops the reader) and big enough to read.
+ */
+function barcodeCrop(src, spot, W, H) {
+  const area = readBox(spot, W, H);
+  const c = grab(src, area, 2400), s = c.width / area.w;
+  const g = grayOf(c, 800), k = g.w / c.width;
+  const b = spot.box;
+  const deg = barAngle(g, { x: (b.x - area.x) * s * k, y: (b.y - area.y) * s * k, w: b.w * s * k, h: b.h * s * k });
+  const t = (-deg * Math.PI) / 180, cos = Math.abs(Math.cos(t)), sin = Math.abs(Math.sin(t));
+  const out = newCanvas(c.width * cos + c.height * sin, c.width * sin + c.height * cos);
+  const x = out.getContext("2d");
+  x.fillStyle = "#fff";
+  x.fillRect(0, 0, out.width, out.height);
+  x.translate(out.width / 2, out.height / 2);
+  x.rotate(t);
+  x.drawImage(c, -c.width / 2, -c.height / 2);
+  return enlarge(out, Math.min(2, 900 / out.width));
+}
+
+/**
+ * Where's the barcode in a video frame or picture (W×H)? A quick look at a small copy
+ * of all of it, then a closer look around what stood out (from far away only the
+ * barcode's bold end bars show at first). Barcodes in `skip` (boxes, src's pixels:
+ * one that turned out not to be a license's, or one that won't read) are passed over
+ * for the next one in view. { box (in src's pixels), upright } or null.
+ */
+function findBarcode(src, W, H, skip = []) {
+  const im = grayOf(src, 400), k = W / im.w;
+  const free = (b) => !skip.some((x) => overlap(b, x) > 0.5);
+  const spot = locateBarcodes(im).map((c) => ({ box: fromArea(c.box, { x: 0, y: 0 }, k), upright: c.upright })).find((c) => free(c.box));
+  if (!spot) return null;
+  const win = searchBox(spot, W, H);
+  if (win.w >= 16 && win.h >= 16) {
+    const near = grayOf(grab(src, win), 720), kn = win.w / near.w;
+    const closer = locateBarcodes(near).map((c) => ({ box: fromArea(c.box, win, kn), upright: c.upright }))
+      .find((c) => overlap(c.box, spot.box) > 0.3 && free(c.box));
+    if (closer) return closer;
+  }
+  return spot;
+}
+
+/** In a still photo: the barcode's spot, cropped (none if no barcode stands out). */
+function barcodeSpots(c) {
+  try {
+    const spot = findBarcode(c, c.width, c.height);
+    return spot ? [barcodeCrop(c, spot, c.width, c.height)] : [];
+  } catch { return []; }
 }
 
 /** The document frame in the video's pixels, or null if the layout gives nothing usable. */
@@ -95,8 +163,16 @@ function around(quad, w, h, pad = 0.1) {
 /** Said when a reader couldn't start, instead of watching for a code it can never read. */
 const NO_READER = "The reader couldn't start on this phone. Take the photo with the shutter and type the details.";
 
-/** With a barcode or MRZ to read: if a card has sat in view, steady, this long and still no read, take the photo anyway. */
-const FALLBACK_MS = 9000;
+/**
+ * With a barcode or MRZ to read: if a card has sat in view, steady, this long and still
+ * no read, take the photo anyway, but never while a barcode is in view (it's about to
+ * read, or the person is told to move closer): only when none has been seen for BAR_QUIET_MS.
+ */
+const FALLBACK_MS = 12000;
+const BAR_QUIET_MS = 4000;
+
+/** Document photos (nothing to read): how long it must hold steady and sharp before the photo is taken. */
+const HOLD_MS = 900;
 
 /** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
 const buzz = () => buzzPref(14);
@@ -128,6 +204,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
   const [torch, setTorch] = useState(null);
   const [toldSaved, setToldSaved] = useState(!!saved);
   const [look, setLook] = useState(null);      // the last look: { ok, found, hint, progress, points (on screen) }
+  const [bar, setBar] = useState(null);        // a barcode in view: { points (on screen), note }
   const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null, looping: false, holdUntil: 0, quad: null }).current;
   const codes = !!(read.barcode || read.mrz);
   const card = shape !== "full";
@@ -180,8 +257,11 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
     const bc = read.barcode ? barcodeReader().catch(() => null) : null;
     const ocr = read.mrz ? mrzReader().catch(() => null) : null;
     if (read.mrz) setStatus("Getting the reader ready…");
-    const track = tracker({ need: codes ? 3 : 4 });
+    const track = tracker({ need: codes ? 3 : 4, hold: codes ? 0 : HOLD_MS });
+    const bars = barTracker();
     let turn = 0, sawMrz = false, prev = null, steadySince = 0, mrzTurn = 0;
+    let barSeen = 0, barSince = 0, barTries = 0, barUpright = true, barFails = 0, lastSpot = null;
+    const skips = []; // barcodes passed over for a while: { box, until }
     while (!L.stop) {
       await sleep(read.mrz ? 60 : codes ? 120 : 90);
       const v = video.current;
@@ -201,7 +281,8 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
             if (t.fire && !L.stop) { L.stop = true; shoot("auto"); return; }
           } else {
             steadySince = r.ok ? steadySince || Date.now() : 0;
-            if (steadySince && Date.now() - steadySince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
+            const barQuiet = !read.barcode || Date.now() - barSeen > BAR_QUIET_MS;
+            if (steadySince && barQuiet && Date.now() - steadySince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
           }
         } catch { /* a bad frame: keep looking */ }
         if (!codes) continue;
@@ -211,11 +292,47 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
         if (barcodeTurn) {
           const r = await bc;
           if (!r) { setStatus(NO_READER); continue; }
-          // around the card when it's been found, else the whole view; every fourth try,
-          // the reader tries harder (rotations, more scanning)
-          const area = L.quad ? around(L.quad, v.videoWidth, v.videoHeight, 0.12) : null;
-          const [text] = await r.read(imageData(grab(v, area, 2400)), { harder: turn % 8 === 0 });
-          if (text && !L.stop) { L.stop = true; shoot("live", { barcode: text }); return; }
+          // Like a store's scan-and-go: find the barcode anywhere in view first (a few
+          // milliseconds on a small grey copy), highlight it, and point the reader at just
+          // that spot, at full resolution, laid flat: it reads from further away and at
+          // any angle, and nobody has to line anything up.
+          const now = Date.now(), W = v.videoWidth, H = v.videoHeight;
+          const spot = findBarcode(v, W, H, skips.filter((x) => x.until > now).map((x) => x.box));
+          if (spot) barUpright = spot.upright;
+          const full = bars.feed(spot, now);
+          let src, harder;
+          if (full) {
+            if (!barSeen || now - barSeen > 1500) barSince = now;
+            barSeen = now;
+            src = barcodeCrop(v, { box: full, upright: barUpright }, W, H);
+            harder = ++barTries % 3 === 0; // now and then, rotations and a closer search too
+            const across = barUpright ? full.w : full.h;
+            const note = now - barSince < 2200 ? "Barcode found. Reading…"
+              : across < Math.min(W, H) * 0.3 ? "Move a little closer to the barcode"
+              : "Hold steady on the barcode…";
+            setBar({ points: onScreen(v, boxCorners(full)), note });
+          } else {
+            setBar(null);
+            // nothing stands out: around the card when it's been found, else the whole
+            // view; every sixth try, the reader tries harder (rotations, more scanning)
+            src = grab(v, L.quad ? around(L.quad, W, H, 0.12) : null, 2400);
+            harder = turn % 6 === 0;
+          }
+          if (DEMO_BUILD) globalThis.__humidBar = { spot, box: full, harder }; // development builds: tests can see what it found
+          const texts = await r.read(imageData(src), { harder });
+          // only a license's barcode is taken: anything else in view is ignored
+          const text = texts.find((t) => parseAamva(t));
+          if (text && !L.stop) { L.stop = true; setBar(null); shoot("live", { barcode: text }); return; }
+          if (spot) {
+            // a barcode that isn't a license's (a store card beside it): look past it. One
+            // that won't read after a while: give the next one in view a turn, then come back.
+            barFails = lastSpot && overlap(spot.box, lastSpot) > 0.5 ? barFails + 1 : 1;
+            lastSpot = spot.box;
+            if (texts.length) { skips.push({ box: spot.box, until: now + 8000 }); barFails = 0; }
+            else if (barFails >= 8) { skips.push({ box: spot.box, until: now + 2500 }); barFails = 0; }
+            while (skips.length > 8) skips.shift();
+          }
+          if (texts.length && !text) setBar((b) => ({ points: b?.points || null, note: "That isn't a license barcode. Show the back of the license." }));
         } else if (read.mrz) {
           const r = await ocr;
           if (!r) { setStatus(NO_READER); continue; }
@@ -280,7 +397,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
     }
     const { turn, flipped, ...codesFound } = readOut;
-    if (DEMO_BUILD) globalThis.__humidDevelop = { straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined }; // development builds: tests can see the proposal
+    if (DEMO_BUILD) globalThis.__humidDevelop = { how, straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined }; // development builds: tests can see the proposal
     return { ...dev, ...codesFound, how };
   }
 
@@ -336,12 +453,13 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
   const lookState = !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined}>
       <video ref={video} playsInline muted autoplay />
-      {live && look.points && (
-        <svg class="dc-outline" aria-hidden="true" style={{ "--p": look.progress }}>
-          <polygon points={look.points} />
-          {look.points.split(" ").map((pt) => { const [x, y] = pt.split(","); return <circle cx={x} cy={y} r="6" />; })}
+      {phase === "live" && (look?.points || bar?.points) && (
+        <svg class="dc-outline" aria-hidden="true" style={{ "--p": look?.progress || 0 }}>
+          {look?.points && <polygon points={look.points} />}
+          {look?.points && look.points.split(" ").map((pt) => { const [x, y] = pt.split(","); return <circle cx={x} cy={y} r="6" />; })}
+          {bar?.points && <polygon class="dc-bar" points={bar.points} />}
         </svg>
       )}
       <div class="dc-stage">
@@ -365,6 +483,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
       </header>
       <div class="dc-status" aria-live="polite">
         {phase === "error" ? error : phase === "reading" ? (codes ? "Reading the photo…" : "Straightening the photo…") : phase === "saved" ? "Saved"
+          : bar?.note && status === (hint || "") ? bar.note
           : auto && look && status === (hint || "") && (!codes || look.found) ? look.hint : status}
       </div>
       <footer class="dc-bottom">
@@ -384,7 +503,7 @@ const PLAN = {
   passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Show the photo page, with the two lines of <<<. It finds the page by itself." }],
   driver_license: [
     { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Show the back, with its barcode. It reads by itself." },
+    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Show the back, anywhere in view. It finds the barcode and reads it by itself." },
   ],
   id_card: [
     { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },

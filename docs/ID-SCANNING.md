@@ -26,8 +26,25 @@ For a side with something to read, it captures once it has read the barcode, or 
 several frames agree on an MRZ whose check digits all pass; the MRZ is read from the
 card straightened out of the live picture, both ways up (the check digits settle which
 is right). For a side without (the front of a card), it captures once the document has
-held still, lit and in focus, for about half a second. A side with a code that won't
-read is photographed anyway after the card has sat steady in view for nine seconds.
+held still, lit and in focus, for about a second, and the camera's focus has settled
+(the picture is as sharp as it has been while held). A side with a code that won't
+read is photographed anyway after the card has sat steady in view for twelve seconds,
+but never while a barcode is in view.
+
+**Barcodes are found the way a store's scan-and-go app finds them**
+(`apps/mobile/src/core/barcodefind.js`), not by lining anything up. Every look, a
+small grey copy of the whole view is searched for patches that change sharply in one
+direction (across the bars) and little in the other (along them): text and edges
+change both ways, a barcode doesn't. From far away only a PDF417's bold start and stop
+bars stand out, so the camera looks again, closer, around them, and finds the whole
+barcode. It's highlighted on screen; its tilt is measured (a structure tensor of the
+picture's gradients) and the reader is handed just that spot at full resolution,
+turned so the bars stand exactly upright and enlarged if small. The reader then rarely
+needs its slow "try harder" mode. Only a license's barcode is accepted (it must parse
+as AAMVA); another barcode in view, such as a store card's, is passed over for the
+next one, and one that won't read gives way to the next one in view for a moment. The
+status line says what's happening: "Barcode found. Reading…", then "Move a little
+closer to the barcode" or "Hold steady on the barcode…".
 The shutter and **Photo** (pick an existing picture) always work too, and every field
 can be typed or corrected before sealing.
 
@@ -77,6 +94,9 @@ with its photos.
 | `packages/idscan` | MRZ parsing and repair (`findMrz`, `MrzConsensus`), AAMVA (`parseAamva`), chip files (`readDg1`, `readDg2`, `checkIntegrity`), the record (`newRecord`, `applyMrz`, `applyAamva`, `applyChip`, `applyTyped`) |
 | `packages/emrtd` | `readDocument(…, { photo: true })` also reads DG2, with long offsets (READ BINARY B1) for photos over 32 KB. Identity proofs never ask for the photo. |
 | `apps/mobile/src/core/scan.js` | Engines and image handling: zxing-cpp (WebAssembly) for PDF417; Tesseract (WebAssembly, in a worker) with an MRZ-trained OCR-B model ([vendor/ocr](../apps/mobile/vendor/ocr/README.md)); JPEG 2000 chip photos decoded with the PDF.js decoder |
+| `apps/mobile/src/core/docfind.js` | Finding a document in view, the calm capture (`tracker`: steady, held, focus settled), straightening and turning upright |
+| `apps/mobile/src/core/barcodefind.js` | Finding barcodes anywhere in view, their tilt, and the spot to hand the reader |
+| `apps/mobile/src/core/scanclean.js` | The clean scan: even light, white paper, crisp ink |
 | `apps/mobile/src/screens/ids.jsx` | The camera (`DocCamera`), the flow (`IdSheet`) and the card view (`IdView`) |
 
 The engines ship in the app (about 5.5 MB in `assets/ocr` and `assets/scan`)
@@ -89,10 +109,17 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 - `node --test tests/idscan.test.js`: ICAO MRZ specimens, OCR noise and
   voting, AAMVA versions (US and Canada), chip reads with the photo (BAC and
   PACE, over 32 KB, JPEG 2000), tampering, and the record.
+- `node --test tests/barcodefind.test.js tests/scanclean.test.js tests/docfind.test.js`:
+  the barcode found centred, sideways, upside down, small and far, tilted, on a desk of
+  printed text, beside another barcode; no barcode found in text or on an ID's front;
+  the tilt measured; a shadowed, warm-lit page cleaned to white and even paper with
+  dark ink, a coloured form kept coloured; the calm capture's hold and focus check.
 - `node tests/browser/idscan.mjs`: the development build in Chromium with a
   fake camera showing specimen documents (`tests/fixtures/id`), through
-  barcode, live MRZ, the simulated chip, sealing and opening again. CI runs it
-  in the `id-scan (browser)` job.
+  barcode, live MRZ, the simulated chip, sealing and opening again, and a cluttered
+  desk (`camera-license-desk.mjpeg`, made by `make-desk.py`) where the license lies
+  sideways and small beside a store card with its own, bigger PDF417: the license is
+  read live. CI runs it in the `id-scan (browser)` job.
 
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
@@ -104,9 +131,23 @@ page holds still it's photographed, straightened (snapped to letter, A4, legal o
 proportions when it's within 6% of one) and turned upright: which way the text lines
 run, from how ink is spread across rows and columns, then which way is up, from
 ascenders outnumbering descenders and lines starting together at the left margin.
-The seal screen proposes that version (**Straightened · Suggested**), with turn
-buttons in case the guess is wrong, and **Original**: the photo exactly as the camera
-took it. Only the version chosen is sealed; the other is discarded.
+The seal screen offers three versions:
+
+- **Clean scan** (suggested when the page looks like paper): the straightened page
+  made to look like it came off a flatbed scanner (`apps/mobile/src/core/scanclean.js`).
+  The light falling on the page is estimated block by block (the level 90% of each
+  block is darker than: paper, even in a block of text), smoothed, and divided out,
+  so shadows and uneven light go and ink keeps its darkness relative to the paper
+  around it. A mild colour cast is taken off by lifting the weaker channels (never
+  dimming one), then the levels are set: paper white, ink near black. Every step
+  scales R, G and B alike except that small correction, so a blue or yellow form keeps
+  its colour.
+- **Straightened**: the same page with its true colours and light (suggested instead
+  when the picture doesn't look like paper: a photo, a dark card).
+- **Original**: the photo exactly as the camera took it.
+
+The first two can be turned by hand in case the guess is wrong. Only the version
+chosen is sealed; the others are discarded.
 
 ## Where it was sealed
 

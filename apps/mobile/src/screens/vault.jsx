@@ -4,7 +4,7 @@ import { guessCategory } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
 import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp } from "../ui.jsx";
-import { rotateCanvas } from "../core/scan.js";
+import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
 import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
@@ -181,16 +181,26 @@ export function ProtectionCard() {
 
 const canvasBlob = (c, q = 0.9) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't save that photo. Try again."))), "image/jpeg", q));
 
+/** How much of a page must look like paper for the clean scan to be the suggested version. */
+const PAPER_SHARE = 0.45;
+
+/** The canvas for a choice: "clean" (the clean scan), "proposed" (straightened) or "original", turned `turn` (not the original). */
+const versionOf = (shot, which, turn) =>
+  which === "original" ? shot.original : rotateCanvas(which === "clean" && shot.clean ? shot.clean : shot.canvas, turn);
+
 /**
- * A photo from the camera: the version HumID proposes (the document straightened and
- * turned the way it reads) or the photo as it was taken. The proposal can be turned by
- * hand if the guess was wrong. Shows the chosen one; onChange({ which, turn }).
+ * A photo from the camera, in up to three versions: a clean scan (the page straightened,
+ * turned the way it reads, and evened out to look like it came off a flatbed scanner:
+ * shadows gone, paper white, ink crisp), the straightened photo with its true colours
+ * and light, or the photo exactly as taken. The clean scan is suggested when the page
+ * looks like paper; otherwise the straightened photo is. Either can be turned by hand if
+ * the guess was wrong. Shows the chosen one; onChange({ which, turn }).
  */
 function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
   const [url, setUrl] = useState(null);
   useEffect(() => {
     let gone = false, made = null;
-    const c = which === "original" ? shot.original : rotateCanvas(shot.canvas, turn);
+    const c = versionOf(shot, which, turn);
     // a small preview: the full photo is only encoded once, when it's sealed
     const s = Math.min(1, 900 / Math.max(c.width, c.height));
     const small = document.createElement("canvas");
@@ -199,20 +209,31 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
     canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
     return () => { gone = true; if (made) URL.revokeObjectURL(made); };
   }, [shot, which, turn]);
-  const did = shot.straightened ? `Found the document's edges and straightened it${shot.rotate ? ", then turned it upright" : ""}.` : "Turned it upright.";
+  const did = shot.straightened ? `Found the document's edges and straightened it${shot.rotate ? ", then turned it upright" : ""}` : "Turned it upright";
+  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
+  const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
+  const note = !shot.changed ? "Sealed as taken: no document edges found to straighten."
+    : which === "original" ? "The photo exactly as the camera took it."
+    : which === "clean" ? `${did}, then evened out the light like a scanner: shadows gone, paper white. Not right? Turn it, or pick another version.`
+    : `${did}, keeping its true colours and light. Not right? Turn it, or seal the original.`;
   return (
     <div class="photo-choice">
       {shot.changed && (
-        <div class="seg" data-n="2" role="radiogroup" aria-label="Which version to seal">
+        <div class="seg" data-n={shot.clean ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
+          {shot.clean && (
+            <button role="radio" aria-checked={which === "clean"} onClick={() => onChange({ which: "clean", turn })}>
+              <Icon name="sparkle" /><span>Clean scan</span>{tag("clean")}
+            </button>
+          )}
           <button role="radio" aria-checked={which === "proposed"} onClick={() => onChange({ which: "proposed", turn })}>
-            <Icon name="sparkle" />Straightened<span class="tag">Suggested</span>
+            <Icon name="scan" /><span>Straightened</span>{tag("proposed")}
           </button>
-          <button role="radio" aria-checked={which === "original"} onClick={() => onChange({ which: "original", turn })}><Icon name="image" />Original</button>
+          <button role="radio" aria-checked={which === "original"} onClick={() => onChange({ which: "original", turn })}><Icon name="image" /><span>Original</span></button>
         </div>
       )}
       <figure class="photo-preview" data-which={which}>
-        {url ? <img src={url} alt={which === "original" ? "The photo as taken" : "The document, straightened"} /> : <span class="photo-wait" />}
-        {which === "proposed" && (
+        {url ? <img src={url} alt={which === "original" ? "The photo as taken" : which === "clean" ? "The document as a clean scan" : "The document, straightened"} /> : <span class="photo-wait" />}
+        {which !== "original" && (
           <div class="photo-turn">
             <button class="icon-btn" aria-label="Turn left" onClick={() => onChange({ which, turn: (turn + 270) % 360 })}><Icon name="turn" /></button>
             <button class="icon-btn" aria-label="Turn right" onClick={() => onChange({ which, turn: (turn + 90) % 360 })}><Icon name="turn" /></button>
@@ -220,7 +241,7 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
         )}
       </figure>
       <p class="fine photo-note">
-        {!shot.changed ? "Sealed as taken: no document edges found to straighten." : which === "original" ? "The photo exactly as the camera took it." : `${did} Not right? Turn it, or seal the original.`}
+        {note}
         {" "}<button class="linklike" onClick={onRetake}>Retake</button>
       </p>
     </div>
@@ -230,7 +251,7 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
 export function AddSheet() {
   const st = S.sheet.value;
   const [file, setFile] = useState(null);
-  const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed }
+  const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed, clean, cleanSuggested }
   const [pick, setPick] = useState({ which: "proposed", turn: 0 });
   const [name, setName] = useState("");
   const [cat, setCat] = useState("other");
@@ -246,10 +267,16 @@ export function AddSheet() {
   // Keep the photo before the camera closes. Encoding waits for Seal, so it's quick.
   const photographed = async (res) => {
     when.current = new Date();
+    // a straightened page also gets a clean scan, made while the camera shows "Saving…"
+    if (res.straightened) {
+      await new Promise((r) => setTimeout(r, 0));
+      try { const c = cleanCanvas(res.canvas); res = { ...res, clean: c.canvas, cleanSuggested: c.paper >= PAPER_SHARE }; }
+      catch { /* low memory: the straightened photo is still offered */ }
+    }
     return () => {
       setCamera(false);
       setShot(res);
-      setPick({ which: res.changed ? "proposed" : "original", turn: 0 });
+      setPick({ which: !res.changed ? "original" : res.cleanSuggested ? "clean" : "proposed", turn: 0 });
       setFile(null);
       setName(`Photo ${when.current.toLocaleDateString()}`);
     };
@@ -277,10 +304,10 @@ export function AddSheet() {
   /** The file to seal: the chosen version of a camera photo, or the chosen file. */
   async function toSeal() {
     if (!shot) return file;
-    const c = pick.which === "original" ? shot.original : rotateCanvas(shot.canvas, pick.turn);
+    const c = versionOf(shot, pick.which, pick.turn);
     const blob = await canvasBlob(c, 0.9);
     const t = when.current || new Date();
-    const tag = pick.which === "original" ? "" : " (straightened)";
+    const tag = { original: "", clean: " (scan)", proposed: " (straightened)" }[pick.which] ?? "";
     return new File([blob], `Photo ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${tag}.jpg`, { type: "image/jpeg" });
   }
   async function seal() {
@@ -356,7 +383,7 @@ export function AddSheet() {
           </div>}
           {place.element}
           <div class="actions">
-            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : "Seal the straightened photo") : "Seal & store"}</button>
+            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : pick.which === "clean" ? "Seal the clean scan" : "Seal the straightened photo") : "Seal & store"}</button>
             <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
           </div>
           <p class="fine" style={{ marginTop: 12 }}>Encrypted on this phone with ML-KEM-1024 + X25519 and signed with ML-DSA-87 before upload. {shot ? "Only the version you seal is kept; the other is discarded." : "The original isn't kept."} The location, if stamped, is sealed with the name, so the vault server can't read it.</p>
