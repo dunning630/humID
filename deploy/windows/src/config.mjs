@@ -26,6 +26,7 @@ export const DEFAULTS = [
   ["HUMID_DURESS_COOLOFF_MS", "86400000", "After a duress signal, how long it must stay calm before the owner can lift the lockdown (24 hours)."],
   ["VAULT_QUOTA_BYTES", "262144000", "Storage per account (250 MB)."],
   ["HUMID_SHARE_RELEASES_PER_HOUR", "120", "Split keys: how many documents one account can open per hour, so a hijacked phone can't drain the vault."],
+  ["HUMID_ADMIN_PORT", "8490", "Local port of the admin console (HumID Admin). Only this computer can open it; the tunnel never forwards it. Open it with `humid console`."],
 ];
 
 const LINE = /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/;
@@ -83,6 +84,9 @@ export function validate(cfg) {
   if (cfg.HUMID_PASS_BUY_URL && !/^https:\/\//.test(cfg.HUMID_PASS_BUY_URL)) problems.push("HUMID_PASS_BUY_URL must start with https://.");
   const port = Number(cfg.HUMID_PORT || 8480);
   if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push("HUMID_PORT must be a port number.");
+  const adminPort = Number(cfg.HUMID_ADMIN_PORT || 8490);
+  if (!Number.isInteger(adminPort) || adminPort < 1 || adminPort > 65535) problems.push("HUMID_ADMIN_PORT must be a port number.");
+  else if (adminPort === port) problems.push("HUMID_ADMIN_PORT must differ from HUMID_PORT: the tunnel forwards HUMID_PORT, and the console must never be reachable through it.");
   if (cfg.HUMID_IOS_APP_ID && !/^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/.test(cfg.HUMID_IOS_APP_ID)) problems.push("HUMID_IOS_APP_ID must look like ABCDE12345.app.humid.vault (10-character Team ID, a dot, the bundle id).");
   if (cfg.HUMID_PUBLIC_URL && !/^https:\/\/[^/\s]+$/.test(cfg.HUMID_PUBLIC_URL)) problems.push("HUMID_PUBLIC_URL must be https://host with no path.");
   if (problems.length) throw Object.assign(new Error(problems.join("\n")), { code: "bad_config" });

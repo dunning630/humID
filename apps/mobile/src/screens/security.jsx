@@ -1,6 +1,7 @@
 // Security: recovery alerts, devices, two-proof recovery (witnesses, ID anchor,
-// seal card), duress protection, helping others, verification station, your
-// identity, and the exits. This device and the connection are in Settings.
+// seal card), duress protection, helping others, verification station, managing
+// the server (approving its admin console's changes), your identity, and the
+// exits. This device and the connection are in Settings.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
@@ -14,6 +15,7 @@ import {
   offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, cancelRecovery,
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
   stationLookup, stationVerify, stationReadChip, markPicking, DURESS_HOLD_MS, readChip,
+  loadAdminSummary, findAdminRequest, approveAdminRequest,
 } from "../core/controller.js";
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
 import { resetSimulation } from "../core/controller.js";
@@ -35,7 +37,7 @@ export function Security() {
   const now = useNow();
   const [confirm, setConfirm] = useState(false);
   const sheet = S.sheet.value;
-  useEffect(() => { loadDevices(); loadRecovery(); loadAlerts(); loadDuress(); }, []);
+  useEffect(() => { loadDevices(); loadRecovery(); loadAlerts(); loadDuress(); loadAdminSummary(); }, []);
   const devices = S.devices.value;
   const rec = S.recovery.value;
   const decoy = S.decoy.value;
@@ -145,6 +147,8 @@ export function Security() {
         </div>
       )}
 
+      {!decoy && S.adminSummary.value && <ServerCard sum={S.adminSummary.value} onApprove={() => open("admin")} />}
+
       {SIM && (
         <div class="card">
           <div class="c-head"><h3>Simulation</h3><span class="pill amber">No real server</span></div>
@@ -165,6 +169,14 @@ export function Security() {
           <div class="row"><span class="k">Keys</span><span class="v mono" style={{ fontSize: 12 }}>ML-DSA-87 · ML-KEM-1024 · X25519</span></div>
         </div>
       </div>
+
+      {!decoy && !SIM && !S.adminSummary.value && (
+        <button class="option" style={{ marginTop: 14 }} onClick={() => open("admin")}>
+          <span class="o-ico"><Icon name="station" /></span>
+          <span><strong>Manage this server</strong><span>Approve a change from the HumID server's admin console, or become its administrator.</span></span>
+          <Icon name="chevron" />
+        </button>
+      )}
 
       <button class="option" style={{ marginTop: 14 }} onClick={() => { S.tab.value = "settings"; window.scrollTo({ top: 0 }); }}>
         <span class="o-ico"><Icon name="settings" /></span>
@@ -208,6 +220,7 @@ export function Security() {
         action="Reset" onConfirm={resetSimulation} />}
       {sheet?.type === "duress" && <DuressSheet />}
       {sheet?.type === "station" && <StationSheet />}
+      {sheet?.type === "admin" && <AdminSheet />}
     </main>
   );
 }
@@ -597,6 +610,74 @@ function StationSheet() {
           <p class="lede" style={{ marginTop: 10 }}>{done.releaseAt ? `Their vault opens on their new phone in about ${fmtLeft(done.releaseAt - Date.now())}, unless one of their devices vetoes it.` : "Their ID counts now. They still need one more proof: their witnesses or their seal card."}</p>
           <p class="small muted" style={{ marginTop: 6 }}>Recorded in your ledger and theirs.</p>
           <div class="actions"><button class="btn secure block" onClick={close}>Done</button></div>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+/* ---------------- managing the server (docs/ADMIN.md) ---------------- */
+
+const HEALTH = { ok: ["mint", "Running normally"], warn: ["amber", "Needs a look"], bad: ["danger", "Needs attention"] };
+
+function ServerCard({ sum, onApprove }) {
+  const [tone, label] = HEALTH[sum.health] || HEALTH.warn;
+  const updates = [sum.updates?.humid && `HumID Server ${sum.updates.humid}`, sum.updates?.security ? `${sum.updates.security} Windows security update${sum.updates.security === 1 ? "" : "s"}` : sum.updates?.os ? `${sum.updates.os} Windows update${sum.updates.os === 1 ? "" : "s"}` : null].filter(Boolean);
+  return (
+    <div class="card">
+      <div class="c-head"><h3>This server</h3><span class={`pill ${tone}`}>{label}</span></div>
+      <p class="small muted" style={{ marginTop: 4 }}>You're an administrator of {serverHost(S.identity.value?.server?.url)}{sum.version ? ` (version ${sum.version})` : ""}. Changes from its admin console wait for your approval here.</p>
+      {sum.alerts?.length > 0 && <ul class="small" style={{ margin: "8px 0 0", paddingLeft: 18 }}>{sum.alerts.map((a) => <li>{a}</li>)}</ul>}
+      {updates.length > 0 && <p class="small" style={{ marginTop: 8 }}>Waiting to install: {updates.join(" and ")}. Start it from the console on the server.</p>}
+      <div class="actions" style={{ marginTop: 10 }}><button class="btn primary sm" onClick={onApprove}><Icon name="scan" />Approve a change</button></div>
+    </div>
+  );
+}
+
+function AdminSheet() {
+  const [code, setCode] = useState("");
+  const [req, setReq] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const now = useNow();
+  const find = async () => { setBusy(true); setReq(await findAdminRequest(code)); setBusy(false); };
+  const approve = async () => { setBusy(true); const r = await approveAdminRequest(req); if (r) setDone(r); setBusy(false); };
+  const enrol = req?.kind === "enrol";
+  return (
+    <Sheet onClose={close} label="Manage this server">
+      <div class="eyebrow">Manage this server</div>
+      {done ? (
+        enrol ? (
+          <>
+            <h2 style={{ marginTop: 6 }}>Compare this with the console</h2>
+            <p class="lede" style={{ marginTop: 10 }}>The admin console now shows an admin check. It must be exactly this. If it is, choose <b>They match</b> there; if not, choose <b>They don't match</b>.</p>
+            <CodeBox code={done.check} label="Admin check" />
+            <div class="actions"><button class="btn primary block" onClick={close}>Done</button></div>
+          </>
+        ) : (
+          <>
+            <h2 style={{ marginTop: 6 }}>Approved</h2>
+            <p class="lede" style={{ marginTop: 10 }}>The console checks your approval itself, then starts: {req.title}. You'll see its progress there.</p>
+            <div class="actions"><button class="btn secure block" onClick={close}>Done</button></div>
+          </>
+        )
+      ) : !req ? (
+        <>
+          <h2 style={{ marginTop: 6 }}>Enter the code from the admin console</h2>
+          <p class="lede" style={{ marginTop: 10 }}>On the server, the console shows a QR code and a 12-character code for each change. Scan it or type it.</p>
+          <CodeInput id="admin-code" label="Console code" value={code} onInput={setCode} expect="admin" />
+          <div class="actions"><button class="btn primary block" disabled={busy || code.replace(/[^0-9a-z]/gi, "").length !== 12} onClick={find}>Look it up</button></div>
+        </>
+      ) : (
+        <>
+          <h2 style={{ marginTop: 6 }}>{enrol ? "Become an administrator of this server?" : req.title}</h2>
+          {req.lines?.length > 0 && <ul class="small muted" style={{ margin: "8px 0 0", paddingLeft: 18 }}>{req.lines.map((l) => <li>{l}</li>)}</ul>}
+          <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Check {req.check}</strong><span>The console must show the same four-and-four. Your approval covers exactly this, for {fmtLeft(req.expiresAt - now)} more.</span></div></div>
+          <p class="small muted" style={{ marginTop: 12 }}>{enrol ? "You'll then be able to approve updates, restarts and backups on this server. Only do this for a server you run." : "Only approve a change you started on the console yourself."}</p>
+          <div class="actions">
+            <button class="btn primary block" disabled={busy || req.expiresAt <= now} onClick={approve}><Icon name="fingerprint" />Approve with biometric</button>
+            <button class="btn ghost block" onClick={close}>Not mine</button>
+          </div>
         </>
       )}
     </Sheet>

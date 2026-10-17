@@ -116,6 +116,13 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
   { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
+
+  // Server administration (docs/ADMIN.md), only where the host gives the gateway an admin
+  // console to talk to (HumID Server for Windows). The console asks; an administrator's
+  // phone approves one exact change with a live check; the console checks that proof itself.
+  { m: "GET", p: re("/admin/summary"), h: "adminSummary", auth: true },
+  { m: "GET", p: re(`/admin/requests/(${CODE_RE})`), h: "adminRequest", auth: true },
+  { m: "POST", p: re(`/admin/requests/(${CODE_RE})/approve`), h: "adminApprove", auth: true, guard: true },
 ];
 
 /** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
@@ -157,6 +164,14 @@ export function createGateway({
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
   registration = env("HUMID_REGISTRATION", "pass"),
   passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
+  /**
+   * Optional bridge to a local admin console (HumID Server for Windows):
+   *   summary()              -> { approvers: [account ids], … } | null
+   *   request(code)          -> { kind: "enrol" | "action", title, lines, digest, check, expiresAt, approvers } | null
+   *   approved(code, record) -> hands the console everything it needs to verify the proof itself
+   * Without it the /admin routes answer "not on this server".
+   */
+  admin = null,
 } = {}) {
   const log = logger("gateway");
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
@@ -535,6 +550,45 @@ export function createGateway({
       return { status: 200, json: r.data };
     },
 
+    /* ---- server administration: only relayed here, decided by the admin console ---- */
+
+    // An administrator's phone asks how the server is doing (counts and alerts, nothing personal).
+    async adminSummary(s) {
+      const sum = admin ? await adminCall(() => admin.summary()) : null;
+      if (!sum || !Array.isArray(sum.approvers) || !sum.approvers.includes(s.subject)) throw new HttpError(404, "not_admin", "This HumID doesn't administer this server.");
+      const { approvers, ...rest } = sum;
+      return { status: 200, json: rest };
+    },
+
+    // What a code from the admin console asks for. Enrolment codes are for any signed-in
+    // HumID (the console then shows a check the person compares); change codes only for
+    // an administrator the console already trusts.
+    async adminRequest(s, body, stepUp, m) {
+      const r = await adminLookup(s, m[1]);
+      return { status: 200, json: { code: m[1], kind: r.kind, title: String(r.title || ""), lines: (r.lines || []).map(String).slice(0, 12), digest: r.digest, check: r.check, expiresAt: r.expiresAt, server: htp.fingerprint } };
+    },
+
+    // The live check approves exactly { digest } for exactly this code. Written to this
+    // account's ledger first (fail closed), then handed to the console with everything it
+    // needs to check the signature against the keys it pinned for this phone.
+    async adminApprove(s, body, stepUp, m, route, meta) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Approving a server change needs a fresh biometric check.");
+      const code = m[1];
+      const r = await adminLookup(s, code);
+      const b = parseJson(body) || {};
+      if (typeof b.digest !== "string" || b.digest !== r.digest) throw new HttpError(409, "admin_request_changed", "This request changed on the server. Look it up again.");
+      await record(s.subject, "admin.approved", { kind: r.kind, title: String(r.title || "").slice(0, 80), digest: r.digest.slice(0, 16), device: s.deviceId, proof: stepUp.proof });
+      const raw = stepUp.raw;
+      await adminCall(() => admin.approved(code, {
+        code, account: s.subject, device: s.deviceId, platform: s.platform, proofLevel: s.proof, assurance: s.assurance,
+        deviceDsaPk: b64u(s.dsaPk), livePub: s.livePub ? b64u(s.livePub) : null,
+        th: b64u(s.th), seq: raw.seq, method: meta.m, path: meta.p, body: b64u(body), at: raw.at,
+        sig: String(raw.sig), live: raw.live ? String(raw.live) : null, nonce: raw.nonce, exp: raw.exp,
+        approvedAt: Date.now(),
+      }));
+      return { status: 200, json: { approved: true, kind: r.kind } };
+    },
+
     // A recovery contact releases their share. Recorded in both people's ledgers.
     async helpRecover(s, body, stepUp, m) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "Releasing your piece needs a fresh biometric check.");
@@ -587,6 +641,8 @@ export function createGateway({
       }
       const i = meta.proof.interrupt || {};
       stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: s.assurance, live: !!s.livePub };
+      // The proof as signed, for a handler that hands it on to be checked again elsewhere (admin approvals).
+      Object.defineProperty(stepUp, "raw", { value: { seq, at, sig: meta.proof.sig, live: meta.proof.live || null, nonce: nonceKey, exp: issued.exp }, enumerable: false });
     }
 
     // Duress lockdown: sensitive changes fail the way a busy server would.
@@ -617,6 +673,23 @@ export function createGateway({
       }
     }
     return res;
+  }
+
+  async function adminCall(fn) {
+    try { return await fn(); }
+    catch (e) { log.warn("admin console bridge failed", { err: e.message }); throw new HttpError(503, "admin_unavailable", "The server's admin console isn't answering. Try again in a minute."); }
+  }
+
+  async function adminLookup(s, code) {
+    if (!admin) throw new HttpError(404, "no_admin_console", "This server has no admin console.");
+    const r = await adminCall(() => admin.request(code));
+    if (!r || !(r.expiresAt > Date.now())) throw new HttpError(404, "admin_request_unknown", "No request with that code, or it expired. Make a new one on the console.");
+    if (r.kind !== "enrol" && !(Array.isArray(r.approvers) && r.approvers.includes(s.subject))) {
+      await recordQuietly(s.subject, "access.denied", { path: "/admin/requests/:code", reason: "not_admin" });
+      throw new HttpError(403, "not_admin", "This HumID isn't an administrator of this server.");
+    }
+    if (typeof r.digest !== "string" || !/^[0-9a-f]{64}$/.test(r.digest)) throw new HttpError(503, "admin_unavailable", "The server's admin console sent a bad request.");
+    return r;
   }
 
   async function lockedDown(s) {

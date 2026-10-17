@@ -26,7 +26,7 @@ import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
-  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck,
+  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck, adminCheck,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
@@ -1772,6 +1772,36 @@ export async function stationVerify(code, chip, checks) {
       showInterrupt({ progress: 0.6, message: "Checking the chip with its issuing country…" });
       return api.stationVerify(code, { chip, checks, signature: chip.aaSignature }, proof);
     });
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
+}
+
+/* ---------------- managing a HumID server (docs/ADMIN.md) ---------------- */
+
+/** How the server is doing, for its administrators; null for everyone else (asked quietly). */
+export async function loadAdminSummary() {
+  if (S.offline.value || S.decoy.value || SIM) { S.adminSummary.value = null; return; }
+  try { S.adminSummary.value = await api.adminSummary(); } catch { S.adminSummary.value = null; }
+}
+
+/** What a code from the server's admin console asks for. */
+export async function findAdminRequest(code) {
+  try { needVault(); return await api.adminRequest(code); }
+  catch (e) { toast(friendly(e), "error"); return null; }
+}
+
+/**
+ * Approve exactly that request with a live check. For becoming an administrator, returns the
+ * admin check computed from this device's own key: the console must show the same.
+ */
+export async function approveAdminRequest(req) {
+  try {
+    let check = null;
+    await withStepUp("approveAdmin", [req.code], "admin", req.kind === "enrol" ? "Become a server administrator" : req.title, async ({ dkeys, proof }) => {
+      check = adminCheck(dkeys.dsaPk);
+      return api.approveAdmin(req.code, req.digest, proof);
+    });
+    loadAdminSummary();
+    return { check };
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
 

@@ -211,7 +211,7 @@ would mean its key on the device, which is what split keys exist to prevent.
    separate storage from the vault; encrypted, tested backups of every volume.
 5. Push and email alerts for new devices and recoveries.
 6. Account-key rotation after a device is removed.
-7. Penetration test of the deployed stack.
+7. Penetration test of the deployed stack, including the admin console (docs/ADMIN.md).
 8. Privacy policy, terms and data-handling review with counsel.
 
 ## Live biometric checks
