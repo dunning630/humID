@@ -85,10 +85,10 @@ function ItemRow({ item }) {
   if (card) {
     const cs = expiryStatus(card.expiry);
     return (
-      <button class="item" onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
         <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
         <span style={{ minWidth: 0 }}>
-          <div class="name">{item.name}</div>
+          <div class="name">{item.pinned && <Icon name="pin" />}{item.name}</div>
           <div class="meta">{brandName(card.brand)}{card.funding ? ` ${card.funding}` : ""} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
         </span>
         <span class="end"><Icon name="chevron" /></span>
