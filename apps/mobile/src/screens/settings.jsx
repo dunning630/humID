@@ -2,7 +2,7 @@
 // reminders, and what this device and its connection are. Nothing here can weaken
 // protection: auto-lock only gets shorter, and leaving the screen always locks.
 import { Icon } from "../icons.jsx";
-import { AssurancePill, proofLabel, useNow, fmtLeft } from "../ui.jsx";
+import { AssurancePill, proofLabel, useNow, fmtLeft, CheckinBar } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { setPref, lockNow } from "../core/controller.js";
 import { CHOICES, IDLE_CHOICES, idleLabel } from "../core/prefs.js";
@@ -57,6 +57,7 @@ export function Settings() {
           <div class="sub"><Icon name="settings" />How HumID looks and behaves on this device</div>
         </div>
       </div>
+      <CheckinBar />
 
       <section class="card" aria-labelledby="set-look">
         <h3 id="set-look">Appearance</h3>

@@ -1,7 +1,7 @@
 // Activity: the holder's own access ledger, verified on this device.
 import { useEffect } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { dayLabel, fmtTime, fmtAgo, OfflineBanner } from "../ui.jsx";
+import { dayLabel, fmtTime, fmtAgo, OfflineBanner, CheckinBar } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { loadLedger } from "../core/controller.js";
 
@@ -50,6 +50,9 @@ function describe(e, names) {
     case "settings.changed": return { icon: "siren", tone: "", title: d.duressAlert ? "Witnesses will see duress signals" : "Witnesses won't see duress signals", meta: [], proof: d.proof };
     case "recovery.helped": return { icon: "user", tone: "mint", title: "You helped someone recover", meta: [], proof: d.proof };
     case "admin.approved": return { icon: "settings", tone: "amber", title: d.kind === "enrol" ? "You became a server administrator" : `Server change approved · ${d.title}`, meta: [d.digest ? `check ${String(d.digest).slice(0, 8).toUpperCase().replace(/(.{4})/, "$1-")}` : null], proof: d.proof };
+    case "checkin.armed": return { icon: "clock", tone: "amber", title: `Check-in on · every ${hours(d.windowMs)}`, meta: [d.graceMs ? `${hours(d.graceMs)} grace` : "no grace", d.kept ? `${d.kept} decoy${d.kept === 1 ? "" : "s"} kept` : null], proof: d.proof };
+    case "checkin.disarmed": return { icon: "clock", tone: "mint", title: "Check-in off", meta: [], proof: d.proof };
+    case "checkin.erased": return { icon: "trash", tone: "danger", title: "Vault erased by Check-in", meta: [d.count != null ? `${d.count} document${d.count === 1 ? "" : "s"}` : null] };
     default: return { icon: "info", tone: "", title: e.type, meta: [] };
   }
 }
@@ -67,6 +70,8 @@ const reason = (r) => ({
   bad_proof: "Proof rejected",
   no_live_seal: "Sealed without a live check",
   lockdown: "Blocked by lockdown",
+  checkin_missed: "Locked: a check-in was missed",
+  vault_erased: "Erased by Check-in",
 })[r] || r;
 
 export function Activity() {
@@ -87,6 +92,7 @@ export function Activity() {
       </div>
 
       <OfflineBanner />
+      <CheckinBar />
 
       {S.ledgerLoading.value && !l && <p class="muted small">Verifying your ledger…</p>}
 
