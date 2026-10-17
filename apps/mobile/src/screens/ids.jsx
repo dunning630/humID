@@ -6,7 +6,7 @@ import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import { Sheet, Steps, ChipAccess } from "../ui.jsx";
 import * as S from "../core/state.js";
-import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy } from "../core/controller.js";
+import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy, buzz as buzzPref } from "../core/controller.js";
 import {
   KINDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyTyped, setImage, title as recordTitle, status as idStatus,
   provenance, fullName, niceName, countryName, regionName, parseAamva, MrzConsensus,
@@ -78,7 +78,7 @@ const NO_READER = "The reader couldn't start on this phone. Take the photo with 
 const FALLBACK_MS = 9000;
 
 /** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
-const buzz = () => { try { globalThis.navigator?.vibrate?.(14); } catch {} };
+const buzz = () => buzzPref(14);
 
 /**
  * Full-screen camera with a document-shaped frame.
@@ -618,7 +618,7 @@ const fmtDay = (iso) => {
 
 export function IdView({ record: rec, item }) {
   const [side, setSide] = useState(rec.images.front ? "front" : rec.images.portrait ? "portrait" : "back");
-  const st = idStatus(rec);
+  const st = idStatus(rec, new Date(), S.prefs.value.expiryWarnDays);
   const p = provenance(rec);
   const rows = fieldsFor(rec.kind).filter((f) => rec.fields[f.key] !== undefined && rec.fields[f.key] !== "" && rec.fields[f.key] !== null);
   const show = (f) => {

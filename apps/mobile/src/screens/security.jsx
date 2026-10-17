@@ -1,6 +1,6 @@
 // Security: recovery alerts, devices, two-proof recovery (witnesses, ID anchor,
-// seal card), duress protection, helping others, verification station, this
-// device, connection, and the exits.
+// seal card), duress protection, helping others, verification station, your
+// identity, and the exits. This device and the connection are in Settings.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
@@ -18,7 +18,7 @@ import {
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
 import { resetSimulation } from "../core/controller.js";
 
-const GATE = {
+export const GATE = {
   "ios-keychain-biometry": "Face ID / Touch ID · Secure Enclave policy",
   "android-keystore-biometric": "Android Keystore · Class 3 biometric",
   "macos-keychain-biometry": "Touch ID · Keychain",
@@ -31,7 +31,6 @@ const METHOD = { card: "recovery card", contacts: "recovery contacts", quorum: "
 
 export function Security() {
   const id = S.identity.value;
-  const sess = S.session.value;
   const srv = id?.server;
   const now = useNow();
   const [confirm, setConfirm] = useState(false);
@@ -167,26 +166,11 @@ export function Security() {
         </div>
       </div>
 
-      <div class="card">
-        <h3>This device</h3>
-        <div class="rows" style={{ marginTop: 6 }}>
-          <div class="row"><span class="k">Protection</span><span class="v"><AssurancePill assurance={id?.assurance} /></span></div>
-          <div class="row"><span class="k">Gate</span><span class="v">{GATE[id?.method] || id?.method}</span></div>
-          <div class="row"><span class="k">Proof</span><span class="v">{proofLabel(id?.proof, id?.assurance)}</span></div>
-          <div class="row"><span class="k">PIN or password</span><span class="v"><span class="pill mint"><Icon name="check" />Never accepted</span></span></div>
-          <div class="row"><span class="k">Device</span><span class="v">{PLATFORM}</span></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Connection</h3>
-        <div class="rows" style={{ marginTop: 6 }}>
-          <div class="row"><span class="k">Vault server</span><span class="v">{serverHost(srv?.url)}</span></div>
-          <div class="row" style={{ display: "block" }}><div class="k" style={{ marginBottom: 8 }}>Pinned server key</div><div class="kid">{(srv?.fingerprint || "").split("-").map((g) => <span>{g}</span>)}</div></div>
-          <div class="row"><span class="k">Channel</span><span class="v mono" style={{ fontSize: 12 }}>HTP/1 · ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
-          <div class="row"><span class="k">Session</span><span class="v">{sess ? <span class="pill mint"><Icon name="signal" />Active · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : S.offline.value ? <span class="pill amber"><Icon name="signal" />Offline · read only · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : "—"}</span></div>
-        </div>
-      </div>
+      <button class="option" style={{ marginTop: 14 }} onClick={() => { S.tab.value = "settings"; window.scrollTo({ top: 0 }); }}>
+        <span class="o-ico"><Icon name="settings" /></span>
+        <span><strong>This device and connection</strong><span>Now in Settings, with how HumID looks and locks.</span></span>
+        <Icon name="chevron" />
+      </button>
 
       <div class="actions" style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 10 }}>
         <button class="btn ghost block" onClick={lockNow}><Icon name="lock" />Lock now</button>

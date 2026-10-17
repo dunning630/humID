@@ -5,7 +5,7 @@ import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
 import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
 import * as S from "../core/state.js";
-import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, loadRecovery, loadDevices } from "../core/controller.js";
+import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 
@@ -77,12 +77,12 @@ export function Vault() {
 function ItemRow({ item }) {
   const cat = categoryOf(item.category);
   const id = item.idInfo;
-  const st = id ? idStatus({ fields: { expiry: id.expiry } }) : null;
+  const st = id ? idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays) : null;
   return (
-    <button class="item" onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+    <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
       <span class="ico" data-cat={cat.id}><Icon name={id ? (id.kind === "passport" ? "passport" : "idcard") : item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
       <span style={{ minWidth: 0 }}>
-        <div class="name">{item.name}</div>
+        <div class="name">{item.pinned && <Icon name="pin" />}{item.name}</div>
         <div class="meta">{id
           ? <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>
           : <>{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>}</div>
@@ -267,6 +267,13 @@ export function ItemSheet() {
               <button class="btn danger" disabled={off} onClick={() => setMode("confirm")}><Icon name="trash" />Delete</button>
             </div>
           </div>
+          {!off && (
+            <label class="toggle" style={{ marginTop: 12 }}>
+              <span><strong>Pin to the top</strong><span>Sealed with the item, so it's pinned on all your devices.</span></span>
+              <input type="checkbox" role="switch" checked={!!item.pinned} onChange={(e) => setPinned(item, e.currentTarget.checked)} />
+              <i aria-hidden="true" />
+            </label>
+          )}
           {S.identity.value?.duress?.enabled && !S.decoy.value && !off && (
             <label class="toggle" style={{ marginTop: 12 }}>
               <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
