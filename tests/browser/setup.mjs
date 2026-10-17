@@ -277,10 +277,23 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".list .item").length === 1);
   await page.locator(".chips[aria-label='Filter by tag'] .chip", { hasText: "Any tag" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".list .item").length === 2);
+  // tapping a row pushes the item: preview first, the facts, and an overflow menu
   await rows.nth(last).click();
-  await page.getByText("Pin to the top").click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).waitFor();
+  assert.equal(await page.locator(".pushed").getByRole("button", { name: "Save a copy" }).count(), 0, "Save a copy is only in the opened viewer");
+  await targets(page, "Item"); await shot(page, "small-item");
+  await page.locator(".pushed").getByRole("button", { name: "More" }).click();
+  assert.deepEqual((await page.locator(".sheet [role=menuitem]").allInnerTexts()).map((t) => t.trim()), ["Rename", "Pin to the top", "Export sealed", "Delete"], "the overflow menu (no decoy entry while duress is off)");
+  await page.locator(".sheet [role=menuitem]", { hasText: "Pin to the top" }).click();
   await page.locator(".list .item[data-pinned]").first().waitFor({ timeout: 10_000 });
-  await page.evaluate(() => globalThis.__humidBack());
+  // Delete goes straight to the inline question; Keep it steps back
+  await page.locator(".pushed").getByRole("button", { name: "More" }).click();
+  await page.locator(".sheet [role=menuitem]", { hasText: "Delete" }).click();
+  await page.getByText(`Delete ${lastName}?`).waitFor();
+  assert.equal(await back(), "pushed", "back from the delete question keeps the item");
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).waitFor();
+  assert.equal(await back(), "pushed", "back leaves the item");
+  await page.locator(".pushed").waitFor({ state: "detached" });
   assert.equal((await rows.first().locator(".name").innerText()).trim(), lastName, "a pinned item goes to the top");
   await shot(page, "small-vault-pinned-day");
   step("a pinned item moves to the top of the vault");
