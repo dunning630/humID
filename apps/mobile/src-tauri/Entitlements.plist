@@ -20,5 +20,8 @@
   <!-- Scanning HumID QR codes (device links, recovery codes). -->
   <key>com.apple.security.device.camera</key>
   <true/>
+  <!-- "Stamp where it's sealed": the location kept in a document's encrypted details. -->
+  <key>com.apple.security.personal-information.location</key>
+  <true/>
 </dict>
 </plist>

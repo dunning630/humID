@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-humid-gate"
-version = "2.0.0"
+version = "2.0.1"
 description = "HumID biological interrupt: releases a 32-byte secret only after a live face or fingerprint check; on phones a hardware liveness key signs each check."
 edition = "2021"
 rust-version = "1.77"

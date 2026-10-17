@@ -9,6 +9,8 @@
 //   MRZ       Tesseract (WebAssembly, in a worker) with an OCR-B model trained
 //             for MRZs (DoubangoTelecom/tesseractMRZ, BSD-3-Clause)
 
+import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad } from "./docfind.js";
+
 const asset = (p) => new URL(`./${p}`, import.meta.url).href;
 const MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
 
@@ -127,6 +129,82 @@ export function looksBlank(c) {
 }
 export const imageUrl = (img) => (img ? `data:${img.type};base64,${img.data}` : null);
 export const imageBytes = (img) => Uint8Array.from(atob(img.data), (ch) => ch.charCodeAt(0));
+
+/* ---------------- straightening ---------------- */
+
+/** The document inside `quad` (in c's pixels), straightened into its own canvas. */
+export function straighten(c, quad, { prefer = null, max = 3000 } = {}) {
+  const size = outputSize(quad, { prefer, max });
+  const out = warp(imageData(c), quad, size.width, size.height);
+  const oc = canvas(size.width, size.height);
+  ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
+  return oc;
+}
+
+/** A canvas turned clockwise by 90, 180 or 270 degrees (or itself, for 0). */
+export function rotateCanvas(c, deg) {
+  const d = ((deg % 360) + 360) % 360;
+  if (!d) return c;
+  const side = d % 180 !== 0;
+  const out = canvas(side ? c.height : c.width, side ? c.width : c.height);
+  const g = ctx2d(out);
+  g.translate(out.width / 2, out.height / 2);
+  g.rotate((d * Math.PI) / 180);
+  g.drawImage(c, -c.width / 2, -c.height / 2);
+  return out;
+}
+
+/** A small grey copy of a canvas or video frame, at most `max` on its long side. */
+export function grayOf(src, max = 320) {
+  const w = src.videoWidth || src.width, h = src.videoHeight || src.height;
+  const s = Math.min(1, max / Math.max(w, h));
+  const c = canvas(w * s, h * s);
+  const g = ctx2d(c);
+  g.imageSmoothingQuality = "medium";
+  g.drawImage(src, 0, 0, c.width, c.height);
+  return toGray(imageData(c));
+}
+
+/**
+ * The document's corners in a still photo, in the photo's pixels: looked for afresh at
+ * 640 px (finer than the live view); if the live view had it (`hint`, same pixels) and
+ * the still agrees, the still's (finer) corners, else the live view's. null if neither.
+ */
+export function cornersIn(c, { hint = null, shape = "full" } = {}) {
+  const im = grayOf(c, 640), k = c.width / im.w;
+  const prior = hint ? scaleQuad(hint, 1 / k) : null;
+  const ratio = { id1: 1.586, td3: 1.42 }[shape] || null;
+  const d = findDocument(im, { minArea: hint ? 0.03 : 0.12, prior, ratio });
+  if (d) {
+    const q = scaleQuad(d.quad, k);
+    if (!hint) return q;
+    const diag = Math.hypot(c.width, c.height);
+    const off = q.reduce((t, p, i) => t + Math.hypot(p.x - hint[i].x, p.y - hint[i].y), 0) / 4 / diag;
+    if (off < 0.04) return q;
+  }
+  return hint;
+}
+
+/**
+ * A photo, developed: the document straightened (when its corners are known) and turned
+ * the way it reads. Returns { canvas (the proposal), original, straightened, rotate,
+ * confidence }; canvas is the original itself when there's nothing to change.
+ *   card   true for cards and passport pages (kept wider than tall)
+ */
+export function develop(original, quad, { shape = "full" } = {}) {
+  const card = shape !== "full";
+  const flat = quad ? straighten(original, quad, { prefer: card ? shape : null, max: card ? 2000 : 3000 }) : null;
+  const base = flat || original;
+  const o = orientation(grayOf(base, 1100), { landscape: card });
+  // Turn it when it's clear which way up it reads. Text clearly running down the page is
+  // turned across even when which way is up is a closer call (a sideways page is wrong
+  // either way; the guess is right far more often than not, and a tap turns it). A
+  // straightened card is always kept wide.
+  const sideways = o.lines === "down" && o.sideways >= 0.4;
+  const rotate = o.confidence >= 0.25 || sideways || (card && flat && base.height > base.width) ? o.rotate : 0;
+  const out = rotate ? rotateCanvas(base, rotate) : base;
+  return { canvas: out, original, straightened: !!flat, rotate, confidence: o.confidence, changed: out !== original };
+}
 
 /** A photo file (camera roll, Files) → canvas, upright, at most maxSide on its long side. */
 export async function fileToCanvas(file, maxSide = 3200) {
