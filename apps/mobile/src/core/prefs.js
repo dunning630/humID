@@ -14,7 +14,6 @@ export const IDLE_CHOICES = [60_000, 2 * 60_000, MAX_IDLE_MS];
 export const CHOICES = Object.freeze({
   theme: ["system", "dark", "light"],
   text: ["standard", "large"],
-  startTab: ["vault", "activity", "security", "settings"],
   sort: ["newest", "oldest", "name", "expiry"],
   expiryWarnDays: [30, 60, 90, 180],
 });
@@ -25,7 +24,6 @@ export const DEFAULTS = Object.freeze({
   motion: true,        // animations (rings, transitions); false = reduced
   haptics: true,       // a short buzz on checks and captures
   idleMs: MAX_IDLE_MS,
-  startTab: "vault",
   sort: "newest",
   expiryWarnDays: 90,
 });
@@ -40,7 +38,6 @@ export function sanitize(raw) {
     motion: typeof r.motion === "boolean" ? r.motion : DEFAULTS.motion,
     haptics: typeof r.haptics === "boolean" ? r.haptics : DEFAULTS.haptics,
     idleMs: IDLE_CHOICES.includes(r.idleMs) ? r.idleMs : DEFAULTS.idleMs,
-    startTab: pick("startTab"),
     sort: pick("sort"),
     expiryWarnDays: pick("expiryWarnDays"),
   };
@@ -48,10 +45,21 @@ export function sanitize(raw) {
 
 const KEY = "humid.prefs.v1";
 
-/** Read this device's preferences. Storage can be missing or refuse (private mode): defaults then. */
-export function loadPrefs(storage = globalThis.localStorage) {
-  try { return sanitize(JSON.parse(storage?.getItem(KEY) || "null")); }
-  catch { return sanitize(null); }
+/** Does this device ask for less motion? (Only consulted before the person has chosen.) */
+export function prefersReducedMotion() {
+  try { return !!globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches; } catch { return false; }
+}
+
+/**
+ * Read this device's preferences. Storage can be missing or refuse (private mode): defaults then.
+ * On first launch (nothing chosen yet) animations follow the device's reduce-motion setting.
+ */
+export function loadPrefs(storage = globalThis.localStorage, reduced = prefersReducedMotion()) {
+  let raw = null;
+  try { raw = JSON.parse(storage?.getItem(KEY) || "null"); } catch { raw = null; }
+  const p = sanitize(raw);
+  if (typeof raw?.motion !== "boolean" && reduced) p.motion = false;
+  return p;
 }
 
 export function savePrefs(prefs, storage = globalThis.localStorage) {

@@ -12,8 +12,7 @@ import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
 import { IdSheet } from "./screens/ids.jsx";
 import { CardSheet } from "./screens/cards.jsx";
 import { Activity } from "./screens/activity.jsx";
-import { Security } from "./screens/security.jsx";
-import { Settings } from "./screens/settings.jsx";
+import { You } from "./screens/you.jsx";
 import { applyPrefs } from "./core/prefs.js";
 import { Mark } from "./brand.jsx";
 
@@ -32,8 +31,7 @@ function App() {
         <>
           {S.tab.value === "vault" && <Vault />}
           {S.tab.value === "activity" && <Activity />}
-          {S.tab.value === "security" && <Security />}
-          {S.tab.value === "settings" && <Settings />}
+          {S.tab.value === "you" && <You />}
           <TabBar />
           {sheet?.type === "add" && <AddSheet />}
           {sheet?.type === "id" && <IdSheet />}
