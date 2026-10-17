@@ -551,8 +551,8 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .dc-label .linklike { margin: -12px -4px; }
 .dc-bottom[data-tools] { grid-template-rows: auto auto; }
 .dc-tools { grid-column: 1 / -1; display: flex; justify-content: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-.doccam:has(.dc-tools) .dc-status { bottom: calc(var(--safe-b) + 190px); }
-.doccam:has(.dc-tools) .dc-stage { padding-bottom: calc(var(--safe-b) + 210px); }
+.doccam:has(.dc-tools) .dc-status { bottom: calc(var(--safe-b) + 236px); }
+.doccam:has(.dc-tools) .dc-stage { padding-bottom: calc(var(--safe-b) + 256px); }
 .dc-tool { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.28); background: rgba(0,0,0,.45); color: #fff; font-size: 12.5px; }
 .dc-tool svg { width: 16px; height: 16px; }
 .dc-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: calc(var(--safe-t) + 10px) 10px 10px; background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0)); }
