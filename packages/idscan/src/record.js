@@ -145,12 +145,12 @@ export function title(rec) {
 }
 
 /** { state: "valid" | "expiring" | "expired" | "unknown", days } — expiring means within 90 days. */
-export function status(rec, now = new Date()) {
+export function status(rec, now = new Date(), warnDays = 90) {
   const e = rec.fields?.expiry || rec.expiry;
   if (!e) return { state: "unknown", days: null };
   const end = Date.parse(`${e}T23:59:59Z`);
   const days = Math.floor((end - now.getTime()) / 86400e3);
-  return { state: days < 0 ? "expired" : days <= 90 ? "expiring" : "valid", days };
+  return { state: days < 0 ? "expired" : days <= warnDays ? "expiring" : "valid", days };
 }
 
 /** What the encrypted vault index carries, so the list can show expiry without opening the document. */

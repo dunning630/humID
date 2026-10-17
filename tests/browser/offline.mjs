@@ -118,8 +118,9 @@ try {
   // visit each tab so its state is in the copy
   await tab(page, "Activity"); await page.locator(".tl, .timeline, .entry, li").first().waitFor({ timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(800);
-  await tab(page, "Security"); await page.getByText("Pinned server key").waitFor();
+  await tab(page, "Security"); await page.getByText("Your identity").waitFor();
   await page.waitForTimeout(1200);
+  await tab(page, "Settings"); await page.getByText("Pinned server key").waitFor();
   await tab(page, "Vault");
   step("two documents sealed, the gym card marked as the decoy, duress gesture set");
 
@@ -159,6 +160,8 @@ try {
   await page.getByText(/Sealed Last will/).waitFor();
   await shot(page, "4-activity-offline");
   await tab(page, "Security");
+  await page.getByText("Your identity").waitFor();
+  await tab(page, "Settings");
   await page.getByText(/Offline · read only · auto-locks/).waitFor();
   await page.getByText(/This device|Web|Chrome|Linux/).first().waitFor();
   await shot(page, "5-security-offline");
