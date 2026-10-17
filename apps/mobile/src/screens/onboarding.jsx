@@ -508,30 +508,28 @@ const ISSUES = {
 };
 
 /**
- * The unlock controls, with the duress gesture if it's on. Both gestures look like
- * ordinary unlocking: hold the Unlock button a little longer, or tap the mark a few
- * times. Nothing on screen changes to show which one happened.
+ * The unlock controls. Both duress gestures are always listened for — holding the
+ * Unlock button a little longer, or tapping the mark three times — because which
+ * one (if any) is the duress gesture is sealed and only known after the check.
+ * The Lock screen passes which gesture was used; the controller decides what it
+ * means once the vault's keys are open. Nothing on screen changes either way.
  */
-function useUnlockGestures(duress) {
+function useUnlockGestures() {
   const taps = useRef({ n: 0, t: null });
   const press = useRef(0);
-  const gesture = duress?.enabled ? duress.gesture : null;
   const onMark = () => {
-    if (gesture !== "taps") return unlock(false);
     const st = taps.current;
     st.n += 1;
     clearTimeout(st.t);
-    st.t = setTimeout(() => { const n = st.n; st.n = 0; unlock(n >= 3); }, 650);
+    st.t = setTimeout(() => { const n = st.n; st.n = 0; unlock(n >= 3 ? "taps" : false); }, 650);
   };
-  const button = gesture === "hold"
-    ? {
-      onPointerDown: () => { press.current = Date.now(); },
-      onPointerUp: () => { const held = press.current && Date.now() - press.current; press.current = 0; unlock(held >= DURESS_HOLD_MS); },
-      onPointerLeave: () => { press.current = 0; },
-      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); unlock(false); } },
-      onContextMenu: (e) => e.preventDefault(),
-    }
-    : { onClick: () => unlock(false) };
+  const button = {
+    onPointerDown: () => { press.current = Date.now(); },
+    onPointerUp: () => { const held = press.current && Date.now() - press.current; press.current = 0; unlock(held >= DURESS_HOLD_MS ? "hold" : false); },
+    onPointerLeave: () => { press.current = 0; },
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); unlock(false); } },
+    onContextMenu: (e) => e.preventDefault(),
+  };
   return { onMark, button };
 }
 
@@ -542,7 +540,7 @@ export function Lock() {
   const id = S.identity.value;
   const [confirm, setConfirm] = useState(false);
   const issue = S.lockIssue.value;
-  const g = useUnlockGestures(id?.duress);
+  const g = useUnlockGestures();
   if (issue) {
     const x = (ISSUES[issue] || ISSUES.unknown_identity)(serverHost(id?.server?.url));
     const terminal = TERMINAL.has(issue);

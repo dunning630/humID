@@ -60,8 +60,8 @@ export function You() {
   const devices = S.devices.value;
   const rec = S.recovery.value;
   const decoy = S.decoy.value;
-  const duress = id?.duress;
   const dinfo = S.duressInfo.value;
+  const duress = dinfo?.setting; // sealed on the device; opened after the check, never read from the identity record
   const protecting = decoy ? [] : S.protecting.value;
   const p = S.prefs.value;
   const pinned = S.items.value.filter((i) => i.pinned).length;
@@ -305,7 +305,7 @@ export function ProtectionCard() {
           {!i.done && <Icon name="chevron" />}
         </button>
       ))}
-      {!id?.duress?.enabled && (
+      {!S.duressInfo.value?.setting?.enabled && (
         <button class="proof-row linkrow" data-done="0" onClick={() => goTo("duress")}>
           <span class="p-ico"><Icon name="siren" /></span>
           <span><strong>Optional: duress gesture</strong><span>If you're ever forced to unlock, show only chosen documents</span></span>
@@ -633,7 +633,7 @@ const GESTURES = [
 function DuressSheet() {
   const id = S.identity.value;
   const decoy = S.decoy.value;
-  const d = decoy ? { enabled: false, gesture: "hold" } : id?.duress || { enabled: false, gesture: "hold" };
+  const d = decoy ? { enabled: false, gesture: "hold" } : S.duressInfo.value?.setting || { enabled: false, gesture: "hold" };
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "hold");
   const info = S.duressInfo.value;

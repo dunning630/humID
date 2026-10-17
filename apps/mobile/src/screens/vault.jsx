@@ -412,7 +412,7 @@ export function ItemSheet() {
               <i aria-hidden="true" />
             </label>
           )}
-          {S.identity.value?.duress?.enabled && !S.decoy.value && !off && (
+          {S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off && (
             <label class="toggle" style={{ marginTop: 12 }}>
               <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
               <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
