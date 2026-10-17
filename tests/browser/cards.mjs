@@ -140,19 +140,21 @@ try {
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: "Backup card" }).click();
-  await page.getByRole("button", { name: "Open", exact: true }).click();
+  // the item screen: the masked number with one "Show the number" (one check), never the number itself
+  assert.equal((await page.locator('.pushed [data-card="number"]').innerText()).trim(), "•••• 1111");
+  await page.locator(".pushed").getByRole("button", { name: "Show the number", exact: true }).click();
   await hold(page);
-  await page.locator(".pay-card").waitFor({ timeout: 30_000 });
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "•••• 1111");
-  assert.equal((await page.locator('[data-card="cvv"]').innerText()).trim(), "•••");
+  await page.locator(".viewer .pay-card").waitFor({ timeout: 30_000 });
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "•••• 1111");
+  assert.equal((await page.locator('.viewer [data-card="cvv"]').innerText()).trim(), "•••");
   assert.match(await page.locator(".viewer").innerText(), /1-800-555-0123/);
   await page.getByRole("button", { name: /Show the number and code/ }).click();
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "4111 1111 1111 1111");
-  assert.equal((await page.locator('[data-card="cvv"]').innerText()).trim(), "123");
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "4111 1111 1111 1111");
+  assert.equal((await page.locator('.viewer [data-card="cvv"]').innerText()).trim(), "123");
   await shot(page, "4-card-revealed");
   assert.equal(await page.getByRole("button", { name: /Copy/ }).count(), 0, "no copy buttons: the clipboard isn't safe");
   await page.getByRole("button", { name: /Hide now/ }).click();
-  assert.equal((await page.locator('[data-card="number"]').innerText()).trim(), "•••• 1111");
+  assert.equal((await page.locator('.viewer [data-card="number"]').innerText()).trim(), "•••• 1111");
   step("the back: security code and bank phone read, the photo not kept; masked until revealed; no copying");
 
   /* ---------------- 3. a Wallet pass ---------------- */
