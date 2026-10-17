@@ -29,7 +29,7 @@ function describe(e, names) {
     case "access.denied": return { icon: "alert", tone: "danger", title: "Access blocked", meta: [reason(d.reason)] };
     case "vault.erased": return { icon: "trash", tone: "danger", title: "Vault erased", meta: [] };
     case "identity.closed": return { icon: "x", tone: "danger", title: "HumID closed", meta: [] };
-    case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only owner's biometrics" : null] };
+    case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only the owner's face or fingerprints" : null] };
     case "device.removed": return { icon: "x", tone: "amber", title: `Device removed · ${d.platform || "device"}`, meta: [], proof: d.proof };
     case "device.link_approved": return { icon: "key", tone: "amber", title: `Approved ${d.platform || "a new device"}`, meta: [], proof: d.proof };
     case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made (older kind)" : "Recovery card made", meta: [], proof: d.proof };
