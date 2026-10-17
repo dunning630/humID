@@ -16,7 +16,8 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
+doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC), and
+[docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone).
 
 ## Try it on your machine
 

@@ -38,6 +38,7 @@ const STEP_UP = {
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
   clearDuress: () => ["POST", "/auth/duress/clear"],
+  approveAdmin: (code) => ["POST", `/admin/requests/${codeOf(code)}/approve`],
 };
 
 /** Chip data for the wire: { dg1, sod, dg15? } bytes → base64url. */
@@ -349,6 +350,15 @@ export class HumidApi {
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
+
+  /* ---------------- server administration (docs/ADMIN.md) ---------------- */
+
+  /** For an administrator of this server: { health, alerts, updates, version, at }. Throws not_admin otherwise. */
+  adminSummary() { return this.#json("GET", "/admin/summary"); }
+  /** What a code from the server's admin console asks for: { code, kind: "enrol" | "action", title, lines, digest, check, expiresAt }. */
+  adminRequest(code) { return this.#json("GET", `/admin/requests/${codeOf(code)}`); }
+  /** Approve exactly that request (its digest), with a live check. */
+  approveAdmin(code, digest, stepUp) { return this.#json("POST", `/admin/requests/${codeOf(code)}/approve`, { body: { digest }, stepUp }); }
 
   /* ---------------- verification stations ---------------- */
 

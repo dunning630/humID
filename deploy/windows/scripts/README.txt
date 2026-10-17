@@ -72,6 +72,7 @@ EVERYDAY COMMANDS  (Terminal (Admin))
   humid set KEY=VALUE     change a setting and restart
   humid backup            stop, copy everything to Documents\HumID-backup-<date>.zip, start
   humid restore -Path <zip>
+  humid console           open the admin console (see below)
 
   Settings worth knowing (humid set ...):
     HUMID_DEVICE_POLICY   attested (default): only phones whose secure chip
@@ -81,9 +82,32 @@ EVERYDAY COMMANDS  (Terminal (Admin))
     HUMID_PORT            local port the tunnel forwards to (8480).
 
 
+THE ADMIN CONSOLE
+-----------------
+  HumID Admin shows how the server and this computer are doing, and installs
+  HumID updates, Windows updates and backups. It's at http://127.0.0.1:8490,
+  on this computer only.
+
+  1. In Terminal (Admin):  humid console
+     Your browser opens a sign-in link (it works once, for two minutes).
+  2. Add your phone: Administrators > Add a phone. In HumID on your phone:
+     Security > Manage this server, scan the code, approve with your face or
+     fingerprint. Compare the admin check on both screens; if it's the same,
+     choose "They match".
+  3. Every change (an update, a restart, a backup) shows a code. Approve it
+     the same way on your phone. Nothing changes until you do.
+
+  For HumID updates from a private GitHub repository, make a fine-grained
+  token (that repository only, Contents: read-only), then:
+       humid admin token github_pat_...
+  Lost your phone?   humid admin reset   then add a new one.
+
+
 UPDATING
 --------
-  Unzip the new version and run "Install HumID Server.cmd" again.
+  From the admin console: Updates > Update (approved on your phone). It backs
+  up first and goes back to the old version by itself if the new one fails.
+  Or by hand: unzip the new version and run "Install HumID Server.cmd" again.
   Settings, accounts, documents and the server's identity are kept.
 
 

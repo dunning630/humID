@@ -1,5 +1,7 @@
 // Local development: the whole HumID stack on your machine, no Docker.
 //   npm run dev        → http://localhost:5173  (demo mode on: policy "demo")
+//   HUMID_DEV_ADMIN=1 npm run dev   also the admin console at http://127.0.0.1:5174 (docs/ADMIN.md),
+//                                   on a simulated Windows: approve its changes from the app's Security tab
 // Runs identity, vault, ledger, recovery and gateway in-process (fresh data each run
 // unless HUMID_DEV_DATA is set), serves the built app, and proxies /htp/* to
 // the gateway exactly as the Caddy edge does in production.
@@ -40,7 +42,16 @@ const passportFor = (name) => {
   }
   return passports.get(key);
 };
+// The admin console beside the dev server, on a simulated Windows (no updates are installed).
+let adminRoot = null;
+if (process.env.HUMID_DEV_ADMIN === "1") {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  adminRoot = mkdtempSync(join(tmpdir(), "humid-dev-admin-"));
+}
+const { createAdminBridge } = await import("../deploy/windows/src/adminbridge.mjs");
 const stack = await startStack({
+  admin: adminRoot ? createAdminBridge(adminRoot) : null,
   dataDir: process.env.HUMID_DEV_DATA || "", // keep accounts and the server key between runs
   recoveryDelayMs: Number(process.env.RECOVERY_DELAY_MS || 120_000), devicePolicy: process.env.HUMID_DEVICE_POLICY || "demo",
   cscas: [devCsca.pem], stations: ["*"], duressCoolOffMs: Number(process.env.HUMID_DURESS_COOLOFF_MS || 60_000),
@@ -113,5 +124,22 @@ http.createServer(async (req, res) => {
 }).listen(PORT, () => {
   console.log(`HumID dev: http://localhost:${PORT}  (gateway ${stack.baseUrl}, server fingerprint ${stack.gateway.htp.fingerprint}, key id ${stack.gateway.htp.kid})`);
 });
+
+if (adminRoot) {
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const { createConsole } = await import("../deploy/windows/admin/console.mjs");
+  const { fakeWindows } = await import("../tests/support/admin-platform.js");
+  writeFileSync(join(adminRoot, "humid.env"), `HUMID_PORT=${PORT}\nHUMID_ADMIN_PORT=5174\n`);
+  writeFileSync(join(adminRoot, "server.json"), JSON.stringify({ version: "dev", kid: stack.gateway.htp.kid, fingerprint: stack.gateway.htp.fingerprint }));
+  const { platform } = fakeWindows(adminRoot);
+  const con = createConsole({ root: adminRoot, installDir: adminRoot, port: 5174, platform, version: "dev", log: () => {} });
+  writeFileSync(join(adminRoot, "admin", "admin.env"), "HUMID_AUTO_CHECKS=0\n");
+  await con.start();
+  const token = randomBytes(32).toString("base64url");
+  mkdirSync(join(adminRoot, "admin", "logins"), { recursive: true });
+  writeFileSync(join(adminRoot, "admin", "logins", `${createHash("sha256").update(token).digest("hex")}.json`), JSON.stringify({ exp: Date.now() + 30 * 60_000 }));
+  console.log(`HumID dev admin console: http://127.0.0.1:5174/#login=${token}  (works once, for 30 minutes; simulated Windows)`);
+}
 
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, async () => { await stack.stop(); process.exit(0); });

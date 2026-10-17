@@ -1,5 +1,17 @@
 # HumID Server for Windows
 
+## 1.6.0
+
+- **HumID Admin, the admin console** (docs/ADMIN.md). A second background task, run as SYSTEM, at `http://127.0.0.1:8490` on this computer only. Open it with `humid console` in Terminal (Admin): a sign-in link that works once.
+  - **Watches** the server (every service, response times, errors, sessions), the public address and its certificate, CPU, memory, drives, Microsoft Defender, Windows Firewall, BitLocker, pending restarts, backups, and new HumID and Windows updates.
+  - **Changes** (update HumID with automatic rollback, roll back, install Windows updates, update Defender, back up, restart the server or the computer) **each wait for an administrator's phone**: a code on the console, **Security ▸ Manage this server** in HumID 1.13.0, a live check. The console checks the phone's signatures itself against keys it pinned when the phone was added, so even a taken-over server process can't approve anything.
+  - HumID updates come from the repository's releases, checked against GitHub's SHA-256 digest; for a private repository run `humid admin token <read-only token>`.
+  - Break-glass: while the server is down, the console can restart it without a phone (logged); `humid admin reset` forgets lost administrator phones.
+- The server writes how it's doing to `C:\ProgramData\HumID\server-status.json` every 15 seconds (health and counts only).
+- Backups the console makes go to `C:\ProgramData\HumID\backups` (administrators only; the newest 10 are kept).
+- The web app it serves is HumID 1.13.0.
+- **Installing over 1.5.0** keeps all data and settings, adds the two admin tasks and `HUMID_ADMIN_PORT=8490`. Nothing can be changed from the console until you add your phone.
+
 ## 1.5.0
 
 - **Security hardening.** The web app it serves is HumID 1.8.0, and the server checks more:

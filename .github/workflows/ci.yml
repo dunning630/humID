@@ -6,9 +6,10 @@ name: CI
 #   3. build only the service images the change touches, then boot the whole
 #      stack with docker compose and run the smoke test against it over TLS
 #   4. build HumID Server for Windows, install it on a Windows runner from the
-#      zip (as a person would), smoke-test, back up, restore, update, uninstall
+#      zip (as a person would), smoke-test, back up, restore, update, test the
+#      admin console and its jobs (tests/windows/admin-console.ps1), uninstall
 #   5. the app in Chromium: "Scan an ID" and "Take a photo" with a fake camera, getting
-#      set up, and offline mode (tests/browser/idscan.mjs, photo.mjs, setup.mjs, offline.mjs)
+#      set up, offline mode, managing the server (tests/browser/idscan.mjs, photo.mjs, setup.mjs, offline.mjs, admin.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -173,6 +174,12 @@ jobs:
           grep -v '^{"t"' cards.log | tail -60
           echo "::error::$(grep -v '^{"t"' cards.log | grep -E 'Error|expected|actual|assert|waiting for|cards.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/cards" }
+      - name: Managing the server (admin console + app; enrol a phone, approve a change)
+        run: |
+          node tests/browser/admin.mjs > admin.log 2>&1 && { grep -v '^{"t"' admin.log; exit 0; }
+          grep -v '^{"t"' admin.log | tail -60
+          echo "::error::$(grep -v '^{"t"' admin.log | grep -E 'Error|expected|actual|assert|waiting for|admin.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/admin" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
@@ -311,12 +318,15 @@ jobs:
           if ($after -ne $kid) { throw "server identity changed" }
           node tests/smoke.mjs http://127.0.0.1:8480
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Uninstall removes the task and, with -RemoveData, the data
+      - name: Admin console (SYSTEM, 127.0.0.1 only), sign-in link, jobs, update with automatic rollback, rollback
+        shell: pwsh
+        run: ./tests/windows/admin-console.ps1 -Repo $env:GITHUB_WORKSPACE
+      - name: Uninstall removes the tasks and, with -RemoveData, the data
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if (Get-ScheduledTask -TaskName 'HumID Server' -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          foreach ($n in 'HumID Server', 'HumID Admin', 'HumID Admin Job') { if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) { throw "task $n still registered" } }
           if (Test-Path 'C:\Program Files\HumID Server') { throw 'program folder still there' }
           if (Test-Path 'C:\ProgramData\HumID') { throw 'data still there' }
       - name: Log on failure
@@ -324,7 +334,11 @@ jobs:
         shell: pwsh
         run: |
           Get-ScheduledTaskInfo -TaskName 'HumID Server' -ErrorAction SilentlyContinue | Format-List
+          Get-ScheduledTaskInfo -TaskName 'HumID Admin' -ErrorAction SilentlyContinue | Format-List
+          Get-ScheduledTaskInfo -TaskName 'HumID Admin Job' -ErrorAction SilentlyContinue | Format-List
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\HumID\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
+          Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
       - uses: actions/upload-artifact@v4
         with:
           name: HumID-Server-Windows

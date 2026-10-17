@@ -294,7 +294,7 @@ export function QrCode({ kind, code, expiresAt, size = 184 }) {
   );
 }
 
-const QR_FOR = { link: "adding a device", recover: "a recovery", contact: "a witness offer" };
+const QR_FOR = { link: "adding a device", recover: "a recovery", contact: "a witness offer", admin: "a server change" };
 
 /**
  * Point the camera at a HumID QR code of the `expect` kind. Calls onCode({ kind, code }).

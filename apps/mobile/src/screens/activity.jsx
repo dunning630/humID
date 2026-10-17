@@ -49,6 +49,7 @@ function describe(e, names) {
     case "duress.cleared": return { icon: "siren", tone: "mint", title: "Lockdown lifted", meta: [], proof: d.proof };
     case "settings.changed": return { icon: "siren", tone: "", title: d.duressAlert ? "Witnesses will see duress signals" : "Witnesses won't see duress signals", meta: [], proof: d.proof };
     case "recovery.helped": return { icon: "user", tone: "mint", title: "You helped someone recover", meta: [], proof: d.proof };
+    case "admin.approved": return { icon: "settings", tone: "amber", title: d.kind === "enrol" ? "You became a server administrator" : `Server change approved · ${d.title}`, meta: [d.digest ? `check ${String(d.digest).slice(0, 8).toUpperCase().replace(/(.{4})/, "$1-")}` : null], proof: d.proof };
     default: return { icon: "info", tone: "", title: e.type, meta: [] };
   }
 }

@@ -36,6 +36,7 @@ export const ledgerLoading = signal(false);
 export const devices = signal(null);         // this account's devices (from the identity service)
 export const recovery = signal(null);        // { card, contacts: { n, threshold, names[], scheme }, anchor, settings, ready }
 export const protecting = signal([]);        // alerts about people this HumID protects: recoveries, duress signals
+export const adminSummary = signal(null);    // { health, alerts, updates, version } — this HumID administers its server
 export const station = signal(null);         // { station: bool, countries } — this HumID runs a verification station
 export const alerts = signal([]);            // recoveries in progress for this account
 export const cardCode = signal(null);        // a recovery card to show once, then forget
