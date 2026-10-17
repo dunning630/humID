@@ -207,7 +207,7 @@ try {
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
-  await page.locator(".dc-status").getByText(/Fit the document in the frame|Line the edges up with the frame/).waitFor();
+  await page.locator(".dc-status").getByText(/Point the camera at the card/).waitFor();
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
   step("an empty table: the camera keeps waiting and says what it needs");

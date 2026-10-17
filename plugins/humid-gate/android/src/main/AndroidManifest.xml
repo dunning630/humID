@@ -6,6 +6,13 @@
     <!-- The camera: HumID QR codes (device links, recovery codes) and photos of documents and IDs,
          taken in the app. Optional: codes can be typed and photos chosen from the gallery. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Location: the optional "Stamp where it's sealed" on the seal screen. Asked for only
+         when that screen opens with the stamp on; the location is kept in the document's
+         encrypted details on this phone's own terms. Precise or approximate both work. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- Android 12+: other apps' overlay windows are hidden while HumID is on screen. -->
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

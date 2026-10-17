@@ -84,7 +84,8 @@ it until that review and the items under *Before real data* are done.
   times, IP addresses at the edge (not logged), and which accounts protect
   which. It never sees names, contents or keys, and can't link a payment to an
   account ([ANONYMITY.md](ANONYMITY.md) lists what that doesn't cover: network,
-  timing within a day, the seller). The public log reveals the total number of
+  timing within a day, the seller). A document's location stamp, like its name,
+  is inside the encrypted index: the server never sees it. The public log reveals the total number of
   ledger events. The server holds a keyed hash of an anchored ID's stable
   fields, and its issuing country.
 - **Demo mode has no biometric.** It exists only in local development builds
