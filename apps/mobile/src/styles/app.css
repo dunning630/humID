@@ -140,7 +140,7 @@ button { cursor: pointer; }
 .btn.block { width: 100%; }
 .btn.sm { min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: var(--t-sm); }
 .link { background: none; border: 0; padding: 8px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; color: var(--sage); text-decoration: underline; text-underline-offset: 3px; font-size: var(--t-sm); }
-.icon-btn { width: 44px; height: 44px; border-radius: 14px; border: 0; background: transparent; color: var(--sage); display: grid; place-items: center; }
+.icon-btn { width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex: 0 0 auto; border-radius: 14px; border: 0; background: transparent; color: var(--sage); display: grid; place-items: center; }
 .icon-btn:active { background: var(--surface-2); }
 .icon-btn svg { width: 22px; height: 22px; }
 
