@@ -131,6 +131,10 @@ try {
     img.complete && img.naturalWidth ? go() : img.addEventListener("load", go, { once: true });
   }));
   await page.locator(".photo-preview img").waitFor();
+  // one preview of the suggested version; "Looks wrong?" reveals the other versions, turning and retake
+  assert.equal(await page.getByRole("radio").count(), 0, "no version picker until asked");
+  assert.equal(await page.getByRole("button", { name: "Turn right" }).count(), 0, "no turn buttons until asked");
+  await page.getByRole("button", { name: "Looks wrong?" }).click();
   await page.getByRole("radio", { name: /Clean scan/ }).getByText("Suggested").waitFor();
   assert.equal(await page.getByRole("radio", { name: /Clean scan/ }).getAttribute("aria-checked"), "true");
   // the clean scan's paper is white and even; the straightened photo keeps the room's light
@@ -162,16 +166,16 @@ try {
   const straight = await paper();
   assert.ok(clean.mean > 240 && clean.mean > straight.mean + 5, `clean scan's paper is white: ${clean.mean.toFixed(0)} (straightened ${straight.mean.toFixed(0)})`);
   assert.ok(clean.spread <= straight.spread + 2, `and even: spread ${clean.spread.toFixed(1)} (straightened ${straight.spread.toFixed(1)})`);
-  assert.equal(await page.getByRole("button", { name: /Seal the straightened photo/ }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Seal", exact: true }).count(), 1);
   await shot(page, "2b-straightened");
   step(`clean scan suggested: paper ${clean.mean.toFixed(0)}/255 against ${straight.mean.toFixed(0)} straightened`);
   await page.getByRole("radio", { name: /Original/ }).click();
   await page.waitForTimeout(400);
   const orig = await size();
   assert.ok(Math.abs(orig.w / orig.h - 1080 / 1920) < 0.02, `original is the camera's frame: ${orig.w}×${orig.h}`);
-  assert.equal(await page.getByRole("button", { name: /Seal the original/ }).count(), 1);
+  await page.getByText("The photo exactly as the camera took it.").waitFor();
   await shot(page, "3-original");
-  step("the original is the photo as taken, and the button says so");
+  step("the original is the photo as taken, and the note says so");
   await page.getByRole("radio", { name: /Clean scan/ }).click();
   await page.getByRole("button", { name: "Turn right" }).click();
   await page.waitForTimeout(400);
@@ -187,12 +191,12 @@ try {
   assert.equal(await stamp.getByRole("switch").isChecked(), true);
   await page.fill("#doc-name", "Assessment notice");
   await shot(page, "4-stamp");
-  await page.getByRole("button", { name: /Seal the clean scan/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().waitFor({ timeout: 30_000 });
   step("sealed, with the location stamp on");
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().click();
-  await page.getByText("Sealed at", { exact: true }).waitFor();
+  await page.getByText("Location stamp", { exact: true }).waitFor();
   await page.locator(".place-v").getByText(HERE).waitFor();
   await page.locator(".place-v").getByText(/within 14 m/).waitFor();
   await shot(page, "5-sealed-at");
@@ -224,13 +228,14 @@ try {
   await page.locator(".place-stamp").getByRole("switch").uncheck({ force: true });
   await page.locator(".place-stamp").getByText(/no location is kept/).waitFor();
   await page.fill("#doc-name", "No stamp");
+  await page.getByRole("button", { name: "Looks wrong?" }).click();
   await page.getByRole("radio", { name: /Straightened/ }).click();
-  await page.getByRole("button", { name: /Seal the straightened photo/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "No stamp" }).first().waitFor({ timeout: 30_000 });
   await page.locator(".item").filter({ hasText: "No stamp" }).first().click();
   await page.getByText("Sealed with", { exact: true }).waitFor();
-  assert.equal(await page.getByText("Sealed at", { exact: true }).count(), 0, "no location with the stamp off");
+  assert.equal(await page.getByText("Location stamp", { exact: true }).count(), 0, "no location with the stamp off");
   step("with the stamp off, the document has no location");
   await ctx.close();
   console.log("ok — Take a photo finds, straightens and stamps documents in the browser");

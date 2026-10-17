@@ -70,9 +70,9 @@ async function hold(page) {
 }
 
 async function scanIdButton(page) {
-  const add = page.locator("button.fab");
-  if (await add.isVisible().catch(() => false)) { await add.click(); await page.getByRole("button", { name: /Scan an ID/ }).click(); }
-  else await page.getByRole("button", { name: /Scan an ID/ }).first().click();
+  // one way in: the + button (or the empty vault's one primary), then the choice
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.getByRole("button", { name: /Scan an ID/ }).click();
 }
 
 try {
@@ -88,7 +88,7 @@ try {
   await page.getByLabel(/Only my own face or fingerprints/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
-  // confirm the seal card by typing back the group the app asks for
+  // confirm the recovery card by typing back the group the app asks for
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
@@ -128,7 +128,7 @@ try {
   assert.match(await page.locator(".id-proof").innerText(), /barcode/i);
   step("barcode read: details filled");
 
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const lic = page.locator(".item", { hasText: "Driver's license · Illinois" });
   await lic.waitFor({ timeout: 30_000 });
@@ -162,14 +162,14 @@ try {
   await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {}); // may already be done
   await shot(page, "4-camera-passport");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 90_000 });
-  await page.getByText("Read the chip").first().waitFor({ timeout: 10_000 });
+  await page.getByText("Read the ID chip").first().waitFor({ timeout: 10_000 });
   await shot(page, "5-chip-step");
   assert.equal(await page.locator("#doc-num").inputValue(), "D00000001");
   assert.equal(await page.locator("#doc-birth").inputValue(), "1974-08-12");
   assert.equal(await page.locator("#doc-exp").inputValue(), "2034-12-31");
   step("MRZ read: the chip's access details are filled in");
 
-  await page.getByRole("button", { name: /^Read the chip$/ }).click();
+  await page.getByRole("button", { name: /^Read the ID chip$/ }).click();
   await page.getByText("Check the details").waitFor({ timeout: 60_000 });
   await shot(page, "6-passport-review");
   assert.equal(await val("surname"), "PERSON");
@@ -178,7 +178,7 @@ try {
   assert.equal(await page.locator(".id-thumbs figure[data-shape='portrait'] img").count(), 1, "chip photo shown");
   step("chip read: details from the chip, photo copied, hashes match");
 
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const pp = page.locator(".item", { hasText: "Passport ·" });
   await pp.waitFor({ timeout: 30_000 });
@@ -191,7 +191,9 @@ try {
   const pview = await page.locator(".id-view").innerText();
   assert.match(pview, /Demo Person/);
   assert.match(pview, /From the chip/);
-  assert.match(pview, /P<UTOPERSON<<DEMO/);
+  assert.doesNotMatch(pview, /P<UTOPERSON<<DEMO/, "the raw lines from the document are folded away");
+  await page.locator(".id-view details summary", { hasText: "Details" }).click();
+  assert.match(await page.locator(".id-view").innerText(), /P<UTOPERSON<<DEMO/);
   step("passport sealed and opened, with the chip photo");
   await ctx.close();
 
