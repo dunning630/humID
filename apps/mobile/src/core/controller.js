@@ -566,11 +566,12 @@ export async function unlock(gesture = null, { decoy = false } = {}) {
     const duress = decoy || await isDuress(gesture);
     await reportPresence(duress);
     if (!duress) await keepDuressSealed();
-    batch(() => { S.session.value = sess; S.decoy.value = duress; S.duressSetting.value = duress ? CALM_DURESS : duressCfg; });
+    // online from here on (also when reconnecting from the offline copy), so Check-in can be asked
+    batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; S.duressSetting.value = duress ? CALM_DURESS : duressCfg; });
     if (!S.server.value) await connectServer(); // its policy says whether it offers Check-in
     await loadCheckin(); // before anything is saved on this device: while Check-in is armed, nothing is
     offline = duress || checkinArmed() ? null : await readOffline();
-    batch(() => { S.lockIssue.value = null; S.offline.value = null; S.view.value = "app"; });
+    batch(() => { S.lockIssue.value = null; S.view.value = "app"; });
     await endInterrupt(true, wasOffline ? "Back online." : "Welcome back.", 500);
     refresh();
     loadAlerts();
@@ -612,15 +613,20 @@ async function openDuressSetting() {
       const d = offlineKey ? await suite(id.suite).openOffline(offlineKey, fromB64(id.duressSealed)) : null;
       if (d?.kind === "duress") return { enabled: d.enabled === 1, gesture: d.gesture === "taps" ? "taps" : "hold" };
     } catch {}
-    return { ...CALM_DURESS };
+    return { ...CALM_DURESS, unreadable: true };
   }
   // before apps 1.14 it was kept in the clear; keepDuressSealed seals it at this unlock
   return { enabled: !!id?.duress?.enabled, gesture: id?.duress?.gesture === "taps" ? "taps" : "hold" };
 }
 
-/** Did the person just use this device's duress gesture? Needs the session's keys (call after the live check). */
+/**
+ * Did the person just use this device's duress gesture? Needs the session's keys (call after
+ * the live check). If the sealed setting can't be read, a duress gesture counts as duress:
+ * for a coercion feature, failing toward the decoy is the safe direction.
+ */
 async function isDuress(gesture) {
   duressCfg = await openDuressSetting();
+  if (duressCfg.unreadable) { const unreadable = !!gesture; duressCfg = { ...CALM_DURESS }; return unreadable; }
   return !!gesture && duressCfg.enabled && duressCfg.gesture === gesture;
 }
 

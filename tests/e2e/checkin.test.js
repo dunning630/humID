@@ -15,6 +15,7 @@ import { HumidApi } from "@humid/api";
 import { splitUnwrap } from "@humid/crypto";
 import { makeHolder, sealFor, sealSplitFor } from "./holder.js";
 import { createLedger } from "../../services/ledger/src/server.js";
+import { signAssertion } from "@humid/svc";
 import { CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS } from "../../services/keyshare/src/server.js";
 
 const H = 3_600_000, MIN = 60_000;
@@ -234,7 +235,43 @@ test("an erase never waits for the ledger: the keys go now, the entry when it's 
   stack.ledger = createLedger({ port, dataDir: join(stack.root, "ledger"), internalPk: stack.internalPk });
   await stack.ledger.start();
   await stack.gateway.sweepCheckin();
-  assert.ok((await events(a.api)).includes("checkin.erased"));
+  const erased = (await a.api.ledger()).entries.filter((e) => e.type === "checkin.erased");
+  assert.equal(erased.length, 1);
+  assert.equal(erased[0].detail.count, 1, "the count is the keys destroyed, not what a retried sweep found left");
+});
+
+test("one ledger entry per erase, even if a sweep's last step is lost", async () => {
+  const a = await holder("checkin-hal");
+  await split(a, "one.txt", "first");
+  await split(a, "two.txt", "second");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  mono += 2 * H + 15 * MIN + 1;
+  await settle();
+  // as if keyshare never heard "cleaned": the next sweep sees the same erase again
+  const db = new DatabaseSync(join(stack.root, "keyshare", "keyshare.db"));
+  try { db.prepare("UPDATE checkin SET cleaned = 0 WHERE owner = ?").run(a.h.id); } finally { db.close(); }
+  await stack.gateway.sweepCheckin();
+  const erased = (await a.api.ledger()).entries.filter((e) => e.type === "checkin.erased");
+  assert.equal(erased.length, 1, "not written twice");
+  assert.equal(erased[0].detail.count, 2);
+});
+
+test("a sweep never takes a document uploaded after the erase", async () => {
+  const a = await holder("checkin-ivy");
+  const old = await split(a, "before.txt", "sealed while armed");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  mono += 2 * H + 15 * MIN + 1;
+  stack.keyshare.tick(); // erased; the sweep hasn't run yet
+  const erasedAt = (await a.api.checkin()).erasedAt;
+  const fresh = await split(a, "after.txt", "sealed after the erase");
+  // the race: a sweep that listed what to keep before this upload's key reached keyshare
+  const assertion = signAssertion(stack.internalSk, { iss: "gateway", aud: "vault", sub: a.h.id });
+  const res = await fetch(`${stack.upstreams.vault}/internal/objects`, { method: "DELETE", headers: { "x-humid-assertion": assertion, "content-type": "application/json" }, body: JSON.stringify({ keep: [], before: erasedAt }) });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await vaultIds(a.api), [fresh], "the erased envelope went; the new one stayed");
+  assert.ok(!(await vaultIds(a.api)).includes(old));
+  assert.equal(await openText(a, fresh), "sealed after the erase");
+  await stack.gateway.sweepCheckin();
 });
 
 /** Open every share an attacker could from a copy of keyshare's data: { fused, ok }. */

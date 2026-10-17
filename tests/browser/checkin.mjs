@@ -181,6 +181,7 @@ try {
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);
   await page.getByText("Your vault was erased by Check-in").first().waitFor({ timeout: 20_000 });
+  await page.locator(".list .item").first().waitFor({ timeout: 20_000 }); // the list loads after the banner
   assert.deepEqual(await names(page), ["Library card"], "the real document is gone; the decoy stayed");
   assert.equal(await page.locator(".banner.checkin").count(), 0, "no check-in due any more");
   await shot(page, "5-erased");

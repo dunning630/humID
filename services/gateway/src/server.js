@@ -843,10 +843,19 @@ export function createGateway({
       const list = () => internalJson("keyshare", "GET", "/internal/checkin/erased");
       const r = await list().catch(() => list()).catch(() => null); // once more: keyshare may have just restarted
       for (const e of r?.status === 200 ? r.data.erased : []) {
-        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims: { sub: e.owner }, json: { keep: e.keep } }).catch(() => null);
+        const claims = { sub: e.owner };
+        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { keep: e.keep, before: e.erasedAt } }).catch(() => null);
         if (v?.status !== 200) continue;
-        try { await record(e.owner, "checkin.erased", { count: v.data.deleted, at: new Date(e.erasedAt).toISOString() }); }
-        catch { continue; }
+        // Once per erase, however many sweeps it takes (a lost "cleaned" mustn't write it twice).
+        // The count is keyshare's: how many document keys were destroyed.
+        const at = new Date(e.erasedAt).toISOString();
+        const seen = await internalJson("ledger", "GET", "/events?limit=100", { claims }).catch(() => null);
+        if (seen?.status !== 200) continue;
+        const done = (seen.data.entries || []).some((x) => { try { const b = JSON.parse(x.body); return b.type === "checkin.erased" && b.detail?.at === at; } catch { return false; } });
+        if (!done) {
+          try { await record(e.owner, "checkin.erased", { count: e.count ?? v.data.deleted, at }); }
+          catch { continue; }
+        }
         await internalJson("keyshare", "POST", `/internal/checkin/erased/${e.owner}/cleaned`).catch(() => {});
         n++;
       }

@@ -37,15 +37,18 @@ it off is a live check.
 What else changes while it's on:
 
 - **Your duress gesture erases at once.** Unlock with it and the vault is
-  erased before the session opens, with no grace. The duress session looks
-  like Check-in is on and working: checking in "works", the timer moves, and
-  your decoy documents open.
+  erased the moment the unlock reaches the server, with no grace (right after
+  the server answers, so the answer looks and takes the same as an ordinary
+  unlock). The duress session looks like Check-in is on and working: checking
+  in "works", the timer moves, and your decoy documents open.
 - **Decoy documents stay.** Documents marked *Show in decoy view* when you turn
   Check-in on (or change its settings) are kept out of the erase, so a forced
   unlock still shows a lived-in vault.
 - **Nothing is kept on the phone.** The offline copy is deleted and none is
   written, so a phone held offline (in a Faraday bag, say) shows nothing, and
-  HumID doesn't open offline.
+  HumID doesn't open offline. Your other devices drop their copies the next
+  time they connect: until then, one kept offline still shows its old list of
+  names (never a document).
 - **Every document must be split.** Documents sealed before split keys (apps
   before 1.5.0) have no second key on the server, so erasing them couldn't be
   final. Check-in refuses until you re-seal them (save a copy, add it again,
@@ -94,7 +97,9 @@ this cryptographic erase.
 - **The erase never waits.** Normal deletes are written to the ledger first
   and refused if it's down. An erase can't be: a ledger outage (or an attacker
   who causes one) would stop it. The keys go first; the vault and the ledger
-  catch up on the next sweep.
+  catch up on the next sweep. The ledger gets exactly one `checkin.erased` per
+  erase, with the number of keys destroyed, however many sweeps it takes; the
+  sweep never removes a document uploaded after the erase.
 - **No heartbeat in the public log.** The ledger records `checkin.armed`,
   `checkin.disarmed` and `checkin.erased`, never a check-in: an hourly entry in
   the public transparency log would tell anyone watching that an account is
