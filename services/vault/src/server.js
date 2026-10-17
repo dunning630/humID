@@ -160,12 +160,17 @@ export function createVault({
 
     // Check-in erased this account's document keys (docs/CHECKIN.md): its envelopes and index
     // entries go too, except `keep`, the documents whose keys keyshare still holds (decoys, and
-    // anything sealed since). Gateway only; the holder's live check isn't there to ask for.
+    // anything sealed since), and anything uploaded after `before` (the erase), which a sweep
+    // racing an upload must never take. Gateway only; the holder's live check isn't there to ask for.
     ["DELETE", "/internal/objects", ({ claims, body }) => {
       if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
       const owner = requireUser(claims);
-      const keep = new Set((parseJson(body)?.keep || []).map(String));
-      const rows = db.prepare("SELECT id, blob FROM objects WHERE owner = ?").all(owner).filter((r) => !keep.has(r.id));
+      const b = parseJson(body) || {};
+      const keep = new Set((b.keep || []).map(String));
+      const before = Number(b.before);
+      if (!Number.isFinite(before)) throw new HttpError(400, "bad_request", "Say when the erase happened.");
+      const rows = db.prepare("SELECT id, blob, uploaded_at FROM objects WHERE owner = ?").all(owner)
+        .filter((r) => !keep.has(r.id) && Date.parse(r.uploaded_at) <= before);
       const del = db.prepare("DELETE FROM objects WHERE id = ?");
       db.exec("BEGIN IMMEDIATE");
       try { for (const r of rows) del.run(r.id); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }

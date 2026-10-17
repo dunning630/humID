@@ -72,7 +72,10 @@ export function createKeyshare({
     `CREATE TABLE checkin (owner TEXT PRIMARY KEY, state TEXT NOT NULL, window_ms INTEGER NOT NULL, max_window_ms INTEGER NOT NULL,
                            grace_ms INTEGER NOT NULL, armed_at INTEGER NOT NULL, deadline INTEGER NOT NULL,
                            erased_at INTEGER, cleaned INTEGER NOT NULL DEFAULT 1)`,
+    // how many document keys an erase destroyed: the count the ledger records, however many sweeps it takes
+    `ALTER TABLE checkin ADD COLUMN erased_count INTEGER`,
   ]);
+  // state is 'armed' or 'erased' on disk; "locked" is only ever worked out from the clock (status()).
   // A deleted share's bytes are overwritten in the database file, not left in free pages.
   db.exec("PRAGMA secure_delete = ON");
 
@@ -148,8 +151,8 @@ export function createKeyshare({
     const f = fuses.get(o);
     if (f) { f.raw.fill(0); f.key.fill(0); fuses.delete(o); }
     tx(() => {
-      db.prepare("DELETE FROM shares WHERE owner = ? AND fused = 1").run(o);
-      db.prepare("UPDATE checkin SET state = 'erased', erased_at = ?, cleaned = 0 WHERE owner = ?").run(now(), o);
+      const gone = db.prepare("DELETE FROM shares WHERE owner = ? AND fused = 1").run(o).changes;
+      db.prepare("UPDATE checkin SET state = 'erased', erased_at = ?, cleaned = 0, erased_count = ? WHERE owner = ?").run(now(), gone, o);
     });
     flush();
     log.warn("check-in: an armed vault's keys were destroyed"); // never the account id
@@ -182,7 +185,7 @@ export function createKeyshare({
 
   /** Every armed vault was erased if this process restarted: its fuse keys died with the old one. */
   {
-    const orphans = db.prepare("SELECT owner FROM checkin WHERE state = 'armed'").all();
+    const orphans = db.prepare("SELECT owner FROM checkin WHERE state != 'erased'").all();
     for (const { owner: o } of orphans) erase(o);
     db.prepare("DELETE FROM shares WHERE fused = 1").run(); // a fused share with no fuse key: useless, gone
     flush();
@@ -374,9 +377,9 @@ export function createKeyshare({
     // documents whose keys are still here (decoys, and anything sealed since), which stay.
     ["GET", "/internal/checkin/erased", ({ claims }) => {
       gatewayOnly(claims);
-      const rows = db.prepare("SELECT owner, erased_at FROM checkin WHERE state = 'erased' AND cleaned = 0 LIMIT 50").all();
+      const rows = db.prepare("SELECT owner, erased_at, erased_count FROM checkin WHERE state = 'erased' AND cleaned = 0 LIMIT 50").all();
       const keepOf = db.prepare("SELECT object FROM shares WHERE owner = ?");
-      return json(200, { erased: rows.map((r) => ({ owner: r.owner, erasedAt: r.erased_at, keep: keepOf.all(r.owner).map((x) => x.object) })) });
+      return json(200, { erased: rows.map((r) => ({ owner: r.owner, erasedAt: r.erased_at, count: r.erased_count ?? null, keep: keepOf.all(r.owner).map((x) => x.object) })) });
     }],
     ["POST", "/internal/checkin/erased/:owner/cleaned", ({ claims, params }) => {
       gatewayOnly(claims);
