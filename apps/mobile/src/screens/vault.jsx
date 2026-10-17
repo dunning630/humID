@@ -1,20 +1,21 @@
-// Vault: list, search, categories, add, item details, preview.
-import { useEffect, useRef, useState } from "preact/hooks";
-import { KINDS, TAGS, kindOf, tagOf, suggestTags } from "../core/categories.js";
+// Vault: list, search, kinds and tags, item details, preview.
+import { useState } from "preact/hooks";
+import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
+import { Sheet, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
 import { openExternal } from "../core/external.js";
-import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned } from "../core/controller.js";
-import { DocCamera, IdView } from "./ids.jsx";
+import { openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, lockNow, setDecoy, setPinned } from "../core/controller.js";
+import { IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 import { CardView } from "./cards.jsx";
 import { BRANDS, expiryStatus, showExpiry } from "@humid/cards";
-import { looksLikePass, STYLE_LABEL } from "@humid/wallet";
-import { PassView, PassCheck } from "./passes.jsx";
+import { STYLE_LABEL } from "@humid/wallet";
+import { PassView } from "./passes.jsx";
+import { TagPicker } from "./review.jsx";
+import { openAdd } from "./add.jsx";
 
 export function Vault() {
   const list = S.visibleItems.value;
@@ -62,7 +63,7 @@ export function Vault() {
           <Mark />
           <h3>Nothing here yet</h3>
           <p>Your IDs, cards and documents, sealed on this phone before they go anywhere.</p>
-          {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add to your vault</button>}
+          {!S.offline.value && <button class="btn primary" onClick={openAdd}><Icon name="plus" />Add to your vault</button>}
         </div>
       )}
 
@@ -73,7 +74,7 @@ export function Vault() {
       </div>
 
       {all.length > 0 && !S.offline.value && (
-        <button class="fab" aria-label="Add to your vault" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" /></button>
+        <button class="fab" aria-label="Add to your vault" onClick={openAdd}><Icon name="plus" /></button>
       )}
     </main>
   );
@@ -144,234 +145,6 @@ function ItemRow({ item }) {
       </span>
       <span class="end"><Icon name="chevron" /></span>
     </button>
-  );
-}
-
-/** Tags: optional labels for what an item is about. Any number can be on. */
-export function TagPicker({ tags, onChange, label = "Tags (optional)" }) {
-  const toggle = (id) => onChange(tags.includes(id) ? tags.filter((t) => t !== id) : [...tags, id]);
-  return (
-    <div class="field tagpick">
-      <label>{label}</label>
-      <div class="chips" role="group" aria-label="Tags">
-        {TAGS.map((t) => <button class="chip" type="button" aria-pressed={tags.includes(t.id)} onClick={() => toggle(t.id)}><Icon name={t.icon} />{t.label}</button>)}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- add ---------------- */
-
-const canvasBlob = (c, q = 0.9) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't save that photo. Try again."))), "image/jpeg", q));
-
-/** How much of a page must look like paper for the clean scan to be the suggested version. */
-const PAPER_SHARE = 0.45;
-
-/** The canvas for a choice: "clean" (the clean scan), "proposed" (straightened) or "original", turned `turn` (not the original). */
-const versionOf = (shot, which, turn) =>
-  which === "original" ? shot.original : rotateCanvas(which === "clean" && shot.clean ? shot.clean : shot.canvas, turn);
-
-/**
- * A photo from the camera, in up to three versions: a clean scan (the page straightened,
- * turned the way it reads, and evened out to look like it came off a flatbed scanner:
- * shadows gone, paper white, ink crisp), the straightened photo with its true colours
- * and light, or the photo exactly as taken. The clean scan is suggested when the page
- * looks like paper; otherwise the straightened photo is. Either can be turned by hand if
- * the guess was wrong. Shows the chosen one; onChange({ which, turn }).
- */
-function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
-  const [url, setUrl] = useState(null);
-  const [more, setMore] = useState(false); // "Looks wrong?" opened: the other versions, turning, retake
-  useEffect(() => {
-    let gone = false, made = null;
-    const c = versionOf(shot, which, turn);
-    // a small preview: the full photo is only encoded once, when it's sealed
-    const s = Math.min(1, 900 / Math.max(c.width, c.height));
-    const small = document.createElement("canvas");
-    small.width = Math.round(c.width * s); small.height = Math.round(c.height * s);
-    small.getContext("2d").drawImage(c, 0, 0, small.width, small.height);
-    canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
-    return () => { gone = true; if (made) URL.revokeObjectURL(made); };
-  }, [shot, which, turn]);
-  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
-  const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
-  const note = !shot.changed ? "As taken: no document edges were found to straighten."
-    : which === "original" ? "The photo exactly as the camera took it."
-    : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
-    : "Straightened, keeping its true colours and light.";
-  return (
-    <div class="photo-choice" data-more={more ? "1" : "0"}>
-      {more && shot.changed && (
-        <div class="seg" data-n={shot.clean ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
-          {shot.clean && (
-            <button role="radio" aria-checked={which === "clean"} onClick={() => onChange({ which: "clean", turn })}>
-              <Icon name="sparkle" /><span>Clean scan</span>{tag("clean")}
-            </button>
-          )}
-          <button role="radio" aria-checked={which === "proposed"} onClick={() => onChange({ which: "proposed", turn })}>
-            <Icon name="scan" /><span>Straightened</span>{tag("proposed")}
-          </button>
-          <button role="radio" aria-checked={which === "original"} onClick={() => onChange({ which: "original", turn })}><Icon name="image" /><span>Original</span></button>
-        </div>
-      )}
-      <figure class="photo-preview" data-which={which}>
-        {url ? <img src={url} alt={which === "original" ? "The photo as taken" : which === "clean" ? "The document as a clean scan" : "The document, straightened"} /> : <span class="photo-wait" />}
-        {more && which !== "original" && (
-          <div class="photo-turn">
-            <button class="icon-btn" aria-label="Turn left" onClick={() => onChange({ which, turn: (turn + 270) % 360 })}><Icon name="turn" /></button>
-            <button class="icon-btn" aria-label="Turn right" onClick={() => onChange({ which, turn: (turn + 90) % 360 })}><Icon name="turn" /></button>
-          </div>
-        )}
-      </figure>
-      <p class="fine photo-note">
-        {note}
-        {" "}{more ? <button class="linklike" onClick={onRetake}>Retake</button> : <button class="linklike" onClick={() => setMore(true)}>Looks wrong?</button>}
-      </p>
-    </div>
-  );
-}
-
-export function AddSheet() {
-  const st = S.sheet.value;
-  const [file, setFile] = useState(null);
-  const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed, clean, cleanSuggested }
-  const [pick, setPick] = useState({ which: "proposed", turn: 0 });
-  const [name, setName] = useState("");
-  const [tags, setTags] = useState([]);
-  const [camera, setCamera] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [passCheck, setPassCheck] = useState(null); // a Wallet pass: null | { state: "checking" } | { ok, result | reason }
-  const chooser = useRef(null);
-  const current = useRef(null); // the file on screen: a check that finishes for another one is dropped
-  const place = usePlaceStamp();
-  const close = () => { if (!st.stage) S.sheet.value = null; };
-  const choose = (input) => { markPicking(); input.current.click(); };
-  const when = useRef(null);
-  // Keep the photo before the camera closes. Encoding waits for Seal, so it's quick.
-  const photographed = async (res) => {
-    when.current = new Date();
-    // a straightened page also gets a clean scan, made while the camera shows "Saving…"
-    if (res.straightened) {
-      await new Promise((r) => setTimeout(r, 0));
-      try { const c = cleanCanvas(res.canvas); res = { ...res, clean: c.canvas, cleanSuggested: c.paper >= PAPER_SHARE }; }
-      catch { /* low memory: the straightened photo is still offered */ }
-    }
-    return () => {
-      setCamera(false);
-      setShot(res);
-      setPick({ which: !res.changed ? "original" : res.cleanSuggested ? "clean" : "proposed", turn: 0 });
-      setFile(null);
-      setName(`Photo ${when.current.toLocaleDateString()}`);
-    };
-  };
-  const onFile = (e) => {
-    const f = e.currentTarget.files?.[0];
-    e.currentTarget.value = "";
-    e.currentTarget.accept = ""; // "Add a Wallet pass" narrows the chooser for one pick
-    if (!f) return;
-    setShot(null);
-    setFile(f);
-    setName(f.name.replace(/\.[a-z0-9]{1,6}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
-    setTags(suggestTags("file", f.name)); // a suggestion; the person can change it
-    setPassCheck(null);
-    current.current = f;
-    if (looksLikePass(f)) {
-      setPassCheck({ state: "checking" });
-      checkPass(f).then((r) => {
-        if (current.current !== f) return;
-        setPassCheck(r);
-        if (r.ok) setName(r.result.pass.description || r.result.pass.organization || "Pass");
-      });
-    }
-  };
-  /** The file to seal: the chosen version of a camera photo, or the chosen file. */
-  async function toSeal() {
-    if (!shot) return file;
-    const c = versionOf(shot, pick.which, pick.turn);
-    const blob = await canvasBlob(c, 0.9);
-    const t = when.current || new Date();
-    const tag = { original: "", clean: " (scan)", proposed: " (straightened)" }[pick.which] ?? "";
-    return new File([blob], `Photo ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${tag}.jpg`, { type: "image/jpeg" });
-  }
-  async function seal() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      if (passCheck?.ok) await addPass({ checked: passCheck, name, place: place.take() });
-      else {
-        // a pass that failed its check is kept as an ordinary file, never under the pass type
-        const f = file && looksLikePass(file) ? new File([file], file.name, { type: "application/octet-stream" }) : await toSeal();
-        await addDocument({ file: f, name, tags, place: place.take() });
-      }
-    }
-    catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
-    finally { setBusy(false); }
-  }
-  const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
-  const have = file || shot;
-  const reset = () => { setFile(null); setShot(null); setPassCheck(null); current.current = null; };
-  const plainFile = () => { setPassCheck(null); setTags([]); }; // keep a pass that failed its check as an ordinary file
-
-  return (
-    <Sheet onClose={close} label="Add a document">
-      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{have ? "Check it, then seal it" : "Add to your vault"}</h2></div>
-        {!st.stage && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
-
-      <input ref={chooser} type="file" hidden onChange={onFile} />
-
-      {!have && (
-        <>
-          <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
-            <span class="ico"><Icon name="idcard" /></span>
-            <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the ID chip where there is one.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
-            <span class="ico"><Icon name="card" /></span>
-            <span><strong>Add a payment card</strong><span>Credit or debit. Scan both sides, tap it, or type it. Never the PIN.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <button class="kind" style={{ marginTop: 10 }} onClick={() => { chooser.current.accept = ".pkpass,application/vnd.apple.pkpass"; choose(chooser); }}>
-            <span class="ico"><Icon name="ticket" /></span>
-            <span><strong>Add a Wallet pass</strong><span>A boarding pass, ticket or membership card shared from Apple Wallet as a .pkpass file. HumID checks it's genuinely from its issuer.</span></span>
-            <Icon name="chevron" />
-          </button>
-          <div class="source" style={{ marginTop: 10 }}>
-            <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card. HumID finds it and straightens it.</span></button>
-            <button onClick={() => { chooser.current.accept = ""; choose(chooser); }}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
-          </div>
-        </>
-      )}
-      {camera && <DocCamera shape="full" title="Take a photo" hint="Point the camera at the document. It finds the edges by itself." onCancel={() => setCamera(false)} onDone={photographed} />}
-
-      {have && st.stage == null && (
-        <>
-          {passCheck ? <PassCheck check={passCheck} onPlain={plainFile} onAnother={() => { reset(); choose(chooser); }} />
-            : shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
-            : (
-              <div class="doc-hero">
-                <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-kind="file"><Icon name={kindIcon(file.type)} /></span></span>
-                <div style={{ minWidth: 0 }}><div class="name" style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{file.name}</div><div class="muted small">{fmtSize(file.size)} · {file.type || "file"}</div></div>
-              </div>
-            )}
-          <div class="field">
-            <label for="doc-name">Name</label>
-            <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
-          </div>
-          {!passCheck && <TagPicker tags={tags} onChange={setTags} />}
-          {place.element}
-          <div class="actions">
-            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />Seal</button>
-            <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
-          </div>
-          <p class="fine" style={{ marginTop: 12 }}>One check seals it on this phone. {shot ? "Only the version shown is kept." : "The original file isn't kept."} The location stamp is sealed with it, so your vault server can't read it. <HowProtectedLink /></p>
-        </>
-      )}
-
-      {have && st.stage != null && (
-        <Steps current={stageIdx} steps={SEAL_STEPS} />
-      )}
-    </Sheet>
   );
 }
 
