@@ -14,7 +14,7 @@ import { CardView } from "./cards.jsx";
 import { BRANDS, expiryStatus, showExpiry } from "@humid/cards";
 import { STYLE_LABEL } from "@humid/wallet";
 import { PassView } from "./passes.jsx";
-import { TagPicker } from "./review.jsx";
+import { TagPicker, Push } from "./review.jsx";
 import { openAdd } from "./add.jsx";
 
 export function Vault() {
@@ -163,88 +163,109 @@ function SealedAt({ place }) {
 
 /* ---------------- item ---------------- */
 
-export function ItemSheet() {
+/**
+ * An item, pushed over the vault: the preview first (a locked placeholder with one Open;
+ * a card's masked number; a pass's summary), then the facts, then an overflow menu
+ * (Rename · Pin · Show in decoy · Export sealed · Delete). Save a copy lives in the
+ * opened Viewer, which has its own check. Open, Export and Delete are each one check.
+ */
+export function Item() {
   const st = S.sheet.value;
   const item = S.items.value.find((i) => i.id === st.id);
-  const [mode, setMode] = useState("view"); // view | edit
+  const [mode, setMode] = useState("view"); // view | menu | edit | delete
   const [name, setName] = useState(item?.name || "");
   const [tags, setTags] = useState(item?.tags || []);
   if (!item) return null;
-  const c = kindOf(item.kind);
+  const k = kindOf(item.kind);
   const close = () => (S.sheet.value = null);
   const off = !!S.offline.value;
+  const card = item.cardInfo, pi = item.passInfo, id = item.idInfo;
+  const decoyOffered = S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off;
 
   return (
-    <Sheet onClose={close} label={item.name}>
-      <div class="doc-hero">
-        <span class="ico" data-kind={c.id} style={{ display: "grid", placeItems: "center", borderRadius: 18, width: 64, height: 64, background: "var(--surface-3)" }}><Icon name={itemIcon(item)} /></span>
-        <div style={{ minWidth: 0 }}><div class="eyebrow">{c.one}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
-      </div>
-
-      {mode === "view" && (
-        <>
-          <div class="card" style={{ marginTop: 14 }}>
-            <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
-            <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
-            <SealedAt place={item.place} />
-            <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
-          </div>
-          {off && (
-            <div class="banner warn" role="note" style={{ marginTop: 14 }}>
-              <span class="b-ico"><Icon name="signal" /></span>
-              <div><strong>Opening needs a connection</strong><span>The document itself and its key are only in your vault. Nothing here can open it offline.</span></div>
+    <>
+      <Push label={item.name} eyebrow={k.one} title={item.name} onBack={close} right={!off && mode !== "edit" && mode !== "delete" && <button class="icon-btn" aria-label="More" aria-haspopup="menu" onClick={() => setMode("menu")}><Icon name="more" /></button>}>
+        {mode !== "edit" && mode !== "delete" && (
+          <>
+            <div class="item-hero" data-kind={item.kind}>
+              {card ? (
+                <>
+                  <div class={`pay-card brand-${card.brand}`} aria-label={`${brandName(card.brand)} card`}>
+                    <div class="pc-top"><span class="pc-brand">{brandName(card.brand)}</span>{expiryStatus(card.expiry).state === "expired" && <span class="pc-flag">Expired</span>}</div>
+                    <div class="pc-number mono" data-card="number">•••• {card.last4}</div>
+                    <div class="pc-bottom"><span>{card.nickname || " "}</span><span class="mono">{showExpiry(card.expiry)}</span></div>
+                  </div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Show the number</button>
+                </>
+              ) : pi ? (
+                <>
+                  <span class="big" data-kind="pass"><Icon name="ticket" /></span>
+                  <div><div style={{ fontWeight: 600 }}>{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}</div><div class="muted small">{pi.voided ? "Voided" : pi.expires ? `${Date.parse(pi.expires) < Date.now() ? "Expired" : "Expires"} ${fmtDate(pi.expires)}` : pi.relevant ? fmtDate(pi.relevant) : "Checked against its issuer when it was added"}</div></div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
+                </>
+              ) : (
+                <>
+                  <span class="big" data-kind={item.kind}><Icon name={itemIcon(item)} /></span>
+                  <div class="muted small">{id ? `${kindLabel(id.kind)} · sealed with its photos` : "Sealed. Nothing here can show it until a check opens it."}</div>
+                  <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
+                </>
+              )}
             </div>
-          )}
-          <div class="actions">
-            <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
-            <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => saveCopy(item)}><Icon name="download" />Save a copy</button>
-              <button class="btn quiet" disabled={off} onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
+            {off && (
+              <div class="banner warn" role="note" style={{ marginTop: 14 }}>
+                <span class="b-ico"><Icon name="signal" /></span>
+                <div><strong>Opening needs a connection</strong><span>The document itself and its key are only in your vault. Nothing here can open it offline.</span></div>
+              </div>
+            )}
+            <div class="card" style={{ marginTop: 14 }}>
+              <div class="row"><span class="k">Kind</span><span class="v">{k.one}</span></div>
+              {item.tags?.length > 0 && <div class="row"><span class="k">Tags</span><span class="v"><TagLabels tags={item.tags} /></span></div>}
+              <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
+              <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
+              <SealedAt place={item.place} />
+              {(id?.expiry || card?.expiry || pi?.expires) && <div class="row"><span class="k">Expires</span><span class="v">{id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)}</span></div>}
+              <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
             </div>
-            <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => exportSealed(item)}><Icon name="lock" />Export sealed</button>
-              <button class="btn danger" disabled={off} onClick={() => setMode("delete")}><Icon name="trash" />Delete</button>
+            <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh check. Every one is recorded in Activity.</p>
+          </>
+        )}
+
+        {mode === "edit" && (
+          <>
+            <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
+            <TagPicker tags={tags} onChange={setTags} />
+            <div class="actions">
+              <button class="btn primary block" onClick={() => renameItem(item, name, tags)}>Save changes</button>
+              <button class="btn ghost block" data-back onClick={() => setMode("view")}>Cancel</button>
             </div>
-          </div>
-          {!off && (
-            <label class="toggle" style={{ marginTop: 12 }}>
-              <span><strong>Pin to the top</strong><span>Sealed with the item, so it's pinned on all your devices.</span></span>
-              <input type="checkbox" role="switch" checked={!!item.pinned} onChange={(e) => setPinned(item, e.currentTarget.checked)} />
-              <i aria-hidden="true" />
-            </label>
-          )}
-          {S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off && (
-            <label class="toggle" style={{ marginTop: 12 }}>
-              <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
-              <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
-              <i aria-hidden="true" />
-            </label>
-          )}
-          <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh check. Every one is recorded in Activity.</p>
-        </>
-      )}
+          </>
+        )}
 
-      {mode === "edit" && (
-        <>
-          <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
-          <TagPicker tags={tags} onChange={setTags} />
-          <div class="actions">
-            <button class="btn primary block" onClick={() => renameItem(item, name, tags)}>Save changes</button>
-            <button class="btn ghost block" onClick={() => setMode("view")}>Cancel</button>
-          </div>
-        </>
-      )}
+        {mode === "delete" && (
+          <>
+            <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete {item.name}?</strong><span>It's gone from your vault for good. Copies you saved elsewhere stay.</span></div></div>
+            <div class="actions">
+              <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Delete</button>
+              <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
+            </div>
+          </>
+        )}
+      </Push>
 
-      {mode === "delete" && (
-        <>
-          <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete {item.name}?</strong><span>It's gone from your vault for good. Copies you saved elsewhere stay.</span></div></div>
-          <div class="actions">
-            <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Delete</button>
-            <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
+      {mode === "menu" && (
+        <Sheet onClose={() => setMode("view")} label="More">
+          <div class="s-head"><div class="grow"><div class="eyebrow">{k.one}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
+            <button class="icon-btn" aria-label="Close" data-back onClick={() => setMode("view")}><Icon name="x" /></button></div>
+          <div class="menu" role="menu">
+            <button role="menuitem" onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
+            <button role="menuitem" onClick={() => { setMode("view"); setPinned(item, !item.pinned); }}><Icon name="pushpin" />{item.pinned ? "Unpin" : "Pin to the top"}</button>
+            {decoyOffered && <button role="menuitem" onClick={() => { setMode("view"); setDecoy(item, !item.decoy); }}><Icon name="eye" />{item.decoy ? "Hide from the decoy view" : "Show in decoy view"}</button>}
+            <button role="menuitem" onClick={() => { setMode("view"); exportSealed(item); }}><Icon name="lock" />Export sealed</button>
+            <button role="menuitem" class="danger" onClick={() => setMode("delete")}><Icon name="trash" />Delete</button>
           </div>
-        </>
+        </Sheet>
       )}
-    </Sheet>
+    </>
   );
 }
 
