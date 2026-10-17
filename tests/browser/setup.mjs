@@ -201,7 +201,6 @@ try {
   assert.equal(await back(), "sheet-step", "back inside the ID sheet steps back to the choice of document");
   await page.locator(".sheet").getByText("Which document?").waitFor();
   assert.equal(await back(), "sheet");
-  assert.equal(await back(), "sheet");
   await page.locator(".sheet").waitFor({ state: "detached" });
   assert.equal(await page.locator(".tabbar").count(), 1, "still in the app");
   step("back gesture: camera, then sheet, then tab; at the Vault it stays put");

@@ -217,7 +217,7 @@ export function You() {
       )}
 
       <details class="card about">
-        <summary><strong>About this HumID</strong><span class="small muted">Your identity, this device, the connection</span></summary>
+        <summary><span><strong>About this HumID</strong><span class="small muted">Your identity, this device, the connection</span></span></summary>
         <div class="eyebrow" style={{ marginTop: 14 }}>Your identity</div>
         <div class="rows" style={{ marginTop: 6 }}>
           <div class="row"><span class="k">Created</span><span class="v">{id ? fmtDate(id.enrolledAt) : ""}</span></div>

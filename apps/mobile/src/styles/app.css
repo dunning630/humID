@@ -606,7 +606,7 @@ details.about { margin-top: 12px; }
 details.about summary { cursor: pointer; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 12px; min-height: 44px; }
 details.about summary::-webkit-details-marker { display: none; }
 details.about summary strong { display: block; font-size: var(--t-md); }
-details.about summary > span { display: block; margin-top: 2px; }
+details.about summary > span > span { display: block; margin-top: 2px; }
 details.about summary::after { content: ""; width: 10px; height: 10px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); justify-self: end; margin-right: 6px; transition: transform .15s; }
 details.about[open] summary::after { transform: rotate(225deg); }
 .checklist.decoys { gap: 4px; }

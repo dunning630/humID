@@ -196,7 +196,7 @@ try {
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().waitFor({ timeout: 30_000 });
   step("sealed, with the location stamp on");
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().click();
-  await page.getByText("Sealed at", { exact: true }).waitFor();
+  await page.getByText("Location stamp", { exact: true }).waitFor();
   await page.locator(".place-v").getByText(HERE).waitFor();
   await page.locator(".place-v").getByText(/within 14 m/).waitFor();
   await shot(page, "5-sealed-at");
@@ -235,7 +235,7 @@ try {
   await page.locator(".item").filter({ hasText: "No stamp" }).first().waitFor({ timeout: 30_000 });
   await page.locator(".item").filter({ hasText: "No stamp" }).first().click();
   await page.getByText("Sealed with", { exact: true }).waitFor();
-  assert.equal(await page.getByText("Sealed at", { exact: true }).count(), 0, "no location with the stamp off");
+  assert.equal(await page.getByText("Location stamp", { exact: true }).count(), 0, "no location with the stamp off");
   step("with the stamp off, the document has no location");
   await ctx.close();
   console.log("ok — Take a photo finds, straightens and stamps documents in the browser");
