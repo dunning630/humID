@@ -45,10 +45,21 @@ export function sanitize(raw) {
 
 const KEY = "humid.prefs.v1";
 
-/** Read this device's preferences. Storage can be missing or refuse (private mode): defaults then. */
-export function loadPrefs(storage = globalThis.localStorage) {
-  try { return sanitize(JSON.parse(storage?.getItem(KEY) || "null")); }
-  catch { return sanitize(null); }
+/** Does this device ask for less motion? (Only consulted before the person has chosen.) */
+export function prefersReducedMotion() {
+  try { return !!globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches; } catch { return false; }
+}
+
+/**
+ * Read this device's preferences. Storage can be missing or refuse (private mode): defaults then.
+ * On first launch (nothing chosen yet) animations follow the device's reduce-motion setting.
+ */
+export function loadPrefs(storage = globalThis.localStorage, reduced = prefersReducedMotion()) {
+  let raw = null;
+  try { raw = JSON.parse(storage?.getItem(KEY) || "null"); } catch { raw = null; }
+  const p = sanitize(raw);
+  if (typeof raw?.motion !== "boolean" && reduced) p.motion = false;
+  return p;
 }
 
 export function savePrefs(prefs, storage = globalThis.localStorage) {

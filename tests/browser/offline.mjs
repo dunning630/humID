@@ -47,9 +47,9 @@ async function hold(page) {
   await page.locator(".interrupt").waitFor({ state: "detached", timeout: 20_000 });
 }
 async function addDoc(page, name) {
-  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
   await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: name.replace(/\.\w+$/, "") }).waitFor({ timeout: 30_000 });
 }
@@ -96,7 +96,7 @@ try {
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  await page.getByRole("button", { name: "Add a document" }).first().click(); // empty state → Add sheet
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add sheet
   await page.locator(".sheet").waitFor();
   await page.keyboard.press("Escape").catch(() => {});
   await page.locator(".sheet").waitFor({ state: "detached", timeout: 5000 }).catch(() => page.locator(".sheet button[aria-label=Close]").first().click());
@@ -147,7 +147,7 @@ try {
 
   await page.locator(".item", { hasText: "Last will" }).click();
   await page.getByText("Opening needs a connection").waitFor();
-  for (const b of ["Open", "Save copy", "Rename", "Sealed copy", "Delete"]) assert.ok(await page.locator(".sheet").getByRole("button", { name: b, exact: true }).isDisabled(), `${b} is disabled offline`);
+  for (const b of ["Open", "Save a copy", "Rename", "Export sealed", "Delete"]) assert.ok(await page.locator(".sheet").getByRole("button", { name: b, exact: true }).isDisabled(), `${b} is disabled offline`);
   assert.equal(await page.locator(".sheet").getByText("Show in decoy view").count(), 0);
   await shot(page, "3-item-offline");
   await page.locator(".sheet button[aria-label=Close], .sheet .icon-btn").first().click().catch(() => page.keyboard.press("Escape"));
@@ -155,7 +155,7 @@ try {
 
   await tab(page, "Activity");
   await page.locator(".banner.offline").waitFor();
-  await page.getByText("Ledger as verified when last online").waitFor({ timeout: 10_000 });
+  await page.getByText("Record as checked when last online").waitFor({ timeout: 10_000 });
   await page.getByText(/Sealed Last will/).waitFor();
   await shot(page, "4-activity-offline");
   await tab(page, "You");

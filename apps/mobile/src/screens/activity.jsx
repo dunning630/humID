@@ -32,19 +32,19 @@ function describe(e, names) {
     case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only owner's biometrics" : null] };
     case "device.removed": return { icon: "x", tone: "amber", title: `Device removed · ${d.platform || "device"}`, meta: [], proof: d.proof };
     case "device.link_approved": return { icon: "key", tone: "amber", title: `Approved ${d.platform || "a new device"}`, meta: [], proof: d.proof };
-    case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made" : "Seal card made", meta: [], proof: d.proof };
-    case "recovery.card_removed": return { icon: "idcard", tone: "", title: "Seal card removed", meta: [], proof: d.proof };
-    case "recovery.contacts_set": return { icon: "users", tone: "mint", title: `${d.scheme === "quorum" ? "Witnesses" : "Recovery contacts"} set · any ${d.threshold} of ${d.n}`, meta: [], proof: d.proof };
+    case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made (older kind)" : "Recovery card made", meta: [], proof: d.proof };
+    case "recovery.card_removed": return { icon: "idcard", tone: "", title: "Recovery card removed", meta: [], proof: d.proof };
+    case "recovery.contacts_set": return { icon: "users", tone: "mint", title: `Witnesses set · any ${d.threshold} of ${d.n}${d.scheme === "quorum" ? "" : " (older kind)"}`, meta: [], proof: d.proof };
     case "recovery.contacts_removed": return { icon: "users", tone: "", title: "Witnesses removed", meta: [], proof: d.proof };
-    case "recovery.anchor_set": return { icon: "passport", tone: "mint", title: `Anchored to your ${d.document || "ID"}`, meta: [d.country], proof: d.proof };
-    case "recovery.anchor_removed": return { icon: "passport", tone: "", title: "ID anchor removed", meta: [], proof: d.proof };
+    case "recovery.anchor_set": return { icon: "passport", tone: "mint", title: `Linked to your ${d.document || "ID"}'s chip`, meta: [d.country], proof: d.proof };
+    case "recovery.anchor_removed": return { icon: "passport", tone: "", title: "ID chip unlinked", meta: [], proof: d.proof };
     case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${({ card: "older card", contacts: "older contacts", quorum: "two proofs" })[d.method] || d.method}`, meta: [d.platform] };
     case "recovery.evidence": return { icon: KIND_ICON[d.kind] || "shield", tone: "amber", title: `Recovery proof added · ${KIND[d.kind] || d.kind}${d.anchorMode === "remote" ? " (live)" : ""}`, meta: [d.releaseAt ? `opens ${new Date(d.releaseAt).toLocaleString()}` : "needs a second proof"] };
     case "recovery.station_verified": return { icon: "station", tone: "amber", title: "ID verified in person at a station", meta: [d.country, d.releaseAt ? `opens ${new Date(d.releaseAt).toLocaleString()}` : null] };
     case "station.verified": return { icon: "station", tone: "mint", title: "You verified someone at your station", meta: [d.country], proof: d.proof };
     case "recovery.approved": return { icon: "users", tone: "amber", title: `A witness approved · ${d.approvals} of ${d.threshold}`, meta: [] };
     case "recovery.cancelled": return { icon: "x", tone: "mint", title: "Recovery cancelled", meta: [d.platform], proof: d.proof };
-    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : d.method === "card" ? "Recovery card" : "Recovery contacts", d.waitedMs ? `waited ${hours(d.waitedMs)}` : null] };
+    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : d.method === "card" ? "Older recovery card" : "Older witnesses", d.waitedMs ? `waited ${hours(d.waitedMs)}` : null] };
     case "duress.signaled": return { icon: "siren", tone: "danger", title: "Duress signal", meta: [d.platform] };
     case "duress.cleared": return { icon: "siren", tone: "mint", title: "Lockdown lifted", meta: [], proof: d.proof };
     case "settings.changed": return { icon: "siren", tone: "", title: d.duressAlert ? "Witnesses will see duress signals" : "Witnesses won't see duress signals", meta: [], proof: d.proof };
@@ -52,19 +52,19 @@ function describe(e, names) {
     default: return { icon: "info", tone: "", title: e.type, meta: [] };
   }
 }
-const VIA = { register: "First device", link: "From another device", card: "Older recovery card", contacts: "Older recovery contacts", quorum: "Two proofs" };
-const KIND = { witness: "witnesses", card: "seal card", anchor: "ID chip" };
+const VIA = { register: "First device", link: "From another device", card: "Older recovery card", contacts: "Older witnesses", quorum: "Two proofs" };
+const KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip" };
 const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport" };
 const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
-  device_not_proven: "Device can't prove a live check",
-  no_live_biometric: "No live face or fingerprint check",
-  step_up_required: "No biometric check",
-  bad_step_up: "Biometric proof rejected",
+  device_not_proven: "Device can't prove its checks",
+  no_live_biometric: "No face or fingerprint check",
+  step_up_required: "No check",
+  bad_step_up: "Check rejected",
   bad_login_proof: "Sign-in proof rejected",
   bad_proof: "Proof rejected",
-  no_live_seal: "Sealed without a live check",
+  no_live_seal: "Sealed without a check",
   lockdown: "Blocked by lockdown",
 })[r] || r;
 
@@ -87,21 +87,29 @@ export function Activity() {
 
       <OfflineBanner />
 
-      {S.ledgerLoading.value && !l && <p class="muted small">Verifying your ledger…</p>}
+      {S.ledgerLoading.value && !l && <p class="muted small">Checking your record…</p>}
 
       {l && (l.ok ? (
         <div class="banner">
           <span class="b-ico"><Icon name="shield" /></span>
-          <div><strong>{S.offline.value ? "Ledger as verified when last online" : "Ledger verified on this phone"}</strong><span>{l.entries.length} events · hash chain intact · head signed with ML-DSA-87 · key <span class="mono">{l.keyFp?.slice(0, 8)}</span></span></div>
+          <div><strong>{S.offline.value ? "Record as checked when last online" : "Record checked on this phone"}</strong><span>{l.entries.length} events · nothing altered or missing · signed by your vault server (<span class="mono">{l.keyFp?.slice(0, 8)}</span>)</span></div>
         </div>
       ) : (
         <div class="banner bad">
           <span class="b-ico"><Icon name="alert" /></span>
-          <div><strong>Ledger failed verification</strong><span>{l.reason}. Treat this history as untrusted.</span></div>
+          <div><strong>This record failed its check</strong><span>{l.reason}. Treat this history as untrusted.</span></div>
         </div>
       ))}
 
       {l?.ok && <Continuity />}
+
+      {l?.ok && entries.length === 0 && (
+        <div class="empty" style={{ marginTop: 18 }}>
+          <Icon name="chain" />
+          <h3>Nothing here yet</h3>
+          <p>Every unlock, open, save and delete is recorded here, checked on this phone.</p>
+        </div>
+      )}
 
       <div class="timeline">
         {groups.map((g) => (
@@ -116,7 +124,7 @@ export function Activity() {
                     <div class="e-title">{x.title}</div>
                     <div class="e-meta">
                       {x.meta.filter(Boolean).map((m) => <span>{m}</span>)}
-                      {x.proof && <span class="pill mint" title="Hash of the biometric-signed proof"><Icon name="fingerprint" /><span class="mono">{x.proof.slice(0, 8)}</span></span>}
+                      {x.proof && <span class="pill mint" title="This action passed a check"><Icon name="fingerprint" /><span class="mono">{x.proof.slice(0, 8)}</span></span>}
                       <span class="mono" title={e.hash}>#{e.seq}</span>
                     </div>
                   </div>

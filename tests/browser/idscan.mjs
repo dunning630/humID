@@ -88,7 +88,7 @@ try {
   await page.getByLabel(/Only my own face or fingerprints/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
-  // confirm the seal card by typing back the group the app asks for
+  // confirm the recovery card by typing back the group the app asks for
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
@@ -128,7 +128,7 @@ try {
   assert.match(await page.locator(".id-proof").innerText(), /barcode/i);
   step("barcode read: details filled");
 
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const lic = page.locator(".item", { hasText: "Driver's license · Illinois" });
   await lic.waitFor({ timeout: 30_000 });
@@ -178,7 +178,7 @@ try {
   assert.equal(await page.locator(".id-thumbs figure[data-shape='portrait'] img").count(), 1, "chip photo shown");
   step("chip read: details from the chip, photo copied, hashes match");
 
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const pp = page.locator(".item", { hasText: "Passport ·" });
   await pp.waitFor({ timeout: 30_000 });
