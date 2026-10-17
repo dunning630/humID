@@ -60,7 +60,8 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 | In-process capture | `getUserMedia` inside the app's WebView; zxing-cpp and Tesseract run on the phone | ➖ (the equivalent of CameraX with on-device ML Kit; nothing leaves the phone) |
 | Frames in memory only; camera stopped after a scan | Canvases in memory, the stream stopped on finish | ➖ |
 | No selfie or face capture | Rear camera only; face checks are the OS biometric | ➖ |
-| "Photo" picks a file through the system chooser | `ids.jsx:307`, `accept="image/*"` | ✅ images only, and with the `<queries>` entry gone it can't reach a camera app; a picked photo is the lowest-ranked source (`record.js` `RANK`) |
+| Location stamp is the phone's word | `core/place.js`: what the OS geolocation reported, kept in the encrypted index, never in the file; shown as "as the phone reported", never as proof | ➖ a rooted or emulated phone can report any place |
+| "Photo" picks a file through the system chooser | `ids.jsx` `DocCamera`, `accept="image/*"` | ✅ images only, and with the `<queries>` entry gone it can't reach a camera app; a picked photo is the lowest-ranked source (`record.js` `RANK`) |
 
 ## P2 — QR payloads
 

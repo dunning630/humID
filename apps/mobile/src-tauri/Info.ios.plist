@@ -12,5 +12,7 @@
   </array>
   <key>NSCameraUsageDescription</key>
   <string>HumID uses the camera to scan HumID QR codes and to photograph documents and IDs you add to your vault. Photos are sealed on this device; nothing is recorded otherwise.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>HumID can stamp a document with where it was sealed, if you leave "Stamp where it's sealed" on. The location is sealed with the document's name on this device; the vault server can't read it.</string>
 </dict>
 </plist>

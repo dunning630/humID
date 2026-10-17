@@ -35,6 +35,7 @@ import { probeNfc, openChip } from "./nfc.js";
 import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
+import { validStamp, REASONS } from "./place.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
@@ -743,10 +744,10 @@ export async function refresh() {
   } finally { S.loading.value = false; }
 }
 
-export async function addDocument({ file, name, category }) {
+export async function addDocument({ file, name, category, place = null }) {
   if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. This POC seals files up to 50 MB.`, "warn"); return false; }
   const bytes = await readFile(file);
-  return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category });
+  return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category, place });
 }
 
 /**
@@ -754,19 +755,31 @@ export async function addDocument({ file, name, category }) {
  * with its photos, and a summary (kind, issuer, expiry) inside the encrypted index
  * so the list can show when it expires without opening it.
  */
-export async function addIdRecord(record, name) {
+export async function addIdRecord(record, name, place = null) {
   const bytes = encodeRecord(record);
   if (bytes.length > MAX_FILE) { toast("Those photos are too large to seal. Retake them and try again.", "warn"); return false; }
-  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) } });
+  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) }, place });
 }
 
-/** Encrypt on this device, one live check signs it, upload. The sheet shows the stages. */
-async function sealAndStore({ bytes, type, name: finalName, category, extra = {} }) {
+/**
+ * Encrypt on this device, one live check signs it, upload. The sheet shows the stages.
+ * place: a location watch (core/place.js) when the person chose to stamp where it was
+ * sealed; the freshest fix at this moment goes into the encrypted index, beside the name.
+ */
+async function sealAndStore({ bytes, type, name: finalName, category, extra = {}, place = null }) {
   const id = S.identity.value;
   if (S.offline.value) { toast(friendly({ code: "offline" }), "warn"); return false; }
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
   let share = null, prepared;
   try {
+    // where it's being sealed (waits a few seconds at most for a first fix)
+    let stamp = null;
+    if (place) {
+      const got = await place.take(5000);
+      if (got.stamp && validStamp(got.stamp)) stamp = got.stamp;
+      else toast(`Sealing without a location: ${REASONS[got.reason] || REASONS.unavailable}`, "warn");
+    }
+    if (stamp) extra = { ...extra, place: stamp };
     // Encrypt first (public keys only), then one live check signs the ciphertext's hash
     // in hardware and releases the key that signs the envelope.
     const Suite = suite(id.suite);
@@ -864,7 +877,8 @@ export async function exportSealed(item) {
 
 const indexEntry = (item, patch = {}) => ({
   name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
-  ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...patch,
+  ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}),
+  ...(item.split ? { split: true } : {}), ...(item.place ? { place: item.place } : {}), ...patch,
 });
 
 /**

@@ -9,6 +9,7 @@ import { qrPayload, parseQr } from "@humid/recovery";
 import { DEMO_BUILD } from "@humid/gate";
 import { setDemoHolder, demoChipHint } from "./core/nfc.js";
 import { IN_APP } from "./core/config.js";
+import { watchPlace, formatCoords, formatAccuracy, REASONS } from "./core/place.js";
 
 export const fmtSize = (n) => n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 export const fmtDate = (t) => new Date(t).toLocaleDateString([], { month: "short", day: "numeric", year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
@@ -386,6 +387,34 @@ export function Toggle({ checked, onChange, label, hint, disabled }) {
       <i aria-hidden="true" />
     </label>
   );
+}
+
+/**
+ * "Stamp where it's sealed" on a seal screen: a switch (on unless turned off for this
+ * document), and while it's on, the phone's location is watched so a fix is ready when
+ * Seal is pressed (core/place.js). Returns { take: () => the watch to pass to sealing, or
+ * null when off, element }.
+ */
+export function usePlaceStamp() {
+  const [on, setOn] = useState(true);
+  const [st, setSt] = useState({ reason: "waiting" });
+  const watch = useRef(null);
+  useEffect(() => {
+    if (!on) return;
+    const w = watchPlace({ onChange: setSt });
+    watch.current = w;
+    setSt(w.status);
+    return () => { w.stop(); if (watch.current === w) watch.current = null; };
+  }, [on]);
+  const hint = !on ? "Off for this document: no location is kept with it."
+    : st.stamp ? `Here: ${formatCoords(st.stamp)} · ${formatAccuracy(st.stamp.accuracy)}`
+    : REASONS[st.reason] || REASONS.waiting;
+  const element = (
+    <div class="place-stamp" data-on={on ? "1" : "0"} data-fix={on && st.stamp ? "1" : "0"}>
+      <Toggle checked={on} onChange={setOn} label={<><Icon name="pin" />Stamp where it's sealed</>} hint={hint} />
+    </div>
+  );
+  return { take: () => (on ? watch.current : null), element };
 }
 
 /** The three kinds of proof, and which ones a recovery or an account has. */
