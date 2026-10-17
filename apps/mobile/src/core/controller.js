@@ -32,6 +32,7 @@ import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
 import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, readCardBack } from "@humid/cards";
 import { parseAccessCode } from "@humid/pass";
+import { sealedWallet } from "@humid/pass/atrest";
 import { probeNfc, openChip } from "./nfc.js";
 import { textReader } from "./scan.js";
 import { readPkpass, passIndex, MEDIA_TYPE as PASS_TYPE, APPLE_ROOTS, WalletError } from "@humid/wallet";
@@ -235,7 +236,7 @@ export async function boot() {
   S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
-  try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
+  try { S.pass.value = await wallet().get(); } catch { S.pass.value = null; }
   try { S.offlineReady.value = !!(await store.getOffline()); } catch { S.offlineReady.value = false; }
   const id = S.identity.value;
   const raw = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
@@ -404,6 +405,10 @@ export function startEnroll() {
 // came from. Before the code is sent, the request is saved here, so a crash or a lost
 // connection never loses a paid-for code: the same request is simply sent again.
 
+// The pass and its draft are sealed at rest under this install's key (@humid/pass/atrest):
+// before enrolment there is no seed-derived key, and the code must not sit readable in storage.
+const wallet = () => sealedWallet(store);
+
 const PASS_REFUSED = new Set(["code_invalid", "code_unknown", "code_used", "too_many_keys", "no_keys", "bad_key"]);
 
 export async function redeemAccessCode(input) {
@@ -417,7 +422,7 @@ export async function redeemAccessCode(input) {
     const pass = await api.getPass(code, {
       saveDraft: async (draft) => {
         const rec = { state: "draft", code, draft, savedAt: new Date().toISOString().slice(0, 10) };
-        await store.putPass(rec);
+        await wallet().put(rec);
         S.pass.value = rec;
         saved = true;
       },
@@ -426,7 +431,7 @@ export async function redeemAccessCode(input) {
     return true;
   } catch (e) {
     // A definite refusal: nothing was signed, so the saved request is worthless.
-    if (saved && PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; }
+    if (saved && PASS_REFUSED.has(e?.code)) { await wallet().clear(); S.pass.value = null; }
     toast(saved && !PASS_REFUSED.has(e?.code) ? "Your access code is saved on this phone. HumID will finish your pass when it can reach the vault." : friendly(e), "error");
     return false;
   } finally { S.passBusy.value = false; }
@@ -441,7 +446,7 @@ export async function resumePass() {
     await keepPass(await api.getPass(rec.code, { draft: rec.draft }));
     return true;
   } catch (e) {
-    if (PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; toast(friendly(e), "error"); }
+    if (PASS_REFUSED.has(e?.code)) { await wallet().clear(); S.pass.value = null; toast(friendly(e), "error"); }
     return false;
   } finally { S.passBusy.value = false; }
 }
@@ -449,7 +454,7 @@ export async function resumePass() {
 /** Keep the finished pass, and drop the access code: from here on, nothing ties the pass to it. */
 async function keepPass(pass) {
   const rec = { state: "ready", pass };
-  await store.putPass(rec);
+  await wallet().put(rec);
   S.pass.value = rec;
 }
 
@@ -530,13 +535,13 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       S.enrollStep.value = "done";
     });
     api.htp.pinnedKid = srv.kid;
-    if (pass) { await store.clearPass(); S.pass.value = null; } // spent: nothing to keep
+    if (pass) { await wallet().clear(); S.pass.value = null; } // spent: nothing to keep
     await endInterrupt(true, "Your HumID is bound to this device.", 700);
   } catch (err) {
     if (enrolled) try { await gate.forget(enrolled.handle); } catch {}
     // The vault refused the pass itself: it's no use to keep, so ask for another code.
     if (["pass_spent", "pass_invalid", "pass_expired", "pass_required"].includes(err?.code)) {
-      await store.clearPass();
+      await wallet().clear();
       batch(() => { S.pass.value = null; S.enrollStep.value = "access"; });
     }
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
