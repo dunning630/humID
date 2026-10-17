@@ -134,6 +134,11 @@ device makes recovery rarely needed at all. Setup points people there.
 - **Two key groups.** The two-key limit bounds how far a malicious server can
   sort people by key; publishing pass keys in the public log would remove it.
 - **The ID anchor and witnesses**, as in the table above.
+- **Where you sealed things, to whoever holds your keys.** A document's location
+  stamp (on by default on the seal screen, off per document) is kept in its
+  encrypted index, which the server can't read; but anyone who opens your vault sees
+  where each document was sealed. Turn the stamp off for documents you'd rather not
+  tie to a place (docs/ID-SCANNING.md).
 
 ## Settings
 

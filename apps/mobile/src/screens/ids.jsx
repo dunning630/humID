@@ -1,18 +1,22 @@
 // Identity documents: scan a driver's license, passport or ID card with the
 // camera (and its chip, where there is one), check the details, and seal one
-// record into the vault. Also the camera itself (DocCamera), which "Take a
-// photo" uses for any document, and the card view for a sealed ID.
+// record into the vault. Also the camera itself (DocCamera), which finds the
+// document anywhere in view, straightens it and turns it upright; "Take a photo"
+// uses it for any document. And the card view for a sealed ID.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { Sheet, Steps, ChipAccess } from "../ui.jsx";
+import { Sheet, Steps, ChipAccess, usePlaceStamp } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy, buzz as buzzPref } from "../core/controller.js";
 import {
   KINDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyTyped, setImage, title as recordTitle, status as idStatus,
   provenance, fullName, niceName, countryName, regionName, parseAamva, MrzConsensus,
 } from "@humid/idscan";
-import { barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank } from "../core/scan.js";
-import { analyzeFrame, autoShutter, toGray } from "../core/detect.js";
+import {
+  barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank,
+  grayOf, cornersIn, develop as developPhoto, straighten, rotateCanvas,
+} from "../core/scan.js";
+import { lookAt, tracker, scaleQuad } from "../core/docfind.js";
 import { DEMO_BUILD } from "@humid/gate";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -26,13 +30,18 @@ function cameraError(e) {
   return "The camera couldn't start. Choose a photo instead.";
 }
 
-/** Read a still photo: barcode (tried hard) and the MRZ from a few versions of the image, voting. */
-async function readStill(c, read, shape, wide = null) {
-  const out = { barcode: null, mrz: null, consensus: false };
+/**
+ * Read a still photo: barcode (tried hard) and the MRZ from a few versions of the image,
+ * voting. A straightened card whose way up was a guess is also read turned round, since
+ * the MRZ's check digits settle which way is right. Returns { barcode, mrz, consensus,
+ * flipped } (flipped: the MRZ read only with the photo turned 180°).
+ */
+async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) {
+  const out = { barcode: null, mrz: null, consensus: false, flipped: false };
   if (read.barcode) {
     try {
       const bc = await barcodeReader();
-      // the wider shot first (the barcode may run past the frame), then the framed one
+      // the wider shot first (the barcode may run past the card's edge), then the card
       for (const src of wide ? [wide, c] : [c]) {
         out.barcode = (await bc.read(imageData(grab(src, null, 2400))))[0] || null;
         if (out.barcode) break;
@@ -42,70 +51,86 @@ async function readStill(c, read, shape, wide = null) {
   if (read.mrz && !out.barcode) {
     try {
       const ocr = await mrzReader();
-      const vote = new MrzConsensus();
-      for (const opts of [{}, { threshold: true }, { scale: 1.3 }]) {
-        const r = vote.add(await ocr.read(mrzBand(c, shape, opts)));
-        if (r.result) out.mrz = r.result;
-        if (r.stable) { out.consensus = true; break; }
+      for (const turn of tryFlip ? [0, 180] : [0]) {
+        const src = turn ? rotateCanvas(c, 180) : c;
+        const vote = new MrzConsensus();
+        let mrz = null, stable = false;
+        for (const opts of [{}, { threshold: true }, { scale: 1.3 }]) {
+          const r = vote.add(await ocr.read(mrzBand(src, shape, opts)));
+          if (r.result) mrz = r.result;
+          if (r.stable) { stable = true; break; }
+        }
+        if (mrz || stable) { out.mrz = mrz || vote.reads.at(-1) || null; out.consensus = stable; out.flipped = !!turn; break; }
+        if (!out.mrz) out.mrz = vote.reads.at(-1) || null;
       }
-      if (!out.mrz) out.mrz = vote.reads.at(-1) || null;
     } catch { /* reported as not found */ }
   }
   return out;
 }
 
-/** The document frame in the video's pixels, or the whole frame if the layout gives nothing usable. */
+/** The document frame in the video's pixels, or null if the layout gives nothing usable. */
 function frameRect(v, el, pad) {
   const r = el ? frameInVideo(v, el, pad) : null;
   return r && r.w >= 64 && r.h >= 40 ? r : null;
 }
 
-/**
- * A small grey copy of the area around the on-screen frame (15% margin), and where
- * the frame sits in it, for the auto-capture check (core/detect.js).
- */
-function lookAround(v, el) {
-  const outer = frameInVideo(v, el, 0.15), inner = frameInVideo(v, el, 0);
-  if (!outer || !inner || inner.w < 64 || inner.h < 40) return null;
-  const im = toGray(imageData(grab(v, outer, 320)));
-  return { im, guide: { x0: (inner.x - outer.x) / outer.w, y0: (inner.y - outer.y) / outer.h, x1: (inner.x + inner.w - outer.x) / outer.w, y1: (inner.y + inner.h - outer.y) / outer.h } };
+/** Corners in the video's pixels → points on screen (the video is shown with object-fit: cover). */
+function onScreen(v, quad) {
+  const vr = v.getBoundingClientRect(), vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw || !vh || !quad) return null;
+  const s = Math.max(vr.width / vw, vr.height / vh);
+  const ox = (vr.width - vw * s) / 2, oy = (vr.height - vh * s) / 2;
+  return quad.map((p) => `${(p.x * s + ox).toFixed(1)},${(p.y * s + oy).toFixed(1)}`).join(" ");
+}
+
+/** The bounding box of some corners, grown by a share on every side and kept inside w×h. */
+function around(quad, w, h, pad = 0.1) {
+  const xs = quad.map((p) => p.x), ys = quad.map((p) => p.y);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const px = (x1 - x0) * pad, py = (y1 - y0) * pad;
+  x0 = Math.max(0, x0 - px); y0 = Math.max(0, y0 - py); x1 = Math.min(w, x1 + px); y1 = Math.min(h, y1 + py);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /** Said when a reader couldn't start, instead of watching for a code it can never read. */
 const NO_READER = "The reader couldn't start on this phone. Take the photo with the shutter and type the details.";
 
-/** With a barcode or MRZ to read: if a document has sat lined up this long and still no read, take the photo anyway. */
+/** With a barcode or MRZ to read: if a card has sat in view, steady, this long and still no read, take the photo anyway. */
 const FALLBACK_MS = 9000;
 
 /** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
 const buzz = () => buzzPref(14);
 
 /**
- * Full-screen camera with a document-shaped frame.
+ * Full-screen camera that finds the document by itself: wherever it is in view and
+ * however it's tilted, its outline is drawn over it and follows it (core/docfind.js),
+ * and once it holds still, lit and in focus, the photo is taken. Nobody has to line
+ * anything up. The photo is then straightened (the outline becomes a flat rectangle)
+ * and turned the way the text reads.
  *   shape   "id1" (cards), "td3" (passport photo page) or "full" (any document)
  *   read    { barcode, mrz } — what to look for while the camera runs; it captures
  *           by itself the moment it reads one, or when the shutter is pressed
- *   auto    take the photo by itself once a document of this shape is lined up, lit,
- *           sharp and steady (core/detect.js). On by default for cards and passport
- *           pages; with a barcode or MRZ to read, it waits for the read, and takes the
- *           photo anyway after a document has sat lined up for a while without one
- *   onDone({ canvas, barcode, mrz, consensus, how }) — may be async: the camera stays
- *           open (showing "Saving…") until it settles, shows a tick when it succeeds,
- *           and goes back to live with the reason if it throws, so a photo is never
- *           silently lost
+ *   auto    take the photo by itself once a document is found and steady (on by
+ *           default); with a barcode or MRZ to read, it waits for the read, and takes
+ *           the photo anyway after the card has sat in view for a while without one
+ *   onDone({ canvas, original, straightened, rotate, changed, barcode, mrz, consensus, how })
+ *           canvas is the proposal (straightened and upright); original the photo as
+ *           taken. May be async: the camera stays open (showing "Saving…") until it
+ *           settles, shows a tick when it succeeds, and goes back to live with the
+ *           reason if it throws, so a photo is never silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
  */
-export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
+export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(hint || "");
   const [torch, setTorch] = useState(null);
   const [toldSaved, setToldSaved] = useState(!!saved);
-  const [look, setLook] = useState(null);      // the last auto-capture check: { ok, aligned, found, hint, progress }
-  const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null, looping: false, holdUntil: 0 }).current;
+  const [look, setLook] = useState(null);      // the last look: { ok, found, hint, progress, points (on screen) }
+  const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null, looping: false, holdUntil: 0, quad: null }).current;
   const codes = !!(read.barcode || read.mrz);
-  const watching = auto || codes;
+  const card = shape !== "full";
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
   const stopStream = () => { L.stream?.getTracks().forEach((t) => t.stop()); };
@@ -127,7 +152,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
       setStatus(e?.message || "Couldn't keep that photo. Try again.");
       setTimeout(() => setStatus(hint || ""), 2600);
       setPhase(L.stream ? "live" : "error");
-      if (L.stream && watching) { L.stop = false; loop(); }
+      if (L.stream) { L.stop = false; loop(); }
       return;
     }
     if (typeof then === "function") then();
@@ -139,36 +164,44 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
     try { await watch(); } finally { L.looping = false; }
   }
 
+  /** The card, straightened from the live video and turned `turn`, for the MRZ reader. */
+  function liveCard(v, quad, turn) {
+    const box = around(quad, v.videoWidth, v.videoHeight, 0.04);
+    const s = Math.min(1, 1600 / Math.max(box.w, box.h));
+    const c = grab(v, box, box.w * s);
+    const q = quad.map((p) => ({ x: (p.x - box.x) * (c.width / box.w), y: (p.y - box.y) * (c.height / box.h) }));
+    let flat = straighten(c, q, { prefer: shape, max: 1400 });
+    if (flat.height > flat.width) flat = rotateCanvas(flat, 90);
+    return turn ? rotateCanvas(flat, turn) : flat;
+  }
+
   async function watch() {
     const consensus = new MrzConsensus();
     const bc = read.barcode ? barcodeReader().catch(() => null) : null;
     const ocr = read.mrz ? mrzReader().catch(() => null) : null;
     if (read.mrz) setStatus("Getting the reader ready…");
-    const shutter = autoShutter({ need: 4 });
-    let turn = 0, sawMrz = false, prev = null, linedUpSince = 0;
+    const track = tracker({ need: codes ? 3 : 4 });
+    let turn = 0, sawMrz = false, prev = null, steadySince = 0, mrzTurn = 0;
     while (!L.stop) {
-      await sleep(read.mrz ? 60 : codes ? 140 : 110);
+      await sleep(read.mrz ? 60 : codes ? 120 : 90);
       const v = video.current;
-      if (L.paused || !v || v.readyState < 2 || !frame.current) continue;
-      const rect = frameInVideo(v, frame.current, 0.05);
-      if (!rect) continue;
+      if (L.paused || !v || v.readyState < 2 || !v.videoWidth) continue;
       turn++;
-      // Is a document lined up? Every look when there's nothing to read; every third otherwise.
-      if (auto && (!codes || turn % 3 === 0) && Date.now() >= L.holdUntil) {
+      // Where's the document? Every look when there's nothing to read; every other one otherwise.
+      if (auto && (!codes || turn % 2 === 0) && Date.now() >= L.holdUntil) {
         try {
-          const a = lookAround(v, frame.current);
-          if (a) {
-            const r = analyzeFrame(a.im, { guide: a.guide, shape, prev });
-            if (DEMO_BUILD) globalThis.__humidLook = r; // development builds: tests can see why it waits
-            prev = a.im;
-            const fire = shutter.feed(r);
-            setLook({ ok: r.ok, aligned: r.aligned, found: r.found, hint: r.hint, progress: shutter.progress });
-            if (!codes) {
-              if (fire && !L.stop) { L.stop = true; shoot("auto"); return; }
-            } else {
-              linedUpSince = r.aligned ? linedUpSince || Date.now() : 0;
-              if (r.ok && linedUpSince && Date.now() - linedUpSince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
-            }
+          const im = grayOf(v, 320), k = v.videoWidth / im.w;
+          const r = lookAt(im, { shape, prev, prior: track.quad });
+          prev = im;
+          const t = track.feed(r, im.w, im.h);
+          L.quad = t.quad ? scaleQuad(t.quad, k) : null;
+          if (DEMO_BUILD) globalThis.__humidLook = { ...r, quad: L.quad }; // development builds: tests can see why it waits
+          setLook({ ok: r.ok, found: !!t.quad, hint: r.hint, progress: track.progress, points: onScreen(v, L.quad) });
+          if (!codes) {
+            if (t.fire && !L.stop) { L.stop = true; shoot("auto"); return; }
+          } else {
+            steadySince = r.ok ? steadySince || Date.now() : 0;
+            if (steadySince && Date.now() - steadySince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
           }
         } catch { /* a bad frame: keep looking */ }
         if (!codes) continue;
@@ -178,18 +211,22 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
         if (barcodeTurn) {
           const r = await bc;
           if (!r) { setStatus(NO_READER); continue; }
-          // a wider area than the frame (a hand-held card is rarely exactly in it); every
-          // fourth try, the reader tries harder (rotations, more scanning)
-          const wide = frameInVideo(v, frame.current, 0.15) || rect;
-          const [text] = await r.read(imageData(grab(v, wide, 2400)), { harder: turn % 8 === 0 });
-          if (text && !L.stop) { finish({ canvas: grab(v, frameRect(v, frame.current, 0.02)), barcode: text, how: "live" }); return; }
+          // around the card when it's been found, else the whole view; every fourth try,
+          // the reader tries harder (rotations, more scanning)
+          const area = L.quad ? around(L.quad, v.videoWidth, v.videoHeight, 0.12) : null;
+          const [text] = await r.read(imageData(grab(v, area, 2400)), { harder: turn % 8 === 0 });
+          if (text && !L.stop) { L.stop = true; shoot("live", { barcode: text }); return; }
         } else if (read.mrz) {
           const r = await ocr;
           if (!r) { setStatus(NO_READER); continue; }
-          const res = consensus.add(await r.read(mrzBand(grab(v, rect), shape)));
+          // the card wherever it is, straightened; which way up isn't known yet, so every
+          // third try reads it turned round (the check digits only agree one way)
+          const flip = L.quad && ++mrzTurn % 3 === 0 ? 180 : 0;
+          const src = L.quad ? liveCard(v, L.quad, flip) : grab(v, frameRect(v, frame.current, 0.05));
+          const res = consensus.add(await r.read(mrzBand(src, shape)));
           if (res.best && !sawMrz) { sawMrz = true; setStatus("Reading… hold still"); }
           if (!res.best && !sawMrz) setStatus(hint || "");
-          if (res.stable && !L.stop) { finish({ canvas: grab(v, frameRect(v, frame.current, 0.02)), mrz: res.result, consensus: true, how: "live" }); return; }
+          if (res.stable && !L.stop) { L.stop = true; shoot("live", { mrz: res.result, consensus: true, turn: flip }); return; }
         }
       } catch { /* a bad frame: keep looking */ }
     }
@@ -210,14 +247,45 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
         setPhase("live");
-        if (watching) loop();
+        if (auto || codes) loop();
       } catch (e) { setPhase("error"); setError(cameraError(e)); }
     })();
     return () => { L.stop = true; L.stream?.getTracks().forEach((t) => t.stop()); };
   }, []);
 
-  /** The shutter, or the auto-capture (how = "auto"). */
-  async function shoot(how = "shutter") {
+  /**
+   * Develop a photo: find the document's corners in it (helped by the live outline),
+   * straighten it, turn it upright, and read it if there's something to read.
+   *   known   what a live read already found ({ barcode } or { mrz, consensus, turn })
+   */
+  async function develop(original, hintQuad, how, known = {}) {
+    await sleep(0); // let "Saving…" paint first: straightening a 4K photo takes a moment
+    const quad = cornersIn(original, { hint: hintQuad, shape });
+    let dev;
+    if (known.mrz && quad) {
+      // read live from the straightened card turned known.turn: develop it the same way
+      let flat = straighten(original, quad, { prefer: shape, max: 2000 });
+      if (flat.height > flat.width) flat = rotateCanvas(flat, 90);
+      dev = { canvas: known.turn ? rotateCanvas(flat, known.turn) : flat, original, straightened: true, rotate: known.turn || 0, confidence: 1, changed: true };
+    } else dev = developPhoto(original, quad, { shape });
+    // a card that wasn't found: what was inside the on-screen frame, as before
+    if (card && !dev.straightened) {
+      const v = video.current, r = v && how !== "file" ? frameRect(v, frame.current, 0.02) : null;
+      if (r) { const c = grab(original, r); dev = { canvas: c, original, straightened: false, rotate: 0, confidence: 0, changed: true }; }
+    }
+    let readOut = {};
+    if (known.barcode || known.mrz) readOut = known;
+    else if (codes) {
+      readOut = await readStill(dev.canvas, read, shape, how === "file" ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
+      if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
+    }
+    const { turn, flipped, ...codesFound } = readOut;
+    if (DEMO_BUILD) globalThis.__humidDevelop = { straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined }; // development builds: tests can see the proposal
+    return { ...dev, ...codesFound, how };
+  }
+
+  /** The shutter, the auto-capture (how = "auto"), or a live read (how = "live"). */
+  async function shoot(how = "shutter", known = {}) {
     const v = video.current;
     if (!v || L.done) return;
     L.paused = true;
@@ -227,23 +295,18 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
       // Android can report a frame before it has one to give, or give a black one: wait briefly, try again.
       let c = null;
       for (let i = 0; i < 6 && !c; i++) {
-        if (v.readyState >= 2 && v.videoWidth) {
-          const got = shape === "full" ? grab(v, null) : grab(v, frameRect(v, frame.current, 0.02));
-          if (!looksBlank(got)) c = got;
-        }
+        if (v.readyState >= 2 && v.videoWidth) { const got = grab(v, null); if (!looksBlank(got)) c = got; }
         if (!c) await sleep(150);
       }
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
-      const wide = read.barcode && shape !== "full" ? grab(v, frameRect(v, frame.current, 0.15)) : null;
-      const r = codes ? await readStill(c, read, shape, wide) : {};
-      await finish({ canvas: c, ...r, how });
+      await finish(await develop(c, L.quad, how, known));
     } catch (e) {
       L.paused = false;
       L.holdUntil = Date.now() + 2500;
       setStatus(e?.message || "Couldn't take the photo. Try again.");
       setTimeout(() => setStatus(hint || ""), 2600);
       setPhase(L.stream ? "live" : "error");
-      if (L.stream && watching) { L.stop = false; loop(); }
+      if (L.stream) { L.stop = false; loop(); }
     }
   }
 
@@ -255,8 +318,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
     setPhase("reading");
     try {
       const c = await fileToCanvas(f);
-      const r = read.barcode || read.mrz ? await readStill(c, read, shape) : {};
-      await finish({ canvas: c, ...r, how: "file" });
+      await finish(await develop(c, null, "file"));
     } catch {
       L.paused = false;
       setPhase(L.stream ? "live" : "error");
@@ -270,16 +332,22 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
 
   const cancel = () => { L.stop = true; stopStream(); onCancel(); };
   const skip = () => { L.stop = true; stopStream(); onSkip(); };
+  const live = phase === "live" && look;
+  const lookState = !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase}
-      data-look={phase !== "live" || !look ? undefined : look.ok ? "ok" : look.aligned || look.found ? "close" : "searching"}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState}>
       <video ref={video} playsInline muted autoplay />
+      {live && look.points && (
+        <svg class="dc-outline" aria-hidden="true" style={{ "--p": look.progress }}>
+          <polygon points={look.points} />
+          {look.points.split(" ").map((pt) => { const [x, y] = pt.split(","); return <circle cx={x} cy={y} r="6" />; })}
+        </svg>
+      )}
       <div class="dc-stage">
         <div class="dc-frame" data-shape={shape} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {read.mrz && <span class="dc-mrz" data-shape={shape} />}
-          {phase === "live" && look?.ok && <span class="dc-fill" style={{ "--p": look.progress }} aria-hidden="true" />}
           {phase === "reading" && <span class="dc-busy"><i /></span>}
           {phase === "saved" && <span class="dc-busy dc-saved" role="status" aria-label="Photo saved"><Icon name="check" /></span>}
         </div>
@@ -296,12 +364,12 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
         {torch != null && <button class="icon-btn" aria-label={torch ? "Turn the light off" : "Turn the light on"} aria-pressed={torch} onClick={toggleTorch}><Icon name="torch" /></button>}
       </header>
       <div class="dc-status" aria-live="polite">
-        {phase === "error" ? error : phase === "reading" ? (codes ? "Reading the photo…" : "Saving the photo…") : phase === "saved" ? "Saved"
-          : auto && !codes && look && status === (hint || "") ? look.hint : status}
+        {phase === "error" ? error : phase === "reading" ? (codes ? "Reading the photo…" : "Straightening the photo…") : phase === "saved" ? "Saved"
+          : auto && look && status === (hint || "") && (!codes || look.found) ? look.hint : status}
       </div>
       <footer class="dc-bottom">
         <button class="dc-side" disabled={phase === "reading" || phase === "saved"} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
-        <button class="dc-shutter" aria-label="Take the photo" disabled={phase !== "live"} onClick={shoot}><i /></button>
+        <button class="dc-shutter" aria-label="Take the photo" disabled={phase !== "live"} onClick={() => shoot()}><i /></button>
         {onSkip ? <button class="dc-side" onClick={skip}><Icon name="chevron" /><span>Skip</span></button> : <span class="dc-side" aria-hidden="true" />}
       </footer>
       <input ref={file} type="file" accept="image/*" hidden onChange={onFile} />
@@ -313,22 +381,22 @@ export function DocCamera({ shape = "id1", read = {}, auto = shape !== "full", e
 
 // What each kind of document asks the camera for, side by side.
 const PLAN = {
-  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Fit the photo page in the frame, the two lines of <<< along the bottom." }],
+  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Show the photo page, with the two lines of <<<. It finds the page by itself." }],
   driver_license: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Fit the card in the frame. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Fill the frame with the back. The barcode reads by itself." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Show the back, with its barcode. It reads by itself." },
   ],
   id_card: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Fit the card in the frame. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Fill the frame with the back. A barcode or the lines of <<< read by themselves.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Show the back. A barcode or the lines of <<< read by themselves.", optional: true },
   ],
   residence_permit: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Fit the card in the frame. It takes the photo by itself." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
     { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "The three lines of <<< read by themselves.", optional: true },
   ],
   other: [
-    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Fit the card in the frame. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Fit the card in the frame. It takes the photo by itself.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself.", optional: true },
   ],
 };
 
@@ -485,7 +553,7 @@ export function IdSheet() {
           busy ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
             : <Review rec={r} name={name} setName={setName} note={note} plan={plan} onRetake={(p) => setCam(p)} onChange={redraw}
               onChip={KINDS[r.kind]?.chip && nfc && nfc.kind !== "none" && !r.verified.chip ? () => setStep("chip") : null}
-              onSave={() => addIdRecord(r, name || recordTitle(r))} />
+              onSave={(place) => addIdRecord(r, name || recordTitle(r), place)} />
         )}
       </Sheet>
       {cam && (
@@ -535,6 +603,7 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
   const main = fields.filter((f) => !f.optional || vals[f.key] !== "" && vals[f.key] != null);
   const extra = fields.filter((f) => f.optional && (vals[f.key] === "" || vals[f.key] == null));
   const missing = rec.kind === "other" ? [] : ["surname", "number"].filter((k) => !String(vals[k] || "").trim());
+  const place = usePlaceStamp();
 
   // Typed changes go into the record before anything that leaves this form (sealing,
   // a retake, the chip), so nothing typed is lost.
@@ -545,7 +614,7 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
     if (Object.values(a).some(Boolean) && JSON.stringify(a) !== JSON.stringify(rec.address || {})) { rec.address = a; rec.addressSource = "typed"; }
     onChange();
   };
-  const save = () => { commit(); onSave(); };
+  const save = () => { commit(); onSave(place.take()); };
   const retake = (side) => { commit(); onRetake(side); };
   const toChip = onChip && (() => { commit(); onChip(); });
 
@@ -579,6 +648,7 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
         <input autocorrect="off" spellcheck={false} id="id-name" value={name} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
       </div>
       {missing.length > 0 && <p class="small" style={{ color: "var(--amber-hi)", marginTop: 10 }}>Add the {missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.</p>}
+      {place.element}
       <div class="actions">
         <button class="btn primary block" disabled={missing.length > 0} onClick={save}><Icon name="fingerprint" />Seal &amp; store</button>
       </div>

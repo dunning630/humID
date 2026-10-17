@@ -1,5 +1,11 @@
 # tauri-plugin-humid-gate
 
+## 2.0.1
+
+- Android: declares location access (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, both
+  optional hardware) for the app's "Stamp where it's sealed". The WebView asks for it only
+  when a seal screen opens with the stamp on. No change to the gate's commands.
+
 ## 2.0.0
 
 - Live biometrics only, never a PIN, passcode or password.

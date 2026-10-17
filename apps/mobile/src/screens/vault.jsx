@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { guessCategory } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
+import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp } from "../ui.jsx";
+import { rotateCanvas } from "../core/scan.js";
+import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
+import { addDocument, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 
@@ -141,41 +143,116 @@ export function ProtectionCard() {
 
 /* ---------------- add ---------------- */
 
+const canvasBlob = (c, q = 0.9) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't save that photo. Try again."))), "image/jpeg", q));
+
+/**
+ * A photo from the camera: the version HumID proposes (the document straightened and
+ * turned the way it reads) or the photo as it was taken. The proposal can be turned by
+ * hand if the guess was wrong. Shows the chosen one; onChange({ which, turn }).
+ */
+function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    let gone = false, made = null;
+    const c = which === "original" ? shot.original : rotateCanvas(shot.canvas, turn);
+    // a small preview: the full photo is only encoded once, when it's sealed
+    const s = Math.min(1, 900 / Math.max(c.width, c.height));
+    const small = document.createElement("canvas");
+    small.width = Math.round(c.width * s); small.height = Math.round(c.height * s);
+    small.getContext("2d").drawImage(c, 0, 0, small.width, small.height);
+    canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
+    return () => { gone = true; if (made) URL.revokeObjectURL(made); };
+  }, [shot, which, turn]);
+  const did = shot.straightened ? `Found the document's edges and straightened it${shot.rotate ? ", then turned it upright" : ""}.` : "Turned it upright.";
+  return (
+    <div class="photo-choice">
+      {shot.changed && (
+        <div class="seg" data-n="2" role="radiogroup" aria-label="Which version to seal">
+          <button role="radio" aria-checked={which === "proposed"} onClick={() => onChange({ which: "proposed", turn })}>
+            <Icon name="sparkle" />Straightened<span class="tag">Suggested</span>
+          </button>
+          <button role="radio" aria-checked={which === "original"} onClick={() => onChange({ which: "original", turn })}><Icon name="image" />Original</button>
+        </div>
+      )}
+      <figure class="photo-preview" data-which={which}>
+        {url ? <img src={url} alt={which === "original" ? "The photo as taken" : "The document, straightened"} /> : <span class="photo-wait" />}
+        {which === "proposed" && (
+          <div class="photo-turn">
+            <button class="icon-btn" aria-label="Turn left" onClick={() => onChange({ which, turn: (turn + 270) % 360 })}><Icon name="turn" /></button>
+            <button class="icon-btn" aria-label="Turn right" onClick={() => onChange({ which, turn: (turn + 90) % 360 })}><Icon name="turn" /></button>
+          </div>
+        )}
+      </figure>
+      <p class="fine photo-note">
+        {!shot.changed ? "Sealed as taken: no document edges found to straighten." : which === "original" ? "The photo exactly as the camera took it." : `${did} Not right? Turn it, or seal the original.`}
+        {" "}<button class="linklike" onClick={onRetake}>Retake</button>
+      </p>
+    </div>
+  );
+}
+
 export function AddSheet() {
   const st = S.sheet.value;
   const [file, setFile] = useState(null);
+  const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed }
+  const [pick, setPick] = useState({ which: "proposed", turn: 0 });
   const [name, setName] = useState("");
   const [cat, setCat] = useState("other");
   const [camera, setCamera] = useState(false);
-  const pick = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const chooser = useRef(null);
+  const place = usePlaceStamp();
   const close = () => { if (!st.stage) S.sheet.value = null; };
   const choose = (input) => { markPicking(); input.current.click(); };
-  // Keep the photo before the camera closes; if it can't be encoded, the camera stays open and says so.
-  const photographed = async ({ canvas }) => {
-    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
-    if (!blob) throw new Error("Couldn't save that photo. Try again.");
-    const when = new Date();
-    const f = new File([blob], `Photo ${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.jpg`, { type: "image/jpeg" });
-    return () => { setCamera(false); setFile(f); setName(`Photo ${when.toLocaleDateString()}`); };
+  const when = useRef(null);
+  // Keep the photo before the camera closes. Encoding waits for Seal, so it's quick.
+  const photographed = async (res) => {
+    when.current = new Date();
+    return () => {
+      setCamera(false);
+      setShot(res);
+      setPick({ which: res.changed ? "proposed" : "original", turn: 0 });
+      setFile(null);
+      setName(`Photo ${when.current.toLocaleDateString()}`);
+    };
   };
   const onFile = (e) => {
     const f = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
     if (!f) return;
+    setShot(null);
     setFile(f);
     setName(f.name.replace(/\.[a-z0-9]{1,5}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
     setCat(guessCategory(f.name, f.type)); // a suggestion; the person can change it
   };
+  /** The file to seal: the chosen version of a camera photo, or the chosen file. */
+  async function toSeal() {
+    if (!shot) return file;
+    const c = pick.which === "original" ? shot.original : rotateCanvas(shot.canvas, pick.turn);
+    const blob = await canvasBlob(c, 0.9);
+    const t = when.current || new Date();
+    const tag = pick.which === "original" ? "" : " (straightened)";
+    return new File([blob], `Photo ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${tag}.jpg`, { type: "image/jpeg" });
+  }
+  async function seal() {
+    if (busy) return;
+    setBusy(true);
+    try { await addDocument({ file: await toSeal(), name, category: cat, place: place.take() }); }
+    catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
+    finally { setBusy(false); }
+  }
   const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
+  const have = file || shot;
+  const reset = () => { setFile(null); setShot(null); };
 
   return (
     <Sheet onClose={close} label="Add a document">
-      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{file ? "Seal it into your vault" : "Add to your vault"}</h2></div>
+      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{have ? "Seal it into your vault" : "Add to your vault"}</h2></div>
         {!st.stage && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
 
-      <input ref={pick} type="file" hidden onChange={onFile} />
+      <input ref={chooser} type="file" hidden onChange={onFile} />
 
-      {!file && (
+      {!have && (
         <>
           <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
             <span class="ico"><Icon name="idcard" /></span>
@@ -183,19 +260,22 @@ export function AddSheet() {
             <Icon name="chevron" />
           </button>
           <div class="source" style={{ marginTop: 10 }}>
-            <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card</span></button>
-            <button onClick={() => choose(pick)}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
+            <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card. HumID finds it and straightens it.</span></button>
+            <button onClick={() => choose(chooser)}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
           </div>
         </>
       )}
-      {camera && <DocCamera shape="full" title="Take a photo" hint="Fit the document in the frame, then take the photo." onCancel={() => setCamera(false)} onDone={photographed} />}
+      {camera && <DocCamera shape="full" title="Take a photo" hint="Point the camera at the document. It finds the edges by itself." onCancel={() => setCamera(false)} onDone={photographed} />}
 
-      {file && st.stage == null && (
+      {have && st.stage == null && (
         <>
-          <div class="doc-hero">
-            <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-cat={cat}><Icon name={kindIcon(file.type)} /></span></span>
-            <div style={{ minWidth: 0 }}><div class="name" style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{file.name}</div><div class="muted small">{fmtSize(file.size)} · {file.type || "file"}</div></div>
-          </div>
+          {shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
+            : (
+              <div class="doc-hero">
+                <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-cat={cat}><Icon name={kindIcon(file.type)} /></span></span>
+                <div style={{ minWidth: 0 }}><div class="name" style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{file.name}</div><div class="muted small">{fmtSize(file.size)} · {file.type || "file"}</div></div>
+              </div>
+            )}
           <div class="field">
             <label for="doc-name">Name</label>
             <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
@@ -206,18 +286,32 @@ export function AddSheet() {
               {CATEGORIES.map((c) => <button aria-pressed={cat === c.id} onClick={() => setCat(c.id)}><Icon name={c.icon} />{c.label}</button>)}
             </div>
           </div>
+          {place.element}
           <div class="actions">
-            <button class="btn primary block" onClick={() => addDocument({ file, name, category: cat })}><Icon name="fingerprint" />Seal &amp; store</button>
-            <button class="btn ghost block" onClick={() => setFile(null)}>Choose another</button>
+            <button class="btn primary block" disabled={busy} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : "Seal the straightened photo") : "Seal & store"}</button>
+            <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
           </div>
-          <p class="fine" style={{ marginTop: 12 }}>Encrypted on this phone with ML-KEM-1024 + X25519 and signed with ML-DSA-87 before upload. The original isn't kept.</p>
+          <p class="fine" style={{ marginTop: 12 }}>Encrypted on this phone with ML-KEM-1024 + X25519 and signed with ML-DSA-87 before upload. {shot ? "Only the version you seal is kept; the other is discarded." : "The original isn't kept."} The location, if stamped, is sealed with the name, so the vault server can't read it.</p>
         </>
       )}
 
-      {file && st.stage != null && (
+      {have && st.stage != null && (
         <Steps current={stageIdx} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
       )}
     </Sheet>
+  );
+}
+
+/** Where a document was sealed, if it was stamped: coordinates, accuracy, and a map link opened only on a tap. */
+function SealedAt({ place }) {
+  if (!validStamp(place)) return null;
+  return (
+    <div class="row"><span class="k">Sealed at</span>
+      <span class="v place-v">
+        <span class="mono" style={{ fontSize: 12 }}>{formatCoords(place)}</span>
+        <span class="muted small">{formatAccuracy(place.accuracy)} · as the phone reported · <a href={mapLink(place)} target="_blank" rel="noopener noreferrer">Show on a map</a></span>
+      </span>
+    </div>
   );
 }
 
@@ -246,6 +340,7 @@ export function ItemSheet() {
           <div class="card" style={{ marginTop: 14 }}>
             <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)} · sealed {fmtSize(item.envelopeSize)}</span></div>
             <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
+            <SealedAt place={item.place} />
             <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
             <div class="row"><span class="k">Encryption</span><span class="v mono" style={{ fontSize: 12 }}>ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
             <div class="row"><span class="k">Signature</span><span class="v mono" style={{ fontSize: 12 }}>ML-DSA-87 ✓ verified by vault</span></div>

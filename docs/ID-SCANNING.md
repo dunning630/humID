@@ -14,17 +14,27 @@ read on the phone; nothing about the document leaves it unencrypted.
 | National ID cards, residence permits | Front photo; the back's barcode or three-line MRZ (TD1) | Same as passports, opened with the MRZ details or the 6-digit CAN |
 | Anything else | Front and back photos | — |
 
-The camera captures by itself. For a side with something to read, that's once
-it has read the barcode, or once several frames agree on an MRZ whose check digits
-all pass. For a side without (the front of a card), it's once a document of the
-right shape is lined up with the frame, lit, in focus and steady for about half a
-second (`apps/mobile/src/core/detect.js`: edges, light, sharpness and motion,
-measured on a small grey copy of the frame, on the phone). The frame's corners turn
-amber when a document is close and green when it's about to take the photo. A side
-with a code that won't read is photographed anyway after the document has sat lined
-up for nine seconds. The shutter and **Photo**
-(pick an existing picture) always work too, and every field can be typed or
-corrected before sealing.
+The camera finds the document by itself: nobody lines anything up. Wherever the
+card or page is in view, and however it's tilted, its outline is drawn over it and
+follows it as it moves (`apps/mobile/src/core/docfind.js`: edges → straight lines →
+the four that make a document, measured on a small grey copy of the whole view,
+several times a second, on the phone). A card's own shape (1.586:1, a passport page
+1.42:1) is preferred over, say, the photo printed on it. The outline turns green when
+it's about to take the photo.
+
+For a side with something to read, it captures once it has read the barcode, or once
+several frames agree on an MRZ whose check digits all pass; the MRZ is read from the
+card straightened out of the live picture, both ways up (the check digits settle which
+is right). For a side without (the front of a card), it captures once the document has
+held still, lit and in focus, for about half a second. A side with a code that won't
+read is photographed anyway after the card has sat steady in view for nine seconds.
+The shutter and **Photo** (pick an existing picture) always work too, and every field
+can be typed or corrected before sealing.
+
+Each photo is then **straightened**: the four corners are found again in the full
+photo, more finely, and the card is mapped back to a flat rectangle of its true shape
+(a perspective warp), then turned the way its text reads. If the card couldn't be
+found, the photo is cropped to the on-screen frame as before.
 
 Each photo is kept before the camera closes: a tick confirms it, and the camera
 moves straight on to the other side. If a photo can't be kept (a blank frame from
@@ -86,3 +96,34 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
+
+## Any document: Take a photo
+
+**Vault → + → Take a photo** uses the same camera for any document or card. Once the
+page holds still it's photographed, straightened (snapped to letter, A4, legal or card
+proportions when it's within 6% of one) and turned upright: which way the text lines
+run, from how ink is spread across rows and columns, then which way is up, from
+ascenders outnumbering descenders and lines starting together at the left margin.
+The seal screen proposes that version (**Straightened · Suggested**), with turn
+buttons in case the guess is wrong, and **Original**: the photo exactly as the camera
+took it. Only the version chosen is sealed; the other is discarded.
+
+## Where it was sealed
+
+Every seal screen (a file, a photo, an ID) has **Stamp where it's sealed**, on unless
+it's turned off for that document. While the screen is open the phone's location is
+watched, and the freshest fix (no older than two minutes, waiting up to five seconds
+for one) goes into the document's encrypted index beside its name and category:
+latitude and longitude to six decimals, the accuracy the phone gave, and the fix's
+time (`apps/mobile/src/core/place.js`). The document's details show it as **Sealed
+at**, with a map link that opens only when tapped. Nothing is looked up online.
+
+- The vault server only ever holds the index encrypted under a key from the account
+  seed, so it can't read the location (`tests/browser/photo.mjs` checks the server's
+  stored files for it).
+- It isn't written into the file itself (no EXIF), so a copy saved or sent elsewhere
+  carries no location.
+- It's what the phone reported (satellites, Wi-Fi, cell towers), not a proof: a
+  rooted phone can report anywhere.
+- With location access off for HumID, or no fix in time, the document is sealed
+  without one and the screen says why.
