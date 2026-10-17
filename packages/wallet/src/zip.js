@@ -9,7 +9,8 @@ export class WalletError extends Error {
 }
 const fail = (code, message) => { throw new WalletError(code, message); };
 
-export const LIMITS = Object.freeze({ archive: 20 * 1024 * 1024, files: 64, file: 10 * 1024 * 1024, total: 20 * 1024 * 1024, name: 200 });
+// files: a pass with many languages has a folder (and strings and images) per language
+export const LIMITS = Object.freeze({ archive: 20 * 1024 * 1024, files: 256, entries: 1024, file: 10 * 1024 * 1024, total: 20 * 1024 * 1024, name: 200 });
 
 const u16 = (b, o) => b[o] | (b[o + 1] << 8);
 const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
@@ -69,7 +70,7 @@ export async function readZip(bytes, limits = LIMITS) {
   const cdSize = u32(b, eocd + 12), cdOff = u32(b, eocd + 16);
   if (disk || cdDisk || here !== count) fail("bad_zip", "Split archives aren't passes.");
   if (count === 0xffff || cdSize === 0xffffffff || cdOff === 0xffffffff) fail("bad_zip", "That archive format isn't used for passes.");
-  if (count > limits.files) fail("too_big", "That pass has too many files.");
+  if (count > limits.entries) fail("too_big", "That pass has too many files.");
   if (cdOff + cdSize > eocd) fail("bad_zip", "The pass's file list is damaged.");
 
   const entries = [];
@@ -82,7 +83,7 @@ export async function readZip(bytes, limits = LIMITS) {
     if (p + 46 + nlen + xlen + clen > cdOff + cdSize) fail("bad_zip", "The pass's file list is damaged.");
     const name = new TextDecoder("utf-8", { fatal: false }).decode(b.subarray(p + 46, p + 46 + nlen));
     p += 46 + nlen + xlen + clen;
-    if (name.endsWith("/")) continue; // a folder
+    if (name.endsWith("/")) continue; // a folder: not counted as a file
     if (flags & 1) fail("bad_zip", "Encrypted passes aren't supported.");
     if (method !== 0 && method !== 8) fail("bad_zip", "That pass uses an unsupported compression.");
     if (!safeName(name, limits.name)) fail("bad_zip", "That pass has a file with an unsafe name.");
@@ -90,6 +91,7 @@ export async function readZip(bytes, limits = LIMITS) {
     total += usize;
     if (total > limits.total) fail("too_big", "That pass is too big once unpacked.");
     entries.push({ name, method, crc, csize, usize, local });
+    if (entries.length > limits.files) fail("too_big", "That pass has too many files.");
   }
 
   const files = new Map();

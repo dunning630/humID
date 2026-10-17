@@ -8,6 +8,9 @@ import { Icon } from "../icons.jsx";
 import { fmtDate } from "../ui.jsx";
 import { saveCopy } from "../core/controller.js";
 
+/** Who signed it: the organisation in the certificate Apple issued, never the pass's own text. */
+const signedBy = (issuer) => (issuer.organization ? `Signed by ${issuer.organization}` : `Signed by team ${issuer.team}`);
+
 /** Adding a pass: checking, verified (with who signed it), or refused (with why). */
 export function PassCheck({ check, onPlain, onAnother }) {
   if (check.state === "checking") return (
@@ -28,9 +31,11 @@ export function PassCheck({ check, onPlain, onAnother }) {
   return (
     <>
       <PassFace pass={pass} images={check.result.images} compact />
-      <div class="banner" role="status" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="check" /></span>
-        <div><strong>Signed by {issuer.organization || pass.organization}, verified through Apple</strong>
-          <span>Unchanged since its issuer signed it{check.result.signedAt ? ` on ${fmtDate(check.result.signedAt)}` : ""}. Team {issuer.team}.</span></div></div>
+      <div class={`banner${issuer.certExpired ? " warn" : ""}`} role="status" style={{ marginTop: 12 }}><span class="b-ico"><Icon name={issuer.certExpired ? "clock" : "check"} /></span>
+        <div><strong>{signedBy(issuer)}, verified through Apple</strong>
+          <span>{issuer.certExpired
+            ? `Unchanged since it was signed${check.result.signedAt ? ` (it says ${fmtDate(check.result.signedAt)})` : ""}, but the issuer's certificate has since expired, so HumID can't tell when it was really signed.`
+            : `Unchanged since its issuer signed it${check.result.signedAt ? ` on ${fmtDate(check.result.signedAt)}` : ""}.`} Team {issuer.team}.</span></div></div>
     </>
   );
 }
@@ -101,13 +106,16 @@ export function PassView({ v }) {
       <div><strong>This pass no longer checks out</strong><span>{v.passError} It was verified when it was added; save a copy if you need the file.</span></div></div>
   );
   const { pass, issuer } = v.pass;
+  const expired = Date.parse(issuer.certExpires) < Date.now();
   return (
     <div class="pass-view">
       <PassFace pass={pass} images={v.pass.images} />
       <Barcode code={pass.barcode} />
       <div class="card" style={{ marginTop: 14 }}>
-        <div class="row"><span class="k">Issued by</span><span class="v">{issuer.organization || pass.organization}</span></div>
-        <div class="row"><span class="k">Signature</span><span class="v"><span class="pill mint"><Icon name="check" />Verified through Apple</span></span></div>
+        <div class="row"><span class="k">Signed by</span><span class="v">{issuer.organization || `Team ${issuer.team}`}</span></div>
+        <div class="row"><span class="k">Signature</span><span class="v">{expired
+          ? <span class="pill amber"><Icon name="clock" />Genuine · certificate since expired</span>
+          : <span class="pill mint"><Icon name="check" />Verified through Apple</span>}</span></div>
         {pass.relevantDate && <div class="row"><span class="k">Date</span><span class="v">{fmtDate(pass.relevantDate)}</span></div>}
         {pass.expirationDate && <div class="row"><span class="k">Expires</span><span class="v">{fmtDate(pass.expirationDate)}</span></div>}
         {pass.serialNumber && <div class="row"><span class="k">Serial</span><span class="v mono small">{pass.serialNumber}</span></div>}

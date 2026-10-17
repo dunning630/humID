@@ -4,8 +4,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { certificate } from "./support/pki.js";
 import { readPkpass, readZip, passIndex, APPLE_ROOTS, parseCert, issuedBy, looksLikePass, WalletError, LIMITS } from "@humid/wallet";
-import { passChain, makePass, passJson, zip } from "./support/pkpass.js";
+import { passChain, makePass, passJson, zip, cmsSign } from "./support/pkpass.js";
+
+/** One DER element at `o`: { start of contents, end }. */
+function tlvAt(b, o) {
+  let p = o + 1, len = b[p++];
+  if (len & 0x80) { const n = len & 0x7f; len = 0; for (let i = 0; i < n; i++) len = len * 256 + b[p++]; }
+  return { start: p, end: p + len, head: b.subarray(o, p) };
+}
+/** The CMS wrapper (ContentInfo, [0], SignedData) re-encoded with indefinite lengths, as BER signing tools write it. */
+function berWrapper(der) {
+  const b = Buffer.from(der);
+  const ci = tlvAt(b, 0), oidE = tlvAt(b, ci.start), ex = tlvAt(b, oidE.end), sd = tlvAt(b, ex.start);
+  return Buffer.concat([Buffer.from([0x30, 0x80]), b.subarray(ci.start, oidE.end), Buffer.from([0xa0, 0x80, 0x30, 0x80]), b.subarray(sd.start, sd.end), Buffer.alloc(6)]);
+}
 
 const chain = passChain();
 const opts = { roots: [chain.root] };
@@ -117,4 +132,44 @@ test("pass contents are shown as text, bounded and without control characters", 
   assert.equal(r.pass.relevantDate, null);
   assert.equal(r.pass.fields.primary.length, 20);
   await assert.rejects(readPkpass(makePass(chain, { pass: { ...passJson(), formatVersion: 2 } }), opts), refused("bad_pass"));
+});
+
+test("review fixes: BER signature wrappers, one manifest hash, bounded certificates, chains with renewed intermediates", async () => {
+  // a signature whose wrapper uses indefinite lengths (BouncyCastle, Apple's CMS encoder) is read
+  const files = await readZip(makePass(chain));
+  const manifest = files.get("manifest.json");
+  const entries = [...files].map(([n, b]) => [n, n === "signature" ? berWrapper(b) : b]);
+  const r = await readPkpass(zip(entries), opts);
+  assert.equal(r.issuer.team, "TEAM123456");
+  assert.ok(manifest.length > 0);
+  // a manifest mixing SHA-1 and SHA-256 is refused
+  await assert.rejects(readPkpass(makePass(chain, { manifest: (m) => { m["logo.png"] = createHash("sha256").update(files.get("logo.png")).digest("hex"); } }), opts), refused("bad_pass"));
+  // a signature padded with certificates is refused before any are checked
+  await assert.rejects(readPkpass(makePass(chain, { cms: { certs: [chain.signerDer, ...Array(9).fill(chain.interDer)] } }), opts), refused("bad_signature"));
+  // an expired intermediate listed before its renewal (same name and key) doesn't stop the chain
+  const renewed = passChain();
+  const stale = certificate({ subject: renewed.interName, issuer: { cn: "Test Root CA", o: "Test Root", country: "US" }, publicKey: renewed.inter.publicKey, signingKey: renewed.rootKey.privateKey, ca: true, notBefore: new Date("2015-01-01"), notAfter: new Date("2016-01-01") });
+  const ok = await readPkpass(makePass(renewed, { cms: { certs: [renewed.signerDer, stale, renewed.interDer] } }), { roots: [renewed.root] });
+  assert.equal(ok.issuer.team, "TEAM123456");
+});
+
+test("review fixes: a certificate that has since expired is reported, not shown as plainly verified", async () => {
+  const lapsed = passChain({ signerNotBefore: new Date("2024-01-01"), signerNotAfter: new Date("2025-01-01") });
+  const r = await readPkpass(makePass(lapsed, { cms: { signingTime: new Date("2024-06-01") } }), { roots: [lapsed.root] });
+  assert.equal(r.issuer.certExpired, true);
+  // a signing time in the future isn't believed: it's checked (and reported) as now
+  const fut = await readPkpass(makePass(chain, { cms: { signingTime: new Date("2030-01-01") } }), opts);
+  assert.equal(fut.signedAt, null);
+  assert.equal((await readPkpass(makePass(chain), opts)).issuer.certExpired, false);
+  // the index says who signed it from the certificate, and when it was checked
+  const idx = passIndex(r.pass, r.issuer, new Date("2026-10-17T00:00:00Z"));
+  assert.equal(idx.issuer, "Example Events");
+  assert.equal(idx.checkedAt, "2026-10-17T00:00:00.000Z");
+  // the certificate's organisation, not the pass's own text
+  const spoof = await readPkpass(makePass(chain, { pass: passJson({ organizationName: "Delta Air Lines" }) }), opts);
+  assert.equal(spoof.issuer.organization, "Example Events");
+  assert.equal(passIndex(spoof.pass, spoof.issuer).issuer, "Example Events");
+  // a byte-order mark in pass.json is fine
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(passJson()))]);
+  assert.equal((await readPkpass(makePass(chain, { files: { "pass.json": withBom } }), opts)).pass.style, "eventTicket");
 });

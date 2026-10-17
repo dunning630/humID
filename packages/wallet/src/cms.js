@@ -3,13 +3,15 @@ import { parse, kids, oid, octets, time, ctx, isSeq, isSet, intBytes } from "./d
 import { WalletError } from "./zip.js";
 import { DIGESTS } from "./x509.js";
 
+/** Apple's signatures carry two (the signer and WWDR); a few more are tolerated, not thousands. */
+export const MAX_CERTS = 8;
 const bad = (m) => { throw new WalletError("bad_signature", m || "The pass's signature can't be read."); };
 const OID = { signedData: "1.2.840.113549.1.7.2", data: "1.2.840.113549.1.7.1", contentType: "1.2.840.113549.1.9.3", messageDigest: "1.2.840.113549.1.9.4", signingTime: "1.2.840.113549.1.9.5" };
 
 /** → { certs: [DER], signer: { sid, digest, signedAttrs, attrs, sigAlg, signature } } */
 export function parseSignature(der) {
   try {
-    const ci = kids(parse(der));
+    const ci = kids(parse(der, true)); // the wrapper may be BER (indefinite lengths)
     if (oid(ci[0]) !== OID.signedData || !ctx(ci[1], 0)) bad("The pass's signature isn't a CMS signature.");
     const sd = kids(kids(ci[1])[0]);
     // SignedData: version, digestAlgorithms, encapContentInfo, [0] certificates?, [1] crls?, signerInfos
@@ -18,7 +20,11 @@ export function parseSignature(der) {
     if (eci.length > 1) bad("The pass's signature must be detached (over manifest.json).");
     let i = 3;
     const certs = [];
-    if (ctx(sd[i], 0)) { for (const c of kids(sd[i])) if (isSeq(c)) certs.push(c.raw.slice()); i++; }
+    if (ctx(sd[i], 0)) {
+      for (const c of kids(sd[i])) if (isSeq(c)) { if (c.indefinite) bad(); certs.push(c.raw.slice()); }
+      if (certs.length > MAX_CERTS) bad("The pass's signature carries too many certificates.");
+      i++;
+    }
     if (ctx(sd[i], 1)) i++;
     if (!isSet(sd[i])) bad();
     const signers = kids(sd[i]);
@@ -34,6 +40,7 @@ export function parseSignature(der) {
     let j = 3, signedAttrs = null;
     const attrs = {};
     if (ctx(si[j], 0)) {
+      if (si[j].indefinite) bad(); // what's signed must be DER: re-encoding it would change the bytes
       // The signature covers the attributes encoded as a SET (tag 0x31), not as the [0] they're stored with.
       signedAttrs = si[j].raw.slice();
       signedAttrs[0] = 0x31;
