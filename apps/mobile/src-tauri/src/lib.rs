@@ -7,7 +7,8 @@ use std::io::Write;
 
 use percent_encoding::percent_decode_str;
 use tauri::ipc::{InvokeBody, Request};
-use tauri::AppHandle;
+use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
+use tauri::{AppHandle, Runtime, Url};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::{FsExt, OpenOptions};
 
@@ -40,13 +41,48 @@ async fn save_bytes(app: AppHandle, request: Request<'_>) -> Result<Option<Strin
     Ok(Some(shown))
 }
 
+/// The WebView shows HumID and nothing else. Any navigation away from the app's own
+/// origin is refused here, before it happens: a link in a document, a crafted
+/// `href`, or a redirect can't turn the vault's window into a browser. Links that
+/// should open elsewhere go through the opener plugin (src/core/external.js), which
+/// hands https:, tel: and mailto: to the system's own apps.
+///
+/// Registered as a plugin: Tauri asks every plugin's `on_navigation` for the main
+/// window and cancels the navigation if any says no.
+fn stay_home<R: Runtime>() -> TauriPlugin<R> {
+    PluginBuilder::new("humid-stay-home")
+        .on_navigation(|_webview, url| own_origin(url))
+        .build()
+}
+
+fn own_origin(url: &Url) -> bool {
+    match url.scheme() {
+        // the app's bundled origin on each platform
+        "tauri" => true,
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or("");
+            // Windows and Android serve the bundle from http(s)://tauri.localhost; development
+            // builds (`tauri dev`) and the Linux/macOS loopback use localhost / 127.0.0.1
+            host == "tauri.localhost"
+                || host.ends_with(".localhost")
+                || host == "localhost"
+                || host == "127.0.0.1"
+        }
+        // a blank page while the WebView is created
+        "about" => url.as_str() == "about:blank",
+        _ => false,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_humid_gate::init())
         .plugin(tauri_plugin_humid_nfc::init())
+        .plugin(stay_home())
         .invoke_handler(tauri::generate_handler![save_bytes])
         .run(tauri::generate_context!())
         .expect("error while running HumID");

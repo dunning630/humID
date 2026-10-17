@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { guessCategory } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp } from "../ui.jsx";
+import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
+import { openExternal } from "../core/external.js";
 import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
+import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 import { CardView } from "./cards.jsx";
@@ -24,7 +25,7 @@ export function Vault() {
       <div class="topbar">
         <div class="grow">
           <h1>Vault</h1>
-          <div class="sub"><Icon name="lock" />{all.length} {all.length === 1 ? "item" : "items"} · sealed on this device{u ? ` · ${fmtSize(u.bytes)}` : ""}</div>
+          <div class="sub"><Icon name="lock" />{all.length} {all.length === 1 ? "item" : "items"} · sealed on this phone{u ? ` · ${fmtSize(u.bytes)}` : ""}</div>
         </div>
         <button class="icon-btn" aria-label="Lock now" onClick={lockNow}><Icon name="lock" /></button>
       </div>
@@ -32,13 +33,11 @@ export function Vault() {
       <OfflineBanner />
 
       {S.alerts.value.length > 0 && (
-        <button class="banner bad alert-banner" onClick={() => { S.tab.value = "security"; window.scrollTo({ top: 0 }); }}>
+        <button class="banner bad alert-banner" onClick={() => { S.tab.value = "you"; window.scrollTo({ top: 0 }); }}>
           <span class="b-ico"><Icon name="alert" /></span>
-          <div><strong>Someone is recovering your HumID</strong><span>From {S.alerts.value[0].platform}. If this isn't you, cancel it in Security.</span></div>
+          <div><strong>Someone is recovering your HumID</strong><span>From {S.alerts.value[0].platform}. If this isn't you, cancel it under You.</span></div>
         </button>
       )}
-
-      <ProtectionCard />
 
       {all.length > 0 && (
         <>
@@ -60,11 +59,9 @@ export function Vault() {
       {!S.loading.value && all.length === 0 && (
         <div class="empty">
           <Mark />
-          <h3>Your vault is empty</h3>
-          <p>Scan your license or passport, or add any document. It's sealed on this phone before it goes anywhere.</p>
-          {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>}
-          {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>}
-          {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}><Icon name="card" />Add a payment card</button>}
+          <h3>Nothing here yet</h3>
+          <p>Your IDs, cards and documents, sealed on this phone before they go anywhere.</p>
+          {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add to your vault</button>}
         </div>
       )}
 
@@ -75,7 +72,7 @@ export function Vault() {
       </div>
 
       {all.length > 0 && !S.offline.value && (
-        <button class="fab" aria-label="Add a document" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" /></button>
+        <button class="fab" aria-label="Add to your vault" onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" /></button>
       )}
     </main>
   );
@@ -130,53 +127,6 @@ function ItemRow({ item }) {
   );
 }
 
-/* ---------------- finish protecting it ---------------- */
-
-/** Opens a step in Security: a sheet, or the Recovery card when the person has a choice to make there. */
-function goSecurity(target) {
-  S.tab.value = "security";
-  if (target === "#recovery") setTimeout(() => document.getElementById("recovery")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
-  else S.sheet.value = { type: target };
-}
-
-/**
- * What's left to make this HumID survive a lost phone, with a button for each, until it's
- * done. Hidden in a duress (decoy) session, which must look like an ordinary account.
- */
-export function ProtectionCard() {
-  const decoy = S.decoy.value;
-  useEffect(() => { if (!decoy) { loadRecovery(); loadDevices(); } }, [decoy]);
-  const rec = S.recovery.value, devices = S.devices.value, id = S.identity.value;
-  if (decoy || S.offline.value || !rec || !devices) return null; // offline: nothing here could be done until it reconnects
-  const items = [
-    { done: !!rec.proofs?.card, icon: "idcard", label: "Seal card", todo: "Make the card that's one of your proofs", target: "cardInfo" },
-    { done: !!(rec.proofs?.witness || rec.proofs?.anchor), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, or your ID chip", target: "#recovery" },
-    { done: devices.length >= 2, icon: "key", label: "A second device", todo: "Another phone or computer, so a lost phone isn't an emergency", target: "addDevice" },
-  ];
-  const n = items.filter((i) => i.done).length;
-  if (n === items.length) return null;
-  return (
-    <section class="card protect" aria-labelledby="protect-h">
-      <div class="c-head"><h3 id="protect-h">Finish protecting your HumID</h3><span class="pill amber">{n} of {items.length}</span></div>
-      <div class="meter" role="progressbar" aria-label="Protection" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={n}><i style={{ width: `${(n / items.length) * 100}%` }} /></div>
-      {items.map((i) => (
-        <button class="proof-row linkrow" data-done={i.done ? "1" : "0"} disabled={i.done} onClick={() => goSecurity(i.target)}>
-          <span class="p-ico"><Icon name={i.done ? "check" : i.icon} /></span>
-          <span><strong>{i.label}</strong><span>{i.done ? "Done" : i.todo}</span></span>
-          {!i.done && <Icon name="chevron" />}
-        </button>
-      ))}
-      {!id?.duress?.enabled && (
-        <button class="proof-row linkrow" data-done="0" onClick={() => goSecurity("duress")}>
-          <span class="p-ico"><Icon name="siren" /></span>
-          <span><strong>Optional: duress gesture</strong><span>If you're ever forced to unlock, show only chosen documents</span></span>
-          <Icon name="chevron" />
-        </button>
-      )}
-    </section>
-  );
-}
-
 /* ---------------- add ---------------- */
 
 const canvasBlob = (c, q = 0.9) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't save that photo. Try again."))), "image/jpeg", q));
@@ -198,6 +148,7 @@ const versionOf = (shot, which, turn) =>
  */
 function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
   const [url, setUrl] = useState(null);
+  const [more, setMore] = useState(false); // "Looks wrong?" opened: the other versions, turning, retake
   useEffect(() => {
     let gone = false, made = null;
     const c = versionOf(shot, which, turn);
@@ -209,16 +160,15 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
     canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
     return () => { gone = true; if (made) URL.revokeObjectURL(made); };
   }, [shot, which, turn]);
-  const did = shot.straightened ? `Found the document's edges and straightened it${shot.rotate ? ", then turned it upright" : ""}` : "Turned it upright";
   const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
   const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
-  const note = !shot.changed ? "Sealed as taken: no document edges found to straighten."
+  const note = !shot.changed ? "As taken: no document edges were found to straighten."
     : which === "original" ? "The photo exactly as the camera took it."
-    : which === "clean" ? `${did}, then evened out the light like a scanner: shadows gone, paper white. Not right? Turn it, or pick another version.`
-    : `${did}, keeping its true colours and light. Not right? Turn it, or seal the original.`;
+    : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
+    : "Straightened, keeping its true colours and light.";
   return (
-    <div class="photo-choice">
-      {shot.changed && (
+    <div class="photo-choice" data-more={more ? "1" : "0"}>
+      {more && shot.changed && (
         <div class="seg" data-n={shot.clean ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
           {shot.clean && (
             <button role="radio" aria-checked={which === "clean"} onClick={() => onChange({ which: "clean", turn })}>
@@ -233,7 +183,7 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
       )}
       <figure class="photo-preview" data-which={which}>
         {url ? <img src={url} alt={which === "original" ? "The photo as taken" : which === "clean" ? "The document as a clean scan" : "The document, straightened"} /> : <span class="photo-wait" />}
-        {which !== "original" && (
+        {more && which !== "original" && (
           <div class="photo-turn">
             <button class="icon-btn" aria-label="Turn left" onClick={() => onChange({ which, turn: (turn + 270) % 360 })}><Icon name="turn" /></button>
             <button class="icon-btn" aria-label="Turn right" onClick={() => onChange({ which, turn: (turn + 90) % 360 })}><Icon name="turn" /></button>
@@ -242,7 +192,7 @@ function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
       </figure>
       <p class="fine photo-note">
         {note}
-        {" "}<button class="linklike" onClick={onRetake}>Retake</button>
+        {" "}{more ? <button class="linklike" onClick={onRetake}>Retake</button> : <button class="linklike" onClick={() => setMore(true)}>Looks wrong?</button>}
       </p>
     </div>
   );
@@ -331,7 +281,7 @@ export function AddSheet() {
 
   return (
     <Sheet onClose={close} label="Add a document">
-      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{have ? "Seal it into your vault" : "Add to your vault"}</h2></div>
+      <div class="s-head"><div class="grow"><div class="eyebrow">New document</div><h2 style={{ marginTop: 4 }}>{have ? "Check it, then seal it" : "Add to your vault"}</h2></div>
         {!st.stage && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
 
       <input ref={chooser} type="file" hidden onChange={onFile} />
@@ -340,7 +290,7 @@ export function AddSheet() {
         <>
           <button class="kind featured" onClick={() => (S.sheet.value = { type: "id" })}>
             <span class="ico"><Icon name="idcard" /></span>
-            <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the chip where there is one.</span></span>
+            <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the ID chip where there is one.</span></span>
             <Icon name="chevron" />
           </button>
           <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
@@ -383,28 +333,28 @@ export function AddSheet() {
           </div>}
           {place.element}
           <div class="actions">
-            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : pick.which === "clean" ? "Seal the clean scan" : "Seal the straightened photo") : "Seal & store"}</button>
+            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />Seal</button>
             <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
           </div>
-          <p class="fine" style={{ marginTop: 12 }}>Encrypted on this phone with ML-KEM-1024 + X25519 and signed with ML-DSA-87 before upload. {shot ? "Only the version you seal is kept; the other is discarded." : "The original isn't kept."} The location, if stamped, is sealed with the name, so the vault server can't read it.</p>
+          <p class="fine" style={{ marginTop: 12 }}>One check seals it on this phone. {shot ? "Only the version shown is kept." : "The original file isn't kept."} The location stamp is sealed with it, so your vault server can't read it. <HowProtectedLink /></p>
         </>
       )}
 
       {have && st.stage != null && (
-        <Steps current={stageIdx} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
+        <Steps current={stageIdx} steps={SEAL_STEPS} />
       )}
     </Sheet>
   );
 }
 
-/** Where a document was sealed, if it was stamped: coordinates, accuracy, and a map link opened only on a tap. */
+/** The location stamp, if there is one: coordinates, accuracy, and a map opened only on a tap. */
 function SealedAt({ place }) {
   if (!validStamp(place)) return null;
   return (
-    <div class="row"><span class="k">Sealed at</span>
+    <div class="row"><span class="k">Location stamp</span>
       <span class="v place-v">
         <span class="mono" style={{ fontSize: 12 }}>{formatCoords(place)}</span>
-        <span class="muted small">{formatAccuracy(place.accuracy)} · as the phone reported · <a href={mapLink(place)} target="_blank" rel="noopener noreferrer">Show on a map</a></span>
+        <span class="muted small">{formatAccuracy(place.accuracy)} · as the phone reported · <button class="linklike" type="button" onClick={() => openExternal(mapLink(place))}>Show on a map</button></span>
       </span>
     </div>
   );
@@ -415,7 +365,7 @@ function SealedAt({ place }) {
 export function ItemSheet() {
   const st = S.sheet.value;
   const item = S.items.value.find((i) => i.id === st.id);
-  const [mode, setMode] = useState("view"); // view | edit | confirm
+  const [mode, setMode] = useState("view"); // view | edit
   const [name, setName] = useState(item?.name || "");
   const [cat, setCat] = useState(item?.category || "other");
   if (!item) return null;
@@ -433,12 +383,10 @@ export function ItemSheet() {
       {mode === "view" && (
         <>
           <div class="card" style={{ marginTop: 14 }}>
-            <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)} · sealed {fmtSize(item.envelopeSize)}</span></div>
+            <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
             <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
             <SealedAt place={item.place} />
             <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>
-            <div class="row"><span class="k">Encryption</span><span class="v mono" style={{ fontSize: 12 }}>ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
-            <div class="row"><span class="k">Signature</span><span class="v mono" style={{ fontSize: 12 }}>ML-DSA-87 ✓ verified by vault</span></div>
           </div>
           {off && (
             <div class="banner warn" role="note" style={{ marginTop: 14 }}>
@@ -449,12 +397,12 @@ export function ItemSheet() {
           <div class="actions">
             <button class="btn secure block" disabled={off} onClick={() => openItem(item)}><Icon name="eye" />Open</button>
             <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => saveCopy(item)}><Icon name="download" />Save copy</button>
+              <button class="btn quiet" disabled={off} onClick={() => saveCopy(item)}><Icon name="download" />Save a copy</button>
               <button class="btn quiet" disabled={off} onClick={() => setMode("edit")}><Icon name="pencil" />Rename</button>
             </div>
             <div class="split">
-              <button class="btn quiet" disabled={off} onClick={() => exportSealed(item)}><Icon name="lock" />Sealed copy</button>
-              <button class="btn danger" disabled={off} onClick={() => setMode("confirm")}><Icon name="trash" />Delete</button>
+              <button class="btn quiet" disabled={off} onClick={() => exportSealed(item)}><Icon name="lock" />Export sealed</button>
+              <button class="btn danger" disabled={off} onClick={() => setMode("delete")}><Icon name="trash" />Delete</button>
             </div>
           </div>
           {!off && (
@@ -464,14 +412,14 @@ export function ItemSheet() {
               <i aria-hidden="true" />
             </label>
           )}
-          {S.identity.value?.duress?.enabled && !S.decoy.value && !off && (
+          {S.duressInfo.value?.setting?.enabled && !S.decoy.value && !off && (
             <label class="toggle" style={{ marginTop: 12 }}>
               <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
               <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />
               <i aria-hidden="true" />
             </label>
           )}
-          <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh biometric check. Every one is recorded in Activity.</p>
+          <p class="fine" style={{ marginTop: 12 }}>Opening, saving and deleting each need a fresh check. Every one is recorded in Activity.</p>
         </>
       )}
 
@@ -486,12 +434,12 @@ export function ItemSheet() {
         </>
       )}
 
-      {mode === "confirm" && (
+      {mode === "delete" && (
         <>
-          <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete “{item.name}”?</strong><span>It's removed from the vault server. Exported copies you saved elsewhere aren't affected.</span></div></div>
+          <div class="banner bad" style={{ marginTop: 14 }}><span class="b-ico"><Icon name="trash" /></span><div><strong>Delete {item.name}?</strong><span>It's gone from your vault for good. Copies you saved elsewhere stay.</span></div></div>
           <div class="actions">
-            <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Confirm with biometric &amp; delete</button>
-            <button class="btn ghost block" onClick={() => setMode("view")}>Keep it</button>
+            <button class="btn danger block" onClick={() => deleteItem(item)}><Icon name="fingerprint" />Delete</button>
+            <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
           </div>
         </>
       )}
@@ -507,55 +455,55 @@ export function Viewer() {
   const isImg = v.type.startsWith("image/");
   const isPdf = v.type === "application/pdf";
   if (v.pass || v.passError) return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
-        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
       </header>
       <div class="body id-body"><PassView v={v} /></div>
-      <div class="wipe">Closing wipes the decrypted pass from memory.</div>
-    </div>
+          </div>
   );
   if (v.cardRecord) return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
-        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
       </header>
       <div class="body id-body"><CardView record={v.cardRecord} /></div>
-      <div class="wipe">Closing wipes the decrypted card from memory.</div>
-    </div>
+          </div>
   );
   if (v.idRecord) return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
-        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
       </header>
       <div class="body id-body"><IdView record={v.idRecord} item={v.item} /></div>
-      <div class="wipe">Closing wipes the decrypted copy from memory.</div>
-    </div>
+          </div>
   );
   return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
-        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
         <button class="icon-btn" aria-label="Save a copy" onClick={() => saveCopy(v.item)}><Icon name="download" /></button>
       </header>
       <div class="body">
         {v.text != null && <pre>{v.text}</pre>}
         {isImg && <img src={v.url} alt={v.name} />}
-        {isPdf && <iframe src={v.url} title={v.name} />}
+        {/* Not sandboxed: Chromium (Android, Windows, this test runner) refuses to show a PDF inside a sandboxed
+            frame at all, whatever the allow-list (checked with sandbox="", allow-scripts, and both with
+            allow-same-origin: every one gives the broken-document icon). The blob is this origin's own
+            decrypted bytes; copying and selection are blocked on the viewer instead. */}
+        {isPdf && <iframe src={v.url} title={v.name} referrerpolicy="no-referrer" />}
         {!isImg && !isPdf && v.text == null && (
           <div class="empty" style={{ marginTop: 0 }}>
             <Icon name="file" />
-            <p>This file type can't be previewed here. Save a copy to open it in another app.</p>
+            <p>This file type can't be shown here. Save a copy to open it in another app.</p>
             <button class="btn secure" onClick={() => saveCopy(v.item)}><Icon name="download" />Save a copy</button>
           </div>
         )}
       </div>
-      <div class="wipe">Closing wipes the decrypted copy from memory.</div>
-    </div>
+          </div>
   );
 }

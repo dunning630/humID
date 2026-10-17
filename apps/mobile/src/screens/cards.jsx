@@ -4,7 +4,8 @@
 // is the screens around them.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { Sheet, Steps } from "../ui.jsx";
+import { Sheet, Steps, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
+import { openExternal } from "../core/external.js";
 import * as S from "../core/state.js";
 import { addCardRecord, readCardTap, readCardPhoto, chipReader } from "../core/controller.js";
 import { jpeg, imageUrl, releaseReaders, rotateCanvas } from "../core/scan.js";
@@ -91,7 +92,9 @@ export function CardSheet() {
   }
 
   const head = (
-    <div class="s-head"><div class="grow"><div class="eyebrow">New card</div>
+    <div class="s-head">
+      {step === "review" && !busy && !cam && <button class="icon-btn" aria-label="Back" data-back onClick={() => setStep("how")}><Icon name="back" /></button>}
+      <div class="grow"><div class="eyebrow">New card</div>
       <h2 style={{ marginTop: 4 }}>{step === "how" ? "Add a payment card" : "Check the details"}</h2></div>
       {!busy && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
   );
@@ -116,7 +119,7 @@ export function CardSheet() {
           </>
         )}
         {step === "review" && (busy
-          ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
+          ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={SEAL_STEPS} />
           : <CardForm rec={rec.current} note={note} pending={pendingCvv} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} />)}
       </Sheet>
       {cam === "front" && <DocCamera shape="id1" eyebrow="Card · front" title="The front of the card" hint="Fit the card in the frame, number side up." onCancel={() => setCam(null)} onDone={front} />}
@@ -205,9 +208,9 @@ function CardForm({ rec, note, pending, onRetake, onBack, onChange }) {
       </div>
       {err && <p class="small" role="alert" style={{ color: "var(--amber-hi)", marginTop: 10 }}>{err}</p>}
       <div class="actions">
-        <button class="btn primary block" disabled={!c?.ok} onClick={save}><Icon name="fingerprint" />Seal &amp; store</button>
+        <button class="btn primary block" disabled={!c?.ok} onClick={save}><Icon name="fingerprint" />Seal</button>
       </div>
-      <p class="fine" style={{ marginTop: 12 }}>Sealed on this phone (ML-KEM-1024 + X25519, signed with ML-DSA-87). Your vault list shows only the network, last four digits and expiry.</p>
+      <p class="fine" style={{ marginTop: 12 }}>One check seals it on this phone. Your vault list shows only the network, last four digits and expiry. <HowProtectedLink /></p>
     </>
   );
 }
@@ -238,7 +241,7 @@ export function CardView({ record }) {
         <div class="row"><span class="k">Expires</span><span class="v mono">{c.expiry || "—"}</span></div>
         {c.cvv && <div class="row"><span class="k">Security code</span><span class="v mono" data-card="cvv">{c.cvv}</span></div>}
         {c.bank && <div class="row"><span class="k">Bank</span><span class="v">{c.bank}</span></div>}
-        {c.phone && <div class="row"><span class="k">Bank phone</span><span class="v"><a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`}>{c.phone}</a></span></div>}
+        {c.phone && <div class="row"><span class="k">Bank phone</span><span class="v"><button class="linklike" type="button" onClick={() => openExternal(`tel:${c.phone.replace(/[^\d+]/g, "")}`)}>{c.phone}</button></span></div>}
         {c.notes && <div class="row"><span class="k">Notes</span><span class="v">{c.notes}</span></div>}
       </div>
       <div class="actions">

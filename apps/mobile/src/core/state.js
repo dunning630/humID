@@ -4,7 +4,7 @@ import { DEMO_BUILD } from "@humid/gate";
 import { loadPrefs, sortItems } from "./prefs.js";
 
 export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
-export const tab = signal("vault");          // vault | activity | security | settings
+export const tab = signal("vault");          // vault | activity | you
 export const prefs = signal(loadPrefs());     // this device's preferences (core/prefs.js)
 export const enrollStep = signal("connect"); // connect · access (when the server needs a pass) · bind · done + recovery card
 

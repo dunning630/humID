@@ -1,5 +1,11 @@
 # tauri-plugin-humid-gate
 
+## 2.0.2
+
+- iOS: the WebView's data store (`Library/WebKit`, `Caches/WebKit`: the wrapped identity,
+  the sealed offline copy, an access pass) is excluded from iCloud and iTunes backups at
+  plugin load, every launch. No change to the gate's commands.
+
 ## 2.0.1
 
 - Android: declares location access (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, both

@@ -67,9 +67,9 @@ async function hold(page) {
   await page.keyboard.up(" ");
 }
 async function addCard(page) {
-  const add = page.locator("button.fab");
-  if (await add.isVisible().catch(() => false)) { await add.click(); await page.getByRole("button", { name: /Add a payment card/ }).click(); }
-  else await page.getByRole("button", { name: /Add a payment card/ }).first().click();
+  // one way in: the + button (or the empty vault's one primary), then the choice
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.getByRole("button", { name: /Add a payment card/ }).click();
 }
 
 try {
@@ -101,7 +101,7 @@ try {
   assert.match(await page.locator(".sheet [role=status]").first().innerText(), /Read Visa ending 1111/);
   await page.getByLabel("Nickname").fill("Travel card");
   await shot(page, "1-front-read");
-  await page.getByRole("button", { name: "Seal & store" }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const row = page.locator(".item", { hasText: "Travel card" });
   await row.waitFor({ timeout: 30_000 });
@@ -121,7 +121,7 @@ try {
   await page.getByRole("button", { name: /Type it/ }).click();
   await page.fill("#cf-pan", "4111 1111 1111 1112");
   assert.ok(await page.getByText("That number has a typo").isVisible(), "a typo is caught");
-  assert.ok(await page.getByRole("button", { name: "Seal & store" }).isDisabled(), "a bad number can't be sealed");
+  assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a bad number can't be sealed");
   await page.fill("#cf-pan", "4111 1111 1111 1111");
   await page.fill("#cf-exp", "08/29");
   await page.getByLabel("Nickname").fill("Backup card");
@@ -133,7 +133,7 @@ try {
   assert.match(await page.locator(".sheet [role=status]").first().innerText(), /photo of the back wasn't kept/);
   assert.equal(await page.locator(".id-thumbs figure").count(), 0, "no photo of the back on screen");
   await shot(page, "3-back-read");
-  await page.getByRole("button", { name: "Seal & store" }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: "Backup card" }).click();
   await page.getByRole("button", { name: "Open", exact: true }).click();
@@ -165,7 +165,7 @@ try {
   await addPassFile(forged);
   await page.getByText("HumID won't add this as a Wallet pass").waitFor({ timeout: 20_000 });
   assert.match(await page.locator(".sheet [role=alert]").innerText(), /changed after it was signed/);
-  assert.ok(await page.getByRole("button", { name: "Seal & store" }).isDisabled(), "a forged pass can't be sealed as a pass");
+  assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a forged pass can't be sealed as a pass");
   await shot(page, "5-pass-forged");
   await page.getByRole("button", { name: "Choose another file" }).waitFor();
   await page.keyboard.press("Escape").catch(() => {});
@@ -175,7 +175,7 @@ try {
   assert.match(await page.locator(".pass-face").innerText(), /The Specimen Tour/);
   assert.equal(await page.inputValue("#doc-name"), "Concert ticket");
   await shot(page, "6-pass-verified");
-  await page.getByRole("button", { name: "Seal & store" }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const passRow = page.locator(".item", { hasText: "Concert ticket" });
   await passRow.waitFor({ timeout: 30_000 });
