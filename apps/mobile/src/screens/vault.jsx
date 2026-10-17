@@ -7,7 +7,7 @@ import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, u
 import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
+import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
 import { CardView } from "./cards.jsx";
@@ -32,13 +32,11 @@ export function Vault() {
       <OfflineBanner />
 
       {S.alerts.value.length > 0 && (
-        <button class="banner bad alert-banner" onClick={() => { S.tab.value = "security"; window.scrollTo({ top: 0 }); }}>
+        <button class="banner bad alert-banner" onClick={() => { S.tab.value = "you"; window.scrollTo({ top: 0 }); }}>
           <span class="b-ico"><Icon name="alert" /></span>
-          <div><strong>Someone is recovering your HumID</strong><span>From {S.alerts.value[0].platform}. If this isn't you, cancel it in Security.</span></div>
+          <div><strong>Someone is recovering your HumID</strong><span>From {S.alerts.value[0].platform}. If this isn't you, cancel it under You.</span></div>
         </button>
       )}
-
-      <ProtectionCard />
 
       {all.length > 0 && (
         <>
@@ -127,53 +125,6 @@ function ItemRow({ item }) {
       </span>
       <span class="end"><Icon name="chevron" /></span>
     </button>
-  );
-}
-
-/* ---------------- finish protecting it ---------------- */
-
-/** Opens a step in Security: a sheet, or the Recovery card when the person has a choice to make there. */
-function goSecurity(target) {
-  S.tab.value = "security";
-  if (target === "#recovery") setTimeout(() => document.getElementById("recovery")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
-  else S.sheet.value = { type: target };
-}
-
-/**
- * What's left to make this HumID survive a lost phone, with a button for each, until it's
- * done. Hidden in a duress (decoy) session, which must look like an ordinary account.
- */
-export function ProtectionCard() {
-  const decoy = S.decoy.value;
-  useEffect(() => { if (!decoy) { loadRecovery(); loadDevices(); } }, [decoy]);
-  const rec = S.recovery.value, devices = S.devices.value, id = S.identity.value;
-  if (decoy || S.offline.value || !rec || !devices) return null; // offline: nothing here could be done until it reconnects
-  const items = [
-    { done: !!rec.proofs?.card, icon: "idcard", label: "Seal card", todo: "Make the card that's one of your proofs", target: "cardInfo" },
-    { done: !!(rec.proofs?.witness || rec.proofs?.anchor), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, or your ID chip", target: "#recovery" },
-    { done: devices.length >= 2, icon: "key", label: "A second device", todo: "Another phone or computer, so a lost phone isn't an emergency", target: "addDevice" },
-  ];
-  const n = items.filter((i) => i.done).length;
-  if (n === items.length) return null;
-  return (
-    <section class="card protect" aria-labelledby="protect-h">
-      <div class="c-head"><h3 id="protect-h">Finish protecting your HumID</h3><span class="pill amber">{n} of {items.length}</span></div>
-      <div class="meter" role="progressbar" aria-label="Protection" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={n}><i style={{ width: `${(n / items.length) * 100}%` }} /></div>
-      {items.map((i) => (
-        <button class="proof-row linkrow" data-done={i.done ? "1" : "0"} disabled={i.done} onClick={() => goSecurity(i.target)}>
-          <span class="p-ico"><Icon name={i.done ? "check" : i.icon} /></span>
-          <span><strong>{i.label}</strong><span>{i.done ? "Done" : i.todo}</span></span>
-          {!i.done && <Icon name="chevron" />}
-        </button>
-      ))}
-      {!id?.duress?.enabled && (
-        <button class="proof-row linkrow" data-done="0" onClick={() => goSecurity("duress")}>
-          <span class="p-ico"><Icon name="siren" /></span>
-          <span><strong>Optional: duress gesture</strong><span>If you're ever forced to unlock, show only chosen documents</span></span>
-          <Icon name="chevron" />
-        </button>
-      )}
-    </section>
   );
 }
 

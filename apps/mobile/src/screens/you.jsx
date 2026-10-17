@@ -1,11 +1,12 @@
-// Security: recovery alerts, devices, two-proof recovery (witnesses, ID anchor,
-// seal card), duress protection, helping others, verification station, your
-// identity, and the exits. This device and the connection are in Settings.
+// You: everything about this HumID in one place, in the order it matters —
+// what's left to protect it, devices, recovery (witnesses, ID chip, seal card),
+// duress protection, helping others, how HumID looks and locks on this device,
+// a collapsed "About" with the diagnostics, and the exits (lock, close).
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
   AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft,
-  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, tierText, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT, OfflineBanner,
+  QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT, OfflineBanner,
 } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
@@ -13,12 +14,13 @@ import {
   makeNewCard, removeCard, saveCard, findContact, saveContacts, removeContacts,
   offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, cancelRecovery,
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
-  stationLookup, stationVerify, stationReadChip, markPicking, DURESS_HOLD_MS, readChip,
+  stationLookup, stationVerify, stationReadChip, markPicking, DURESS_HOLD_MS, readChip, setPref, setDecoy,
 } from "../core/controller.js";
+import { CHOICES, IDLE_CHOICES, idleLabel } from "../core/prefs.js";
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
 import { resetSimulation } from "../core/controller.js";
 
-export const GATE = {
+const GATE = {
   "ios-keychain-biometry": "Face ID / Touch ID · Secure Enclave policy",
   "android-keystore-biometric": "Android Keystore · Class 3 biometric",
   "macos-keychain-biometry": "Touch ID · Keychain",
@@ -29,9 +31,26 @@ export const GATE = {
 const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with older card", contacts: "Recovered with older contacts", quorum: "Recovered with two proofs" };
 const METHOD = { card: "recovery card", contacts: "recovery contacts", quorum: "two proofs" };
 
-export function Security() {
+const LABELS = {
+  theme: { system: "Match device", dark: "Night", light: "Day" },
+  text: { standard: "Standard", large: "Larger" },
+  sort: { newest: "Newest", oldest: "Oldest", name: "Name", expiry: "Expiring first" },
+};
+const opts = (key) => CHOICES[key].map((v) => [v, LABELS[key][v]]);
+
+const close = () => (S.sheet.value = null);
+const open = (type, extra = {}) => (S.sheet.value = { type, ...extra });
+
+/** Opens a step here: a sheet, or the Recovery card when there's a choice to make there. */
+function goTo(target) {
+  if (target === "#recovery") setTimeout(() => document.getElementById("recovery")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
+  else open(target);
+}
+
+export function You() {
   const id = S.identity.value;
   const srv = id?.server;
+  const sess = S.session.value;
   const now = useNow();
   const [confirm, setConfirm] = useState(false);
   const sheet = S.sheet.value;
@@ -42,11 +61,12 @@ export function Security() {
   const duress = id?.duress;
   const dinfo = S.duressInfo.value;
   const protecting = decoy ? [] : S.protecting.value;
-  const open = (type, extra = {}) => (S.sheet.value = { type, ...extra });
+  const p = S.prefs.value;
+  const pinned = S.items.value.filter((i) => i.pinned).length;
 
   return (
     <main class="screen with-tabs">
-      <div class="topbar"><div class="grow"><h1>Security</h1><div class="sub"><Icon name="shield" />How your HumID is protected</div></div></div>
+      <div class="topbar"><div class="grow"><h1>You</h1><div class="sub"><Icon name="shield" />Your HumID, and how it's protected</div></div></div>
 
       <OfflineBanner />
 
@@ -83,6 +103,8 @@ export function Security() {
           </div>
         </div>
       ))}
+
+      <ProtectionCard />
 
       <div class="card">
         <div class="c-head"><h3>Devices</h3><button class="btn quiet sm" onClick={() => open("addDevice")}><Icon name="plus" />Add a device</button></div>
@@ -125,10 +147,6 @@ export function Security() {
           </button>
         </div>
         {rec?.legacy && <div class="banner warn" style={{ marginTop: 10 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Upgrade to two-proof recovery</strong><span>You have an older card or contacts that work on their own. Make a new seal card and save your witnesses again to switch.</span></div></div>}
-        <div class="split" style={{ marginTop: 12 }}>
-          <button class="btn ghost sm" onClick={offerToBeContact}>Be a witness</button>
-          <button class="btn ghost sm" onClick={() => open("help")}>Help recover</button>
-        </div>
       </div>
 
       <div class="card">
@@ -137,13 +155,35 @@ export function Security() {
         <div class="actions" style={{ marginTop: 10 }}><button class="btn quiet sm" onClick={() => open("duress")}><Icon name="siren" />{!decoy && duress?.enabled ? "Settings" : "Set up"}</button></div>
       </div>
 
-      {!decoy && S.station.value?.station && (
-        <div class="card">
-          <div class="c-head"><h3>Verification station</h3><span class="pill mint"><Icon name="station" />Operator</span></div>
-          <p class="small muted" style={{ marginTop: 4 }}>Check a person and their ID in person, so their recovery can count their ID chip.</p>
-          <div class="actions" style={{ marginTop: 10 }}><button class="btn primary sm" onClick={() => open("station")}><Icon name="scan" />Verify someone</button></div>
+      <div class="card">
+        <h3>Help others</h3>
+        <p class="small muted" style={{ marginTop: 4 }}>Be one of someone's witnesses, or help a witness of yours get back in.</p>
+        <div class="split" style={{ marginTop: 12 }}>
+          <button class="btn ghost sm" onClick={offerToBeContact}>Be a witness</button>
+          <button class="btn ghost sm" onClick={() => open("help")}>Help recover</button>
         </div>
-      )}
+        {!decoy && S.station.value?.station && (
+          <>
+            <div class="c-head" style={{ marginTop: 16 }}><strong>Verification station</strong><span class="pill mint"><Icon name="station" />Operator</span></div>
+            <p class="small muted" style={{ marginTop: 4 }}>Check a person and their ID in person, so their recovery can count their ID chip.</p>
+            <div class="actions" style={{ marginTop: 10 }}><button class="btn primary sm" onClick={() => open("station")}><Icon name="scan" />Verify someone</button></div>
+          </>
+        )}
+      </div>
+
+      <section class="card" aria-labelledby="set-prefs">
+        <h3 id="set-prefs">Preferences</h3>
+        <Choice id="theme" label="Theme" value={p.theme} options={opts("theme")} onPick={(v) => setPref({ theme: v })} />
+        <Choice id="text" label="Text size" value={p.text} options={opts("text")} onPick={(v) => setPref({ text: v })} />
+        <Switch id="motion" label="Animations" hint="The rings and transitions. Off keeps everything still." checked={p.motion} onChange={(v) => setPref({ motion: v })} />
+        <Switch id="haptics" label="Haptics" hint="A short buzz when a check passes or a photo is taken." checked={p.haptics} onChange={(v) => setPref({ haptics: v })} />
+        <Choice id="idle" label="Lock after no activity" hint="5 minutes is the longest HumID allows. Leaving the screen always locks."
+          value={p.idleMs} options={IDLE_CHOICES.map((ms) => [ms, idleLabel(ms).replace(" minutes", " min").replace(" minute", " min")])} onPick={(v) => setPref({ idleMs: v })} />
+        <Choice id="expiry" label="Warn before an ID expires" value={p.expiryWarnDays}
+          options={CHOICES.expiryWarnDays.map((d) => [d, d < 90 ? `${d} days` : `${Math.round(d / 30)} months`])} onPick={(v) => setPref({ expiryWarnDays: v })} />
+        <Choice id="sort" label="Sort the vault by" value={p.sort} options={opts("sort")} onPick={(v) => setPref({ sort: v })} />
+        <p class="small muted" style={{ marginTop: 10 }}><Icon name="pushpin" /> {pinned ? `${pinned} pinned ${pinned === 1 ? "item stays" : "items stay"} at the top.` : "Pin items from their details to keep them at the top."} Pins are sealed with each item, so they show on all your devices and the server can't see them.</p>
+      </section>
 
       {SIM && (
         <div class="card">
@@ -156,27 +196,37 @@ export function Security() {
         </div>
       )}
 
-      <div class="card">
-        <h3>Your identity</h3>
+      <details class="card about">
+        <summary><strong>About this HumID</strong><span class="small muted">Your identity, this device, the connection</span></summary>
+        <div class="eyebrow" style={{ marginTop: 14 }}>Your identity</div>
         <div class="rows" style={{ marginTop: 6 }}>
           <div class="row"><span class="k">Created</span><span class="v">{id ? fmtDate(id.enrolledAt) : ""}</span></div>
           <div class="row"><span class="k">HumID</span><span class="v mono" style={{ fontSize: 12 }}>{srv?.id?.slice(0, 16)}…</span></div>
           <div class="row" style={{ display: "block" }}><div class="k" style={{ marginBottom: 8 }}>Identity commitment</div><div class="kid">{groupKey(id?.commit).slice(0, 8).map((g) => <span>{g}</span>)}</div></div>
           <div class="row"><span class="k">Keys</span><span class="v mono" style={{ fontSize: 12 }}>ML-DSA-87 · ML-KEM-1024 · X25519</span></div>
         </div>
-      </div>
-
-      <button class="option" style={{ marginTop: 14 }} onClick={() => { S.tab.value = "settings"; window.scrollTo({ top: 0 }); }}>
-        <span class="o-ico"><Icon name="settings" /></span>
-        <span><strong>This device and connection</strong><span>Now in Settings, with how HumID looks and locks.</span></span>
-        <Icon name="chevron" />
-      </button>
+        <div class="eyebrow" style={{ marginTop: 16 }}>This device</div>
+        <div class="rows" style={{ marginTop: 6 }}>
+          <div class="row"><span class="k">Protection</span><span class="v"><AssurancePill assurance={id?.assurance} /></span></div>
+          <div class="row"><span class="k">Gate</span><span class="v">{GATE[id?.method] || id?.method}</span></div>
+          <div class="row"><span class="k">Proof</span><span class="v">{proofLabel(id?.proof, id?.assurance)}</span></div>
+          <div class="row"><span class="k">PIN or password</span><span class="v"><span class="pill mint"><Icon name="check" />Never accepted</span></span></div>
+          <div class="row"><span class="k">Device</span><span class="v">{PLATFORM}</span></div>
+        </div>
+        <div class="eyebrow" style={{ marginTop: 16 }}>Connection</div>
+        <div class="rows" style={{ marginTop: 6 }}>
+          <div class="row"><span class="k">Vault server</span><span class="v">{serverHost(srv?.url)}</span></div>
+          <div class="row" style={{ display: "block" }}><div class="k" style={{ marginBottom: 8 }}>Pinned server key</div><div class="kid">{(srv?.fingerprint || "").split("-").map((g) => <span>{g}</span>)}</div></div>
+          <div class="row"><span class="k">Channel</span><span class="v mono" style={{ fontSize: 12 }}>HTP/1 · ML-KEM-1024 + X25519 · AES-256-GCM</span></div>
+          <div class="row"><span class="k">Session</span><span class="v">{sess ? <span class="pill mint"><Icon name="signal" />Active · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : S.offline.value ? <span class="pill amber"><Icon name="signal" />Offline · read only · auto-locks in {fmtLeft(S.idleDeadline.value - now)}</span> : "—"}</span></div>
+        </div>
+      </details>
 
       <div class="actions" style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 10 }}>
         <button class="btn ghost block" onClick={lockNow}><Icon name="lock" />Lock now</button>
         <button class="btn danger block" onClick={() => setConfirm(true)}><Icon name="trash" />Close HumID &amp; erase vault</button>
       </div>
-      <p class="fine" style={{ marginTop: 14 }}>HumID {VERSION}</p>
+      <p class="fine" style={{ marginTop: 14 }}>HumID {VERSION} · Preferences are kept on this device. Pins follow you.</p>
 
       {confirm && (
         <Sheet onClose={() => setConfirm(false)} label="Close HumID">
@@ -212,7 +262,73 @@ export function Security() {
   );
 }
 
-const close = () => (S.sheet.value = null);
+/* ---------------- finish protecting it ---------------- */
+
+/**
+ * What's left to make this HumID survive a lost phone, with a button for each, until it's
+ * done. Hidden in a duress (decoy) session, which must look like an ordinary account.
+ */
+export function ProtectionCard() {
+  const decoy = S.decoy.value;
+  useEffect(() => { if (!decoy) { loadRecovery(); loadDevices(); } }, [decoy]);
+  const rec = S.recovery.value, devices = S.devices.value, id = S.identity.value;
+  if (decoy || S.offline.value || !rec || !devices) return null; // offline: nothing here could be done until it reconnects
+  const items = [
+    { done: !!rec.proofs?.card, icon: "idcard", label: "Seal card", todo: "Make the card that's one of your proofs", target: "cardInfo" },
+    { done: !!(rec.proofs?.witness || rec.proofs?.anchor), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, or your ID chip", target: "#recovery" },
+    { done: devices.length >= 2, icon: "key", label: "A second device", todo: "Another phone or computer, so a lost phone isn't an emergency", target: "addDevice" },
+  ];
+  const n = items.filter((i) => i.done).length;
+  if (n === items.length) return null;
+  return (
+    <section class="card protect" aria-labelledby="protect-h">
+      <div class="c-head"><h3 id="protect-h">Finish protecting your HumID</h3><span class="pill amber">{n} of {items.length}</span></div>
+      <div class="meter" role="progressbar" aria-label="Protection" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={n}><i style={{ width: `${(n / items.length) * 100}%` }} /></div>
+      {items.map((i) => (
+        <button class="proof-row linkrow" data-done={i.done ? "1" : "0"} disabled={i.done} onClick={() => goTo(i.target)}>
+          <span class="p-ico"><Icon name={i.done ? "check" : i.icon} /></span>
+          <span><strong>{i.label}</strong><span>{i.done ? "Done" : i.todo}</span></span>
+          {!i.done && <Icon name="chevron" />}
+        </button>
+      ))}
+      {!id?.duress?.enabled && (
+        <button class="proof-row linkrow" data-done="0" onClick={() => goTo("duress")}>
+          <span class="p-ico"><Icon name="siren" /></span>
+          <span><strong>Optional: duress gesture</strong><span>If you're ever forced to unlock, show only chosen documents</span></span>
+          <Icon name="chevron" />
+        </button>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- preferences ---------------- */
+
+/** One choice out of a few, as a row of buttons. */
+function Choice({ id, label, hint, value, options, onPick }) {
+  return (
+    <div class="setting">
+      <div class="s-label" id={`${id}-label`}><strong>{label}</strong>{hint && <span>{hint}</span>}</div>
+      <div class="seg" role="radiogroup" aria-labelledby={`${id}-label`} data-n={options.length}>
+        {options.map(([v, text]) => (
+          <button type="button" role="radio" aria-checked={value === v} data-pref={`${id}:${v}`} onClick={() => onPick(v)}>{text}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Switch({ id, label, hint, checked, onChange }) {
+  return (
+    <label class="toggle">
+      <span><strong>{label}</strong>{hint && <span>{hint}</span>}</span>
+      <input type="checkbox" role="switch" data-pref={id} checked={checked} onChange={(e) => onChange(e.currentTarget.checked)} />
+      <i aria-hidden="true" />
+    </label>
+  );
+}
+
+/* ---------------- sheets ---------------- */
 
 function ConfirmSheet({ label, eyebrow, title, text, action, onConfirm }) {
   return (
@@ -225,15 +341,6 @@ function ConfirmSheet({ label, eyebrow, title, text, action, onConfirm }) {
         <button class="btn ghost block" onClick={close}>Keep it</button>
       </div>
     </Sheet>
-  );
-}
-
-function CodeField({ id, label, value, onInput, placeholder = "XXXX-XXXX-XXXX" }) {
-  return (
-    <div class="field">
-      <label for={id}>{label}</label>
-      <input autocorrect="off" id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder={placeholder} value={value} onInput={(e) => onInput(e.currentTarget.value)} />
-    </div>
   );
 }
 
@@ -345,7 +452,7 @@ function ContactsSheet() {
       ))}
       {scanning != null && <Scanner expect="contact" onCancel={() => setScanning(null)} onCode={(c) => { set(scanning, { code: c.code, offer: null }); setScanning(null); }} />}
       {rows.length < 5 && <button class="link" onClick={() => setRows([...rows, { name: "", code: "", offer: null }])}>+ Add another witness</button>}
-      <p class="small muted" style={{ marginTop: 6 }}>Each witness gets their code from HumID → Security → Be a witness. Tap a code box's scan button to scan theirs.</p>
+      <p class="small muted" style={{ marginTop: 6 }}>Each witness gets their code from HumID → You → Be a witness. Tap a code box's scan button to scan theirs.</p>
       <div class="actions">
         <button class="btn primary block" disabled={ready.length < 2 || !me.trim()} onClick={() => saveContacts(ready.map((r) => ({ code: r.code, name: r.name, offer: r.offer })), me.trim())}>
           <Icon name="fingerprint" />Save {ready.length || ""} witnesses · any {t} count as a proof
@@ -506,7 +613,8 @@ function DuressSheet() {
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "hold");
   const info = S.duressInfo.value;
-  const decoys = decoy ? 0 : S.items.value.filter((i) => i.decoy).length;
+  const items = decoy ? [] : S.items.value;
+  const decoys = items.filter((i) => i.decoy).length;
   const save = () => saveDuress({ enabled, gesture });
   return (
     <Sheet onClose={close} label="Duress protection">
@@ -526,8 +634,21 @@ function DuressSheet() {
             ))}
           </div>
         )}
-        <div class="row"><span class="k">Decoy documents</span><span class="v">{decoys ? `${decoys} marked` : "None yet: mark some in each document's details"}</span></div>
         {!decoy && <Toggle label="Tell my witnesses" hint="They see a duress alert next time they open HumID. Only turn this on if they'd know what to do." checked={!!info?.alert} onChange={setWitnessAlert} />}
+      </div>
+      <div class="card" style={{ marginTop: 12 }}>
+        <div class="c-head"><h3>Decoy documents</h3><span class="pill">{decoys ? `${decoys} shown` : "None"}</span></div>
+        <p class="small muted" style={{ marginTop: 4 }}>What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
+        {items.length === 0 ? <p class="small muted" style={{ marginTop: 8 }}>Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
+          <div class="checklist decoys">
+            {items.map((it) => (
+              <label class="check" key={it.id}>
+                <input type="checkbox" checked={!!it.decoy} onChange={(e) => setDecoy(it, e.currentTarget.checked)} />
+                <span>{it.name}</span>
+              </label>
+            ))}
+          </div>
+        )}
       </div>
       <p class="small muted" style={{ marginTop: 10 }}>Your biometric still unlocks either way, so no one can tell from watching. HumID records the signal in your ledger, where only a normal unlock shows it.</p>
       <div class="actions"><button class="btn primary block" onClick={() => { save(); close(); }}>Save</button></div>

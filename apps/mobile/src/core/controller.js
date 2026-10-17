@@ -297,10 +297,10 @@ function wireGlobalEvents() {
       S.idleDeadline.value = Date.now() + idleMs();
     }
   };
-  // Opening the app (unlock, a finished setup or join) shows the tab the person chose.
+  // Opening the app (unlock, a finished setup or join) always starts at the vault.
   let wasApp = false;
   S.view.subscribe((v) => {
-    if (v === "app") { if (!wasApp) S.tab.value = S.prefs.value.startTab; reset(); }
+    if (v === "app") { if (!wasApp) S.tab.value = "vault"; reset(); }
     wasApp = v === "app";
   });
   resetIdle = reset;
@@ -683,7 +683,7 @@ function needVault() {
 /** After reconnecting, load what the open tab shows from the vault instead of the copy. */
 function reloadTab() {
   if (S.tab.value === "activity") loadLedger();
-  if (S.tab.value === "security") { loadRecovery(); loadDuress(); }
+  if (S.tab.value === "you") { loadRecovery(); loadDuress(); }
   loadDevices();
   if (S.tab.value === "vault" && !S.decoy.value) loadRecovery();
 }

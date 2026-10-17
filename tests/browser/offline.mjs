@@ -1,10 +1,10 @@
 // Offline, in a real browser (apps 1.7.0). With no connection, the same live check
-// opens a read-only copy kept on the device: the document list, Activity and Security
+// opens a read-only copy kept on the device: the document list, Activity and You
 // as of the last sync. Checks that:
 //   - the copy on the device holds no readable document name (it's sealed)
 //   - offline (no network), Unlock shows the list, read only, with a banner
 //   - a document can't be opened, saved, renamed or deleted offline, and nothing new added
-//   - Activity and Security show the saved state, and say they're offline
+//   - Activity and You show the saved state, and say they're offline
 //   - the duress gesture offline still shows only the decoy documents
 //   - with the vault server down (but a network), Unlock falls back to the copy too
 //   - Reconnect signs in with one live check, and documents open again
@@ -104,7 +104,7 @@ try {
   await addDoc(page, "Gym membership.txt");
 
   // duress: three taps on the mark; the gym card is the decoy
-  await tab(page, "Security");
+  await tab(page, "You");
   await page.getByRole("button", { name: /Set up|Settings/ }).filter({ hasText: /Set up|Settings/ }).first().waitFor();
   await page.locator(".card", { hasText: "Duress protection" }).getByRole("button").first().click();
   await page.locator(".sheet label.toggle", { hasText: "Duress gesture" }).click();
@@ -118,9 +118,8 @@ try {
   // visit each tab so its state is in the copy
   await tab(page, "Activity"); await page.locator(".tl, .timeline, .entry, li").first().waitFor({ timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(800);
-  await tab(page, "Security"); await page.getByText("Your identity").waitFor();
+  await tab(page, "You"); await page.locator("details.about summary").click(); await page.getByText("Pinned server key").waitFor();
   await page.waitForTimeout(1200);
-  await tab(page, "Settings"); await page.getByText("Pinned server key").waitFor();
   await tab(page, "Vault");
   step("two documents sealed, the gym card marked as the decoy, duress gesture set");
 
@@ -159,14 +158,13 @@ try {
   await page.getByText("Ledger as verified when last online").waitFor({ timeout: 10_000 });
   await page.getByText(/Sealed Last will/).waitFor();
   await shot(page, "4-activity-offline");
-  await tab(page, "Security");
-  await page.getByText("Your identity").waitFor();
-  await tab(page, "Settings");
+  await tab(page, "You");
+  await page.locator("details.about summary").click();
   await page.getByText(/Offline · read only · auto-locks/).waitFor();
   await page.getByText(/This device|Web|Chrome|Linux/).first().waitFor();
   await shot(page, "5-security-offline");
   assert.equal(await page.locator(".toast").count(), 0, "no error toasts from screens loading offline");
-  step("Activity and Security show the saved state, marked offline; no errors");
+  step("Activity and You show the saved state, marked offline; no errors");
 
   // the duress gesture, offline: only the decoy
   await tab(page, "Vault");
