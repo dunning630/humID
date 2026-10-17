@@ -189,7 +189,9 @@ How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suit
   account keys can't use it to open a document.
 - **Duress.** A duress session never writes the copy. Offline, the duress gesture shows
   only the decoy documents, as online; reconnecting from that session reports duress,
-  so the server locks down then.
+  so the server locks down then. Which gesture means duress is itself sealed on the
+  device (`settingsKey`, same derivation family) and read only inside the live check, so
+  the copy, the identity record and the setting all read as random bytes at rest.
 - **Removal.** Erasing the device's vault erases the copy. When the server says the
   device was removed (or isn't the server it trusted), the copy is deleted at that
   moment. Until a removed device reconnects, its owner's live check still shows its
@@ -197,6 +199,26 @@ How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suit
 
 What offline mode doesn't do: open documents. Keeping a document readable offline
 would mean its key on the device, which is what split keys exist to prevent.
+
+## 2.0 security pass
+
+A review of the app shell and what it keeps on the device (October 2026); the item-by-item
+table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short:
+
+- **Nothing about duress is on the device in the clear.** The setting is sealed under a
+  seed-derived key; the decoy-or-real decision is made after the live check, from the
+  opened setting (`apps/mobile/src/core/duress.js`).
+- **Leaving the screen locks**, even with a file picker open: the exemption is bounded
+  (60 s, `pagehide`, a 20 s hidden span).
+- **Names are forgotten on lock**; a decoy session never decrypts the other names.
+- **Release builds carry no demo or simulation code** (`tests/bundle.test.js`); the
+  simulation app has its own bundle identifier.
+- **The WebView never leaves HumID.** Links go out through `openExternal` (https, tel,
+  mailto only) and the shell refuses any other navigation.
+- **Every request times out** (45 s), so a silent server can't hold a live check open.
+- **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
+  a chip that fails its own hash list.
+- **iOS backups exclude the WebView's data store.**
 
 ## Before real data
 
@@ -213,6 +235,9 @@ would mean its key on the device, which is what split keys exist to prevent.
 6. Account-key rotation after a device is removed.
 7. Penetration test of the deployed stack.
 8. Privacy policy, terms and data-handling review with counsel.
+9. Encrypt the access pass at rest on the device (between buying and spending it: today
+   it is stored as is, excluded from backups but readable from the phone's storage), and
+   the `pending` join record while a join waits.
 
 ## Live biometric checks
 
