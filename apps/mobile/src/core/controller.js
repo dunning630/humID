@@ -34,9 +34,10 @@ import { parseAccessCode } from "@humid/pass";
 import { probeNfc, openChip } from "./nfc.js";
 import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
+import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
-const IDLE_LOCK_MS = 5 * 60 * 1000;
+const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 const MAX_FILE = 50 * 1024 * 1024;
 const SEED = 64;
 const CARD = 15;          // a seal card's secret
@@ -112,7 +113,7 @@ const waitForHold = (gate) => gate.needsHold ? new Promise((resolve, reject) => 
 
 /** A short buzz when a check passes, a distinct one when it fails (Android; iPhones have no web vibration). */
 function haptic(ok) {
-  try { globalThis.navigator?.vibrate?.(ok ? 18 : [40, 70, 40]); } catch {}
+  buzz(ok ? 18 : [40, 70, 40]);
 }
 
 async function endInterrupt(ok, message, ms) {
@@ -288,11 +289,17 @@ function wireGlobalEvents() {
   const reset = () => {
     clearTimeout(idleTimer);
     if (S.view.value === "app") {
-      idleTimer = setTimeout(() => lock("Locked after 5 minutes without activity."), IDLE_LOCK_MS);
-      S.idleDeadline.value = Date.now() + IDLE_LOCK_MS;
+      idleTimer = setTimeout(() => lock(`Locked after ${idleLabel(idleMs())} without activity.`), idleMs());
+      S.idleDeadline.value = Date.now() + idleMs();
     }
   };
-  S.view.subscribe((v) => { if (v === "app") reset(); });
+  // Opening the app (unlock, a finished setup or join) shows the tab the person chose.
+  let wasApp = false;
+  S.view.subscribe((v) => {
+    if (v === "app") { if (!wasApp) S.tab.value = S.prefs.value.startTab; reset(); }
+    wasApp = v === "app";
+  });
+  resetIdle = reset;
   for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reset, { passive: true });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && S.view.value === "app" && !busy && !picking) lock("Locked when HumID left the screen.");
@@ -306,6 +313,17 @@ function wireGlobalEvents() {
 }
 
 export const markPicking = () => { picking = true; };
+
+let resetIdle = () => {};
+/** Change preferences: saved on this device, applied now. */
+export function setPref(patch) {
+  const p = savePrefs({ ...S.prefs.value, ...patch });
+  S.prefs.value = p;
+  applyPrefs(p);
+  if ("idleMs" in patch) resetIdle();
+}
+/** A short buzz, unless the person turned haptics off. */
+export const buzz = (pattern) => { if (!S.prefs.value.haptics) return; try { globalThis.navigator?.vibrate?.(pattern); } catch {} };
 
 /** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 function chooseGate(useDemo) {
@@ -846,8 +864,26 @@ export async function exportSealed(item) {
 
 const indexEntry = (item, patch = {}) => ({
   name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
-  ...(item.decoy ? { decoy: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...patch,
+  ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}), ...patch,
 });
+
+/**
+ * Pin an item to the top of the vault. The pin is sealed in the item's encrypted index
+ * entry, so it shows on every device and the server can't see which items are pinned.
+ * In a decoy session it changes only what's on screen.
+ */
+export async function setPinned(item, on) {
+  const show = () => { S.items.value = S.items.value.map((i) => (i.id === item.id ? { ...i, pinned: on || undefined } : i)); };
+  if (S.decoy.value) { show(); return; }
+  try {
+    needVault();
+    const entry = indexEntry(item);
+    if (on) entry.pinned = true; else delete entry.pinned;
+    await api.rename(item.id, await suite().sealIndex(indexKey, entry));
+    show();
+    toast(on ? `${item.name} is pinned to the top.` : `${item.name} is unpinned.`);
+  } catch (e) { toast(friendly(e), "error"); }
+}
 
 /** Show (or stop showing) a document in the decoy view. Stored inside the encrypted index. */
 export async function setDecoy(item, on) {

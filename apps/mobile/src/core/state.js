@@ -1,9 +1,11 @@
 // App state as signals. Screens read these; only core/controller.js writes them.
 import { signal, computed } from "@preact/signals";
 import { DEMO_BUILD } from "@humid/gate";
+import { loadPrefs, sortItems } from "./prefs.js";
 
 export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
-export const tab = signal("vault");          // vault | activity | security
+export const tab = signal("vault");          // vault | activity | security | settings
+export const prefs = signal(loadPrefs());     // this device's preferences (core/prefs.js)
 export const enrollStep = signal("connect"); // connect · access (when the server needs a pass) · bind · done + recovery card
 
 // Anonymous payment (docs/ANONYMITY.md). The access pass bought with an access code, kept
@@ -69,7 +71,7 @@ export const passNeeded = computed(() => server.value?.policy?.registration === 
 
 export const visibleItems = computed(() => {
   const q = query.value.trim().toLowerCase();
-  return items.value.filter((i) => (filter.value === "all" || i.category === filter.value) && (!q || i.name.toLowerCase().includes(q)));
+  return sortItems(items.value.filter((i) => (filter.value === "all" || i.category === filter.value) && (!q || i.name.toLowerCase().includes(q))), prefs.value.sort);
 });
 
 export const counts = computed(() => {

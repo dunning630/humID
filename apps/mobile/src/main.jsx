@@ -12,6 +12,8 @@ import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
 import { IdSheet } from "./screens/ids.jsx";
 import { Activity } from "./screens/activity.jsx";
 import { Security } from "./screens/security.jsx";
+import { Settings } from "./screens/settings.jsx";
+import { applyPrefs } from "./core/prefs.js";
 import { Mark } from "./brand.jsx";
 
 function App() {
@@ -30,6 +32,7 @@ function App() {
           {S.tab.value === "vault" && <Vault />}
           {S.tab.value === "activity" && <Activity />}
           {S.tab.value === "security" && <Security />}
+          {S.tab.value === "settings" && <Settings />}
           <TabBar />
           {sheet?.type === "add" && <AddSheet />}
           {sheet?.type === "id" && <IdSheet />}
@@ -45,6 +48,10 @@ function App() {
     </>
   );
 }
+
+// The look comes first, before anything is drawn; "Match device" follows the system's changes.
+applyPrefs(S.prefs.value);
+try { matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => applyPrefs(S.prefs.value)); } catch {}
 
 render(<App />, document.getElementById("app"));
 boot();
