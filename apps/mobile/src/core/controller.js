@@ -65,7 +65,11 @@ let duressSetting = null;   // { enabled, gesture } once a live check opened it;
 let offline = null;         // the offline copy, as last saved (in memory while unlocked)
 let offlineWrite = Promise.resolve();
 let busy = false;
-let picking = false;
+let picking = false;        // a system file picker is open: HumID leaves the screen without locking
+let pickingTimer = null;
+let hiddenAt = 0;           // when HumID last left the screen, while picking
+const PICK_MS = 60_000;     // a picker that hasn't come back by then no longer excuses leaving the screen
+const PICK_HIDDEN_MS = 20_000; // behind the picker for longer than this (another app, the home screen) locks anyway
 let idleTimer = null;
 let holdWaiter = null;
 let joinTimer = null;
@@ -309,9 +313,21 @@ function wireGlobalEvents() {
   resetIdle = reset;
   for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reset, { passive: true });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && S.view.value === "app" && !busy && !picking) lock("Locked when HumID left the screen.");
+    if (!document.hidden) {
+      // back from the picker (or another app) while picking: if it was away long, lock anyway
+      if (picking && hiddenAt && Date.now() - hiddenAt > PICK_HIDDEN_MS && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
+      hiddenAt = 0;
+      return;
+    }
+    if (S.view.value !== "app" || busy) return;
+    if (!picking) return lock("Locked when HumID left the screen.");
+    // the file picker is up (it normally comes back within seconds): lock if that's not what this is
+    hiddenAt = Date.now();
+    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, PICK_HIDDEN_MS);
   });
-  addEventListener("focus", () => setTimeout(() => { picking = false; }, 1200));
+  // leaving the page entirely (closed, navigated, suspended) is never a file picker
+  addEventListener("pagehide", () => { stopPicking(); if (S.view.value === "app" && !busy) lock(); });
+  addEventListener("focus", () => setTimeout(stopPicking, 1200));
   addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
   addEventListener("offline", () => { S.online.value = false; link?.online(false); });
   // retries pause while HumID is off the screen, and resume when it's back
@@ -319,7 +335,13 @@ function wireGlobalEvents() {
   if (!S.online.value) link?.online(false);
 }
 
-export const markPicking = () => { picking = true; };
+/** A system file picker is about to open: leaving the screen for it isn't leaving HumID. Bounded: it clears itself after a minute. */
+export const markPicking = () => {
+  picking = true;
+  clearTimeout(pickingTimer);
+  pickingTimer = setTimeout(stopPicking, PICK_MS);
+};
+function stopPicking() { picking = false; hiddenAt = 0; clearTimeout(pickingTimer); pickingTimer = null; }
 
 let resetIdle = () => {};
 /** Change preferences: saved on this device, applied now. */
