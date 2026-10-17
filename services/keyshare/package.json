@@ -1,6 +1,6 @@
 {
   "name": "@humid/keyshare-service",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Split keys: the per-document key every split document also needs, released one document at a time inside a live step-up. Never sees envelopes.",
   "type": "module",
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@humid/svc": "^1.0.0",
-    "@humid/htp": "^1.1.0"
+    "@humid/htp": "^1.4.0"
   },
   "license": "UNLICENSED"
 }

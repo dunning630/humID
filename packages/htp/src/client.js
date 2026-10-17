@@ -51,7 +51,11 @@ export class HtpClient {
     const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(j.policy?.passBuyUrl || "")) ? j.policy.passBuyUrl : null;
     // Split keys: only a server with a keyshare service keeps a document's second key. An older one would drop it.
     const splitKeys = j.policy?.splitKeys === true;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys } };
+    // Check-in (docs/CHECKIN.md): the windows (hours) and grace periods (minutes) the server allows; null if it doesn't offer it.
+    const ints = (a, max) => (Array.isArray(a) && a.length > 0 && a.length <= 12 && a.every((n) => Number.isInteger(n) && n >= 0 && n <= max) ? [...a] : null);
+    const ck = j.policy?.checkin;
+    const checkin = ck && ints(ck.windowsH, 168) && ints(ck.graceMin, 1440) ? { windowsH: ints(ck.windowsH, 168), graceMin: ints(ck.graceMin, 1440) } : null;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin } };
     return this.server;
   }
 

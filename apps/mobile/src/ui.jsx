@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark } from "./brand.jsx";
 import { Icon } from "./icons.jsx";
 import * as S from "./core/state.js";
-import { holdComplete, holdCancel, dismissChipRead, reconnect, retryConnection } from "./core/controller.js";
+import { holdComplete, holdCancel, dismissChipRead, reconnect, retryConnection, checkIn } from "./core/controller.js";
 import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
 import { DEMO_BUILD } from "@humid/gate";
@@ -119,6 +119,45 @@ export function OfflineBanner() {
         <span>Your vault as it was {o.savedAt ? fmtAgo(o.savedAt) : "last time you were online"}. Opening or changing anything needs a connection.</span>
       </div>
       {S.online.value && <button class="btn sm primary" onClick={reconnect}>{S.link.value.state === "up" ? "Reconnect" : "Try to reconnect"}</button>}
+    </div>
+  );
+}
+
+/**
+ * Check-in (docs/CHECKIN.md), while it's armed: when the next check-in is due, at the top of
+ * every tab, with the button to check in. Amber in the last half hour, red once missed.
+ * Never on the lock screen: anyone holding the phone would see it.
+ */
+export function CheckinBar() {
+  const st = S.checkin.value;
+  const now = useNow(1000);
+  if (!st || (st.state !== "armed" && st.state !== "locked") || S.offline.value) return null;
+  const left = st.deadline - now;
+  const missed = st.state === "locked" || left <= 0;
+  const soon = !missed && left <= 30 * 60_000;
+  return (
+    <div class={`banner checkin${missed ? " bad" : soon ? " warn" : ""}`} role="status" aria-live={missed || soon ? "polite" : "off"}>
+      <span class="b-ico"><Icon name={missed ? "alert" : "clock"} /></span>
+      <div>
+        <strong>{missed ? "Check-in missed" : `Check in by ${fmtTime(st.deadline)}`}</strong>
+        <span>{missed ? `Your vault opens nothing until you do. Erased in ${fmtLeft(st.erasesAt - now)}.` : `${fmtLeft(left)} left`}</span>
+      </div>
+      <button class={`btn sm ${missed || soon ? "primary" : "quiet"}`} onClick={() => checkIn()}><Icon name="fingerprint" />Check in</button>
+    </div>
+  );
+}
+
+/** After a Check-in erase, on the Vault for a week: what happened, said once, plainly. */
+export function ErasedBanner() {
+  const st = S.checkin.value;
+  if (st?.state !== "erased" || !st.erasedAt || Date.now() - st.erasedAt > 7 * 86_400_000 || S.offline.value) return null;
+  return (
+    <div class="banner bad" style={{ marginBottom: 14 }}>
+      <span class="b-ico"><Icon name="trash" /></span>
+      <div>
+        <strong>Your vault was erased by Check-in</strong>
+        <span>{fmtAgo(st.erasedAt)}. Those documents can't be opened again, by anyone. Your HumID still works, and anything sealed since is here.</span>
+      </div>
     </div>
   );
 }

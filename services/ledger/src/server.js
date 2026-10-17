@@ -37,6 +37,9 @@ const EVENT_TYPES = new Set([
   "duress.signaled", "duress.cleared", "settings.changed",
   // server administration from an administrator's phone (ledger 1.3, docs/ADMIN.md)
   "admin.approved",
+  // Check-in (docs/CHECKIN.md). Never one per check-in: an hourly heartbeat in the public log
+  // would tell anyone watching that an account is armed.
+  "checkin.armed", "checkin.disarmed", "checkin.erased",
 ]);
 
 /**
