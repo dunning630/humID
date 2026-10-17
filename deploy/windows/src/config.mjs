@@ -17,6 +17,8 @@ export const DEFAULTS = [
   ["HUMID_ANDROID_PACKAGES", "app.humid.vault", "Android package names accepted in key attestation."],
   ["HUMID_ANDROID_CERT_DIGESTS", "", "The official HumID Android app is always accepted. Add the SHA-256 of your own signing certificate here only if you build and sign the app yourself."],
   ["HUMID_REQUIRE_LOCKED_BOOT", "1", "1 refuses rooted / unlocked-bootloader Android phones."],
+  ["HUMID_ANDROID_MIN_PATCH", "", "Optional minimum Android security patch, YYYYMM (e.g. 202501). Empty = any."],
+  ["HUMID_ATTESTATION_STATUS_REQUIRED", "0", "1 refuses Android phones until Google's revoked-key list has been fetched (it's fetched every 6 hours either way)."],
   ["RECOVERY_DELAY_MS", "259200000", "Base recovery wait (72 hours). Two-proof recoveries wait a third of it with a station, the whole of it with witnesses, 7/3 of it with a card and an ID chip alone; twice that after a duress signal."],
   ["HUMID_CSCA_DIR", "", "Folder of country signing certificates (CSCA, PEM or DER) for ID chips. Empty = the csca folder next to data."],
   ["HUMID_STATION_ACCOUNTS", "", "HumID account ids (hid_…, comma-separated) allowed to act as in-person verification stations."],
