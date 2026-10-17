@@ -281,8 +281,12 @@ jobs:
           "$BT/apksigner" verify --print-certs "$APK" | tee signer.txt
           grep -q "CN=HumID" signer.txt || { echo "::error::the APK isn't signed with the HumID release key"; exit 1; }
           if "$BT/aapt" dump badging "$APK" | grep -q "application-debuggable"; then echo "::error::the APK is debuggable"; exit 1; fi
-          echo "Signing certificate SHA-256 (set HUMID_ANDROID_CERT_DIGESTS on the server to this):"
-          grep -i "SHA-256 digest" signer.txt | head -1
+          # Servers accept the certificate built into @humid/attest; a build signed with any other
+          # key would be refused by every server, so it must not ship.
+          GOT=$(grep -i "certificate SHA-256 digest" signer.txt | head -1 | awk '{print $NF}' | tr 'A-F' 'a-f')
+          WANT=$(grep -oE 'HUMID_ANDROID_RELEASE_CERT = "[0-9a-f]{64}"' packages/attest/src/roots.js | grep -oE '[0-9a-f]{64}')
+          echo "Signing certificate SHA-256: $GOT"
+          [ -n "$WANT" ] && [ "$GOT" = "$WANT" ] || { echo "::error::the APK's signing certificate ($GOT) isn't the one servers accept ($WANT, packages/attest/src/roots.js)"; exit 1; }
 
       # ---------------- collect ----------------
       - name: Collect artifacts
