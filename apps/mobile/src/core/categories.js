@@ -12,6 +12,7 @@ const RULES = [
 
 /** One of: identity, health, money, home, personal, other. */
 export function guessCategory(name = "", type = "") {
+  if (type === "application/vnd.apple.pkpass" || /\.pkpass$/i.test(name)) return "passes";
   const n = String(name).replace(/\.[a-z0-9]{1,5}$/i, "");
   for (const [category, re] of RULES) if (re.test(n)) return category;
   return "other";

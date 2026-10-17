@@ -84,7 +84,7 @@ export function Settings() {
         <h3 id="set-vault">Vault</h3>
         <Choice id="startTab" label="Open on" value={p.startTab} options={opts("startTab")} onPick={(v) => setPref({ startTab: v })} />
         <Choice id="sort" label="Sort items by" value={p.sort} options={opts("sort")} onPick={(v) => setPref({ sort: v })} />
-        <p class="small muted" style={{ marginTop: 10 }}><Icon name="pin" /> {pinned ? `${pinned} pinned ${pinned === 1 ? "item stays" : "items stay"} at the top.` : "Pin items from their details to keep them at the top."} Pins are sealed with each item, so they show on all your devices and the server can't see them.</p>
+        <p class="small muted" style={{ marginTop: 10 }}><Icon name="pushpin" /> {pinned ? `${pinned} pinned ${pinned === 1 ? "item stays" : "items stay"} at the top.` : "Pin items from their details to keep them at the top."} Pins are sealed with each item, so they show on all your devices and the server can't see them.</p>
       </section>
 
       <section class="card" aria-labelledby="set-remind">

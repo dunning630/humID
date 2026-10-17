@@ -113,12 +113,17 @@ await writeFile(`${out}manifest.webmanifest`, JSON.stringify({
 // (src/core/scan.js): Tesseract's worker and WebAssembly core with the MRZ model,
 // and zxing-cpp's barcode reader. Copied as files so nothing is fetched at run time.
 const MRZ_MODEL_SHA256 = "ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01";
+// General printed text, for payment cards (both sides): tessdata_best_int English.
+const ENG_MODEL_SHA256 = "5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747";
 const mod = (p) => [here(`./node_modules/${p}`), `${root}node_modules/${p}`].find((x) => existsSync(x)) || (() => { throw new Error(`missing ${p}: run npm ci`); })();
 const model = await readFile(here("./vendor/ocr/mrz.traineddata"));
 if (createHash("sha256").update(model).digest("hex") !== MRZ_MODEL_SHA256) { console.error("vendor/ocr/mrz.traineddata doesn't match its recorded hash (see vendor/ocr/README.md)"); process.exit(1); }
 await mkdir(`${out}assets/ocr`, { recursive: true });
 await mkdir(`${out}assets/scan`, { recursive: true });
 await writeFile(`${out}assets/ocr/mrz.traineddata`, model);
+const eng = await readFile(here("./vendor/ocr/eng.traineddata"));
+if (createHash("sha256").update(eng).digest("hex") !== ENG_MODEL_SHA256) { console.error("vendor/ocr/eng.traineddata doesn't match its recorded hash (see vendor/ocr/README.md)"); process.exit(1); }
+await writeFile(`${out}assets/ocr/eng.traineddata`, eng);
 await copyFile(mod("tesseract.js/dist/worker.min.js"), `${out}assets/ocr/worker.min.js`);
 await copyFile(mod("tesseract.js-core/tesseract-core-lstm.js"), `${out}assets/ocr/tesseract-core-lstm.js`);
 await copyFile(mod("tesseract.js-core/tesseract-core-lstm.wasm"), `${out}assets/ocr/tesseract-core-lstm.wasm`);
@@ -127,6 +132,7 @@ const notice = (name, p) => { try { return `== ${name} ==\n\n${readFileSync(mod(
 await writeFile(`${out}assets/THIRD-PARTY-scan.txt`, [
   "Document scanning in HumID uses the following, under their licenses.",
   `== MRZ model: DoubangoTelecom/tesseractMRZ (tessdata_fast/mrz.traineddata) ==\n\n${await readFile(here("./vendor/ocr/LICENSE-tesseractMRZ.txt"), "utf8")}`,
+  "== English model: tesseract-ocr/tessdata_best (integer build, via @tesseract.js-data/eng 1.0.0, 4.0.0_best_int) ==\n\nApache License 2.0. Copyright Google and the Tesseract contributors.",
   notice("Tesseract.js (worker)", "tesseract.js/LICENSE.md"),
   notice("Tesseract.js core (Tesseract OCR and Leptonica, compiled to WebAssembly)", "tesseract.js-core/LICENSE"),
   notice("zxing-wasm (zxing-cpp compiled to WebAssembly; zxing-cpp is Apache-2.0)", "zxing-wasm/LICENSE"),

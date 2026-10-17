@@ -1,4 +1,6 @@
-# MRZ OCR model
+# OCR models
+
+## MRZ
 
 `mrz.traineddata` is the integer ("fast") Tesseract LSTM model for
 machine-readable zones from
@@ -19,3 +21,19 @@ someone scans a passport or ID card; nothing is downloaded at run time.
 To replace it, put the new file here, update the hash in this README and in
 `build.mjs` (`MRZ_MODEL_SHA256`), and run `node --test tests/idscan.test.js`
 plus the browser check in `tests/browser/idscan.mjs`.
+
+## English (payment cards)
+
+`eng.traineddata` is Tesseract's English LSTM model in its integer build
+(`tessdata_best`, converted to integer: `4.0.0_best_int/eng.traineddata.gz` from
+the npm package `@tesseract.js-data/eng` 1.0.0, ungzipped). Apache-2.0. It reads
+the printed text on both sides of a payment card (number, expiry, name; security
+code and bank phone on the back), which the MRZ model can't: it knows only
+`A-Z 0-9 <`.
+
+```
+sha256  5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747  eng.traineddata
+size    5,199,098 bytes
+```
+
+`build.mjs` checks it as `ENG_MODEL_SHA256`. It loads only when someone scans a card.

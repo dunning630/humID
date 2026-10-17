@@ -7,9 +7,13 @@ import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, u
 import { rotateCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { addDocument, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
+import { addDocument, checkPass, addPass, toast, openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, markPicking, lockNow, setDecoy, setPinned, loadRecovery, loadDevices } from "../core/controller.js";
 import { DocCamera, IdView } from "./ids.jsx";
 import { status as idStatus, kindLabel } from "@humid/idscan";
+import { CardView } from "./cards.jsx";
+import { BRANDS, expiryStatus, showExpiry } from "@humid/cards";
+import { looksLikePass, STYLE_LABEL } from "@humid/wallet";
+import { PassView, PassCheck } from "./passes.jsx";
 
 export function Vault() {
   const list = S.visibleItems.value;
@@ -60,6 +64,7 @@ export function Vault() {
           <p>Scan your license or passport, or add any document. It's sealed on this phone before it goes anywhere.</p>
           {!S.offline.value && <button class="btn primary" onClick={() => (S.sheet.value = { type: "id" })}><Icon name="idcard" />Scan an ID</button>}
           {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "add" })}><Icon name="plus" />Add a document</button>}
+          {!S.offline.value && <button class="btn ghost" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}><Icon name="card" />Add a payment card</button>}
         </div>
       )}
 
@@ -76,15 +81,46 @@ export function Vault() {
   );
 }
 
+const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+
 function ItemRow({ item }) {
   const cat = categoryOf(item.category);
+  const card = item.cardInfo;
+  if (card) {
+    const cs = expiryStatus(card.expiry);
+    return (
+      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+        <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
+        <span style={{ minWidth: 0 }}>
+          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
+          <div class="meta">{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
+        </span>
+        <span class="end"><Icon name="chevron" /></span>
+      </button>
+    );
+  }
+  const pi = item.passInfo;
+  if (pi) {
+    const when = pi.relevant || pi.expires;
+    const gone = pi.voided || (pi.expires && Date.parse(pi.expires) < Date.now());
+    return (
+      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+        <span class="ico" data-cat={cat.id}><Icon name="ticket" /></span>
+        <span style={{ minWidth: 0 }}>
+          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
+          <div class="meta">{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</div>
+        </span>
+        <span class="end"><Icon name="chevron" /></span>
+      </button>
+    );
+  }
   const id = item.idInfo;
   const st = id ? idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays) : null;
   return (
     <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
       <span class="ico" data-cat={cat.id}><Icon name={id ? (id.kind === "passport" ? "passport" : "idcard") : item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
       <span style={{ minWidth: 0 }}>
-        <div class="name">{item.pinned && <Icon name="pin" />}{item.name}</div>
+        <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
         <div class="meta">{id
           ? <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>
           : <>{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>}</div>
@@ -200,7 +236,9 @@ export function AddSheet() {
   const [cat, setCat] = useState("other");
   const [camera, setCamera] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [passCheck, setPassCheck] = useState(null); // a Wallet pass: null | { state: "checking" } | { ok, result | reason }
   const chooser = useRef(null);
+  const current = useRef(null); // the file on screen: a check that finishes for another one is dropped
   const place = usePlaceStamp();
   const close = () => { if (!st.stage) S.sheet.value = null; };
   const choose = (input) => { markPicking(); input.current.click(); };
@@ -219,11 +257,22 @@ export function AddSheet() {
   const onFile = (e) => {
     const f = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
+    e.currentTarget.accept = ""; // "Add a Wallet pass" narrows the chooser for one pick
     if (!f) return;
     setShot(null);
     setFile(f);
-    setName(f.name.replace(/\.[a-z0-9]{1,5}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
+    setName(f.name.replace(/\.[a-z0-9]{1,6}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
     setCat(guessCategory(f.name, f.type)); // a suggestion; the person can change it
+    setPassCheck(null);
+    current.current = f;
+    if (looksLikePass(f)) {
+      setPassCheck({ state: "checking" });
+      checkPass(f).then((r) => {
+        if (current.current !== f) return;
+        setPassCheck(r);
+        if (r.ok) setName(r.result.pass.description || r.result.pass.organization || "Pass");
+      });
+    }
   };
   /** The file to seal: the chosen version of a camera photo, or the chosen file. */
   async function toSeal() {
@@ -237,13 +286,21 @@ export function AddSheet() {
   async function seal() {
     if (busy) return;
     setBusy(true);
-    try { await addDocument({ file: await toSeal(), name, category: cat, place: place.take() }); }
+    try {
+      if (passCheck?.ok) await addPass({ checked: passCheck, name, place: place.take() });
+      else {
+        // a pass that failed its check is kept as an ordinary file, never under the pass type
+        const f = file && looksLikePass(file) ? new File([file], file.name, { type: "application/octet-stream" }) : await toSeal();
+        await addDocument({ file: f, name, category: cat, place: place.take() });
+      }
+    }
     catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
     finally { setBusy(false); }
   }
   const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
   const have = file || shot;
-  const reset = () => { setFile(null); setShot(null); };
+  const reset = () => { setFile(null); setShot(null); setPassCheck(null); current.current = null; };
+  const plainFile = () => { setPassCheck(null); setCat("other"); }; // keep a pass that failed its check as an ordinary file
 
   return (
     <Sheet onClose={close} label="Add a document">
@@ -259,9 +316,19 @@ export function AddSheet() {
             <span><strong>Scan an ID</strong><span>Driver's license, passport or ID card. HumID reads the details, and the chip where there is one.</span></span>
             <Icon name="chevron" />
           </button>
+          <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
+            <span class="ico"><Icon name="card" /></span>
+            <span><strong>Add a payment card</strong><span>Credit or debit. Scan both sides, tap it, or type it. Never the PIN.</span></span>
+            <Icon name="chevron" />
+          </button>
+          <button class="kind" style={{ marginTop: 10 }} onClick={() => { chooser.current.accept = ".pkpass,application/vnd.apple.pkpass"; choose(chooser); }}>
+            <span class="ico"><Icon name="ticket" /></span>
+            <span><strong>Add a Wallet pass</strong><span>A boarding pass, ticket or membership card shared from Apple Wallet as a .pkpass file. HumID checks it's genuinely from its issuer.</span></span>
+            <Icon name="chevron" />
+          </button>
           <div class="source" style={{ marginTop: 10 }}>
             <button onClick={() => setCamera(true)}><Icon name="camera" /><strong>Take a photo</strong><span>Any document or card. HumID finds it and straightens it.</span></button>
-            <button onClick={() => choose(chooser)}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
+            <button onClick={() => { chooser.current.accept = ""; choose(chooser); }}><Icon name="file" /><strong>Choose a file</strong><span>PDF, image, any type up to 50 MB</span></button>
           </div>
         </>
       )}
@@ -269,7 +336,8 @@ export function AddSheet() {
 
       {have && st.stage == null && (
         <>
-          {shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
+          {passCheck ? <PassCheck check={passCheck} onPlain={plainFile} onAnother={() => { reset(); choose(chooser); }} />
+            : shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
             : (
               <div class="doc-hero">
                 <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-cat={cat}><Icon name={kindIcon(file.type)} /></span></span>
@@ -280,15 +348,15 @@ export function AddSheet() {
             <label for="doc-name">Name</label>
             <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
           </div>
-          <div class="field">
+          {!passCheck && <div class="field">
             <label>Category</label>
             <div class="cats">
               {CATEGORIES.map((c) => <button aria-pressed={cat === c.id} onClick={() => setCat(c.id)}><Icon name={c.icon} />{c.label}</button>)}
             </div>
-          </div>
+          </div>}
           {place.element}
           <div class="actions">
-            <button class="btn primary block" disabled={busy} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : "Seal the straightened photo") : "Seal & store"}</button>
+            <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />{shot && shot.changed ? (pick.which === "original" ? "Seal the original" : "Seal the straightened photo") : "Seal & store"}</button>
             <button class="btn ghost block" onClick={reset}>{shot ? "Start again" : "Choose another"}</button>
           </div>
           <p class="fine" style={{ marginTop: 12 }}>Encrypted on this phone with ML-KEM-1024 + X25519 and signed with ML-DSA-87 before upload. {shot ? "Only the version you seal is kept; the other is discarded." : "The original isn't kept."} The location, if stamped, is sealed with the name, so the vault server can't read it.</p>
@@ -411,6 +479,26 @@ export function Viewer() {
   if (!v) return null;
   const isImg = v.type.startsWith("image/");
   const isPdf = v.type === "application/pdf";
+  if (v.pass || v.passError) return (
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+      <header>
+        <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+      </header>
+      <div class="body id-body"><PassView v={v} /></div>
+      <div class="wipe">Closing wipes the decrypted pass from memory.</div>
+    </div>
+  );
+  if (v.cardRecord) return (
+    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
+      <header>
+        <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
+        <div class="grow"><div class="name">{v.name}</div><div class="muted small">Decrypted in memory · verified</div></div>
+      </header>
+      <div class="body id-body"><CardView record={v.cardRecord} /></div>
+      <div class="wipe">Closing wipes the decrypted card from memory.</div>
+    </div>
+  );
   if (v.idRecord) return (
     <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name}>
       <header>

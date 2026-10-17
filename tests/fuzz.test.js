@@ -1,6 +1,6 @@
 // Fuzzing the parsers that read untrusted bytes: QR codes from the camera, chip
-// answers (BER-TLV, secure messaging, EF.CardAccess, EF.SOD) and, on the server,
-// the SOD and DG1 a phone sends. Seeded, so a failure can be replayed:
+// answers (BER-TLV, secure messaging, EF.CardAccess, EF.SOD), on the server the SOD
+// and DG1 a phone sends, Wallet passes (zip, CMS signature, pass.json) and card text. Seeded, so a failure can be replayed:
 //   FUZZ_SEED=1234 FUZZ_N=20000 node --test tests/fuzz.test.js
 // Each parser must either return something well-formed or refuse with its own
 // error type: never another exception (a TypeError on the server is a 500), never hang.
@@ -11,6 +11,9 @@ import { util, SecureMessaging, ChipError, parseCardAccess } from "@humid/emrtd"
 import { parseSod, passiveAuth, readDg1, AnchorError } from "@humid/anchor";
 import { sodHashes, checkIntegrity, tlvChildren } from "@humid/idscan";
 import { testCsca, testPassport } from "./support/passport.js";
+import { readZip, readPkpass, parseSignature, WalletError } from "@humid/wallet";
+import { readCardText, readCardBack } from "@humid/cards";
+import { passChain, makePass } from "./support/pkpass.js";
 
 const SEED = Number(process.env.FUZZ_SEED || 0x5eed);
 const N = Number(process.env.FUZZ_N || 3000);
@@ -146,4 +149,35 @@ test("fuzz: the phone's own SOD reading (for the vault copy) never crashes on a 
     sodHashes(b);
     tlvChildren(b);
   }, (e) => e instanceof Error && !(e instanceof RangeError && /call stack/i.test(e.message)));
+});
+
+test("fuzz: Wallet passes (archive, signature, contents) refuse with WalletError only", async () => {
+  const r = rng(SEED + 6);
+  const chain = passChain();
+  const good = makePass(chain);
+  const n = Math.max(200, Math.floor(N / 10)); // each read inflates and checks signatures
+  const inputs = Array.from({ length: n }, (_, i) => (i % 5 === 0 ? r.bytes(r.int(400)) : r.mutate(good)));
+  let accepted = 0;
+  for (const [i, x] of inputs.entries()) {
+    try { await readPkpass(x, { roots: [chain.root] }); accepted++; }
+    catch (e) { if (!(e instanceof WalletError)) assert.fail(`readPkpass: input ${i} (seed ${SEED}) threw ${e?.constructor?.name}: ${e?.message}`); }
+  }
+  assert.ok(accepted < n / 2, "almost every change is caught");
+  const files = await readZip(good);
+  const sig = files.get("signature");
+  for (const [i, x] of Array.from({ length: n * 3 }, () => r.mutate(sig)).entries()) {
+    try { parseSignature(x); } catch (e) { if (!(e instanceof WalletError)) assert.fail(`parseSignature: input ${i} (seed ${SEED}) threw ${e?.constructor?.name}: ${e?.message}`); }
+  }
+});
+
+test("fuzz: card text readers return a result for any text", () => {
+  const r = rng(SEED + 7);
+  const alphabet = "0123456789 /-.()+OIlSBZ\nVISA THRU CVV CALL 1-800 ";
+  for (let i = 0; i < N; i++) {
+    const t = Array.from({ length: r.int(160) }, () => r.pick([...alphabet])).join("");
+    const front = readCardText(t);
+    assert.ok(front && (front.pan === null || /^\d{12,19}$/.test(front.pan)));
+    const back = readCardBack(t, { pan: i % 2 ? "4111111111111111" : null });
+    assert.ok(back && (back.cvv === null || /^\d{3,4}$/.test(back.cvv)));
+  }
 });
