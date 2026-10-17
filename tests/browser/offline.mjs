@@ -48,7 +48,10 @@ async function hold(page) {
 }
 async function addDoc(page, name) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
+  await page.locator(".doccam").waitFor();
+  await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+  await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
+  await page.locator(".pushed .review").waitFor();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: name.replace(/\.\w+$/, "") }).waitFor({ timeout: 30_000 });
@@ -87,19 +90,20 @@ try {
   await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
   await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
+  await page.getByRole("button", { name: "I've saved it" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add sheet
-  await page.locator(".sheet").waitFor();
-  await page.keyboard.press("Escape").catch(() => {});
-  await page.locator(".sheet").waitFor({ state: "detached", timeout: 5000 }).catch(() => page.locator(".sheet button[aria-label=Close]").first().click());
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the camera)
+  await page.locator(".doccam").waitFor();
+  await page.getByRole("button", { name: "Close the camera" }).click();
+  await page.locator(".doccam").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Last will.txt");
   await addDoc(page, "Gym membership.txt");
 
@@ -111,10 +115,13 @@ try {
   await page.getByRole("button", { name: /Tap the mark three times/ }).click();
   await page.locator(".sheet").getByRole("button", { name: "Save" }).click();
   await tab(page, "Vault");
+  // the item is pushed over the vault; its overflow menu holds the decoy switch
   await page.locator(".item", { hasText: "Gym membership" }).click();
-  await page.locator(".sheet label.toggle", { hasText: "Show in decoy view" }).click();
+  await page.locator(".pushed").getByRole("button", { name: "More" }).click();
+  await page.locator(".sheet [role=menuitem]", { hasText: "Show in decoy view" }).click();
   await page.getByText(/will show in the decoy view/).waitFor({ timeout: 15_000 });
-  await page.locator(".sheet button[aria-label=Close], .sheet .icon-btn").first().click().catch(() => page.keyboard.press("Escape"));
+  await page.locator(".pushed").getByRole("button", { name: "Back" }).click();
+  await page.locator(".pushed").waitFor({ state: "detached" });
   // visit each tab so its state is in the copy
   await tab(page, "Activity"); await page.locator(".tl, .timeline, .entry, li").first().waitFor({ timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(800);
@@ -147,11 +154,13 @@ try {
 
   await page.locator(".item", { hasText: "Last will" }).click();
   await page.getByText("Opening needs a connection").waitFor();
-  for (const b of ["Open", "Save a copy", "Rename", "Export sealed", "Delete"]) assert.ok(await page.locator(".sheet").getByRole("button", { name: b, exact: true }).isDisabled(), `${b} is disabled offline`);
-  assert.equal(await page.locator(".sheet").getByText("Show in decoy view").count(), 0);
+  assert.ok(await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).isDisabled(), "Open is disabled offline");
+  assert.equal(await page.locator(".pushed").getByRole("button", { name: "More" }).count(), 0, "no menu (rename, export, delete) offline");
+  assert.equal(await page.locator(".pushed").getByText("Show in decoy view").count(), 0);
   await shot(page, "3-item-offline");
-  await page.locator(".sheet button[aria-label=Close], .sheet .icon-btn").first().click().catch(() => page.keyboard.press("Escape"));
-  step("a document can't be opened, saved, renamed or deleted offline");
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed", "back leaves the item");
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("a document can't be opened, renamed, exported or deleted offline");
 
   await tab(page, "Activity");
   await page.locator(".banner.offline").waitFor();
@@ -163,7 +172,7 @@ try {
   await page.getByText(/Offline · read only · auto-locks/).waitFor();
   await page.getByText(/This device|Web|Chrome|Linux/).first().waitFor();
   await shot(page, "5-security-offline");
-  assert.equal(await page.locator(".toast").count(), 0, "no error toasts from screens loading offline");
+  assert.equal(await page.locator(".toast[data-kind=error]").count(), 0, `no error toasts from screens loading offline: ${await page.locator(".toast").allInnerTexts()}`);
   step("Activity and You show the saved state, marked offline; no errors");
 
   // the duress gesture, offline: only the decoy
@@ -201,9 +210,10 @@ try {
   await page.locator(".banner.offline").waitFor({ state: "detached", timeout: 20_000 });
   await page.locator("button.fab").waitFor();
   await page.locator(".item", { hasText: "Last will" }).click();
-  await page.locator(".sheet").getByRole("button", { name: "Open", exact: true }).click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
   await hold(page);
   await page.getByText(/walnut desk goes to Sam/).waitFor({ timeout: 20_000 });
+  assert.equal(await page.locator(".viewer").getByRole("button", { name: "Save a copy" }).count(), 1, "Save a copy lives in the opened viewer");
   await shot(page, "7-reconnected-open");
   step("Reconnect: one live check, back online, and the document opens");
   await page.getByRole("button", { name: "Close and wipe" }).click();
