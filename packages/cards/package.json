@@ -1,0 +1,15 @@
+{
+  "name": "@humid/cards",
+  "version": "1.0.0",
+  "description": "The holder's payment cards in the vault: card number checks and networks, camera (OCR text) and contactless (EMV, read only) capture, and the sealed card record (never a PIN; security code only on opt-in). No platform code.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "humid": {
+    "provides": {
+      "cards": 1
+    }
+  },
+  "license": "UNLICENSED"
+}

@@ -30,8 +30,11 @@ import {
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
+import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, readCardBack } from "@humid/cards";
 import { parseAccessCode } from "@humid/pass";
 import { probeNfc, openChip } from "./nfc.js";
+import { textReader } from "./scan.js";
+import { readPkpass, passIndex, MEDIA_TYPE as PASS_TYPE, APPLE_ROOTS, WalletError } from "@humid/wallet";
 import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
@@ -762,6 +765,70 @@ export async function addIdRecord(record, name, place = null) {
 }
 
 /**
+ * Seal a payment card record (@humid/cards) into the vault. The encrypted index
+ * carries only network, last four digits, expiry and nickname, never the number.
+ */
+export async function addCardRecord(record, name) {
+  let bytes;
+  try { bytes = encodeCard(record); } catch (e) { toast(e.message, "warn"); return false; }
+  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), category: "money", extra: { cardInfo: cardSummary(record) } });
+}
+
+/** Tap a contactless card (Android NFC, or a USB reader on a computer): number and expiry. No payment is made. */
+export async function readCardTap() {
+  let t;
+  try {
+    t = await openChip({ prompt: "Hold your card flat against the back of your phone." });
+    const r = await readContactless(t);
+    await t.end({ message: "Card read." });
+    return r;
+  } catch (e) {
+    await t?.end({ error: "Couldn't read the card." });
+    if (e?.code !== "cancelled") toast(e?.message || "Couldn't read the card. Try the camera, or type it.", "warn");
+    return null;
+  }
+}
+
+/**
+ * Read a card from a photo with the on-device text reader. front: number, expiry, name
+ * (and an American Express code); back: the security code and the bank's phone number.
+ * Best effort: the holder checks what was read. The photo of the back is never kept.
+ */
+export async function readCardPhoto(canvas, { side = "front", pan = null } = {}) {
+  try {
+    const ocr = await textReader();
+    const text = await ocr.read(canvas, { front: side === "front" });
+    return side === "front" ? readCardText(text) : readCardBack(text, { pan });
+  } catch { return null; }
+}
+
+/* ---------------- Apple Wallet passes ---------------- */
+
+/**
+ * Apple's roots, pinned (@humid/wallet). A development build also trusts test roots a
+ * browser check puts in globalThis.__humidExtraPassRoots; a release build never does.
+ */
+const passRoots = () => (DEMO_BUILD && Array.isArray(globalThis.__humidExtraPassRoots)
+  ? [...APPLE_ROOTS, ...globalThis.__humidExtraPassRoots.map((d, i) => ({ name: `Test root ${i + 1}`, der: fromB64(d) }))]
+  : APPLE_ROOTS);
+
+/** Check a .pkpass: its files, its issuer's signature, Apple's chain. → { ok, result } | { ok: false, reason } */
+export async function checkPass(file) {
+  try {
+    if (file.size > 20 * 1024 * 1024) return { ok: false, reason: "That pass is too big." };
+    return { ok: true, result: await readPkpass(await readFile(file), { roots: passRoots() }) };
+  } catch (e) {
+    return { ok: false, reason: e instanceof WalletError ? e.message : "That pass can't be read." };
+  }
+}
+
+/** Seal a checked pass: the original .pkpass (so it can go back into Wallet), with its summary in the encrypted index. */
+export async function addPass({ file, name, checked, place = null }) {
+  const bytes = await readFile(file);
+  return sealAndStore({ bytes, type: PASS_TYPE, name: (name || checked.pass.description || "Pass").trim().slice(0, 120), category: "passes", extra: { passInfo: passIndex(checked.pass, checked.issuer) }, place });
+}
+
+/**
  * Encrypt on this device, one live check signs it, upload. The sheet shows the stages.
  * place: a location watch (core/place.js) when the person chose to stamp where it was
  * sealed; the freshest fix at this moment goes into the encrypted index, beside the name.
@@ -834,12 +901,19 @@ export async function openItem(item) {
     needVault();
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     const type = meta.type || item.type || "application/octet-stream";
-    let url = null, text = null, idRecord = null;
+    let url = null, text = null, idRecord = null, cardRecord = null, pass = null, passError = null;
     if (type === ID_TYPE) {
       try { idRecord = decodeRecord(bytes); } catch { text = new TextDecoder().decode(bytes); }
+    } else if (type === CARD_TYPE) {
+      try { cardRecord = decodeCard(bytes); } catch { text = "This card record can't be read."; }
+      wipe(bytes); // the card lives only in the viewer, masked until revealed
+    } else if (type === PASS_TYPE) {
+      // checked again on every open: what's shown is what the issuer signed
+      try { pass = await readPkpass(bytes, { roots: passRoots(), now: new Date() }); }
+      catch (e) { passError = e instanceof WalletError ? e.message : "This pass can't be read."; }
     } else if (type.startsWith("text/") || type === "application/json") { text = new TextDecoder().decode(bytes); wipe(bytes); }
     else url = URL.createObjectURL(new Blob([bytes], { type }));
-    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, idRecord, bytes: url || idRecord ? bytes : null, item }; });
+    batch(() => { S.sheet.value = null; S.viewer.value = { name: meta.name, type, url, text, idRecord, cardRecord, pass, passError, bytes: url || idRecord || pass || passError ? bytes : null, item }; });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -878,7 +952,8 @@ export async function exportSealed(item) {
 const indexEntry = (item, patch = {}) => ({
   name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
   ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}),
-  ...(item.split ? { split: true } : {}), ...(item.place ? { place: item.place } : {}), ...patch,
+  ...(item.split ? { split: true } : {}), ...(item.place ? { place: item.place } : {}),
+  ...(item.cardInfo ? { cardInfo: item.cardInfo } : {}), ...(item.passInfo ? { passInfo: item.passInfo } : {}), ...patch,
 });
 
 /**

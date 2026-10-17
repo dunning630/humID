@@ -45,7 +45,9 @@ const P = {
   globe: <><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5S9.7 5.9 12 3.5Z" /></>,
   barcode: <><path d="M4 6v12M7 6v12M10.5 6v12M13 6v12M16.5 6v12M20 6v12" /><path d="M2.5 4h19M2.5 20h19" opacity=".35" /></>,
   torch: <path d="M13 3 6.5 13H11l-1 8 6.5-10H12l1-8Z" />,
-  pin: <><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" /><path d="M12 14v6" /></>,
+  card: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" /><path d="M2.5 9.5h19M6 15h4" /></>,
+  ticket: <><path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h13A1.5 1.5 0 0 1 20 7.5V10a2 2 0 0 0 0 4v2.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 16.5V14a2 2 0 0 0 0-4V7.5Z" /><path d="M14 6v12" stroke-dasharray="1.5 2" /></>,
+  pushpin: <><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" /><path d="M12 14v6" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7" /><circle cx="12" cy="12" r="6.2" /></>,
   copy: <><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></>,
   pin: <><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" /><circle cx="12" cy="10" r="2.4" /></>,
@@ -70,12 +72,15 @@ export const CATEGORIES = [
   { id: "money", label: "Money", icon: "money" },
   { id: "home", label: "Home", icon: "home" },
   { id: "personal", label: "Personal", icon: "user" },
+  { id: "passes", label: "Passes", icon: "ticket" },
   { id: "other", label: "Other", icon: "folder" },
 ];
-export const categoryOf = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[5];
+export const categoryOf = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES.find((c) => c.id === "other");
 
 export function kindIcon(type = "") {
   if (type === "application/vnd.humid.id+json") return "idcard";
+  if (type === "application/vnd.humid.card+json") return "card";
+  if (type === "application/vnd.apple.pkpass") return "ticket";
   if (type.startsWith("image/")) return "image";
   if (type === "application/pdf") return "pdf";
   if (type.startsWith("text/") || type === "application/json") return "text";

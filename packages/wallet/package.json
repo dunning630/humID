@@ -1,0 +1,18 @@
+{
+  "name": "@humid/wallet",
+  "version": "1.0.0",
+  "description": "Apple Wallet passes (.pkpass) into the vault: a bounded zip reader, the manifest's hashes, and the issuer's signature checked through Apple's certificate chain (pinned roots). Runs in the app and in Node (Web Crypto). No platform code.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "humid": {
+    "provides": {
+      "wallet": 1
+    }
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0"
+  },
+  "license": "UNLICENSED"
+}

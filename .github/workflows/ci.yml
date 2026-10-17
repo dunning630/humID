@@ -135,7 +135,7 @@ jobs:
     name: id-scan (browser)
     needs: test
     runs-on: ubuntu-22.04
-    timeout-minutes: 20 # the four checks take ~5 min; a stuck browser fails fast instead of holding the run
+    timeout-minutes: 25 # the five checks take ~7 min; a stuck browser fails fast instead of holding the run
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -167,6 +167,12 @@ jobs:
           grep -v '^{"t"' photo.log | tail -60
           echo "::error::$(grep -v '^{"t"' photo.log | grep -E 'Error|expected|actual|assert|readable|waiting for|photo.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/photo" }
+      - name: Payment cards and Wallet passes (front and back read by the camera, masked, no copying; pass signatures)
+        run: |
+          node tests/browser/cards.mjs > cards.log 2>&1 && { grep -v '^{"t"' cards.log; exit 0; }
+          grep -v '^{"t"' cards.log | tail -60
+          echo "::error::$(grep -v '^{"t"' cards.log | grep -E 'Error|expected|actual|assert|waiting for|cards.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/cards" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
