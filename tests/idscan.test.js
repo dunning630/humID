@@ -231,7 +231,8 @@ test("record: chip beats barcode beats OCR, typed corrections win and are marked
   assert.deepEqual(rec.edited, ["given"]);
   assert.equal(title(rec), "Passport · Nigeria");
   assert.equal(fullName(rec), "Ada Ngozi Okafor");
-  assert.equal(provenance(rec).level, "chip");
+  assert.equal(provenance(rec).level, "chip-edited", "a typed change means the record no longer says it's all from the chip");
+  assert.match(provenance(rec).text, /changed by hand/);
   assert.deepEqual(summary(rec), { kind: "passport", issuer: "NGA", region: "", expiry: "2033-06-30" });
   const back = decodeRecord(encodeRecord(rec));
   assert.equal(back.fields.number, "X4K90T2R1");

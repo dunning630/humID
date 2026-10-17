@@ -206,8 +206,20 @@ test("station: the 24-hour tier; only stations can vouch, only after their check
   await assert.rejects(witnessApis[0].stationVerify(dev.req.code, { chip: passport, checks: { document: true, face: true, present: true } }, witnesses[0].stepUp), (e) => e.code === "not_a_station");
   await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: { document: true, face: false, present: true } }, station.stepUp), (e) => e.code === "checks_incomplete");
   await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: { document: true, face: true, present: true } }), (e) => e.code === "step_up_required");
-  const v = await stationApi.stationVerify(dev.req.code, { chip: passport, checks: { document: true, face: true, present: true } }, station.stepUp);
+  // A chip that can prove it's present must, at the station too: copied chip data isn't enough.
+  const all = { document: true, face: true, present: true };
+  await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: all }, station.stepUp), (e) => e.code === "challenge_expired");
+  let nonce = await stationApi.stationChallenge(dev.req.code);
+  await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(new Uint8Array(8)) }, station.stepUp), (e) => e.code === "chip_not_present");
+  await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(nonce) }, station.stepUp), (e) => e.code === "challenge_expired", "a challenge is answered once");
+  nonce = await stationApi.stationChallenge(dev.req.code);
+  const { dg15: _drop, ...noKey } = passport;
+  await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: noKey, checks: all, signature: passport.answer(nonce) }, station.stepUp), (e) => e.code === "no_chip_proof", "leaving DG15 out doesn't dodge the challenge");
+  await assert.rejects(witnessApis[0].stationChallenge(dev.req.code), (e) => e.code === "not_a_station");
+  nonce = await stationApi.stationChallenge(dev.req.code);
+  const v = await stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(nonce) }, station.stepUp);
   assert.equal(v.verified, true);
+  assert.equal(v.chipProof, true);
   assert.equal(v.account, undefined, "the operator doesn't learn whose HumID it is");
   assert.ok(v.releaseAt < before, "a station shortens the wait");
   assert.ok(v.releaseAt - Date.now() <= DELAY / 3);

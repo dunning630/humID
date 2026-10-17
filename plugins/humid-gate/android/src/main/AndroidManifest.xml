@@ -6,9 +6,9 @@
     <!-- The camera: HumID QR codes (device links, recovery codes) and photos of documents and IDs,
          taken in the app. Optional: codes can be typed and photos chosen from the gallery. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 12+: other apps' overlay windows are hidden while HumID is on screen. -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
-    <!-- Android 11+ hides other apps unless declared: without this, a web page's
-         "take a photo" input can't find the camera app and falls back to the gallery. -->
     <!-- Never back up or transfer HumID's data. The Keystore keys that unlock it can't
          leave this phone, so a restored copy (a reinstall, a new phone) is a HumID
          nothing can open: it would show "biometric key is gone" instead of setup.
@@ -17,9 +17,4 @@
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/humid_no_backup" />
-    <queries>
-        <intent>
-            <action android:name="android.media.action.IMAGE_CAPTURE" />
-        </intent>
-    </queries>
 </manifest>

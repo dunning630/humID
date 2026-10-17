@@ -336,28 +336,57 @@ export function evidenceLabel(kinds, anchorMode) {
 }
 
 /* ---------------- QR payloads ----------------
- * A QR carries the same 12-character code you could type; the code is what
- * commits to the keys, so scanning is a convenience, never a shortcut.
+ * A QR carries the same 12-character code you could type, plus what it's for
+ * and when it expires: HUMID:2:LINK:XXXXXXXXXXXX:<expiry, unix seconds, base 36>.
+ * The code is what commits to the keys (each side recomputes it), so a QR is
+ * data to check, never a command: nothing in it is opened, followed or run.
+ *
+ * Why the code and not a signature: the QR introduces keys the scanner doesn't
+ * know yet (a new device, a stranger offering to be a witness), so there is no
+ * key it could already trust to check a signature with. The code is a
+ * commitment to those keys that a person can also read out or type; the
+ * scanning device fetches the keys and refuses unless they hash to it, and the
+ * showing device refuses to show a code that isn't its own keys'.
+ * The expiry is a convenience (stale QRs are refused before anything is
+ * fetched); the server's own expiry is what counts.
  */
-const QR_PREFIX = "HUMID:";
+export const QR_VERSION = 2;
+export const QR_MAX = 48;
 export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT" });
+// One spelling per payload: no leading zeros in the version or the expiry.
+const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}):([1-9A-Z][0-9A-Z]{0,7})$/;
 
-export function qrPayload(kind, code) {
+/** The text for a QR code. expiresAt in ms. */
+export function qrPayload(kind, code, expiresAt) {
   const k = QR_KINDS[kind];
   const c = parseCode(code);
-  if (!k || !c) throw new Error("Nothing to put in a QR code");
-  return `${QR_PREFIX}${k}:${c}`;
+  if (!k || !c || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Nothing to put in a QR code");
+  return `HUMID:${QR_VERSION}:${k}:${c}:${Math.ceil(expiresAt / 1000).toString(36).toUpperCase()}`;
 }
 
-/** { kind, code } from scanned text, or null. Accepts a bare 12-character code too. */
+/**
+ * { kind, code, expiresAt } from scanned text, or null for anything that isn't
+ * exactly a current-version HumID QR: too long, another version, an unknown kind,
+ * a malformed code, extra fields, a URL. Bare codes are not accepted from the camera.
+ */
 export function parseQr(text) {
-  const t = String(text || "").trim().toUpperCase();
-  const m = /^HUMID:(LINK|RECOVER|CONTACT):([0-9A-Z-]+)$/.exec(t);
-  if (m) {
-    const code = parseCode(m[2]);
-    const kind = Object.keys(QR_KINDS).find((k) => QR_KINDS[k] === m[1]);
-    return code ? { kind, code } : null;
-  }
-  const code = parseCode(t);
-  return code ? { kind: null, code } : null;
+  if (typeof text !== "string" || text.length > QR_MAX) return null;
+  const m = QR_RE.exec(text);
+  if (!m || Number(m[1]) !== QR_VERSION) return null;
+  const kind = Object.keys(QR_KINDS).find((k) => QR_KINDS[k] === m[2]);
+  if (!kind || parseCode(m[3]) !== m[3]) return null;
+  const expiresAt = parseInt(m[4], 36) * 1000;
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return null;
+  return { kind, code: m[3], expiresAt };
+}
+
+/* ---------------- account check ----------------
+ * Adding a device: both screens show this short string for the account, and the
+ * person compares them before the new device finishes. A server that sealed some
+ * other account's key to the new device would show a different one.
+ */
+export const ACCOUNT_CHECK_LABEL = "HUMID-ACCOUNT-CHECK-v1";
+export function accountCheck(accountId) {
+  if (!accountId) throw new Error("No account");
+  return base32(sha3_256(concat(utf8(ACCOUNT_CHECK_LABEL), utf8(String(accountId))))).slice(0, 8).match(/.{4}/g).join("-");
 }
