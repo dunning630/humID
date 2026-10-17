@@ -73,11 +73,11 @@ async function targets(page, where) {
 }
 async function confirmCard(page) {
   // until the card is checked, the button says so and takes you to the check instead of opening the vault
-  const go = page.locator(".foot button.btn.secure");
+  const go = page.locator(".foot button.btn.primary");
   assert.equal((await go.innerText()).trim(), "Check your card to continue");
   await go.click();
   await page.waitForFunction(() => document.activeElement?.id === "card-check");
-  assert.ok(await page.getByText("You're all set").isVisible(), "still on the recovery card");
+  assert.ok(await page.getByText("Save your recovery card").isVisible(), "still on the recovery card");
   const ask = await page.locator('label[for="card-check"]').innerText();
   const n = Number(/group (\d+)/.exec(ask)[1]);
   const groups = await page.locator(".cardcode span").allInnerTexts();
@@ -86,7 +86,7 @@ async function confirmCard(page) {
   assert.equal((await go.innerText()).trim(), "Check your card to continue");
   await page.fill("#card-check", groups[n - 1].toLowerCase().replace(/0/g, "O")); // the right one, as someone might write it
   await page.getByText("That matches").waitFor();
-  await page.locator(".foot button:not([disabled])", { hasText: "Open my vault" }).waitFor({ timeout: 5000 }); // enables on the next render
+  await page.locator(".foot button:not([disabled])", { hasText: "I've saved it" }).waitFor({ timeout: 5000 }); // enables on the next render
 }
 
 let current = null; // the running dev server, stopped whatever happens
@@ -106,7 +106,7 @@ try {
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByText("Connect to the vault you'll trust").waitFor();
   assert.equal(await page.locator(".stepper").getAttribute("role"), "progressbar");
-  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "4");
+  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "5");
   await onScreen(page, page.getByRole("button", { name: "Trust this server" }), "Trust this server");
   await page.getByRole("button", { name: "Trust this server" }).click();
   await page.getByRole("button", { name: "Use a demo access code" }).click();
@@ -119,15 +119,23 @@ try {
   await targets(page, "Bind"); await shot(page, "small-bind");
   step("server step shown (not pinned); no duplicate toast; bind button on screen");
 
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  assert.ok(await page.getByRole("button", { name: /Use demo mode/ }).isDisabled(), "the statement is still required");
+  await page.getByRole("button", { name: "What does this mean?" }).click();
+  await page.getByText(/HumID can't see whose faces/).waitFor();
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
-  await page.getByText("You're all set").waitFor({ timeout: 30_000 });
+  await page.getByText("Save your recovery card").waitFor({ timeout: 30_000 });
   await confirmCard(page);
-  await onScreen(page, page.getByRole("button", { name: "Open my vault" }), "Open my vault");
+  await onScreen(page, page.getByRole("button", { name: "I've saved it" }), "I've saved it");
   await targets(page, "Recovery card"); await shot(page, "small-recovery-card");
+  await page.getByRole("button", { name: "I've saved it" }).click();
+  // then one line and the vault
+  await page.getByRole("heading", { name: "You're in" }).waitFor();
+  await onScreen(page, page.getByRole("button", { name: "Open my vault" }), "Open my vault");
+  await targets(page, "You're in"); await shot(page, "small-youre-in");
   await page.getByRole("button", { name: "Open my vault" }).click();
-  step("recovery card: a wrong group is refused, the right one (written with O for 0, lower case) accepted");
+  step("recovery card on its own screen: a wrong group is refused, the right one (written with O for 0, lower case) accepted; then You're in");
 
   // the vault: one way to add, and nothing to protect here (that's under You)
   await page.getByRole("button", { name: "Add to your vault" }).waitFor({ timeout: 15_000 });
@@ -334,7 +342,7 @@ try {
   await p2.page.goto(BASE);
   await p2.page.getByRole("button", { name: "Create my HumID" }).click();
   await p2.page.getByText("Pay without being known").waitFor({ timeout: 15_000 });
-  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "3", "access, bind, done");
+  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "4", "access, bind, recovery card, in");
   assert.match(await p2.page.locator(".eyebrow").first().innerText(), /Step 1/i);
   assert.equal(await p2.page.evaluate(() => globalThis.__humidBack()), "screen", "the back gesture does what the Back button does");
   await p2.page.getByRole("button", { name: "I already have HumID" }).click();

@@ -90,12 +90,13 @@ try {
   await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
   await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
+  await page.getByRole("button", { name: "I've saved it" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
