@@ -713,6 +713,7 @@ export function lock(reason) {
   if (S.view.value !== "app") return;
   if (!S.offline.value) api.logout();
   clearKeys(); offline = null;
+  knownNames.clear();
   clearTimeout(idleTimer);
   batch(() => {
     S.view.value = "locked";
@@ -750,11 +751,12 @@ export async function refresh() {
     keepOffline({ items, usage });
     const decoded = await Promise.all(items.map(async (it) => {
       const meta = await decodeIndex(it.index);
-      knownNames.set(it.id, meta.name);
       return { ...it, ...meta, id: it.id, size: meta.size ?? it.size, envelopeSize: it.size };
     }));
-    // A decoy session shows only the documents marked for it, and their usage.
+    // A decoy session shows only the documents marked for it, and their usage; only
+    // their names are kept in memory (for Activity), never the others'.
     const shown = S.decoy.value ? decoded.filter((i) => i.decoy) : decoded;
+    for (const i of shown) knownNames.set(i.id, i.name);
     const u = S.decoy.value ? { ...usage, bytes: shown.reduce((n, i) => n + (i.envelopeSize || 0), 0), count: shown.length } : usage;
     batch(() => { S.items.value = shown; S.usage.value = u; });
   } catch (e) {
@@ -1616,6 +1618,7 @@ export async function eraseEverything() {
   await store.clearIdentity();
   await store.clearVault();
   clearKeys(); offline = null; S.offlineReady.value = false;
+  knownNames.clear();
   batch(() => {
     S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null;
     S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
