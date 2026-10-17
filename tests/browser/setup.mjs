@@ -138,19 +138,19 @@ try {
   await targets(page, "Vault"); await shot(page, "small-vault-checklist");
   await protect.locator("button.proof-row", { hasText: "A second device" }).click();
   await page.getByText("Enter the code from your new device").waitFor();
-  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Security");
+  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "You");
   await page.locator(".sheet .icon-btn, .sheet button[aria-label=Close]").first().click().catch(() => page.keyboard.press("Escape"));
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
   await page.locator("section.protect button.proof-row", { hasText: "A second proof" }).click();
   await page.waitForTimeout(800);
   const rec = await page.locator("#recovery").boundingBox();
   assert.ok(rec && rec.y < page.viewportSize().height / 2, "A second proof scrolls to the Recovery card");
-  await targets(page, "Security");
-  step("vault checklist: 1 of 3, and each button opens the right place in Security");
+  await targets(page, "You");
+  step("vault checklist: 1 of 3, and each button opens the right place under You");
 
   // Android's back button / edge swipe (wired to the same handler): closes what's on top, never leaves HumID
   const back = () => page.evaluate(() => globalThis.__humidBack());
-  assert.equal(await back(), "tab", "back from Security goes to the Vault tab");
+  assert.equal(await back(), "tab", "back from You goes to the Vault tab");
   assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault");
   assert.equal(await back(), "stay", "back at the Vault stays in HumID");
   assert.ok(await page.locator("section.protect").isVisible());
@@ -192,10 +192,10 @@ try {
   await shot(page, "small-toast");
   step("a lease is filed under Home; the toast shows at the bottom, above the tab bar");
 
-  // Settings: how it looks and locks, kept on this device; pins sealed with the item
-  await page.locator(".tabbar button", { hasText: "Settings" }).click();
-  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
-  await targets(page, "Settings");
+  // Preferences (under You): how it looks and locks, kept on this device; pins sealed with the item
+  await page.locator(".tabbar button", { hasText: "You" }).click();
+  await page.getByRole("heading", { name: "You", level: 1 }).waitFor();
+  await targets(page, "You");
   const html = (k) => page.evaluate((key) => document.documentElement.dataset[key], k);
   assert.equal(await html("theme"), "dark", "night by default");
   await page.locator('[data-pref="theme:light"]').click();
@@ -205,14 +205,15 @@ try {
   await page.locator('[data-pref="motion"]').uncheck({ force: true });
   assert.equal(await html("motion"), "reduced");
   await page.locator('[data-pref="idle:60000"]').click();
-  await page.locator('[data-pref="startTab:settings"]').click();
   await page.locator('[data-pref="sort:name"]').click();
   assert.equal(await page.locator('[data-pref="idle:600000"]').count(), 0, "no lock time longer than 5 minutes is offered");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("humid.prefs.v1")));
-  assert.deepEqual([saved.theme, saved.text, saved.motion, saved.idleMs, saved.startTab, saved.sort], ["light", "large", false, 60000, "settings", "name"]);
+  assert.deepEqual([saved.theme, saved.text, saved.motion, saved.idleMs, saved.sort], ["light", "large", false, 60000, "name"]);
+  assert.equal("startTab" in saved, false, "no start-tab preference any more");
+  await page.locator("details.about summary").click();
   assert.match(await page.locator("main").innerText(), /auto-locks in 0?[01]:/, "the session shows the shorter lock");
   await shot(page, "small-settings-day");
-  step("settings: day theme, larger text, animations off, 1-minute lock, open on Settings, sort by name");
+  step("preferences: day theme, larger text, animations off, 1-minute lock, sort by name");
 
   // a second document, so there's an order to change
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
@@ -237,12 +238,11 @@ try {
   assert.equal(await html("theme"), "light", "the theme is there before unlocking");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);
-  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor({ timeout: 15_000 });
-  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Settings", "opens on the chosen tab");
-  await page.locator(".tabbar button", { hasText: "Vault" }).click();
+  await page.getByRole("heading", { name: "Vault", level: 1 }).waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault", "always opens on the vault");
   await page.locator(".list .item[data-pinned]").first().waitFor({ timeout: 10_000 });
-  step("after a restart: same look, opens on Settings, the pin came back from the vault");
-  await page.locator(".tabbar button", { hasText: "Settings" }).click();
+  step("after a restart: same look, opens on the Vault, the pin came back from the vault");
+  await page.locator(".tabbar button", { hasText: "You" }).click();
   await page.locator('[data-pref="theme:dark"]').click();
   await page.locator('[data-pref="text:standard"]').click();
 

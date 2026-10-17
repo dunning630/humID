@@ -99,8 +99,7 @@ export function Sheet({ children, onClose, label }) {
 const TABS = [
   { id: "vault", label: "Vault", icon: "vault" },
   { id: "activity", label: "Activity", icon: "activity" },
-  { id: "security", label: "Security", icon: "shield" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "you", label: "You", icon: "person" },
 ];
 
 /**

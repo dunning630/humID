@@ -14,7 +14,6 @@ export const IDLE_CHOICES = [60_000, 2 * 60_000, MAX_IDLE_MS];
 export const CHOICES = Object.freeze({
   theme: ["system", "dark", "light"],
   text: ["standard", "large"],
-  startTab: ["vault", "activity", "security", "settings"],
   sort: ["newest", "oldest", "name", "expiry"],
   expiryWarnDays: [30, 60, 90, 180],
 });
@@ -25,7 +24,6 @@ export const DEFAULTS = Object.freeze({
   motion: true,        // animations (rings, transitions); false = reduced
   haptics: true,       // a short buzz on checks and captures
   idleMs: MAX_IDLE_MS,
-  startTab: "vault",
   sort: "newest",
   expiryWarnDays: 90,
 });
@@ -40,7 +38,6 @@ export function sanitize(raw) {
     motion: typeof r.motion === "boolean" ? r.motion : DEFAULTS.motion,
     haptics: typeof r.haptics === "boolean" ? r.haptics : DEFAULTS.haptics,
     idleMs: IDLE_CHOICES.includes(r.idleMs) ? r.idleMs : DEFAULTS.idleMs,
-    startTab: pick("startTab"),
     sort: pick("sort"),
     expiryWarnDays: pick("expiryWarnDays"),
   };
