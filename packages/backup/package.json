@@ -1,0 +1,28 @@
+{
+  "name": "@humid/backup",
+  "version": "0.1.0",
+  "description": "HumID 3.0 (provisional): whole-computer backups sealed under a backup key that HumID gates. Two of three parts open it: the HumID vault part (live check), a printed backup sheet, a trusted contact's part.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./fs": "./src/fs.js"
+  },
+  "humid": {
+    "provides": {
+      "backup-format": 1
+    },
+    "requires": {
+      "envelope-format": 1,
+      "suites": ["HUMID-PQ1"],
+      "split": 1
+    },
+    "track": "3.0"
+  },
+  "dependencies": {
+    "@humid/codec": "^1.0.0",
+    "@humid/crypto": "^1.4.0",
+    "@humid/recovery": "^1.2.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "license": "UNLICENSED"
+}
