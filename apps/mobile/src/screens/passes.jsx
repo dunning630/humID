@@ -127,7 +127,7 @@ export function PassView({ v }) {
         </details>
       )}
       <div class="actions">
-        <button class="btn secure block" onClick={() => saveCopy(v.item)}><Icon name="download" />Save the pass (opens in Apple Wallet)</button>
+        <button class="btn secure block" onClick={() => saveCopy(v.item)}><Icon name="download" />Save a copy (opens in Apple Wallet)</button>
       </div>
       <p class="fine" style={{ marginTop: 10 }}>Links in a pass are shown as text, never opened. HumID keeps the signed original, so it can go back into Wallet unchanged.</p>
     </div>

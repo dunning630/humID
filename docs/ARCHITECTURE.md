@@ -47,12 +47,25 @@ JavaScript before compression):
 Servers accept proven phones by default (`HUMID_DEVICE_POLICY=attested`);
 `biometric` also admits the desktops. See [SECURITY.md](SECURITY.md#live-biometric-checks).
 
-**Screens.** Welcome → *Create my HumID* (connect · access pass · bind · recovery card) or
-*I already have HumID* (connect · choose: another device, recovery card,
-recovery contacts · bind · wait) → Lock → Vault (search, categories, add,
-open, rename, sealed copy, delete) → Activity (verified ledger) → Security
-(recovery alerts, devices, recovery card and contacts, being someone's
-contact, helping someone recover, connection, lock, close & erase).
+**Screens.** Welcome → *Create my HumID* (connect · access pass · the first
+check · recovery card) or *I already have HumID* (connect · choose: another
+device, or prove it's you with two proofs · the first check · wait) → Lock →
+three tabs. **Vault** (search, categories, one Add sheet: scan an ID, a
+payment card, a Wallet pass, a photo or a file; open, rename, save a copy,
+export sealed, delete). **Activity** (the access record, checked on the
+phone). **You** (`screens/you.jsx`: the protection checklist, devices,
+recovery — witnesses · ID chip · recovery card — duress with its decoy
+picker, helping others and the station, preferences, a collapsed "About
+this HumID" with the identity, device and connection diagnostics, then lock
+and close & erase). `main.jsx` routes `S.view` → the tab in `S.tab` → one
+global `S.sheet` (`{ type, … }`; each type is rendered by exactly one file,
+see tests/ia.test.js); `core/back.js` sends Android Back to the top
+`[data-back]` control, so a wizard steps back before its sheet closes. The
+words people read follow one vocabulary: *check* for the biometric prompt
+(the "biological interrupt" of this document), *seal* for encrypt-and-store,
+*recovery card*, *witnesses*, *ID chip* (the identity anchor), *your vault
+server*; the security facts are in one shared `HowProtected` sheet
+(`ui.jsx`).
 
 **Keys on a device.** Each device holds two seeds behind one biometric
 secret: the **account seed**, shared by all of the holder's devices, and its
