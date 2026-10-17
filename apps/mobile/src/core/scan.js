@@ -10,6 +10,7 @@
 //             for MRZs (DoubangoTelecom/tesseractMRZ, BSD-3-Clause)
 
 import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad } from "./docfind.js";
+import { cleanScan } from "./scanclean.js";
 
 const asset = (p) => new URL(`./${p}`, import.meta.url).href;
 const MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
@@ -165,6 +166,18 @@ export function straighten(c, quad, { prefer = null, max = 3000 } = {}) {
   const oc = canvas(size.width, size.height);
   ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
   return oc;
+}
+
+/**
+ * The "clean scan" of a straightened page (core/scanclean.js): even light, white
+ * paper, crisp ink. Returns { canvas, paper } — paper says how much of it looked like
+ * paper, so a photo or a dark card isn't offered as a scan by default.
+ */
+export function cleanCanvas(c) {
+  const out = cleanScan(imageData(c));
+  const oc = canvas(out.width, out.height);
+  ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
+  return { canvas: oc, paper: out.paper };
 }
 
 /** A canvas turned clockwise by 90, 180 or 270 degrees (or itself, for 0). */

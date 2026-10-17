@@ -4,8 +4,9 @@
 // grained table, nowhere near the middle. Checks that:
 //   - nobody lines anything up: the outline is drawn over the page and the photo is
 //     taken by itself
-//   - the proposal is the page straightened and turned upright (taller than wide),
-//     marked Suggested; the original is one tap away and is the photo as taken
+//   - the proposal is the page straightened and turned upright (taller than wide);
+//     a clean scan of it (apps 1.12.0: light evened out, paper white) is marked
+//     Suggested; the straightened photo and the original are one tap away
 //   - turning by hand works, and the choice is what gets sealed
 //   - "Stamp where it's sealed" is on, shows the phone's location, and the sealed
 //     document shows it ("Sealed at"); the vault server's copy of the index can't
@@ -130,14 +131,40 @@ try {
     img.complete && img.naturalWidth ? go() : img.addEventListener("load", go, { once: true });
   }));
   await page.locator(".photo-preview img").waitFor();
-  await page.getByRole("radio", { name: /Straightened/ }).getByText("Suggested").waitFor();
-  assert.equal(await page.getByRole("radio", { name: /Straightened/ }).getAttribute("aria-checked"), "true");
+  await page.getByRole("radio", { name: /Clean scan/ }).getByText("Suggested").waitFor();
+  assert.equal(await page.getByRole("radio", { name: /Clean scan/ }).getAttribute("aria-checked"), "true");
+  // the clean scan's paper is white and even; the straightened photo keeps the room's light
+  const paper = async () => page.locator(".photo-preview img").evaluate((img) => new Promise((res) => {
+    const go = () => {
+      const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      // the margins (no text): the brightest-but-one level in each tenth across the top band
+      const levels = [];
+      for (let k = 0; k < 10; k++) {
+        let sum = 0, n = 0;
+        for (let y = Math.round(c.height * 0.01); y < c.height * 0.04; y++) for (let x = Math.round(c.width * (0.05 + k * 0.09)); x < c.width * (0.1 + k * 0.09); x++) { const i = (y * c.width + x) * 4; sum += (d[i] + d[i + 1] + d[i + 2]) / 3; n++; }
+        levels.push(sum / n);
+      }
+      res({ mean: levels.reduce((a, b) => a + b) / levels.length, spread: Math.max(...levels) - Math.min(...levels) });
+    };
+    img.complete && img.naturalWidth ? go() : img.addEventListener("load", go, { once: true });
+  }));
+  const clean = await paper();
   const flat = await size();
   const developed = await page.evaluate(() => globalThis.__humidDevelop);
   if (developed?.png) { (await import("node:fs")).writeFileSync(process.env.KEEP_PNG, Buffer.from(developed.png.split(",")[1], "base64")); delete developed.png; }
   assert.ok(flat.h > flat.w * 1.2 && Math.abs(flat.h / flat.w - 1.294) < 0.03, `straightened page is upright letter-shaped: ${flat.w}×${flat.h} ${JSON.stringify(developed)}`);
   await shot(page, "2-proposal");
   step(`proposal: the page straightened and turned upright (${flat.w}×${flat.h}, letter proportions)`);
+  await page.getByRole("radio", { name: /Straightened/ }).click();
+  await page.waitForTimeout(500);
+  const straight = await paper();
+  assert.ok(clean.mean > 240 && clean.mean > straight.mean + 5, `clean scan's paper is white: ${clean.mean.toFixed(0)} (straightened ${straight.mean.toFixed(0)})`);
+  assert.ok(clean.spread <= straight.spread + 2, `and even: spread ${clean.spread.toFixed(1)} (straightened ${straight.spread.toFixed(1)})`);
+  assert.equal(await page.getByRole("button", { name: /Seal the straightened photo/ }).count(), 1);
+  await shot(page, "2b-straightened");
+  step(`clean scan suggested: paper ${clean.mean.toFixed(0)}/255 against ${straight.mean.toFixed(0)} straightened`);
   await page.getByRole("radio", { name: /Original/ }).click();
   await page.waitForTimeout(400);
   const orig = await size();
@@ -145,7 +172,7 @@ try {
   assert.equal(await page.getByRole("button", { name: /Seal the original/ }).count(), 1);
   await shot(page, "3-original");
   step("the original is the photo as taken, and the button says so");
-  await page.getByRole("radio", { name: /Straightened/ }).click();
+  await page.getByRole("radio", { name: /Clean scan/ }).click();
   await page.getByRole("button", { name: "Turn right" }).click();
   await page.waitForTimeout(400);
   const turned = await size();
@@ -160,7 +187,7 @@ try {
   assert.equal(await stamp.getByRole("switch").isChecked(), true);
   await page.fill("#doc-name", "Assessment notice");
   await shot(page, "4-stamp");
-  await page.getByRole("button", { name: /Seal the straightened photo/ }).click();
+  await page.getByRole("button", { name: /Seal the clean scan/ }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().waitFor({ timeout: 30_000 });
   step("sealed, with the location stamp on");
@@ -197,6 +224,7 @@ try {
   await page.locator(".place-stamp").getByRole("switch").uncheck({ force: true });
   await page.locator(".place-stamp").getByText(/no location is kept/).waitFor();
   await page.fill("#doc-name", "No stamp");
+  await page.getByRole("radio", { name: /Straightened/ }).click();
   await page.getByRole("button", { name: /Seal the straightened photo/ }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "No stamp" }).first().waitFor({ timeout: 30_000 });

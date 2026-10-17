@@ -423,17 +423,19 @@ export function lookAt(im, { shape = "full", prev = null, prior = null } = {}) {
 
 /**
  * Smooths the corners from look to look (so the outline glides rather than jitters)
- * and decides when to take the photo: `need` good looks in a row with the corners
- * barely moving. A lost document is let go after a few empty looks.
+ * and decides when to take the photo, calmly: `need` good looks in a row with the
+ * corners barely moving, held for at least `hold` ms, and the picture as sharp as it
+ * has been during the hold (the camera's focus has settled, not still hunting). A
+ * lost document is let go after a few empty looks.
  */
-export function tracker({ need = 5, still = 0.02, lose = 3 } = {}) {
-  let quad = null, raw = null, run = 0, missed = 0, diag = 1;
+export function tracker({ need = 5, still = 0.02, lose = 3, hold = 0 } = {}) {
+  let quad = null, raw = null, run = 0, missed = 0, diag = 1, since = 0, sharpest = 0, held = 0;
   return {
     /** Feed one look and the picture's size; returns { quad (smoothed), fire }. */
-    feed(look, w, h) {
+    feed(look, w, h, now = Date.now()) {
       diag = Math.hypot(w, h);
       if (!look.found) {
-        run = 0;
+        run = 0; since = 0; sharpest = 0; held = 0;
         if (++missed >= lose) { quad = null; raw = null; }
         return { quad, fire: false };
       }
@@ -442,11 +444,16 @@ export function tracker({ need = 5, still = 0.02, lose = 3 } = {}) {
       raw = look.quad;
       quad = !quad || moved > 0.08 ? look.quad : quad.map((p, i) => ({ x: p.x * 0.45 + look.quad[i].x * 0.55, y: p.y * 0.45 + look.quad[i].y * 0.55 }));
       run = look.ok && moved < still ? run + 1 : look.ok ? 1 : 0;
-      return { quad, fire: run >= need };
+      if (run <= 1) { since = now; sharpest = 0; }
+      const crisp = look.crisp ?? 1;
+      sharpest = Math.max(sharpest, crisp);
+      held = now - since;
+      const settled = crisp >= sharpest * 0.9;
+      return { quad, fire: run >= need && held >= hold && settled };
     },
     get quad() { return quad; },
-    get progress() { return Math.min(1, run / need); },
-    reset() { quad = null; raw = null; run = 0; missed = 0; },
+    get progress() { return Math.min(1, run / need, hold ? held / hold : 1); },
+    reset() { quad = null; raw = null; run = 0; missed = 0; since = 0; sharpest = 0; held = 0; },
   };
 }
 

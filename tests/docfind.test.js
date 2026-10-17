@@ -190,3 +190,32 @@ test("live: hints say what's needed", () => {
   const card = shrink(view({ page, quad: place(page, 0, { cx: 480, cy: 360, size: 600 }) }), 320);
   assert.match(lookAt(card, { shape: "id1" }).hint, /card/, "a letter page isn't a card");
 });
+
+test("live: a calm capture: it waits out the hold time, and for the focus to settle", () => {
+  const ok = (crisp, quad) => ({ found: true, ok: true, crisp, quad });
+  const q = [{ x: 10, y: 10 }, { x: 200, y: 10 }, { x: 200, y: 260 }, { x: 10, y: 260 }];
+  // steady from the first look, but only 300 ms in: not yet
+  let t = tracker({ need: 3, hold: 900 });
+  const at = (ms, crisp = 0.6) => t.feed(ok(crisp, q), 320, 240, ms);
+  assert.equal(at(0).fire, false);
+  assert.equal(at(150).fire, false);
+  assert.equal(at(300).fire, false, "three steady looks, but not held long enough");
+  assert.ok(t.progress < 0.5, "the progress shows the hold");
+  assert.equal(at(1000).fire, true, "held 900 ms: taken");
+  // the camera still focusing (sharper each look): waits until it stops getting sharper
+  t = tracker({ need: 3, hold: 900 });
+  at(0, 0.32); at(400, 0.45);
+  assert.equal(at(1000, 0.31).fire, false, "a blurry moment after a sharper one: not now");
+  assert.equal(at(1150, 0.46).fire, true, "back to its sharpest: taken");
+  // losing the page starts the clock again
+  t = tracker({ need: 2, hold: 900, lose: 1 });
+  at(0); at(500);
+  t.feed({ found: false }, 320, 240, 600);
+  assert.equal(at(700).fire, false);
+  assert.equal(at(1200).fire, false);
+  assert.equal(at(1700).fire, true);
+  // hold 0 (reading a barcode or MRZ): as before
+  t = tracker({ need: 2 });
+  at(0);
+  assert.equal(at(10).fire, true);
+});
