@@ -297,11 +297,19 @@ export function mrzBand(c, shape = "td3", { threshold = false, scale = 1 } = {})
   return enhance(out, { threshold });
 }
 
+/** The most pixels a chip photo may declare: an ID portrait is a few hundred thousand; a huge header is a hostile chip or file, not a photo. */
+export const MAX_PORTRAIT_PIXELS = 4_000_000;
+export const MAX_PORTRAIT_BYTES = 2 * 1024 * 1024;
+export const portraitTooBig = ({ width, height }) => !(width > 0 && height > 0) || width * height > MAX_PORTRAIT_PIXELS;
+
 /** A chip's JPEG 2000 photo → a JPEG the app can show (decoder loaded only for these). */
 export async function jp2ToJpeg(bytes) {
+  if (!bytes || bytes.length > MAX_PORTRAIT_BYTES) throw new Error("The chip's photo is too large.");
   const { JpxImage } = await import("jpeg2000");
   const j = new JpxImage();
   j.parse(bytes);
+  // what the header declares decides the canvas size: refuse before allocating anything
+  if (portraitTooBig(j)) throw new Error("The chip's photo declares an unreasonable size.");
   const c = canvas(j.width, j.height);
   const img = ctx2d(c).createImageData(j.width, j.height);
   const n = j.componentsCount;
@@ -320,6 +328,7 @@ export async function jp2ToJpeg(bytes) {
 
 /** Chip photo bytes (JPEG or JPEG 2000) → an image for the record. */
 export async function portraitImage({ type, bytes }) {
+  if (!bytes || bytes.length > MAX_PORTRAIT_BYTES) throw new Error("The chip's photo is too large.");
   if (type === "image/jpeg") return { type, data: b64(bytes), size: bytes.length };
   return jp2ToJpeg(bytes);
 }
