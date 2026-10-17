@@ -1469,6 +1469,7 @@ async function finishJoin(st) {
     const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
     wipe(rewrapped);
     const pub = Suite.publicOf(keys);
+    // pending (the link or recovery code, the request id) is spent here and dropped from the record.
     const record = {
       ...id, wrapped, pending: null,
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
