@@ -248,7 +248,7 @@ function watchConnection(raw) {
   const unanswered = (r) => r.status >= 502 && r.status <= 504;
   link = createLink({
     // the server's public key bundle: unauthenticated, cheap, and touches no session
-    probe: () => raw(`${api.htp.base}/htp/v1/keys`, { cache: "no-store", headers: { accept: "application/json" } })
+    probe: () => raw(`${api.htp.base}/htp/v1/keys`, { cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) })
       .then((r) => { if (unanswered(r)) throw new Error(`HTTP ${r.status}`); }),
     onChange: (st) => { S.link.value = st; },
     onUp: reconnected,
@@ -926,7 +926,14 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
   }
 }
 
-/** Download, verify, decrypt — all under one live check. Returns { bytes, meta }. */
+/**
+ * Download, verify, decrypt — all under one live check. Returns { bytes, meta }.
+ * The download can't come before the check: GET /vault/objects/:id IS the step-up
+ * request, and the server releases the envelope (and, for a split document, its key)
+ * only on the proof the liveness key signs during the check. Every request has a
+ * 45 s timeout (@humid/htp), so a server that stops answering ends the check instead
+ * of holding the keys in memory.
+ */
 async function fetchPlain(item, purpose, label) {
   return withStepUp("download", [item.id], purpose, label, async ({ keys, proof, Suite }) => {
     showInterrupt({ progress: 0.65, message: "Fetching sealed copy over HTP/1…" });
