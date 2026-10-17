@@ -53,11 +53,37 @@ export function mrzReader() {
   return ocrP;
 }
 
-/** Free the MRZ reader's memory (tens of MB) when no document is being scanned. */
+let textP = null;
+/**
+ * { read(canvas, { front }) → Promise<string> } — general printed text, for payment cards.
+ * front: digits, capitals and the separators a card front uses; the back is read unrestricted
+ * (the security code, the bank's phone number). One worker, reused until released.
+ */
+export function textReader() {
+  textP ||= (async () => {
+    const { default: Tesseract } = await import("tesseract.js/dist/tesseract.esm.min.js");
+    const base = asset("ocr/");
+    const worker = await Tesseract.createWorker("eng", 1 /* LSTM only */, {
+      workerPath: `${base}worker.min.js`, corePath: `${base}tesseract-core-lstm.js`, langPath: base.replace(/\/$/, ""),
+      gzip: false, cacheMethod: "none", workerBlobURL: false, logger: () => {}, errorHandler: () => {},
+    });
+    let mode = null;
+    const set = async (front) => {
+      if (mode === front) return;
+      await worker.setParameters({ tessedit_char_whitelist: front ? "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/-.' " : "", tessedit_pageseg_mode: "11", preserve_interword_spaces: "1" });
+      mode = front;
+    };
+    return { read: async (canvas, { front = true } = {}) => { await set(front); return (await worker.recognize(canvas)).data.text || ""; }, stop: () => worker.terminate() };
+  })();
+  textP.catch(() => { textP = null; });
+  return textP;
+}
+
+/** Free the readers' memory (tens of MB) when no document is being scanned. */
 export async function releaseReaders() {
-  const p = ocrP;
-  ocrP = null;
-  try { (await p)?.stop(); } catch { /* already gone */ }
+  const running = [ocrP, textP];
+  ocrP = null; textP = null;
+  for (const p of running) { try { (await p)?.stop(); } catch { /* already gone */ } }
 }
 
 /* ---------------- images ---------------- */
