@@ -489,6 +489,9 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .dc-outline polygon { fill: rgba(138,201,136, calc(.06 + .16 * var(--p, 0))); stroke: var(--amber-hi); stroke-width: 3; stroke-linejoin: round; transition: stroke .2s var(--ease); }
 .dc-outline circle { fill: var(--ground, #0b1a13); stroke: var(--amber-hi); stroke-width: 3; }
 .doccam[data-look="ok"] .dc-outline polygon, .doccam[data-look="ok"] .dc-outline circle { stroke: var(--mint); }
+/* a barcode found in view (scan-and-go style): highlighted wherever it is */
+.dc-outline polygon.dc-bar { fill: rgba(138,201,136,.16); stroke: var(--mint); stroke-width: 3; stroke-dasharray: 10 6; animation: dc-bar-run 1s linear infinite; }
+@keyframes dc-bar-run { to { stroke-dashoffset: -16; } }
 .dc-frame .c { position: absolute; width: 34px; height: 34px; border: 3px solid var(--mint); }
 .dc-frame .tl { top: -2px; left: -2px; border-right: 0; border-bottom: 0; border-radius: 16px 0 0 0; }
 .dc-frame .tr { top: -2px; right: -2px; border-left: 0; border-bottom: 0; border-radius: 0 16px 0 0; }
@@ -500,7 +503,7 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .dc-frame .c { transition: border-color .2s var(--ease), opacity .25s var(--ease); }
 .doccam[data-look="searching"] .dc-frame .c { border-color: rgba(255,255,255,.75); }
 .dc-frame[data-shape="full"] .c { opacity: .55; }
-@media (prefers-reduced-motion: reduce) { .dc-frame, .dc-frame .c, .dc-outline polygon { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dc-frame, .dc-frame .c, .dc-outline polygon { transition: none; } .dc-outline polygon.dc-bar { animation: none; } }
 .dc-busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(4,14,10,.45); border-radius: 16px; }
 .dc-busy i { width: 42px; height: 42px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--mint); animation: spin .9s linear infinite; }
 .dc-saved { background: rgba(4,14,10,.55); animation: fade .15s var(--ease) both; }
@@ -666,6 +669,9 @@ p.small svg { width: 14px; height: 14px; vertical-align: -2px; color: var(--ambe
 .photo-choice .seg button { display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; }
 .photo-choice .seg button svg { width: 18px; height: 18px; flex: none; }
 .photo-choice .seg .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px; background: var(--mint-wash); color: var(--mint); }
+/* three versions side by side on a phone: icon, name and tag stacked */
+.photo-choice .seg[data-n="3"] button { flex-direction: column; gap: 2px; min-height: 58px; font-size: 13px; }
+.photo-choice .seg[data-n="3"] .tag { font-size: 10px; padding: 1px 6px; }
 .photo-preview { position: relative; margin: 10px 0 0; display: grid; place-items: center; min-height: 180px; max-height: 46vh; padding: 10px; border-radius: 16px; background: repeating-conic-gradient(rgba(255,255,255,.03) 0 25%, transparent 0 50%) 0 0 / 18px 18px, var(--surface-3); border: 1px solid var(--line); overflow: hidden; }
 .photo-preview img { max-width: 100%; max-height: calc(46vh - 20px); object-fit: contain; border-radius: 6px; box-shadow: 0 4px 18px rgba(0,0,0,.35); }
 .photo-wait { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.2); border-top-color: var(--mint); animation: spin .9s linear infinite; }

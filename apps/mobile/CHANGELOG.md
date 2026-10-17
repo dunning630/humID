@@ -1,5 +1,27 @@
 # @humid/mobile
 
+## 1.12.0
+
+### Minor Changes
+
+- **Smarter capture.** The camera is calmer and finds what it needs by itself.
+  
+  - **Barcodes, like a store's scan-and-go**: the back of a license no longer has to
+    be lined up. The camera finds the barcode anywhere in view (sideways, upside down,
+    small and far off, slightly tilted), highlights it, and reads just that spot at
+    full resolution, turned exactly upright. Only a license's barcode is taken: a
+    store card's barcode beside it is passed over. While a barcode is in view it never
+    takes a fallback photo; it says "Move a little closer" or "Hold steady" instead.
+  - **Calmer document photos**: a page or card must hold steady for about a second,
+    and the camera's focus must have settled (as sharp as it has been), before the
+    photo is taken. A side with a code that won't read is photographed after twelve
+    seconds, not nine.
+  - **Clean scan**: Take a photo now offers a third version, suggested when the page
+    looks like paper: straightened, turned upright, and evened out like a flatbed
+    scanner (shadows gone, paper white, ink crisp, a light colour cast taken off,
+    coloured forms kept coloured). The straightened photo with its true light, and the
+    original, are still one tap away.
+
 ## 1.11.0
 
 ### Minor Changes
