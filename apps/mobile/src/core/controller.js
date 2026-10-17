@@ -1148,7 +1148,7 @@ export async function makeNewCard() {
       try { await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
       finally { wipe(part.y); }
     });
-    S.sheet.value = { type: "card", code: card.code };
+    S.sheet.value = { type: "recoveryCard", code: card.code };
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
   finally { wipe(card?.secret); }

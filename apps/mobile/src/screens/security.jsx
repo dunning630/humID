@@ -198,7 +198,7 @@ export function Security() {
         text={`A device (${sheet.alert.platform}) asked for your HumID with ${sheet.alert.evidence || `your ${METHOD[sheet.alert.method] || sheet.alert.method}`}. Cancel it and it gets nothing. If it wasn't you, also make a new seal card or choose new witnesses.`}
         action="Cancel with biometric" onConfirm={() => cancelRecovery(sheet.alert)} />}
       {sheet?.type === "cardInfo" && <CardInfoSheet />}
-      {sheet?.type === "card" && <CardSheet code={sheet.code} />}
+      {sheet?.type === "recoveryCard" && <CardSheet code={sheet.code} />}
       {sheet?.type === "contacts" && <ContactsSheet />}
       {sheet?.type === "offer" && <OfferSheet code={sheet.code} expiresAt={sheet.expiresAt} />}
       {sheet?.type === "help" && <HelpSheet />}
