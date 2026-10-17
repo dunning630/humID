@@ -39,7 +39,7 @@ export function InterruptOverlay() {
   const root = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);
   // The check takes the screen: focus moves to it, so a screen reader says what's happening and keys go nowhere else.
-  useEffect(() => { if (it) root.current?.focus(); }, [!!it]);
+  useEffect(() => { const el = root.current; if (it && el && !el.contains(document.activeElement)) el.focus(); }, [!!it]);
   if (!it) return null;
   const start = () => { setHolding(true); timer.current = setTimeout(() => { setHolding(false); holdComplete(); }, 1200); };
   const stop = () => { clearTimeout(timer.current); setHolding(false); };

@@ -67,9 +67,9 @@ async function hold(page) {
   await page.keyboard.up(" ");
 }
 async function addCard(page) {
-  const add = page.locator("button.fab");
-  if (await add.isVisible().catch(() => false)) { await add.click(); await page.getByRole("button", { name: /Add a payment card/ }).click(); }
-  else await page.getByRole("button", { name: /Add a payment card/ }).first().click();
+  // one way in: the + button (or the empty vault's one primary), then the choice
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.getByRole("button", { name: /Add a payment card/ }).click();
 }
 
 try {

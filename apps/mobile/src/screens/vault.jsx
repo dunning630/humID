@@ -491,8 +491,11 @@ export function Viewer() {
       <div class="body">
         {v.text != null && <pre>{v.text}</pre>}
         {isImg && <img src={v.url} alt={v.name} />}
-        {/* The PDF is a blob of this origin; the frame gets no powers at all: no scripts, no same-origin access, no navigation. */}
-        {isPdf && <iframe src={v.url} title={v.name} sandbox="" />}
+        {/* Not sandboxed: Chromium (Android, Windows, this test runner) refuses to show a PDF inside a sandboxed
+            frame at all, whatever the allow-list (checked with sandbox="", allow-scripts, and both with
+            allow-same-origin: every one gives the broken-document icon). The blob is this origin's own
+            decrypted bytes; copying and selection are blocked on the viewer instead. */}
+        {isPdf && <iframe src={v.url} title={v.name} referrerpolicy="no-referrer" />}
         {!isImg && !isPdf && v.text == null && (
           <div class="empty" style={{ marginTop: 0 }}>
             <Icon name="file" />
