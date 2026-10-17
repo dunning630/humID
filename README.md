@@ -89,6 +89,8 @@ packages/            independently versioned modules
   pass                             anonymous access passes (RFC 9474 blind signatures), access codes
   emrtd                            reads passport / ID chips: BAC, PACE, secure messaging, Active Authentication
   idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
+  cards                            payment cards: number checks, camera (both sides) + contactless capture, sealed record (no PIN, no back photo)
+  wallet                           Apple Wallet passes: bounded unzip, manifest hashes, issuer signature through Apple's pinned roots
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare

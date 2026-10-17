@@ -55,8 +55,14 @@ const curveOf = (k) => (k.asymmetricKeyDetails.namedCurve === "secp384r1" ? "P-3
 const printable = (s) => tlv([0x13], Buffer.from(s));
 /** An X.509 Name: CN, with a countryName first when given ({ cn, country } or a plain CN). */
 export const name = (n) => {
-  const { cn, country } = typeof n === "string" ? { cn: n } : n;
-  return seq(...(country ? [set(seq(oid("2.5.4.6"), printable(country)))] : []), set(seq(oid("2.5.4.3"), utf8s(cn))));
+  const { cn, country, o, ou, uid } = typeof n === "string" ? { cn: n } : n;
+  return seq(
+    ...(uid ? [set(seq(oid("0.9.2342.19200300.100.1.1"), utf8s(uid)))] : []),
+    ...(cn ? [set(seq(oid("2.5.4.3"), utf8s(cn)))] : []),
+    ...(ou ? [set(seq(oid("2.5.4.11"), utf8s(ou)))] : []),
+    ...(o ? [set(seq(oid("2.5.4.10"), utf8s(o)))] : []),
+    ...(country ? [set(seq(oid("2.5.4.6"), printable(country)))] : []),
+  );
 };
 /** keyUsage BIT STRING with the given bits set (0 = digitalSignature, 5 = keyCertSign, 6 = cRLSign). */
 export const keyUsage = (...bits) => { let v = 0; for (const b of bits) v |= 0x80 >> b; return tlv([0x03], [7 - Math.max(...bits), v]); };

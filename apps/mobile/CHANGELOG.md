@@ -1,5 +1,28 @@
 # @humid/mobile
 
+## 1.11.0
+
+### Minor Changes
+
+- **Payment cards** are back, and **Apple Wallet passes** can be added.
+  
+  - **Cards** (credit and debit): scan the front for the number, expiry and name; scan
+    the back for the security code and the bank's phone number; tap a contactless card
+    on Android or a USB reader; or type it. Everything is read on the device by the
+    camera's text reader (Tesseract's English model, now in the app). A card held
+    upside down is read turned round. The security code is kept only when you switch
+    it on or scan the back; the PIN, chip and stripe data, and any photo of the back
+    are never stored. Opening a card takes your face or fingerprint; the number and
+    code stay masked until you tap Show, and hide again after 30 seconds. Nothing is
+    copied to the clipboard.
+  - **Wallet passes**: add a boarding pass, ticket or membership card shared from
+    Apple Wallet as a `.pkpass` file. HumID checks it before keeping it: every file
+    against the signed manifest, the issuer's signature, and the chain to Apple's
+    root certificates (pinned by fingerprint). A changed or forged pass is refused,
+    with the reason. Opened, a pass shows its fields and its QR code, and can be saved
+    back into Wallet. Google Wallet has no file to export.
+  - Pinned items now show a pushpin, not the map pin used for location stamps.
+
 ## 1.10.0
 
 ### Minor Changes

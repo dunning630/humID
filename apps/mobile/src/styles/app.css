@@ -681,3 +681,38 @@ p.small svg { width: 14px; height: 14px; vertical-align: -2px; color: var(--ambe
 .place-stamp[data-on="1"][data-fix="0"] .toggle span span { color: var(--amber-hi); }
 .place-v { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
 .place-v a { color: var(--mint); }
+
+/* ---------- payment cards ---------- */
+.card-view { max-width: 460px; margin: 0 auto; }
+.pay-card {
+  aspect-ratio: 85.6 / 53.98; border-radius: 16px; padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between;
+  background: linear-gradient(135deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--line-strong); color: var(--text); box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
+}
+.pay-card .pc-top { display: flex; justify-content: space-between; align-items: center; }
+.pay-card .pc-brand { font-weight: 700; letter-spacing: .02em; }
+.pay-card .pc-flag { font-size: 12px; font-weight: 600; color: var(--amber-hi); border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
+.pay-card .pc-number { font-size: clamp(18px, 5.4vw, 24px); letter-spacing: .08em; }
+.pay-card .pc-bottom { display: flex; justify-content: space-between; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--sage); }
+.id-form .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.id-form .split .field { min-width: 0; }
+.id-form .split input { width: 100%; min-width: 0; box-sizing: border-box; }
+:root[data-theme="light"] .pay-card { box-shadow: 0 10px 30px rgba(13,31,23,.12); }
+
+/* ---------- Wallet passes ---------- */
+.pass-face { border-radius: 16px; padding: 16px 18px; background: var(--surface-2); border: 1px solid var(--line-strong); color: var(--text); display: flex; flex-direction: column; gap: 12px; }
+.pass-face.own { background: var(--pass-bg); color: var(--pass-fg); border-color: transparent; }
+.pass-face .pf-head { display: flex; align-items: center; gap: 10px; }
+.pass-face .pf-head img { height: 28px; width: auto; max-width: 96px; object-fit: contain; }
+.pass-face .pf-org { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pass-face .pf-kind { font-size: var(--t-xs); letter-spacing: .08em; text-transform: uppercase; opacity: .8; }
+.pass-face .pf-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.pass-face .pf { display: flex; flex-direction: column; min-width: 0; }
+.pass-face .pf-l { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.pass-face.own .pf-l { color: var(--pass-label); opacity: .85; }
+.pass-face .pf-v { font-weight: 500; overflow-wrap: anywhere; }
+.pass-face .pf-row.big .pf-v { font-size: var(--t-xl); font-family: var(--f-display); }
+.pass-face .pf-desc { margin: 0; font-size: var(--t-sm); opacity: .85; }
+.pass-code { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 14px; }
+.pass-code svg { border-radius: 12px; }
+.pass-back summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
