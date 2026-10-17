@@ -1,6 +1,6 @@
 {
   "name": "@humid/gateway-service",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "Internet-facing HTP/1 terminator: handshakes, sessions, biometric proofs, routing, audit enforcement.",
   "type": "module",
@@ -13,9 +13,9 @@
     "port": 8080
   },
   "dependencies": {
-    "@humid/svc": "^1.0.0",
-    "@humid/htp": "^1.2.0",
-    "@humid/attest": "^1.0.0"
+    "@humid/svc": "^1.1.1",
+    "@humid/htp": "^1.3.0",
+    "@humid/attest": "^1.2.0"
   },
   "license": "UNLICENSED"
 }

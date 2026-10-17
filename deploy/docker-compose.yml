@@ -84,6 +84,8 @@ services:
       HUMID_IOS_APP_ID: ${HUMID_IOS_APP_ID:-}                       # "<Apple Team ID>.app.humid.vault"; empty = no iPhones
       HUMID_APP_ATTEST_ENV: ${HUMID_APP_ATTEST_ENV:-production}     # "development" for Xcode debug builds
       HUMID_REQUIRE_LOCKED_BOOT: ${HUMID_REQUIRE_LOCKED_BOOT:-1}    # refuse rooted / unlocked-bootloader Android phones
+      HUMID_ANDROID_MIN_PATCH: ${HUMID_ANDROID_MIN_PATCH:-}        # optional minimum Android security patch, YYYYMM
+      HUMID_ATTESTATION_STATUS_REQUIRED: ${HUMID_ATTESTATION_STATUS_REQUIRED:-0}  # 1: refuse Android phones until Google's revoked-key list is fetched
       HUMID_DURESS_COOLOFF_MS: ${HUMID_DURESS_COOLOFF_MS:-86400000}  # calm period before the owner can lift a duress lockdown
     volumes: [identity-data:/data]
     healthcheck:

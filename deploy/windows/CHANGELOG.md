@@ -1,5 +1,14 @@
 # HumID Server for Windows
 
+## 1.5.0
+
+- **Security hardening.** The web app it serves is HumID 1.8.0, and the server checks more:
+  - **Approvals sign the action.** Each approval is a single-use, 60-second approval for one action on one device, signed by the phone's secure chip. **Update every phone and computer to HumID 1.8.0**: older apps can sign in and read, but can't approve anything on this server.
+  - **Android phones:** both attestation levels must be TEE or StrongBox; Google's revoked-key list is checked every 6 hours (`humid set HUMID_ATTESTATION_STATUS_REQUIRED=1` refuses phones until it has been fetched); `humid set HUMID_ANDROID_MIN_PATCH=202501` sets a minimum security patch. The official HumID app's signing certificate is built in, so test builds signed with another key can't join. An attestation must be under 5 minutes old and enrols one device.
+  - **ID chips:** passive authentication now requires one country throughout (the country signing certificate, the document signer and the passport's issuer), a document-signing certificate named by the chip, and the MRZ's overall check digit. A chip that can prove it's present must, at stations too.
+  - **Logs** record each request's route (`/links/:code`), never the codes or ids in it.
+- No data changes: installing over 1.4.0 keeps all data and settings.
+
 ## 1.4.0
 
 - The web app it serves is HumID 1.6.0: setup buttons stay on screen on small phones, the seal card is checked by typing back part of it (and can be printed), and the vault shows what's left to protect a new HumID, with a button for each step.
