@@ -35,6 +35,7 @@ import { parseAccessCode } from "@humid/pass";
 import { probeNfc, openChip } from "./nfc.js";
 import { textReader } from "./scan.js";
 import { readPkpass, passIndex, MEDIA_TYPE as PASS_TYPE, APPLE_ROOTS, WalletError } from "@humid/wallet";
+import { classify, inferKind, kindFromType } from "./categories.js";
 import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
@@ -774,8 +775,8 @@ export function lock(reason) {
 /* ---------------- vault ---------------- */
 
 async function decodeIndex(raw) {
-  try { return await suite().openIndex(indexKey, fromB64u(raw)); }
-  catch { return { name: "Unreadable item", type: "", category: "other" }; }
+  try { return classify(await suite().openIndex(indexKey, fromB64u(raw))); }
+  catch { return classify({ name: "Unreadable item", type: "" }); }
 }
 const fromB64u = (s) => fromB64(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
 
@@ -800,10 +801,12 @@ export async function refresh() {
   } finally { S.loading.value = false; }
 }
 
-export async function addDocument({ file, name, category, place = null }) {
+/** Seal a photo or a file. `tags`: what it's about (core/categories.js), chosen on the review screen. */
+export async function addDocument({ file, name, tags = [], place = null }) {
   if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. HumID seals files up to 50 MB.`, "warn"); return false; }
   const bytes = await readFile(file);
-  return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category, place });
+  const type = file.type || "application/octet-stream";
+  return sealAndStore({ bytes, type, name: (name || file.name || "Document").trim().slice(0, 120), kind: kindFromType(type, file.name), tags, place });
 }
 
 /**
@@ -811,20 +814,20 @@ export async function addDocument({ file, name, category, place = null }) {
  * with its photos, and a summary (kind, issuer, expiry) inside the encrypted index
  * so the list can show when it expires without opening it.
  */
-export async function addIdRecord(record, name, place = null) {
+export async function addIdRecord(record, name, place = null, { tags = ["identity"] } = {}) {
   const bytes = encodeRecord(record);
   if (bytes.length > MAX_FILE) { toast("Those photos are too large to seal. Retake them and try again.", "warn"); return false; }
-  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) }, place });
+  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), kind: "id", tags, extra: { idInfo: idSummary(record) }, place });
 }
 
 /**
  * Seal a payment card record (@humid/cards) into the vault. The encrypted index
  * carries only network, last four digits, expiry and nickname, never the number.
  */
-export async function addCardRecord(record, name) {
+export async function addCardRecord(record, name, { tags = ["money"], place = null } = {}) {
   let bytes;
   try { bytes = encodeCard(record); } catch (e) { toast(e.message, "warn"); return false; }
-  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), category: "money", extra: { cardInfo: cardSummary(record) } });
+  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), kind: "card", tags, extra: { cardInfo: cardSummary(record) }, place });
 }
 
 /** Tap a contactless card (Android NFC, or a USB reader on a computer): number and expiry. No payment is made. */
@@ -880,9 +883,9 @@ export async function checkPass(file) {
 }
 
 /** Seal a checked pass: exactly the bytes that were checked (the signed original, so it can go back into Wallet), with its summary in the encrypted index. */
-export async function addPass({ checked, name, place = null }) {
+export async function addPass({ checked, name, tags = [], place = null }) {
   const { result, bytes } = checked;
-  return sealAndStore({ bytes: Uint8Array.from(bytes), type: PASS_TYPE, name: (name || result.pass.description || "Pass").trim().slice(0, 120), category: "passes", extra: { passInfo: passIndex(result.pass, result.issuer) }, place });
+  return sealAndStore({ bytes: Uint8Array.from(bytes), type: PASS_TYPE, name: (name || result.pass.description || "Pass").trim().slice(0, 120), kind: "pass", tags, extra: { passInfo: passIndex(result.pass, result.issuer) }, place });
 }
 
 /**
@@ -890,7 +893,7 @@ export async function addPass({ checked, name, place = null }) {
  * place: a location watch (core/place.js) when the person chose to stamp where it was
  * sealed; the freshest fix at this moment goes into the encrypted index, beside the name.
  */
-async function sealAndStore({ bytes, type, name: finalName, category, extra = {}, place = null }) {
+async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], extra = {}, place = null }) {
   const id = S.identity.value;
   if (S.offline.value) { toast(friendly({ code: "offline" }), "warn"); return false; }
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
@@ -920,7 +923,7 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
     wipe(bytes); bytes = null;
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
-      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
+      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, kind, ...(tags.length ? { tags } : {}), addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sheet.value = { ...S.sheet.value, stage: "upload" };
@@ -1015,8 +1018,14 @@ export async function exportSealed(item) {
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
+/**
+ * An item's index entry, to re-seal with a change. The kind and tags go in as the app
+ * now knows them: an item sealed before 2.0 (no kind, a category) gets its inferred kind
+ * written back here, on its next rename or pin, and never through a bulk re-upload.
+ */
 const indexEntry = (item, patch = {}) => ({
-  name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
+  name: item.name, type: item.type, size: item.size, kind: inferKind(item), addedAt: item.addedAt, plainHash: item.plainHash,
+  ...(item.tags?.length ? { tags: item.tags } : {}),
   ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}),
   ...(item.split ? { split: true } : {}), ...(item.place ? { place: item.place } : {}),
   ...(item.cardInfo ? { cardInfo: item.cardInfo } : {}), ...(item.passInfo ? { passInfo: item.passInfo } : {}), ...patch,
@@ -1053,10 +1062,13 @@ export async function setDecoy(item, on) {
   } catch (e) { toast(friendly(e), "error"); }
 }
 
-export async function renameItem(item, name, category) {
+/** Rename an item and set its tags (an array of tag ids; an empty one clears them). */
+export async function renameItem(item, name, tags = item.tags || []) {
   try {
     needVault();
-    const idx = await suite().sealIndex(indexKey, indexEntry(item, { name: name.trim().slice(0, 120) || item.name, category }));
+    const entry = indexEntry(item, { name: name.trim().slice(0, 120) || item.name });
+    if (tags.length) entry.tags = tags; else delete entry.tags;
+    const idx = await suite().sealIndex(indexKey, entry);
     await api.rename(item.id, idx);
     await refresh();
     S.sheet.value = null;

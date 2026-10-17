@@ -1,8 +1,8 @@
 // Vault: list, search, categories, add, item details, preview.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { guessCategory } from "../core/categories.js";
+import { KINDS, TAGS, kindOf, tagOf, suggestTags } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
-import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
+import { Icon, kindIcon } from "../icons.jsx";
 import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
 import { openExternal } from "../core/external.js";
 import { rotateCanvas, cleanCanvas } from "../core/scan.js";
@@ -45,12 +45,13 @@ export function Vault() {
             <Icon name="search" />
             <input autocorrect="off" spellcheck={false} id="vault-search" type="search" placeholder="Search your vault" value={S.query.value} onInput={(e) => (S.query.value = e.currentTarget.value)} autocomplete="off" />
           </label>
-          <div class="chips" role="group" aria-label="Filter by category">
+          <div class="chips" role="group" aria-label="Filter by kind">
             <button class="chip" aria-pressed={S.filter.value === "all"} onClick={() => (S.filter.value = "all")}>All <span class="count">{S.counts.value.all}</span></button>
-            {CATEGORIES.filter((c) => S.counts.value[c.id]).map((c) => (
-              <button class="chip" aria-pressed={S.filter.value === c.id} onClick={() => (S.filter.value = c.id)}><Icon name={c.icon} />{c.label} <span class="count">{S.counts.value[c.id]}</span></button>
+            {KINDS.filter((k) => S.counts.value[k.id]).map((k) => (
+              <button class="chip" aria-pressed={S.filter.value === k.id} onClick={() => (S.filter.value = k.id)}><Icon name={k.icon} />{k.label} <span class="count">{S.counts.value[k.id]}</span></button>
             ))}
           </div>
+          <TagFilters />
         </>
       )}
 
@@ -78,52 +79,84 @@ export function Vault() {
   );
 }
 
-const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+/** The secondary row: filter by tag, offered only when something carries a tag. */
+function TagFilters() {
+  const [open, setOpen] = useState(false);
+  const tc = S.tagCounts.value;
+  const used = TAGS.filter((t) => tc[t.id]);
+  if (!used.length) { if (S.tagFilter.value) S.tagFilter.value = null; return null; }
+  const on = S.tagFilter.value;
+  return (
+    <div class="tagfilters" data-open={open || on ? "1" : "0"}>
+      {!open && !on && <button class="linklike" onClick={() => setOpen(true)}>More filters</button>}
+      {(open || on) && (
+        <div class="chips" role="group" aria-label="Filter by tag">
+          <button class="chip" aria-pressed={!on} onClick={() => { S.tagFilter.value = null; setOpen(false); }}>Any tag</button>
+          {used.map((t) => (
+            <button class="chip" aria-pressed={on === t.id} onClick={() => (S.tagFilter.value = on === t.id ? null : t.id)}><Icon name={t.icon} />{t.label} <span class="count">{tc[t.id]}</span></button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-function ItemRow({ item }) {
-  const cat = categoryOf(item.category);
+export const brandName = (id) => BRANDS.find((b) => b.id === id)?.name || "Card";
+
+/** The small tag labels after an item's facts. */
+export function TagLabels({ tags }) {
+  const list = (tags || []).map(tagOf).filter(Boolean);
+  if (!list.length) return null;
+  return <>{list.map((t) => <span class="tag" key={t.id}>{t.label}</span>)}</>;
+}
+
+/** One line of facts about an item, as the list and the item screen show it. */
+export function itemMeta(item) {
   const card = item.cardInfo;
   if (card) {
     const cs = expiryStatus(card.expiry);
-    return (
-      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-        <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
-        <span style={{ minWidth: 0 }}>
-          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-          <div class="meta">{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
-        </span>
-        <span class="end"><Icon name="chevron" /></span>
-      </button>
-    );
+    return <>{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</>;
   }
   const pi = item.passInfo;
   if (pi) {
     const when = pi.relevant || pi.expires;
     const gone = pi.voided || (pi.expires && Date.parse(pi.expires) < Date.now());
-    return (
-      <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-        <span class="ico" data-cat={cat.id}><Icon name="ticket" /></span>
-        <span style={{ minWidth: 0 }}>
-          <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-          <div class="meta">{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</div>
-        </span>
-        <span class="end"><Icon name="chevron" /></span>
-      </button>
-    );
+    return <>{STYLE_LABEL[pi.style] || "Pass"} · {pi.issuer || pi.organization}{gone ? <> · <b class="warn-text">{pi.voided ? "voided" : "expired"}</b></> : when ? ` · ${fmtDate(when)}` : ""}</>;
   }
   const id = item.idInfo;
-  const st = id ? idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays) : null;
+  if (id) {
+    const st = idStatus({ fields: { expiry: id.expiry } }, new Date(), S.prefs.value.expiryWarnDays);
+    return <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>;
+  }
+  return <>{kindOf(item.kind).one} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>;
+}
+
+/** The icon for an item: its kind's, or the file type's for a file. */
+export const itemIcon = (item) => item.idInfo ? (item.idInfo.kind === "passport" ? "passport" : "idcard") : item.kind === "file" ? kindIcon(item.type) : kindOf(item.kind).icon;
+
+function ItemRow({ item }) {
   return (
-    <button class="item" data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
-      <span class="ico" data-cat={cat.id}><Icon name={id ? (id.kind === "passport" ? "passport" : "idcard") : item.category === "other" || item.category === "personal" ? kindIcon(item.type) : cat.icon} /></span>
+    <button class="item" data-kind={item.kind} data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.sheet.value = { type: "item", id: item.id })}>
+      <span class="ico" data-kind={item.kind}><Icon name={itemIcon(item)} /></span>
       <span style={{ minWidth: 0 }}>
         <div class="name">{item.pinned && <Icon name="pushpin" />}{item.name}</div>
-        <div class="meta">{id
-          ? <>{kindLabel(id.kind)} · {st.state === "expired" ? <b class="warn-text">expired</b> : st.state === "expiring" ? <b class="warn-text">expires in {st.days} days</b> : id.expiry ? `expires ${fmtDate(`${id.expiry}T12:00:00`)}` : "no expiry"}</>
-          : <>{cat.label} · {fmtSize(item.size)} · {fmtAgo(item.uploadedAt)}</>}</div>
+        <div class="meta">{itemMeta(item)}<TagLabels tags={item.tags} /></div>
       </span>
       <span class="end"><Icon name="chevron" /></span>
     </button>
+  );
+}
+
+/** Tags: optional labels for what an item is about. Any number can be on. */
+export function TagPicker({ tags, onChange, label = "Tags (optional)" }) {
+  const toggle = (id) => onChange(tags.includes(id) ? tags.filter((t) => t !== id) : [...tags, id]);
+  return (
+    <div class="field tagpick">
+      <label>{label}</label>
+      <div class="chips" role="group" aria-label="Tags">
+        {TAGS.map((t) => <button class="chip" type="button" aria-pressed={tags.includes(t.id)} onClick={() => toggle(t.id)}><Icon name={t.icon} />{t.label}</button>)}
+      </div>
+    </div>
   );
 }
 
@@ -204,7 +237,7 @@ export function AddSheet() {
   const [shot, setShot] = useState(null);      // a camera photo: { canvas (proposal), original, straightened, rotate, changed, clean, cleanSuggested }
   const [pick, setPick] = useState({ which: "proposed", turn: 0 });
   const [name, setName] = useState("");
-  const [cat, setCat] = useState("other");
+  const [tags, setTags] = useState([]);
   const [camera, setCamera] = useState(false);
   const [busy, setBusy] = useState(false);
   const [passCheck, setPassCheck] = useState(null); // a Wallet pass: null | { state: "checking" } | { ok, result | reason }
@@ -239,7 +272,7 @@ export function AddSheet() {
     setShot(null);
     setFile(f);
     setName(f.name.replace(/\.[a-z0-9]{1,6}$/i, "").replace(/[_-]+/g, " ").slice(0, 80) || "Document");
-    setCat(guessCategory(f.name, f.type)); // a suggestion; the person can change it
+    setTags(suggestTags("file", f.name)); // a suggestion; the person can change it
     setPassCheck(null);
     current.current = f;
     if (looksLikePass(f)) {
@@ -268,7 +301,7 @@ export function AddSheet() {
       else {
         // a pass that failed its check is kept as an ordinary file, never under the pass type
         const f = file && looksLikePass(file) ? new File([file], file.name, { type: "application/octet-stream" }) : await toSeal();
-        await addDocument({ file: f, name, category: cat, place: place.take() });
+        await addDocument({ file: f, name, tags, place: place.take() });
       }
     }
     catch (e) { toast(e?.message || "Couldn't save that photo. Try again.", "error"); }
@@ -277,7 +310,7 @@ export function AddSheet() {
   const stageIdx = { seal: 0, upload: 1, done: 2 }[st.stage];
   const have = file || shot;
   const reset = () => { setFile(null); setShot(null); setPassCheck(null); current.current = null; };
-  const plainFile = () => { setPassCheck(null); setCat("other"); }; // keep a pass that failed its check as an ordinary file
+  const plainFile = () => { setPassCheck(null); setTags([]); }; // keep a pass that failed its check as an ordinary file
 
   return (
     <Sheet onClose={close} label="Add a document">
@@ -317,7 +350,7 @@ export function AddSheet() {
             : shot ? <PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={() => setCamera(true)} />
             : (
               <div class="doc-hero">
-                <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-cat={cat}><Icon name={kindIcon(file.type)} /></span></span>
+                <span class="ico item" style={{ padding: 0, border: 0, background: "none" }}><span class="ico" data-kind="file"><Icon name={kindIcon(file.type)} /></span></span>
                 <div style={{ minWidth: 0 }}><div class="name" style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{file.name}</div><div class="muted small">{fmtSize(file.size)} · {file.type || "file"}</div></div>
               </div>
             )}
@@ -325,12 +358,7 @@ export function AddSheet() {
             <label for="doc-name">Name</label>
             <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
           </div>
-          {!passCheck && <div class="field">
-            <label>Category</label>
-            <div class="cats">
-              {CATEGORIES.map((c) => <button aria-pressed={cat === c.id} onClick={() => setCat(c.id)}><Icon name={c.icon} />{c.label}</button>)}
-            </div>
-          </div>}
+          {!passCheck && <TagPicker tags={tags} onChange={setTags} />}
           {place.element}
           <div class="actions">
             <button class="btn primary block" disabled={busy || (passCheck && !passCheck.ok)} onClick={seal}><Icon name="fingerprint" />Seal</button>
@@ -367,17 +395,17 @@ export function ItemSheet() {
   const item = S.items.value.find((i) => i.id === st.id);
   const [mode, setMode] = useState("view"); // view | edit
   const [name, setName] = useState(item?.name || "");
-  const [cat, setCat] = useState(item?.category || "other");
+  const [tags, setTags] = useState(item?.tags || []);
   if (!item) return null;
-  const c = categoryOf(item.category);
+  const c = kindOf(item.kind);
   const close = () => (S.sheet.value = null);
   const off = !!S.offline.value;
 
   return (
     <Sheet onClose={close} label={item.name}>
       <div class="doc-hero">
-        <span class="ico" data-cat={c.id} style={{ display: "grid", placeItems: "center", borderRadius: 18, width: 64, height: 64, background: "var(--surface-3)" }}><Icon name={kindIcon(item.type)} /></span>
-        <div style={{ minWidth: 0 }}><div class="eyebrow">{c.label}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
+        <span class="ico" data-kind={c.id} style={{ display: "grid", placeItems: "center", borderRadius: 18, width: 64, height: 64, background: "var(--surface-3)" }}><Icon name={itemIcon(item)} /></span>
+        <div style={{ minWidth: 0 }}><div class="eyebrow">{c.one}</div><h2 style={{ marginTop: 4 }}>{item.name}</h2></div>
       </div>
 
       {mode === "view" && (
@@ -426,9 +454,9 @@ export function ItemSheet() {
       {mode === "edit" && (
         <>
           <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
-          <div class="field"><label>Category</label><div class="cats">{CATEGORIES.map((x) => <button aria-pressed={cat === x.id} onClick={() => setCat(x.id)}><Icon name={x.icon} />{x.label}</button>)}</div></div>
+          <TagPicker tags={tags} onChange={setTags} />
           <div class="actions">
-            <button class="btn primary block" onClick={() => renameItem(item, name, cat)}>Save changes</button>
+            <button class="btn primary block" onClick={() => renameItem(item, name, tags)}>Save changes</button>
             <button class="btn ghost block" onClick={() => setMode("view")}>Cancel</button>
           </div>
         </>
