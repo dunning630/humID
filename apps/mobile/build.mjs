@@ -116,7 +116,7 @@ await writeFile(`${out}manifest.webmanifest`, JSON.stringify({
   icons: [
     { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
     { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
   ],
 }, null, 2));
 // Document scanning engines, loaded by the app only when someone scans an ID
@@ -149,9 +149,12 @@ await writeFile(`${out}assets/THIRD-PARTY-scan.txt`, [
   notice("jpeg2000 (JPEG 2000 decoder from Mozilla PDF.js)", "jpeg2000/LICENCE"),
 ].join("\n\n"));
 
-const icons = here("./src-tauri/icons/");
-const iconMap = { "icon-192.png": "128x128@2x.png", "icon-512.png": "icon.png", "apple-touch-icon.png": "128x128@2x.png" };
-for (const [to, from] of Object.entries(iconMap)) if (existsSync(icons + from)) await copyFile(icons + from, `${out}icons/${to}`);
+// Web icons: the peace-sign HumID logo (src/favicon/). favicon.svg and the small
+// PNG/ICO sizes are the hand without the wordmark, which turns to mush at tab size;
+// 180 px and up use the full logo. The native app icons in src-tauri/icons are separate.
+const fav = here("./src/favicon/");
+for (const f of ["favicon.svg", "favicon-32.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"]) await copyFile(fav + f, `${out}icons/${f}`);
+await copyFile(fav + "favicon.ico", `${out}favicon.ico`);
 
 if (watch) await ctx.watch();
 else { await ctx.rebuild(); await ctx.dispose(); }
