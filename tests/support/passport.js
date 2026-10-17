@@ -2,7 +2,7 @@
 // throwaway country signing CA, plus an Active Authentication "chip" that
 // answers challenges. For tests and the local dev server only.
 import { generateKeyPairSync, sign, createHash, privateEncrypt, constants, randomBytes } from "node:crypto";
-import { seq, set, octet, int, oid, explicit, name, certificate, ecKeys, pem } from "./pki.js";
+import { seq, set, octet, int, oid, explicit, name, certificate, ecKeys, pem, extension, keyUsage } from "./pki.js";
 import { checkDigit } from "../../packages/anchor/src/mrz.js";
 
 const len = (n) => (n < 128 ? [n] : n < 256 ? [0x81, n] : n < 65536 ? [0x82, n >> 8, n & 255] : [0x83, n >> 16, (n >> 8) & 255, n & 255]);
@@ -11,11 +11,15 @@ const sha = (alg, ...p) => { const h = createHash(alg); for (const x of p) h.upd
 
 const OIDS = { sha256: "2.16.840.1.101.3.4.2.1", sha1: "1.3.14.3.2.26", ecdsaSha256: "1.2.840.10045.4.3.2", rsa: "1.2.840.113549.1.1.1", sha256Rsa: "1.2.840.113549.1.1.11", pss: "1.2.840.113549.1.1.10" };
 
-/** A country signing CA (self-signed). */
-export function testCsca(cn = "HumID Test CSCA") {
+/**
+ * A country signing CA (self-signed). country: the alpha-2 code in its name; "UT" is
+ * ICAO's specimen country, Utopia, which test MRZs (issuer "UTO") come from.
+ */
+export function testCsca(cn = "HumID Test CSCA", country = "UT") {
   const k = ecKeys("P-384");
-  const der = certificate({ subject: cn, issuer: cn, publicKey: k.publicKey, signingKey: k.privateKey, ca: true, notAfter: new Date(Date.now() + 10 * 365 * 86400e3) });
-  return { ...k, der, pem: pem(der), cn };
+  const nm = { cn, country };
+  const der = certificate({ subject: nm, issuer: nm, publicKey: k.publicKey, signingKey: k.privateKey, ca: true, extensions: [extension("2.5.29.15", keyUsage(5, 6), true)], notAfter: new Date(Date.now() + 10 * 365 * 86400e3) });
+  return { ...k, der, pem: pem(der), cn, country, name: nm };
 }
 
 const pad = (s, n) => (s + "<".repeat(n)).slice(0, n);
@@ -38,7 +42,7 @@ export function td3({ issuer = "UTO", surname = "ERIKSSON", given = "ANNA MARIA"
  * photo: a JPEG or JPEG 2000 image for DG2 (the holder's face), or null for none.
  * Returns { dg1, dg2, dg15, sod, mrz, answer(nonce) } — answer() is the chip signing a challenge.
  */
-export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null, photo = null } = {}) {
+export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null, photo = null, ds: dsOpts = {} } = {}) {
   const text = typeof mrz === "string" ? mrz : td3(mrz);
   const dg1 = tlv([0x61], tlv([0x5f, 0x1f], Buffer.from(text, "latin1")));
   const dg2 = photo ? faceGroup(photo) : null;
@@ -49,13 +53,20 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
   if (aa) dg15 = tlv([0x6f], aa.publicKey.export({ type: "spki", format: "der" }));
 
   const ds = dsKind === "ec" ? ecKeys("P-256") : generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const dsDer = certificate({ subject: "HumID Test Document Signer", issuer: csca.cn, publicKey: ds.publicKey, signingKey: csca.privateKey });
+  // The document signer: ds.country, ds.keyUsage (false = none), ds.ca, ds.sid ("ski" | "wrong") vary it for tests.
+  const dsSerial = 4000 + Math.floor(Math.random() * 1e6);
+  const dsName = { cn: "HumID Test Document Signer", country: dsOpts.country ?? csca.country };
+  const dsExts = [
+    ...(dsOpts.keyUsage === false ? [] : [extension("2.5.29.15", keyUsage(0), true)]),
+    extension("2.5.29.14", octet(Buffer.from("0123456789abcdef0123", "latin1"))),
+  ];
+  const dsDer = certificate({ subject: dsName, issuer: csca.name || csca.cn, publicKey: ds.publicKey, signingKey: csca.privateKey, serialNumber: dsSerial, extensions: dsExts, ca: !!dsOpts.ca });
 
   const hashes = [[1, dg1], ...(dg2 ? [[2, dg2]] : []), ...(dg15 ? [[15, dg15]] : [])]
     .map(([n, b]) => seq(int(n), octet(sha("sha256", (tamper === "dg1" && n === 1) || (tamper === "dg2" && n === 2) ? Buffer.from("x") : b))));
   const lds = seq(int(0), seq(oid(OIDS.sha256)), seq(...hashes));
   const attrs = [
-    seq(oid("1.2.840.113549.1.9.3"), set(oid("2.23.136.1.1.1"))),
+    ...(tamper === "contentType" ? [] : [seq(oid("1.2.840.113549.1.9.3"), set(oid("2.23.136.1.1.1")))]),
     seq(oid("1.2.840.113549.1.9.4"), set(octet(sha("sha256", lds)))),
   ].sort(Buffer.compare);
   const attrsSet = set(...attrs);
@@ -68,7 +79,9 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
     signature = sign("sha256", attrsSet, { key: ds.privateKey, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 });
   }
   if (tamper === "signature") signature = Buffer.from(signature).fill(1, 10, 20);
-  const signerInfo = seq(int(1), seq(name(csca.cn), int(1)), seq(oid(OIDS.sha256)), explicit(0, Buffer.concat(attrs)), sigAlg, octet(signature));
+  const sid = dsOpts.sid === "ski" ? explicit(0, Buffer.from("0123456789abcdef0123", "latin1")).fill(0x80, 0, 1)
+    : seq(name(csca.name || csca.cn), int(dsOpts.sid === "wrong" ? dsSerial + 1 : dsSerial));
+  const signerInfo = seq(int(dsOpts.sid === "ski" ? 3 : 1), sid, seq(oid(OIDS.sha256)), explicit(0, Buffer.concat(attrs)), sigAlg, octet(signature));
   const signedData = seq(int(3), set(seq(oid(OIDS.sha256))), seq(oid("2.23.136.1.1.1"), explicit(0, octet(lds))), explicit(0, dsDer), set(signerInfo));
   const sod = tlv([0x77], seq(oid("1.2.840.113549.1.7.2"), explicit(0, signedData)));
 

@@ -9,11 +9,11 @@ import {
 } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
-  lockNow, eraseEverything, loadDevices, loadRecovery, loadAlerts, findLink, approveLink, removeDevice,
-  makeNewCard, removeCard, saveCard, copyCard, findContact, saveContacts, removeContacts,
+  lockNow, eraseEverything, loadDevices, loadRecovery, loadAlerts, findLink, approveLink, removeDevice, myAccountCheck,
+  makeNewCard, removeCard, saveCard, findContact, saveContacts, removeContacts,
   offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, cancelRecovery,
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
-  stationLookup, stationVerify, markPicking, DURESS_HOLD_MS, readChip,
+  stationLookup, stationVerify, stationReadChip, markPicking, DURESS_HOLD_MS, readChip,
 } from "../core/controller.js";
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
 import { resetSimulation } from "../core/controller.js";
@@ -248,7 +248,7 @@ function CodeField({ id, label, value, onInput, placeholder = "XXXX-XXXX-XXXX" }
   return (
     <div class="field">
       <label for={id}>{label}</label>
-      <input id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder={placeholder} value={value} onInput={(e) => onInput(e.currentTarget.value)} />
+      <input autocorrect="off" id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder={placeholder} value={value} onInput={(e) => onInput(e.currentTarget.value)} />
     </div>
   );
 }
@@ -257,11 +257,21 @@ function AddDeviceSheet() {
   const [code, setCode] = useState("");
   const [req, setReq] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const check = myAccountCheck();
   const find = async () => { setBusy(true); setReq(await findLink(code)); setBusy(false); };
+  const approve = async () => { setBusy(true); if (await approveLink(req)) setDone(true); setBusy(false); };
   return (
     <Sheet onClose={close} label="Add a device">
       <div class="eyebrow">Add a device</div>
-      {!req ? (
+      {done ? (
+        <>
+          <h2 style={{ marginTop: 6 }}>Compare this on the new device</h2>
+          <p class="lede" style={{ marginTop: 10 }}>The new device shows an account check before it joins. It must be exactly this. If it isn't, tap "It doesn't match" there.</p>
+          <CodeBox code={check} label="Account check" />
+          <div class="actions"><button class="btn primary block" onClick={close}>Done</button></div>
+        </>
+      ) : !req ? (
         <>
           <h2 style={{ marginTop: 6 }}>Enter the code from your new device</h2>
           <p class="lede" style={{ marginTop: 10 }}>On the new device: <b>I already have HumID → From another device</b>. Scan its QR code or type its 12-character code.</p>
@@ -270,11 +280,12 @@ function AddDeviceSheet() {
         </>
       ) : (
         <>
-          <h2 style={{ marginTop: 6 }}>Add {req.platform}?</h2>
+          <h2 style={{ marginTop: 6 }}>Add this device?</h2>
+          <p class="small muted" style={{ marginTop: 6 }}>It calls itself <b>“{req.platform}”</b>. The device chose that name; HumID doesn't check it.</p>
           <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="check" /></span><div><strong>Code matches the device's keys</strong><span>Your account key will be sealed to that device only. The server can't open it.</span></div></div>
           <p class="small muted" style={{ marginTop: 12 }}>Only approve a device you're holding right now. Anyone you approve can open your vault.</p>
           <div class="actions">
-            <button class="btn primary block" onClick={() => approveLink(req)}><Icon name="fingerprint" />Approve with biometric</button>
+            <button class="btn primary block" disabled={busy} onClick={approve}><Icon name="fingerprint" />Approve with biometric</button>
             <button class="btn ghost block" onClick={close}>Not my device</button>
           </div>
         </>
@@ -311,7 +322,6 @@ function CardSheet({ code }) {
       <div class="split" style={{ marginTop: 12 }}>
         {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
         <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
-        <button class="btn quiet sm" onClick={() => copyCard(code)}><Icon name="file" />Copy</button>
       </div>
       <CardConfirm code={code} onChange={setOk} />
       <PrintableCard code={code} />
@@ -337,12 +347,12 @@ function ContactsSheet() {
       {rec?.contacts.n > 0 && <div class="banner warn" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Replaces {rec.contacts.names.join(", ")}</strong><span>Their pieces stop working when you save new witnesses.</span></div></div>}
       <div class="field">
         <label for="owner-name">Your name, as they know you</label>
-        <input id="owner-name" value={me} maxLength={40} placeholder="e.g. Parker" onInput={(e) => setMe(e.currentTarget.value)} />
+        <input autocorrect="off" spellcheck={false} autocomplete="off" id="owner-name" value={me} maxLength={40} placeholder="e.g. Parker" onInput={(e) => setMe(e.currentTarget.value)} />
       </div>
       {rows.map((r, i) => (
         <div class="contact-row">
-          <input aria-label={`Witness ${i + 1} name`} placeholder={`Witness ${i + 1} name`} value={r.name} maxLength={40} onInput={(e) => set(i, { name: e.currentTarget.value })} />
-          <input aria-label={`Contact ${i + 1} code`} class="mono up" placeholder="XXXX-XXXX-XXXX" value={r.code} autocapitalize="characters" spellcheck={false}
+          <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label={`Witness ${i + 1} name`} placeholder={`Witness ${i + 1} name`} value={r.name} maxLength={40} onInput={(e) => set(i, { name: e.currentTarget.value })} />
+          <input autocorrect="off" autocomplete="off" aria-label={`Contact ${i + 1} code`} class="mono up" placeholder="XXXX-XXXX-XXXX" value={r.code} autocapitalize="characters" spellcheck={false}
             onInput={(e) => set(i, { code: e.currentTarget.value, offer: null })} />
           {r.offer ? <span class="pill mint"><Icon name="check" />Verified</span>
             : r.code.replace(/[^0-9a-z]/gi, "").length === 12 ? <button class="btn quiet sm" onClick={() => check(i)}>Check</button>
@@ -370,7 +380,7 @@ function OfferSheet({ code, expiresAt }) {
       <h2 style={{ marginTop: 6 }}>Give them this code</h2>
       <p class="lede" style={{ marginTop: 10 }}>They scan or type it when choosing witnesses. It lets them seal a piece to you. On your own, you can never open their vault.</p>
       <CodeBox code={code} label="Witness code" />
-      <QrCode kind="contact" code={code} />
+      <QrCode kind="contact" code={code} expiresAt={expiresAt} />
       <p class="fine" style={{ textAlign: "center" }}>{expiresAt > now ? `Expires in ${fmtLeft(expiresAt - now)}` : "Expired. Close and make a new one."}</p>
       <div class="actions"><button class="btn ghost block" onClick={close}>Done</button></div>
     </Sheet>
@@ -477,7 +487,7 @@ function AnchorSheet() {
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>
                   <label for="demo-holder">Development build: demo passport holder</label>
-                  <input id="demo-holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+                  <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
                   <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await demoPassport(name))}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
@@ -552,8 +562,6 @@ function StationSheet() {
   const [checks, setChecks] = useState({ document: false, face: false, present: false });
   const [done, setDone] = useState(null);
   const [name, setName] = useState("Demo Person");
-  const files = useRef(null);
-  const onFiles = async (e) => { const c = await readChipFiles(e.currentTarget.files); e.currentTarget.value = ""; if (c) setChip(c); };
   const all = checks.document && checks.face && checks.present;
   const tick = (k) => (e) => setChecks({ ...checks, [k]: e.currentTarget.checked });
   return (
@@ -571,21 +579,19 @@ function StationSheet() {
         <>
           <h2 style={{ marginTop: 6 }}>A {req.platform} is recovering</h2>
           <p class="small muted" style={{ marginTop: 6 }}>Started {fmtAgo(req.createdAt)}. You won't see whose HumID it is.</p>
-          <input ref={files} type="file" multiple hidden accept=".json,.bin,.dat,application/json,application/octet-stream" onChange={onFiles} />
           {!chip ? (
             <div class="actions">
               {nfc?.available && (
                 <>
                   <ChipAccess onChange={setAccess} title="Details from their document" />
-                  <button class="btn primary block" disabled={!access} onClick={async () => { const r = await readChip(access, { purpose: "station" }); if (r) setChip(r); }}><Icon name="passport" />{nfc.kind === "reader" ? "Read with the card reader" : "Hold to this phone and read"}</button>
+                  <button class="btn primary block" disabled={!access} onClick={async () => { const r = await stationReadChip(req.code, { access }); if (r) setChip(r); }}><Icon name="passport" />{nfc.kind === "reader" ? "Read with the card reader" : "Hold to this phone and read"}</button>
                 </>
               )}
               {!nfc?.available && <p class="small muted">{nfc?.reason || "This device can't read ID chips."}</p>}
-              <button class="btn ghost block" onClick={() => { markPicking(); files.current.click(); }}><Icon name="file" />Load chip data from a file</button>
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>
-                  <input aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-                  <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await demoPassport(name))}><Icon name="passport" />Use a demo passport</button>
+                  <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+                  <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await stationReadChip(req.code, { demo: name }))}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
             </div>

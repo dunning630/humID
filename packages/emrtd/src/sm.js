@@ -8,7 +8,7 @@
 //   AES   (PACE-AES)        AES-CBC with IV = AES(KSenc, SSC), AES-CMAC truncated to 8 bytes
 import { tdesCbc, retailMac } from "./des.js";
 import { aesCbc, aesEcbBlock, cmac } from "./cmac.js";
-import { concat, pad, unpad, increment, tlv, readTlvs, equal, ChipError } from "./util.js";
+import { concat, pad, unpad, increment, tlv, readTlvs, equal, wipe, ChipError } from "./util.js";
 
 export class SecureMessaging {
   /** cipher: "3des" | "aes"; ssc: initial counter (8 bytes for 3DES, 16 for AES). */
@@ -48,12 +48,20 @@ export class SecureMessaging {
     const t = readTlvs(body);
     const do87 = t.get(0x87), do85 = t.get(0x85), do99 = t.get(0x99), do8e = t.get(0x8e);
     if (!do99 || !do8e) throw new ChipError("bad_sm", "The chip's answer wasn't protected. Reading stopped.", outerSw);
+    if (do99.length !== 2 || do8e.length !== 8 || (do87 && do85)) throw new ChipError("bad_sm", "The chip's answer was malformed. Reading stopped.", outerSw);
     const k = concat(do87 ? tlv(0x87, do87) : do85 ? tlv(0x85, do85) : new Uint8Array(0), tlv(0x99, do99));
     if (!equal(this.mac(k), do8e)) throw new ChipError("bad_sm", "The chip's answer failed its integrity check. Reading stopped.", outerSw);
     const sw = (do99[0] << 8) | do99[1];
-    const data = do87 ? unpad(this.decrypt(do87.subarray(1))) : do85 ? unpad(this.decrypt(do85)) : new Uint8Array(0);
+    // DO87 is a padding-content indicator (01) then whole cipher blocks; DO85 is whole blocks.
+    const ct = do87 ? do87.subarray(1) : do85;
+    if (do87 && do87[0] !== 0x01) throw new ChipError("bad_sm", "The chip's answer was malformed. Reading stopped.", outerSw);
+    if (ct && (ct.length === 0 || ct.length % this.block)) throw new ChipError("bad_sm", "The chip's answer was malformed. Reading stopped.", outerSw);
+    const data = ct ? unpad(this.decrypt(ct)) : new Uint8Array(0);
     return { data, sw };
   }
+
+  /** Forget the session keys (when reading is over, or failed). */
+  wipe() { wipe(this.ksEnc, this.ksMac, this.ssc); }
 }
 
 /** What an ISO 7816 status word means to a person. */

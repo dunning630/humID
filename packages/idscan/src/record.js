@@ -157,9 +157,14 @@ export function status(rec, now = new Date()) {
 export const summary = (rec) => ({ kind: rec.kind, issuer: rec.fields.issuer || "", region: rec.fields.region || "", expiry: rec.fields.expiry || "" });
 
 /** How sure HumID is of the details, in words, strongest source first. */
+// The phone checks the chip's files against the chip's own list of hashes, but not
+// the issuing country's signature on that list (only the server does that, when an
+// ID is used to recover). So this never says "verified by the country".
 export function provenance(rec) {
   const v = rec.verified || {};
-  if (v.chip?.integrity) return { level: "chip", text: "Read from the chip; matches the issuing country's signed hashes" };
+  const typed = Object.values(rec.source || {}).includes("typed");
+  if (v.chip && typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
+  if (v.chip?.integrity) return { level: "chip", text: "Read from the chip; its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
   if (v.chip) return { level: "chip-unchecked", text: "Read from the chip" };
   if (v.barcode) return { level: "barcode", text: `Read from the barcode (AAMVA v${v.barcode.version})` };
   if (v.mrz?.valid && v.mrz.consensus) return { level: "mrz", text: "Read from the machine-readable lines; every check digit agrees" };

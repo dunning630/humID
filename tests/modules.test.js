@@ -66,3 +66,10 @@ test("the native shell doesn't freeze Object.prototype (the UI's signals library
   const conf = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
   assert.notEqual(conf.app.security.freezePrototype, true);
 });
+
+test("service request logs name the route, never the ids or codes in the path", async () => {
+  const { logPath } = await import("@humid/svc");
+  assert.equal(logPath({ pattern: "/links/:code" }, "/links/ABCD1234EFGH"), "/links/:code");
+  assert.equal(logPath(null, "/station/requests/ABCD1234EFGH/verify"), "/station/…");
+  assert.doesNotMatch(logPath(null, "/x\nforged log line"), /\n/);
+});

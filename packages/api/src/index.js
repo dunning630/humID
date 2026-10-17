@@ -49,7 +49,7 @@ const PRESENCE_PAD = "x".repeat(96);
  * server returned: a server that swapped in its own keys is caught here.
  */
 function checkCode(code, label, ...keys) {
-  if (keyCode(label, ...keys) !== parseCode(code)) {
+  if (!code || keyCode(label, ...keys) !== parseCode(code)) {
     throw new ApiError(409, "code_mismatch", "The server returned different keys for this code. Nothing was shared. Don't continue, and report this.");
   }
 }
@@ -271,7 +271,15 @@ export class HumidApi {
   /* ---------------- device links ---------------- */
 
   /** New device: publish link keys, get the code to show. No sign-in needed. */
-  startLink({ kemPk, xPk, platform }) { return this.#json("POST", "/recovery/links", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), platform } }); }
+  /**
+   * New device: ask to join. The code shown must commit to this device's own keys:
+   * recomputed here, so a server that swapped in its keys is caught before anything is shown.
+   */
+  async startLink({ kemPk, xPk, platform }) {
+    const r = await this.#json("POST", "/recovery/links", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), platform } });
+    checkCode(r.code, LINK_LABEL, kemPk, xPk);
+    return r;
+  }
   /** New device: poll. { status: waiting | approved | expired, account?, envelope? } */
   async linkResult(code) {
     const r = await this.#json("GET", `/recovery/links/${code}/result`);
@@ -299,7 +307,11 @@ export class HumidApi {
   /* ---------------- recovery contacts ---------------- */
 
   /** "Be a recovery contact": publish this account's public keys under a short code. */
-  offerContact({ kemPk, xPk, dsaPk }) { return this.#json("POST", "/recovery/offers", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), dsaPk: b64u(dsaPk) } }); }
+  async offerContact({ kemPk, xPk, dsaPk }) {
+    const r = await this.#json("POST", "/recovery/offers", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), dsaPk: b64u(dsaPk) } });
+    checkCode(r.code, OFFER_LABEL, kemPk, xPk, dsaPk);
+    return r;
+  }
   async getOffer(input) {
     const code = codeOf(input);
     const r = await this.#json("GET", `/recovery/offers/${code}`);
@@ -343,8 +355,11 @@ export class HumidApi {
   station() { return this.#json("GET", "/recovery/station"); }
   stationRequest(code) { return this.#json("GET", `/recovery/station/requests/${codeOf(code)}`); }
   /** checks: { document, face, present } — what the operator confirmed in person. */
-  stationVerify(code, { chip, checks }, stepUp) {
-    return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body: { chip: chipBody(chip), checks }, stepUp });
+  /** A fresh challenge for the chip in front of the station (bytes). */
+  async stationChallenge(code) { return unb64u((await this.#json("POST", `/recovery/station/requests/${codeOf(code)}/challenge`)).nonce); }
+  stationVerify(code, { chip, checks, signature, hash }, stepUp) {
+    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}) };
+    return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body, stepUp });
   }
 
   /* ---------------- recovering ---------------- */
@@ -355,9 +370,11 @@ export class HumidApi {
    *   { method: "card", tag, platform }                   a v1 card on its own
    *   { method: "contacts", kemPk, xPk, platform }        v1 contacts on their own
    */
-  startRecovery(body) {
+  async startRecovery(body) {
     const b = body.kemPk ? { ...body, kemPk: b64u(body.kemPk), xPk: b64u(body.xPk) } : body;
-    return this.#json("POST", "/recovery/requests", { body: b });
+    const r = await this.#json("POST", "/recovery/requests", { body: b });
+    if (body.kemPk) checkCode(r.code, REQUEST_LABEL, body.kemPk, body.xPk);
+    return r;
   }
   /** Two proofs: add the seal card. */
   recoveryAddCard(id, tag) { return this.#json("POST", `/recovery/requests/${id}/card`, { body: { tag } }); }
