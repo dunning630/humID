@@ -188,10 +188,15 @@ p { margin: 0; }
 .item:active { transform: scale(.99); background: var(--surface-2); }
 .item .ico { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; background: var(--surface-3); color: var(--sage); }
 .item .ico svg { width: 22px; height: 22px; }
-.item .ico[data-cat="identity"] { color: var(--amber-hi); background: var(--amber-wash); }
-.item .ico[data-cat="health"] { color: #f19c9c; background: rgba(241,156,156,.1); }
-.item .ico[data-cat="money"] { color: var(--mint); background: var(--mint-wash); }
-.item .ico[data-cat="home"] { color: #9cc6e8; background: rgba(156,198,232,.1); }
+.ico[data-kind="id"] { color: var(--amber-hi); background: var(--amber-wash); }
+.ico[data-kind="card"] { color: var(--mint); background: var(--mint-wash); }
+.ico[data-kind="pass"] { color: #9cc6e8; background: rgba(156,198,232,.1); }
+.ico[data-kind="photo"] { color: #f1c49c; background: rgba(241,196,156,.1); }
+.item .meta .tag { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--sage); font-size: 11px; vertical-align: 1px; }
+.tagfilters { margin-top: 10px; }
+.tagfilters .linklike { font-size: var(--t-sm); }
+.tagpick .chips { margin: 0; padding: 2px 0; flex-wrap: wrap; }
+.tagpick .chip[aria-pressed="true"] { border-color: var(--amber); background: var(--amber-wash); color: var(--text); }
 .item .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item .meta { color: var(--muted); font-size: var(--t-sm); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item .end { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }

@@ -67,17 +67,6 @@ export function Icon({ name, label }) {
   );
 }
 
-export const CATEGORIES = [
-  { id: "identity", label: "Identity", icon: "idcard" },
-  { id: "health", label: "Health", icon: "health" },
-  { id: "money", label: "Money", icon: "money" },
-  { id: "home", label: "Home", icon: "home" },
-  { id: "personal", label: "Personal", icon: "user" },
-  { id: "passes", label: "Passes", icon: "ticket" },
-  { id: "other", label: "Other", icon: "folder" },
-];
-export const categoryOf = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES.find((c) => c.id === "other");
-
 export function kindIcon(type = "") {
   if (type === "application/vnd.humid.id+json") return "idcard";
   if (type === "application/vnd.humid.card+json") return "card";
