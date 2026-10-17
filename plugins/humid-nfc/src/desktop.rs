@@ -34,6 +34,7 @@ pub(crate) mod pcsc_reader {
     use super::*;
     use pcsc::{Card, Context, Protocols, ReaderState, Scope, ShareMode, State, MAX_BUFFER_SIZE_EXTENDED};
     use std::ffi::{CStr, CString};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
@@ -43,6 +44,8 @@ pub(crate) mod pcsc_reader {
         _ctx: Context,
     }
     static SESSION: Mutex<Option<Open>> = Mutex::new(None);
+    /// Bumped by `cancel`: a `begin` still waiting for a card sees it change and gives up.
+    static WAIT_GEN: AtomicU64 = AtomicU64::new(0);
 
     fn readers(ctx: &Context) -> Result<Vec<CString>> {
         let len = ctx.list_readers_len().map_err(|e| Error::Unavailable(format!("No smart card service: {e}")))?;
@@ -85,6 +88,7 @@ pub(crate) mod pcsc_reader {
         let names = readers(&ctx)?;
         let reader = pick(&names, req.reader.as_deref()).ok_or_else(|| Error::Unavailable("Connect a USB contactless (NFC) card reader.".into()))?;
         let deadline = Instant::now() + Duration::from_millis(req.timeout_ms.unwrap_or(60_000));
+        let gen = WAIT_GEN.load(Ordering::SeqCst);
         let mut states = vec![ReaderState::new(reader.clone(), State::UNAWARE)];
         loop {
             ctx.get_status_change(Duration::from_millis(500), &mut states).or_else(|e| if e == pcsc::Error::Timeout { Ok(()) } else { Err(e) })
@@ -92,7 +96,7 @@ pub(crate) mod pcsc_reader {
             let st = states[0].event_state();
             if st.contains(State::PRESENT) && !st.contains(State::MUTE) { break; }
             states[0].sync_current_state();
-            if Instant::now() > deadline { return Err(Error::Cancelled); }
+            if Instant::now() > deadline || WAIT_GEN.load(Ordering::SeqCst) != gen { return Err(Error::Cancelled); }
         }
         let card = ctx.connect(&reader, ShareMode::Shared, Protocols::ANY).map_err(|e| Error::Platform(format!("Can't talk to the chip: {e}")))?;
         let id = new_session_id();
@@ -110,6 +114,15 @@ pub(crate) mod pcsc_reader {
             e => Error::Platform(format!("Chip exchange failed: {e}")),
         })?;
         Ok(Response { response: B64.encode(r) })
+    }
+
+    /// Stop any `begin` that is waiting and close any open session.
+    pub fn cancel() -> Result<()> {
+        WAIT_GEN.fetch_add(1, Ordering::SeqCst);
+        if let Some(open) = SESSION.lock().unwrap().take() {
+            let _ = open.card.disconnect(pcsc::Disposition::ResetCard);
+        }
+        Ok(())
     }
 
     pub fn end(req: EndRequest) -> Result<()> {
@@ -131,6 +144,7 @@ pub(crate) mod pcsc_reader {
     pub fn begin(_: BeginRequest) -> Result<Session> { Err(Error::Unavailable(WHY.into())) }
     pub fn transceive(_: TransceiveRequest) -> Result<Response> { Err(Error::NoSession) }
     pub fn end(_: EndRequest) -> Result<()> { Ok(()) }
+    pub fn cancel() -> Result<()> { Ok(()) }
 }
 
 impl<R: Runtime> HumidNfc<R> {
@@ -139,4 +153,5 @@ impl<R: Runtime> HumidNfc<R> {
     pub async fn transceive(&self, req: TransceiveRequest) -> Result<Response> { blocking(move || pcsc_reader::transceive(req)).await }
     pub async fn message(&self, _req: MessageRequest) -> Result<()> { Ok(()) }
     pub async fn end(&self, req: EndRequest) -> Result<()> { blocking(move || pcsc_reader::end(req)).await }
+    pub async fn cancel(&self) -> Result<()> { blocking(pcsc_reader::cancel).await }
 }

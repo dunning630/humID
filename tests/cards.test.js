@@ -1,9 +1,10 @@
 // Payment cards: number checks, networks, camera text, contactless reads
-// against simulated cards (tests/support/emvcard.js), and the sealed record's rules.
+// against simulated cards (@humid/cards/sim), and the sealed record's rules.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   luhn, checkPan, brandOf, formatPan, maskPan, parseExpiry, expiryStatus, readCardText, CardConsensus, readContactless, parseTrack2,
+  issuerFromLabel, fundingOf, filledBy,
   newCard, applyRead, applyTyped, setStoreCvv, setImage, summary, view, title, copyValue, encodeCard, decodeCard, problems, HANDLING, MEDIA_TYPE,
 } from "@humid/cards";
 import { card } from "./support/emvcard.js";
@@ -90,7 +91,50 @@ test("contactless: Visa (track 2 in the processing options), Mastercard (records
 
   // The reader only ever selects, asks for processing options, reads records or fetches chained replies.
   for (const l of [...visa.log, ...mc.log, ...amex.log]) assert.ok(["A4", "A8", "B2", "C0"].includes(l.slice(2, 4)), `unexpected command ${l}`);
-  for (const r of [v, m, a]) assert.deepEqual(Object.keys(r).sort(), ["aid", "expiry", "issuerCountry", "name", "network", "pan"], "nothing else leaves the reader");
+  for (const r of [v, m, a]) assert.deepEqual(Object.keys(r).sort(), ["aid", "country", "expiry", "funding", "issuer", "issuerCountry", "label", "name", "network", "pan", "validFrom"], "nothing else leaves the reader");
+  assert.equal(v.funding, "credit");
+  assert.deepEqual({ country: m.country, validFrom: m.validFrom, issuer: m.issuer }, { country: "US", validFrom: "2024-01", issuer: null });
+});
+
+test("contactless: one tap fills the whole form (issuer, debit, name, country, valid from)", async () => {
+  const d = card("visa-debit");
+  const r = await readContactless(d);
+  assert.deepEqual(
+    { pan: r.pan, expiry: r.expiry, name: r.name, issuer: r.issuer, funding: r.funding, country: r.country, validFrom: r.validFrom, label: r.label },
+    { pan: "4012888888881881", expiry: "2029-08", name: "JANE Q SPECIMEN", issuer: "First Humid", funding: "debit", country: "US", validFrom: "2024-01", label: "FIRST HUMID DEBIT" },
+  );
+  for (const l of d.log) assert.ok(["A4", "A8", "B2", "C0"].includes(l.slice(2, 4)), `unexpected command ${l}`);
+
+  const rec = newCard();
+  applyTyped(rec, { nickname: "Groceries" });
+  applyRead(rec, r, "nfc");
+  assert.deepEqual(filledBy(rec, "nfc").sort(), ["bank", "country", "expiry", "funding", "name", "pan", "validFrom"]);
+  assert.deepEqual(
+    (({ number, expiry, name, bank, funding, country, validFrom }) => ({ number, expiry, name, bank, funding, country, validFrom }))(view(rec)),
+    { number: "•••• 1881", expiry: "08/29", name: "JANE Q SPECIMEN", bank: "First Humid", funding: "Debit", country: "United States", validFrom: "01/24" },
+  );
+  assert.equal(summary(rec).funding, "debit");
+  // What the holder typed or corrects stays theirs; a second tap doesn't undo it.
+  applyTyped(rec, { bank: "First HumID Bank" });
+  applyRead(rec, r, "nfc");
+  assert.equal(rec.fields.bank, "First HumID Bank");
+  assert.equal(rec.fields.nickname, "Groceries");
+  assert.throws(() => applyTyped(rec, { funding: "charge" }), code("bad_funding"));
+  // A camera read never claims the chip-only fields.
+  const cam = newCard();
+  applyRead(cam, { ...r, issuer: "X" }, "camera");
+  assert.equal(cam.fields.bank, undefined);
+  assert.equal(cam.fields.funding, undefined);
+});
+
+test("contactless: issuer names come from the label, not the network's words", () => {
+  assert.equal(issuerFromLabel("CHASE VISA"), "Chase");
+  assert.equal(issuerFromLabel("Debit Mastercard"), null);
+  assert.equal(issuerFromLabel("VISA CREDIT"), null);
+  assert.equal(issuerFromLabel("WELLS FARGO DEBIT"), "Wells Fargo");
+  assert.equal(issuerFromLabel("US DEBIT"), null);
+  assert.equal(fundingOf(["MASTERCARD"], "A0000000042203"), "debit");
+  assert.equal(fundingOf(["AMERICAN EXPRESS"], "A00000002501"), null);
 });
 
 test("contactless: a card that won't answer is reported, and track 2's extra data is dropped", async () => {

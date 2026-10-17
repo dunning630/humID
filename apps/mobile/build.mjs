@@ -53,14 +53,16 @@ await rm(out, { recursive: true, force: true });
 await mkdir(`${out}assets`, { recursive: true });
 await mkdir(`${out}icons`, { recursive: true });
 
-// Release builds don't contain the demo gate at all: its module is swapped for an empty stub.
+// Release builds don't contain the demo gate or the simulated payment card at all:
+// their modules are swapped for empty stubs.
 const allowDemo = process.env.HUMID_ALLOW_DEMO === "1";
 const noDemoGate = {
   name: "no-demo-gate",
   setup(b) {
     if (allowDemo) return;
     b.onResolve({ filter: /adapters\/demo\.js$/ }, () => ({ path: "demo-gate-removed", namespace: "humid-stub" }));
-    b.onLoad({ filter: /.*/, namespace: "humid-stub" }, () => ({ contents: "export const demoAdapter = null;", loader: "js" }));
+    b.onResolve({ filter: /^@humid\/cards\/sim$/ }, () => ({ path: "demo-card-removed", namespace: "humid-stub" }));
+    b.onLoad({ filter: /.*/, namespace: "humid-stub" }, (a) => ({ contents: a.path === "demo-card-removed" ? "export const card = null;" : "export const demoAdapter = null;", loader: "js" }));
   },
 };
 

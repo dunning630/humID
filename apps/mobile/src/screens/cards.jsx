@@ -1,59 +1,93 @@
-// Payment cards: add one (camera, tap, or type), and the card view inside the
-// viewer. The rules live in @humid/cards (never a PIN or the back of the card,
+// Payment cards: add one (tap, camera, or type), and the card view inside the
+// viewer. With a phone's NFC or a desktop card reader, the sheet waits for the
+// card from the moment it opens, and the chip's details fill in the form. The rules live in @humid/cards (never a PIN or the back of the card,
 // the security code only on opt-in); this file is the screens around them.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import { Sheet, Steps } from "../ui.jsx";
 import * as S from "../core/state.js";
-import { addCardRecord, readCardTap, readCardPhoto, copySecret, chipReader } from "../core/controller.js";
+import { addCardRecord, readCardTap, readCardPhoto, copySecret, chipReader, cancelChip } from "../core/controller.js";
 import { jpeg, imageUrl, releaseReaders } from "../core/scan.js";
 import { PLATFORM } from "../core/config.js";
 import { DocCamera } from "./ids.jsx";
 import {
   newCard, applyRead, applyTyped, setStoreCvv, setImage, view, title as cardTitle, copyValue, checkPan, brandOf, formatPan, showExpiry, HANDLING,
+  FUNDING, countryName, filledBy,
 } from "@humid/cards";
 
 const IOS = PLATFORM.startsWith("iOS");
 
+// Which reads fill which fields, in the form's order.
+const FORM_KEYS = ["pan", "expiry", "name", "funding", "validFrom", "country", "bank"];
+const asForm = (k, x) => (x == null ? "" : k === "pan" ? formatPan(x) : k === "expiry" || k === "validFrom" ? showExpiry(x) : String(x));
+const SOURCE_TAG = { nfc: ["From chip", "src-chip"], camera: ["From photo", "src-mrz"] };
+
 export function CardSheet() {
   const st = S.sheet.value;
   const rec = useRef(newCard());
-  const [, redraw] = useReducer((n) => n + 1, 0);
+  const [version, bump] = useReducer((n) => n + 1, 0);
   const [step, setStep] = useState("how"); // how | review
   const [cam, setCam] = useState(false);
   const [note, setNote] = useState(null);
   const [nfc, setNfc] = useState(null);
-  const [tapping, setTapping] = useState(false);
+  const [listen, setListen] = useState("off"); // off | waiting | done
+  const [tapping, setTapping] = useState(false); // demo builds: the "tap" button
   const busy = st.stage != null;
+  // A phone's NFC or a desktop card reader waits for the card on its own while this
+  // sheet is open; the chip's details land in the form as soon as it's read.
+  const auto = !IOS && nfc?.available && (nfc.kind === "phone" || nfc.kind === "reader");
 
   useEffect(() => { if (!IOS) chipReader().then(setNfc).catch(() => setNfc({ available: false })); return () => { releaseReaders(); }; }, []);
   const close = () => { if (!busy) S.sheet.value = null; };
+
+  function chipRead(read) {
+    try {
+      applyRead(rec.current, read, "nfc");
+      const n = filledBy(rec.current, "nfc").length;
+      const what = brandOf(read.pan).name;
+      setNote({ tone: "ok", text: `Read ${what} ending ${read.pan.slice(-4)} from the chip and filled in ${n} detail${n === 1 ? "" : "s"}. Check them. No payment was made.` });
+      setStep("review");
+      bump();
+      return true;
+    } catch (e) { setNote({ tone: "warn", text: e.message }); return false; }
+  }
+
+  useEffect(() => {
+    if (!auto || busy || listen === "done") return undefined;
+    const ctrl = new AbortController();
+    (async () => {
+      while (!ctrl.signal.aborted) {
+        setListen("waiting");
+        const r = await readCardTap({ signal: ctrl.signal });
+        if (ctrl.signal.aborted) return;
+        if (r.read) { if (chipRead(r.read)) { setListen("done"); return; } }
+        else if (r.code !== "timeout") setNote({ tone: "warn", text: r.error });
+        await new Promise((ok) => setTimeout(ok, r.code === "timeout" ? 0 : 1200)); // let the card be lifted away
+      }
+    })();
+    return () => { ctrl.abort(); cancelChip(); };
+  }, [auto, busy, listen === "done"]);
 
   async function photographed({ canvas }) {
     setCam(false);
     setImage(rec.current, "front", await jpeg(canvas, { maxW: 1200 }));
     setNote({ tone: "ok", text: "Reading the card…" });
     setStep("review");
-    redraw();
+    bump();
     const r = await readCardPhoto(canvas);
     if (r?.pan) {
       try { applyRead(rec.current, r, "camera"); setNote({ tone: "ok", text: `Read ${brandOf(r.pan).name} ending ${r.pan.slice(-4)}. Check the details.` }); }
       catch { setNote({ tone: "warn", text: "Couldn't read the number clearly. Type it below." }); }
     } else setNote({ tone: "warn", text: "Couldn't read the number from the photo. Type it below." });
-    redraw();
+    bump();
   }
 
-  async function tap() {
+  // Development builds in a browser have no NFC: a button reads the simulated card.
+  async function demoTap() {
     setTapping(true);
-    const r = await readCardTap();
+    const r = await readCardTap({ demo: true });
     setTapping(false);
-    if (!r) return;
-    try {
-      applyRead(rec.current, r, "nfc");
-      setNote({ tone: "ok", text: `Read ${r.network || brandOf(r.pan).name} ending ${r.pan.slice(-4)} from the chip. No payment was made.` });
-      setStep("review");
-      redraw();
-    } catch (e) { setNote({ tone: "warn", text: e.message }); }
+    if (r.read) chipRead(r.read); else if (r.error) setNote({ tone: "warn", text: r.error });
   }
 
   const head = (
@@ -61,6 +95,7 @@ export function CardSheet() {
       <h2 style={{ marginTop: 4 }}>{step === "how" ? "Add a payment card" : "Check the details"}</h2></div>
       {!busy && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
   );
+  const where = nfc?.kind === "reader" ? "Place your card on the card reader" : "Hold your card to the back of your phone";
 
   return (
     <>
@@ -70,20 +105,35 @@ export function CardSheet() {
           <>
             <p class="lede">Credit and debit cards, sealed on this phone. Only your face or fingerprint shows the full number.</p>
             <div class="kinds">
-              <button class="kind" onClick={() => setCam(true)}><span class="ico"><Icon name="camera" /></span><span><strong>Scan the front</strong><span>Reads the number, expiry and name</span></span><Icon name="chevron" /></button>
-              {!IOS && nfc?.available && (
-                <button class="kind" disabled={tapping} onClick={tap}><span class="ico"><Icon name="nfc" /></span>
-                  <span><strong>{tapping ? "Hold the card still…" : "Tap the card"}</strong><span>{nfc.kind === "reader" ? "Place it on the card reader. A read, not a payment." : "Hold it to the back of your phone. A read, not a payment."}</span></span><Icon name="chevron" /></button>
+              {auto && (
+                <div class={`kind tap-wait ${listen === "waiting" ? "live" : ""}`} role="status" aria-live="polite">
+                  <span class="ico"><Icon name="nfc" /></span>
+                  <span><strong>{where}</strong><span>Its chip fills in the details by itself. A read, not a payment.</span></span>
+                </div>
               )}
+              {!IOS && nfc?.available && nfc.kind === "demo" && (
+                <button class="kind" disabled={tapping} onClick={demoTap}><span class="ico"><Icon name="nfc" /></span>
+                  <span><strong>{tapping ? "Reading the demo card…" : "Tap a demo card"}</strong><span>Development build: a simulated chip. A read, not a payment.</span></span><Icon name="chevron" /></button>
+              )}
+              <button class="kind" onClick={() => setCam(true)}><span class="ico"><Icon name="camera" /></span><span><strong>Scan the front</strong><span>Reads the number, expiry and name</span></span><Icon name="chevron" /></button>
               <button class="kind" onClick={() => setStep("review")}><span class="ico"><Icon name="pencil" /></span><span><strong>Type it</strong><span>Number, expiry and name</span></span><Icon name="chevron" /></button>
             </div>
+            {!IOS && nfc && !nfc.available && nfc.kind === "phone" && nfc.reason && <p class="fine" style={{ marginTop: 10 }}>{nfc.reason} Then its chip can fill in the card for you.</p>}
             {note && <CardNote {...note} />}
             <p class="fine" style={{ marginTop: 14 }}>HumID never stores a card's PIN or a photo of its back, and keeps the security code only if you turn that on.</p>
           </>
         )}
         {step === "review" && (busy
           ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
-          : <CardForm rec={rec.current} note={note} onRetake={() => setCam(true)} onChange={redraw} />)}
+          : (
+            <>
+              {auto && listen === "waiting" && (
+                <div class="banner tap-banner" style={{ marginTop: 6 }}><span class="b-ico"><Icon name="nfc" /></span><div><span>{where} to fill these in from its chip.</span></div></div>
+              )}
+              {auto && listen === "done" && <p class="small" style={{ margin: "6px 0 0" }}><button class="linklike" onClick={() => setListen("off")}>Read a different card's chip</button></p>}
+              <CardForm rec={rec.current} version={version} note={note} onRetake={() => setCam(true)} onChange={bump} />
+            </>
+          ))}
       </Sheet>
       {cam && <DocCamera shape="id1" eyebrow="Card" title="The front of the card" hint="Fit the card in the frame, number side up." onCancel={() => setCam(false)} onDone={photographed} />}
     </>
@@ -94,17 +144,30 @@ function CardNote({ tone, text }) {
   return <div class={`banner ${tone === "warn" ? "warn" : ""}`} style={{ marginTop: 10 }}><span class="b-ico"><Icon name={tone === "warn" ? "info" : "check"} /></span><div><span>{text}</span></div></div>;
 }
 
-function CardForm({ rec, note, onRetake, onChange }) {
+function CardForm({ rec, version, note, onRetake, onChange }) {
   const f = rec.fields;
-  const [v, setV] = useState({ pan: f.pan ? formatPan(f.pan) : "", expiry: showExpiry(f.expiry), name: f.name || "", nickname: "", bank: "", phone: "", notes: "", cvv: "" });
+  const init = () => ({ ...Object.fromEntries(FORM_KEYS.map((k) => [k, asForm(k, f[k])])), nickname: f.nickname || "", phone: f.phone || "", notes: f.notes || "", cvv: "" });
+  const [v, setV] = useState(init);
+  const touched = useRef(new Set()); // what the holder typed here: a later read never overwrites it
   const [keepCvv, setKeepCvv] = useState(false);
   const [err, setErr] = useState(null);
   const [name, setName] = useState("");
-  useEffect(() => { setV((x) => ({ ...x, pan: rec.fields.pan ? formatPan(rec.fields.pan) : x.pan, expiry: showExpiry(rec.fields.expiry) || x.expiry, name: rec.fields.name || x.name })); }, [rec.fields.pan, rec.fields.expiry, rec.fields.name]);
-  const set = (k) => (e) => { setErr(null); setV({ ...v, [k]: e.currentTarget.value }); };
+  // A read (chip or photo) landed: fill every field the holder hasn't typed in.
+  useEffect(() => {
+    setV((x) => {
+      const y = { ...x };
+      for (const k of FORM_KEYS) if (!touched.current.has(k) && rec.fields[k] != null) y[k] = asForm(k, rec.fields[k]);
+      return y;
+    });
+  }, [version]);
+  const set = (k) => (e) => { setErr(null); touched.current.add(k); setV({ ...v, [k]: e.currentTarget.value }); };
+  const tag = (k) => {
+    const t = !touched.current.has(k) && v[k] && SOURCE_TAG[rec.source[k]];
+    return t ? <span class={`src ${t[1]}`}>{t[0]}</span> : null;
+  };
   const c = v.pan ? checkPan(v.pan) : null;
   const brand = c ? brandOf(c.pan) : null;
-  const panHint = !c ? null : c.ok ? brand.name : c.problems.includes("luhn") && c.pan.length >= brand.lengths[0] ? "That number has a typo" : null;
+  const panHint = !c ? null : c.ok ? (tag("pan") ? null : brand.name) : c.problems.includes("luhn") && c.pan.length >= brand.lengths[0] ? "That number has a typo" : null;
 
   const save = async () => {
     try {
@@ -124,20 +187,26 @@ function CardForm({ rec, note, onRetake, onChange }) {
       )}
       <div class="id-form">
         <div class="field id-field">
-          <label for="cf-pan">Card number{panHint && <span class={`src ${c?.ok ? "src-typed" : ""}`}>{panHint}</span>}</label>
+          <label for="cf-pan">Card number{panHint ? <span class={`src ${c?.ok ? "src-typed" : ""}`}>{panHint}</span> : tag("pan")}</label>
           <input id="cf-pan" class="mono" inputMode="numeric" autocomplete="off" spellcheck={false} maxLength={23} value={v.pan} onInput={set("pan")} placeholder="1234 5678 9012 3456" />
         </div>
         <div class="split">
-          <div class="field id-field"><label for="cf-exp">Expires</label><input id="cf-exp" class="mono" inputMode="numeric" placeholder="MM/YY" maxLength={7} autocomplete="off" value={v.expiry} onInput={set("expiry")} /></div>
-          <div class="field id-field"><label for="cf-nick">Nickname</label><input id="cf-nick" placeholder="Travel card" maxLength={40} autocomplete="off" value={v.nickname} onInput={set("nickname")} /></div>
+          <div class="field id-field"><label for="cf-exp">Expires{tag("expiry")}</label><input id="cf-exp" class="mono" inputMode="numeric" placeholder="MM/YY" maxLength={7} autocomplete="off" value={v.expiry} onInput={set("expiry")} /></div>
+          <div class="field id-field"><label for="cf-type">Type{tag("funding")}</label>
+            <select id="cf-type" value={v.funding} onChange={set("funding")}><option value="">—</option>{Object.entries(FUNDING).map(([k, label]) => <option value={k}>{label}</option>)}</select></div>
         </div>
-        <div class="field id-field"><label for="cf-name">Name on card</label><input id="cf-name" class="up" autocomplete="off" maxLength={40} value={v.name} onInput={set("name")} /></div>
+        <div class="field id-field"><label for="cf-name">Name on card{tag("name")}</label><input id="cf-name" class="up" autocomplete="off" maxLength={45} value={v.name} onInput={set("name")} /></div>
         <div class="split">
-          <div class="field id-field"><label for="cf-bank">Bank</label><input id="cf-bank" autocomplete="off" maxLength={60} value={v.bank} onInput={set("bank")} /></div>
+          <div class="field id-field"><label for="cf-bank">Bank{tag("bank")}</label><input id="cf-bank" autocomplete="off" maxLength={60} value={v.bank} onInput={set("bank")} /></div>
           <div class="field id-field"><label for="cf-phone">Bank phone</label><input id="cf-phone" type="tel" autocomplete="off" maxLength={30} value={v.phone} onInput={set("phone")} /></div>
         </div>
+        <div class="split">
+          <div class="field id-field"><label for="cf-from">Valid from{tag("validFrom")}</label><input id="cf-from" class="mono" inputMode="numeric" placeholder="MM/YY" maxLength={7} autocomplete="off" value={v.validFrom} onInput={set("validFrom")} /></div>
+          <div class="field id-field"><label for="cf-country">Issued in{tag("country")}</label><input id="cf-country" autocomplete="off" maxLength={56} value={tag("country") ? countryName(v.country) : v.country} onInput={set("country")} /></div>
+        </div>
+        <div class="field id-field"><label for="cf-nick">Nickname</label><input id="cf-nick" placeholder="Travel card" maxLength={40} autocomplete="off" value={v.nickname} onInput={set("nickname")} /></div>
         <label class="toggle" style={{ marginTop: 12 }}>
-          <span><strong>Keep the security code</strong><span>Off by default. It's what makes a stolen number usable online.</span></span>
+          <span><strong>Keep the security code</strong><span>Off by default. It's what makes a stolen number usable online. Cards don't share it over the chip, so type it if you want it.</span></span>
           <input type="checkbox" role="switch" checked={keepCvv} onChange={(e) => setKeepCvv(e.currentTarget.checked)} />
           <i aria-hidden="true" />
         </label>
@@ -146,7 +215,7 @@ function CardForm({ rec, note, onRetake, onChange }) {
       </div>
       <div class="field">
         <label for="cf-vname">Name in your vault</label>
-        <input id="cf-vname" value={name} placeholder={v.nickname || (c?.ok ? `${brand.name} •••• ${c.pan.slice(-4)}` : "Card")} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
+        <input id="cf-vname" value={name} placeholder={v.nickname || (c?.ok ? `${v.bank ? `${v.bank} ` : ""}${brand.name} •••• ${c.pan.slice(-4)}` : "Card")} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
       </div>
       {err && <p class="small" style={{ color: "var(--amber-hi)", marginTop: 10 }}>{err}</p>}
       <div class="actions">
@@ -187,9 +256,12 @@ export function CardView({ record }) {
         </div>
         {c.cvv && <button class="btn quiet block" onClick={() => copySecret(copyValue(record, "cvv"), "Security code copied")}><Icon name="copy" />Copy security code {revealed ? `(${c.cvv})` : ""}</button>}
       </div>
-      {(c.bank || c.phone || c.notes) && (
+      {(c.bank || c.phone || c.notes || c.funding || c.validFrom || c.country) && (
         <div class="card" style={{ marginTop: 14 }}>
           {c.bank && <div class="row"><span class="k">Bank</span><span class="v">{c.bank}</span></div>}
+          {c.funding && <div class="row"><span class="k">Type</span><span class="v">{c.funding}</span></div>}
+          {c.validFrom && <div class="row"><span class="k">Valid from</span><span class="v mono">{c.validFrom}</span></div>}
+          {c.country && <div class="row"><span class="k">Issued in</span><span class="v">{c.country}</span></div>}
           {c.phone && <div class="row"><span class="k">Bank phone</span><span class="v"><a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`}>{c.phone}</a></span></div>}
           {c.notes && <div class="row"><span class="k">Notes</span><span class="v">{c.notes}</span></div>}
         </div>

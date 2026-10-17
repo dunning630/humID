@@ -669,4 +669,10 @@ p.small svg { width: 14px; height: 14px; vertical-align: -2px; color: var(--ambe
 .pay-card .pc-bottom { display: flex; justify-content: space-between; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--sage); }
 .id-form .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .id-form .split .field { min-width: 0; }
-.id-form .split input { width: 100%; min-width: 0; box-sizing: border-box; }
+.id-form .split input, .id-form .split select { width: 100%; min-width: 0; box-sizing: border-box; }
+/* waiting for a card's chip: the sheet listens on its own */
+.kind.tap-wait { cursor: default; }
+.kind.tap-wait .ico { position: relative; }
+.kind.tap-wait.live .ico::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; border: 2px solid var(--mint); opacity: 0; animation: tap-pulse 1.8s var(--ease-out, ease-out) infinite; }
+@keyframes tap-pulse { 0% { opacity: .7; transform: scale(.9); } 100% { opacity: 0; transform: scale(1.25); } }
+@media (prefers-reduced-motion: reduce) { .kind.tap-wait.live .ico::after { animation: none; opacity: .5; } }

@@ -1,5 +1,5 @@
 // The chip reader transport in the app: tauri-plugin-humid-nfc (humid-nfc@1)
-// moves APDUs; @humid/emrtd does ICAO 9303. iPhone and Android use the
+// moves APDUs; @humid/emrtd does ICAO 9303 and @humid/cards reads payment cards. iPhone and Android use the
 // phone's NFC; Windows and Mac use a USB contactless reader (PC/SC).
 import { fromB64, toB64, toHex } from "@humid/codec";
 import { DEMO_BUILD } from "@humid/gate";
@@ -23,11 +23,28 @@ export async function probeNfc() {
   catch (e) { return { available: false, kind: "none", reason: msg(e) }; }
 }
 
+/** Stop waiting for a chip and close any open session (humid-nfc 1.1). Safe to call at any time. */
+export async function cancelChip() {
+  if (!inTauri()) return;
+  try { await invoke("cancel"); } catch { /* an older plugin: the wait ends at its timeout */ }
+}
+
+const cancelledError = () => Object.assign(new Error("Chip reading cancelled."), { code: "cancelled" });
+
 /**
- * Wait for a document, then return a transport for @humid/emrtd:
+ * Wait for a chip, then return a transport for @humid/emrtd or @humid/cards:
  * { transceive(bytes), message(text), end({ message?, error? }) }.
+ * `signal` (an AbortSignal) stops the wait, e.g. when the screen that asked closes.
+ * `demo: "card"` makes development builds in a browser answer with a simulated
+ * payment card instead of the simulated passport.
  */
-export async function openChip({ prompt, timeoutMs = 60_000 } = {}) {
+export async function openChip({ prompt, timeoutMs = 60_000, signal, demo } = {}) {
+  if (signal?.aborted) throw cancelledError();
+  if (!inTauri() && DEMO_BUILD && demo === "card") {
+    const { card } = await import("@humid/cards/sim");
+    const sim = card("visa-debit");
+    return { kind: "demo", transceive: sim.transceive, message: async () => {}, end: async () => {} };
+  }
   if (!inTauri() && DEMO_BUILD) {
     const s = await (await fetch(`${SERVER_URL}/dev/chip/begin?name=${encodeURIComponent(demoHolder)}`, { method: "POST" })).json();
     return {
@@ -41,8 +58,12 @@ export async function openChip({ prompt, timeoutMs = 60_000 } = {}) {
     };
   }
   let s;
+  const stop = () => { cancelChip(); };
+  signal?.addEventListener("abort", stop, { once: true });
   try { s = await invoke("begin", { prompt, timeoutMs }); }
-  catch (e) { const m = msg(e); throw Object.assign(new Error(/cancel/i.test(m) ? "Chip reading cancelled." : m), { code: /cancel/i.test(m) ? "cancelled" : "nfc" }); }
+  catch (e) { const m = msg(e); throw /cancel/i.test(m) || signal?.aborted ? cancelledError() : Object.assign(new Error(m), { code: "nfc" }); }
+  finally { signal?.removeEventListener("abort", stop); }
+  if (signal?.aborted) { invoke("end", { session: s.session }).catch(() => {}); throw cancelledError(); }
   return {
     kind: s.kind,
     async transceive(apdu) {

@@ -94,6 +94,19 @@ class HumidNfcPlugin: Plugin, NFCTagReaderSessionDelegate {
     invoke.resolve()
   }
 
+  /// Stop waiting for a chip (a pending begin fails as cancelled) and close any session.
+  @objc public func cancel(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      self.waiting?.reject("Chip reading cancelled.")
+      self.waiting = nil
+      self.reader?.invalidate()
+      self.reader = nil
+      self.tag = nil
+      self.sessionId = nil
+      invoke.resolve()
+    }
+  }
+
   @objc public func end(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(EndArgs.self)
     DispatchQueue.main.async {

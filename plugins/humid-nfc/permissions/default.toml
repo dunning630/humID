@@ -1,5 +1,5 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Lets the HumID UI read a passport or ID card chip: check for a reader, open a session, exchange APDUs, end it."
-permissions = ["allow-probe", "allow-begin", "allow-transceive", "allow-message", "allow-end"]
+description = "Lets the HumID UI read a chip (a passport or ID card, or a payment card's number and expiry): check for a reader, open a session, exchange APDUs, end it, or stop waiting for one."
+permissions = ["allow-probe", "allow-begin", "allow-transceive", "allow-message", "allow-end", "allow-cancel"]

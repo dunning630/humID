@@ -1,6 +1,7 @@
-// Android chip reader (humid-nfc@1). NFC reader mode finds a passport or ID
-// card chip (ISO 14443 A or B, IsoDep) and this plugin passes APDUs to and
-// from it. All ICAO 9303 logic runs in the shared @humid/emrtd module.
+// Android chip reader (humid-nfc@1). NFC reader mode finds an ISO-DEP chip
+// (ISO 14443 A or B): a passport or ID card, or a contactless payment card,
+// and this plugin passes APDUs to and from it. All ICAO 9303 logic runs in the
+// shared @humid/emrtd module, and the payment-card read in @humid/cards.
 
 package app.humid.nfc
 
@@ -77,6 +78,7 @@ class HumidNfcPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(BeginArgs::class.java)
         val a = adapter()
         if (a == null || !a.isEnabled) { invoke.reject(if (a == null) "This phone has no NFC." else "Turn on NFC in Settings, then try again."); return }
+        waiting?.reject("Chip reading cancelled.")
         stop()
         waiting = invoke
         val flags = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
@@ -132,6 +134,15 @@ class HumidNfcPlugin(private val activity: Activity) : Plugin(activity) {
     fun message(invoke: Invoke) {
         invoke.parseArgs(MessageArgs::class.java)
         invoke.resolve() // Android shows progress in the app itself
+    }
+
+    /** Stop waiting for a chip (the pending begin fails as cancelled) and close any session. */
+    @Command
+    fun cancel(invoke: Invoke) {
+        waiting?.reject("Chip reading cancelled.")
+        waiting = null
+        stop()
+        invoke.resolve()
     }
 
     @Command

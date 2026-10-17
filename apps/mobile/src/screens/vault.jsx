@@ -89,7 +89,7 @@ function ItemRow({ item }) {
         <span class="ico" data-cat={cat.id}><Icon name="card" /></span>
         <span style={{ minWidth: 0 }}>
           <div class="name">{item.name}</div>
-          <div class="meta">{brandName(card.brand)} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
+          <div class="meta">{brandName(card.brand)}{card.funding ? ` ${card.funding}` : ""} •••• {card.last4} · {cs.state === "expired" ? <b class="warn-text">expired</b> : cs.state === "expiring" ? <b class="warn-text">expires {showExpiry(card.expiry)}</b> : card.expiry ? `expires ${showExpiry(card.expiry)}` : "no expiry"}</div>
         </span>
         <span class="end"><Icon name="chevron" /></span>
       </button>
@@ -203,7 +203,7 @@ export function AddSheet() {
           </button>
           <button class="kind" style={{ marginTop: 10 }} onClick={() => (S.sheet.value = { type: "card" })}>
             <span class="ico"><Icon name="card" /></span>
-            <span><strong>Add a payment card</strong><span>Credit or debit. Scan the front, tap it, or type it. Never the PIN.</span></span>
+            <span><strong>Add a payment card</strong><span>Credit or debit. Tap it and its chip fills in the details, or scan the front, or type it. Never the PIN.</span></span>
             <Icon name="chevron" />
           </button>
           <div class="source" style={{ marginTop: 10 }}>

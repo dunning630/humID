@@ -35,6 +35,10 @@ impl<R: Runtime> HumidNfc<R> {
         self.0.run_mobile_plugin_async::<serde_json::Value>("message", req).await?;
         Ok(())
     }
+    pub async fn cancel(&self) -> crate::Result<()> {
+        self.0.run_mobile_plugin_async::<serde_json::Value>("cancel", ()).await?;
+        Ok(())
+    }
     pub async fn end(&self, req: EndRequest) -> crate::Result<()> {
         self.0.run_mobile_plugin_async::<serde_json::Value>("end", req).await?;
         Ok(())

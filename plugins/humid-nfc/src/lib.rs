@@ -1,7 +1,8 @@
 //! tauri-plugin-humid-nfc — the chip reader transport for HumID.
 //!
-//! It only moves bytes: open a session with a passport or ID card chip, send
-//! command APDUs, return response APDUs, close. All of ICAO 9303 (BAC, PACE,
+//! It only moves bytes: open a session with a chip (a passport or ID card, or a
+//! contactless payment card), send command APDUs, return response APDUs, close;
+//! or `cancel` to stop waiting when the screen that asked goes away. All of ICAO 9303 (BAC, PACE,
 //! secure messaging, files, Active Authentication) is done by `@humid/emrtd`
 //! in the shared JS, the same on every platform.
 //!
@@ -13,7 +14,7 @@
 //! | macOS    | PC/SC (CryptoTokenKit): USB contactless reader |
 //! | Linux    | not yet (needs libpcsclite at run time)        |
 //!
-//! Versioned on its own (`humid-nfc@1`).
+//! Versioned on its own (`humid-nfc@1`; 1.1 adds `cancel`).
 
 use tauri::{
     plugin::{Builder, TauriPlugin},
@@ -35,7 +36,7 @@ pub use error::{Error, Result};
 #[cfg(desktop)]
 #[doc(hidden)]
 pub mod reader {
-    pub use crate::desktop::pcsc_reader::{begin, end, probe, transceive};
+    pub use crate::desktop::pcsc_reader::{begin, cancel, end, probe, transceive};
 }
 pub use models::*;
 
@@ -61,7 +62,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::begin,
             commands::transceive,
             commands::message,
-            commands::end
+            commands::end,
+            commands::cancel
         ])
         .setup(|app, api| {
             #[cfg(mobile)]

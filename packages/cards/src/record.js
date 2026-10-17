@@ -1,8 +1,9 @@
 // One record per payment card, sealed into the vault like any document
 // (media type application/vnd.humid.card+json). What it will and won't hold:
 //
-//   holds       number, expiry, name on card, network, the holder's nickname,
-//               the bank's name and phone number, notes, a photo of the FRONT
+//   holds       number, expiry, name on card, network, credit/debit, valid-from
+//               date, issuing country, the holder's nickname, the bank's name
+//               and phone number, notes, a photo of the FRONT
 //   never       the PIN; track or chip data; a photo of the back (it shows
 //               the security code)
 //   opt-in      the security code (CVV / CVC / CID), only after the holder
@@ -30,6 +31,9 @@ export const FIELDS = [
   { key: "expiry", label: "Expires", type: "month" },
   { key: "name", label: "Name on card" },
   { key: "cvv", label: "Security code", mono: true, secret: true, optIn: true },
+  { key: "funding", label: "Type", optional: true, choices: ["credit", "debit", "prepaid"] },
+  { key: "validFrom", label: "Valid from", type: "month", optional: true },
+  { key: "country", label: "Issued in", optional: true },
   { key: "nickname", label: "Nickname", optional: true },
   { key: "bank", label: "Bank", optional: true },
   { key: "phone", label: "Bank phone", optional: true },
@@ -45,6 +49,14 @@ export class CardRecordError extends Error {
 const fail = (code, m) => { throw new CardRecordError(code, m); };
 
 const nowIso = () => new Date().toISOString();
+export const FUNDING = { credit: "Credit", debit: "Debit", prepaid: "Prepaid" };
+
+/** "US" → "United States" (where the platform knows region names); anything else as given. */
+export function countryName(code, locale = "en") {
+  if (!code) return "";
+  if (!/^[A-Z]{2}$/.test(code)) return code;
+  try { return new Intl.DisplayNames([locale], { type: "region" }).of(code) || code; } catch { return code; }
+}
 const RANK = { typed: 3, nfc: 2, camera: 1 };
 
 export function newCard() {
@@ -68,10 +80,20 @@ export function applyRead(rec, read, from) {
   if (!["camera", "nfc"].includes(from)) fail("bad_source", "Unknown card source.");
   const pan = read.pan ? digits(read.pan) : null;
   if (pan && !checkPan(pan).ok) fail("bad_number", "That card number doesn't check out. Try again or type it.");
-  put(rec, from, { pan, expiry: read.expiry || null, name: read.name || null });
-  if (from === "nfc") rec.read = { network: read.network || null, aid: read.aid || null, issuerCountry: read.issuerCountry || null, at: nowIso() };
+  put(rec, from, {
+    pan, expiry: read.expiry || null, name: read.name || null,
+    // Only a chip says these; the camera reads the front, which rarely shows them reliably.
+    ...(from === "nfc" ? {
+      bank: read.issuer || null, funding: FUNDING[read.funding] ? read.funding : null,
+      validFrom: /^\d{4}-\d{2}$/.test(read.validFrom || "") ? read.validFrom : null, country: read.country || null,
+    } : {}),
+  });
+  if (from === "nfc") rec.read = { network: read.network || null, aid: read.aid || null, label: read.label || null, issuerCountry: read.issuerCountry || null, at: nowIso() };
   return rec;
 }
+
+/** Which fields a reader filled ("nfc" or "camera") and the holder hasn't since changed. */
+export const filledBy = (rec, from) => Object.keys(rec.fields).filter((k) => rec.source[k] === from);
 
 /** The holder turns storing this card's security code on or off. Off deletes it. */
 export function setStoreCvv(rec, on) {
@@ -98,6 +120,17 @@ export function applyTyped(rec, values) {
     if (!e) fail("bad_expiry", "Enter the expiry as MM/YY.");
     v.expiry = e;
   }
+  if ("validFrom" in v && v.validFrom) {
+    const e = parseExpiry(v.validFrom);
+    if (!e) fail("bad_valid_from", "Enter the valid-from date as MM/YY.");
+    v.validFrom = e;
+  }
+  if ("funding" in v && v.funding) {
+    const f = String(v.funding).trim().toLowerCase();
+    if (!FUNDING[f]) fail("bad_funding", "A card is credit, debit or prepaid.");
+    v.funding = f;
+  }
+  if ("country" in v && v.country && String(v.country).trim().length > 56) fail("bad_country", "That country name is too long.");
   if ("cvv" in v && v.cvv) {
     if (!rec.policy.storeCvv) fail("cvv_off", "Turn on 'Keep the security code' for this card first.");
     const want = brandOf(v.pan || rec.fields.pan).cvv;
@@ -127,6 +160,8 @@ export function problems(rec) {
   if (!f.pan) out.push({ field: "pan", code: "missing" });
   else if (!checkPan(f.pan).ok) out.push({ field: "pan", code: "invalid" });
   if (f.expiry && !/^\d{4}-\d{2}$/.test(f.expiry)) out.push({ field: "expiry", code: "invalid" });
+  if (f.validFrom && !/^\d{4}-\d{2}$/.test(f.validFrom)) out.push({ field: "validFrom", code: "invalid" });
+  if (f.funding && !FUNDING[f.funding]) out.push({ field: "funding", code: "invalid" });
   if (f.cvv && !rec.policy.storeCvv) out.push({ field: "cvv", code: "not_allowed" });
   return out;
 }
@@ -134,13 +169,17 @@ export function problems(rec) {
 export const brand = (rec) => brandOf(rec.fields.pan);
 export const status = (rec, now) => expiryStatus(rec.fields.expiry, now);
 
-/** "Visa •••• 1111", or the holder's nickname. */
+/** The holder's nickname, or "First Humid Visa •••• 1111" (the bank when known). */
 export function title(rec) {
-  return rec.fields.nickname || `${brand(rec).name} ${maskPan(rec.fields.pan)}`;
+  const b = rec.fields.bank && !rec.fields.bank.toLowerCase().includes(brand(rec).name.toLowerCase()) ? `${rec.fields.bank} ` : "";
+  return rec.fields.nickname || `${b}${brand(rec).name} ${maskPan(rec.fields.pan)}`;
 }
 
 /** What the encrypted vault index carries: never the number. */
-export const summary = (rec) => ({ kind: "payment_card", brand: brand(rec).id, last4: last4(rec.fields.pan), expiry: rec.fields.expiry || "", nickname: rec.fields.nickname || "" });
+export const summary = (rec) => ({
+  kind: "payment_card", brand: brand(rec).id, last4: last4(rec.fields.pan), expiry: rec.fields.expiry || "", nickname: rec.fields.nickname || "",
+  ...(rec.fields.funding ? { funding: rec.fields.funding } : {}),
+});
 
 /** Display values. Number and code stay masked unless `revealed` (which the app sets after its biometric check and clears after HANDLING.revealMs). */
 export function view(rec, { revealed = false } = {}) {
@@ -151,6 +190,7 @@ export function view(rec, { revealed = false } = {}) {
     expiry: showExpiry(f.expiry), name: f.name || "",
     cvv: f.cvv ? (revealed ? f.cvv : "•".repeat(String(f.cvv).length)) : null,
     bank: f.bank || "", phone: f.phone || "", notes: f.notes || "",
+    funding: FUNDING[f.funding] || "", validFrom: showExpiry(f.validFrom), country: countryName(f.country),
     status: status(rec),
   };
 }
@@ -159,7 +199,7 @@ export function view(rec, { revealed = false } = {}) {
 export function copyValue(rec, field) {
   if (field === "pan") return digits(rec.fields.pan);
   if (field === "cvv") return rec.policy.storeCvv ? rec.fields.cvv || "" : "";
-  if (field === "expiry") return showExpiry(rec.fields.expiry);
+  if (field === "expiry" || field === "validFrom") return showExpiry(rec.fields[field]);
   return rec.fields[field] || "";
 }
 

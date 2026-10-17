@@ -8,7 +8,7 @@ name: CI
 #   4. build HumID Server for Windows, install it on a Windows runner from the
 #      zip (as a person would), smoke-test, back up, restore, update, uninstall
 #   5. the app in Chromium: "Scan an ID" with a fake camera, getting set up, and
-#      offline mode (tests/browser/idscan.mjs, setup.mjs, offline.mjs)
+#      offline mode, payment cards (tests/browser/idscan.mjs, setup.mjs, offline.mjs, cards.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -161,6 +161,12 @@ jobs:
           grep -v '^{"t"' offline.log | tail -60
           echo "::error::$(grep -v '^{"t"' offline.log | grep -E 'Error|expected|actual|assert|readable|waiting for|offline.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/offline" }
+      - name: Payment cards (tap a demo card and its chip fills the form; type one; seal, open, reveal, copy)
+        run: |
+          node tests/browser/cards.mjs > cards.log 2>&1 && { grep -v '^{"t"' cards.log; exit 0; }
+          grep -v '^{"t"' cards.log | tail -60
+          echo "::error::$(grep -v '^{"t"' cards.log | grep -E 'Error|expected|actual|assert|waiting for|cards.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/cards" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }

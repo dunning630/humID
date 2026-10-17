@@ -32,7 +32,8 @@ import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
 import { parseAccessCode } from "@humid/pass";
 import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, HANDLING as CARD_HANDLING } from "@humid/cards";
-import { probeNfc, openChip } from "./nfc.js";
+import { probeNfc, openChip, cancelChip } from "./nfc.js";
+export { cancelChip };
 import { createLink, isNetworkFailure } from "./link.js";
 import { mrzReader } from "./scan.js";
 import * as S from "./state.js";
@@ -772,18 +773,30 @@ export async function addCardRecord(record, name) {
   return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), category: "money", extra: { cardInfo: cardSummary(record) } });
 }
 
-/** Tap a contactless card (Android NFC, or a USB reader on a computer): number and expiry. No payment is made. */
-export async function readCardTap() {
+/**
+ * Wait for a contactless card (Android NFC, or a USB reader on a computer) and
+ * read what fills the form: number, expiry, name, issuer, credit/debit, valid
+ * from, country. No payment is made. `signal` stops the wait (the sheet closed).
+ * Returns { read } or { error, code }; code "cancelled" or "timeout" are quiet.
+ */
+export async function readCardTap({ signal, timeoutMs = 60_000, demo = false } = {}) {
   let t;
   try {
-    t = await openChip({ prompt: "Hold your card flat against the back of your phone." });
-    const r = await readContactless(t);
+    t = await openChip({ prompt: "Hold your card flat against the back of your phone.", timeoutMs, signal, demo: demo ? "card" : undefined });
+    if (signal?.aborted) throw Object.assign(new Error("cancelled"), { code: "cancelled" });
+    const read = await readContactless(t);
     await t.end({ message: "Card read." });
-    return r;
+    haptic(true);
+    return { read };
   } catch (e) {
     await t?.end({ error: "Couldn't read the card." });
-    if (e?.code !== "cancelled") toast(e?.message || "Couldn't read the card. Try the camera, or type it.", "warn");
-    return null;
+    if (e?.code === "cancelled") return { code: signal?.aborted ? "cancelled" : "timeout" };
+    haptic(false);
+    const code = e?.code || "nfc";
+    const error = code === "lost" ? "The card moved away before it was read. Hold it still a moment longer."
+      : code === "no_payment_app" ? "That isn't a payment card. Hold a credit or debit card to the phone."
+      : e?.message || "Couldn't read the card. Try the camera, or type it.";
+    return { error, code };
   }
 }
 

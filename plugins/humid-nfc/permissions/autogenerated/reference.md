@@ -1,6 +1,6 @@
 ## Default Permission
 
-Lets the HumID UI read a passport or ID card chip: check for a reader, open a session, exchange APDUs, end it.
+Lets the HumID UI read a chip (a passport or ID card, or a payment card's number and expiry): check for a reader, open a session, exchange APDUs, end it, or stop waiting for one.
 
 #### This default permission set includes the following:
 
@@ -9,6 +9,7 @@ Lets the HumID UI read a passport or ID card chip: check for a reader, open a se
 - `allow-transceive`
 - `allow-message`
 - `allow-end`
+- `allow-cancel`
 
 ## Permission Table
 
@@ -41,6 +42,32 @@ Enables the begin command without any pre-configured scope.
 <td>
 
 Denies the begin command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`humid-nfc:allow-cancel`
+
+</td>
+<td>
+
+Enables the cancel command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`humid-nfc:deny-cancel`
+
+</td>
+<td>
+
+Denies the cancel command without any pre-configured scope.
 
 </td>
 </tr>

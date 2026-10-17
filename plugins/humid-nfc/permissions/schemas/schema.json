@@ -307,6 +307,18 @@
           "markdownDescription": "Denies the begin command without any pre-configured scope."
         },
         {
+          "description": "Enables the cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel",
+          "markdownDescription": "Enables the cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel",
+          "markdownDescription": "Denies the cancel command without any pre-configured scope."
+        },
+        {
           "description": "Enables the end command without any pre-configured scope.",
           "type": "string",
           "const": "allow-end",
@@ -355,10 +367,10 @@
           "markdownDescription": "Denies the transceive command without any pre-configured scope."
         },
         {
-          "description": "Lets the HumID UI read a passport or ID card chip: check for a reader, open a session, exchange APDUs, end it.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-begin`\n- `allow-transceive`\n- `allow-message`\n- `allow-end`",
+          "description": "Lets the HumID UI read a chip (a passport or ID card, or a payment card's number and expiry): check for a reader, open a session, exchange APDUs, end it, or stop waiting for one.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-begin`\n- `allow-transceive`\n- `allow-message`\n- `allow-end`\n- `allow-cancel`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets the HumID UI read a passport or ID card chip: check for a reader, open a session, exchange APDUs, end it.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-begin`\n- `allow-transceive`\n- `allow-message`\n- `allow-end`"
+          "markdownDescription": "Lets the HumID UI read a chip (a passport or ID card, or a payment card's number and expiry): check for a reader, open a session, exchange APDUs, end it, or stop waiting for one.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-begin`\n- `allow-transceive`\n- `allow-message`\n- `allow-end`\n- `allow-cancel`"
         }
       ]
     }

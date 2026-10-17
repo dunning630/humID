@@ -23,6 +23,12 @@ pub(crate) async fn message<R: Runtime>(app: AppHandle<R>, session: String, mess
     app.humid_nfc().message(MessageRequest { session, message }).await
 }
 
+/// Stop waiting for a chip (a pending `begin` fails as cancelled) and close any open session.
+#[command]
+pub(crate) async fn cancel<R: Runtime>(app: AppHandle<R>) -> Result<()> {
+    app.humid_nfc().cancel().await
+}
+
 #[command]
 pub(crate) async fn end<R: Runtime>(app: AppHandle<R>, session: String, message: Option<String>, error: Option<String>) -> Result<()> {
     app.humid_nfc().end(EndRequest { session, message, error }).await

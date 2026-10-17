@@ -7,11 +7,14 @@
 //   SELECT PPSE ("2PAY.SYS.DDF01") → the card's payment applications
 //   SELECT the application → its PDOL (what it wants to know first)
 //   GET PROCESSING OPTIONS  → where its records are (AFL), or track 2 directly
-//   READ RECORD …           → PAN (5A), expiry (5F24), track 2 equivalent (57)
+//   READ RECORD …           → PAN (5A), expiry (5F24), track 2 equivalent (57),
+//                             name (5F20 / 9F0B), country (5F28), valid from (5F25)
 //
-// Only the number, expiry, name (rarely present), network and issuing country
-// are returned. Never the security code, service code or track discretionary
-// data, and no payment is made: no GENERATE AC, amount zero.
+// What comes back fills the "add a card" form by itself: number, expiry, name
+// (when the card carries one), network, the issuer's name from the card's own
+// label (9F12 / 50), credit or debit, valid-from date and issuing country.
+// Never the security code, service code or track discretionary data, and no
+// payment is made: no GENERATE AC, amount zero.
 
 export class CardReadError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -75,8 +78,9 @@ async function send(transport, cmd) {
 
 /** Well-known payment application ids, tried when a card has no PPSE directory. */
 export const AIDS = {
-  A0000000031010: "Visa", A0000000032010: "Visa Electron", A0000000041010: "Mastercard", A0000000043060: "Maestro",
-  A00000002501: "American Express", A0000001523010: "Discover", A0000000651010: "JCB", A000000333010101: "UnionPay Debit",
+  A0000000031010: "Visa", A0000000032010: "Visa Electron", A0000000980840: "Visa US Common Debit",
+  A0000000041010: "Mastercard", A0000000043060: "Maestro", A0000000042203: "US Maestro",
+  A00000002501: "American Express", A0000001523010: "Discover", A0000001524010: "Discover US Common Debit", A0000000651010: "JCB", A000000333010101: "UnionPay Debit",
   A000000333010102: "UnionPay Credit", A0000002771010: "Interac", A0000005241010: "RuPay", A0000006581010: "Mir",
 };
 
@@ -132,6 +136,42 @@ function holderName(b) {
   return given ? `${given} ${sur}`.replace(/\s+/g, " ").trim() : sur;
 }
 
+/** ISO 3166-1 numeric → alpha-2, for the issuing countries a holder is likeliest to carry. Others stay numeric. */
+const COUNTRIES = Object.fromEntries((
+  "840US 124CA 484MX 826GB 372IE 250FR 276DE 380IT 724ES 620PT 528NL 056BE 442LU 756CH 040AT 752SE 578NO 208DK 246FI 352IS " +
+  "616PL 203CZ 703SK 348HU 642RO 100BG 300GR 191HR 705SI 233EE 428LV 440LT 196CY 470MT 792TR 804UA 376IL 784AE 682SA 634QA " +
+  "414KW 048BH 512OM 400JO 818EG 504MA 710ZA 566NG 404KE 356IN 586PK 050BD 144LK 156CN 344HK 446MO 158TW 392JP 410KR 702SG " +
+  "458MY 764TH 360ID 608PH 704VN 036AU 554NZ 076BR 032AR 152CL 170CO 604PE 858UY 862VE 188CR 591PA 214DO 630PR 388JM 780TT"
+).split(" ").map((x) => [String(+x.slice(0, 3)), x.slice(3)]));
+export const countryAlpha2 = (numeric) => (numeric == null ? null : COUNTRIES[String(+numeric)] || null);
+
+// Words in a card's label that name the network, the product or the funding, not the bank.
+const NOT_ISSUER = new Set(("VISA ELECTRON MASTERCARD MASTER CARD MAESTRO AMERICAN EXPRESS AMEX DISCOVER DINERS CLUB JCB UNIONPAY " +
+  "INTERAC RUPAY MIR CREDIT DEBIT PREPAID COMMON US INTL INTERNATIONAL CONTACTLESS PAYWAVE PAYPASS CLASSIC GOLD PLATINUM " +
+  "SIGNATURE INFINITE WORLD ELITE PREFERRED PREMIER REWARDS BUSINESS COMMERCIAL CORPORATE PURCHASING STANDARD").split(" "));
+const titleCase = (s) => s.toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase());
+
+/** The bank's name from a card label like "CHASE VISA" or "WELLS FARGO DEBIT"; null when the label only names the network. */
+export function issuerFromLabel(label) {
+  if (!label) return null;
+  const words = label.toUpperCase().replace(/[^A-Z0-9&' ]+/g, " ").split(/\s+/).filter(Boolean);
+  const left = words.filter((w) => !NOT_ISSUER.has(w));
+  if (!left.length || left.join("").length < 3) return null;
+  return titleCase(left.join(" "));
+}
+
+const DEBIT_AIDS = new Set(["A0000000032010", "A0000000980840", "A0000000043060", "A0000000042203", "A0000001524010", "A0000002771010", "A000000333010101"]);
+/** "credit" | "debit" | "prepaid" from the card's own labels and application id, or null. */
+export function fundingOf(labels, aidHex) {
+  const s = labels.filter(Boolean).join(" ").toUpperCase();
+  if (/PREPAID/.test(s)) return "prepaid";
+  if (/DEBIT|ELECTRON|MAESTRO|INTERAC/.test(s)) return "debit";
+  if (/CREDIT/.test(s)) return "credit";
+  if (DEBIT_AIDS.has(aidHex)) return "debit";
+  if (aidHex === "A000000333010102") return "credit";
+  return null;
+}
+
 async function selectApp(transport, aid) {
   const r = await send(transport, apdu(0x00, 0xa4, 0x04, 0x00, aid));
   return r.sw === 0x9000 ? tlv(r.data) : null;
@@ -139,7 +179,9 @@ async function selectApp(transport, aid) {
 
 /**
  * Read a contactless card. Returns { pan, expiry: "YYYY-MM", name, network,
- * aid, issuerCountry (ISO 3166 numeric) }. Throws CardReadError.
+ * aid, label, issuer, funding, validFrom: "YYYY-MM", issuerCountry (ISO 3166
+ * numeric), country (alpha-2) }; anything the card doesn't carry is null.
+ * Throws CardReadError.
  */
 export async function readContactless(transport, { now = new Date(), random } = {}) {
   // 1. Which payment applications?
@@ -159,7 +201,9 @@ export async function readContactless(transport, { now = new Date(), random } = 
     const fci = await selectApp(transport, app.aid);
     if (!fci) continue;
     const aidHex = hex(app.aid).toUpperCase();
-    const label = (first(fci, "9F12") && ascii(first(fci, "9F12"))) || (first(fci, "50") && ascii(first(fci, "50"))) || app.label || AIDS[aidHex] || null;
+    const preferred = first(fci, "9F12") ? ascii(first(fci, "9F12")) : null;
+    const appLabel = first(fci, "50") ? ascii(first(fci, "50")) : null;
+    const label = preferred || appLabel || app.label || AIDS[aidHex] || null;
 
     // 2. Processing options.
     const pdol = first(fci, "9F38");
@@ -190,9 +234,16 @@ export async function readContactless(transport, { now = new Date(), random } = 
     if (!pan) continue;
     const yy = exp ? +exp.slice(0, 2) : null, mm = exp ? exp.slice(2, 4) : null;
     const country = first(all, "5F28");
+    const issuerCountry = country ? hex(country).slice(-3) : null;
+    const eff = first(all, "5F25") ? yymmdd(first(all, "5F25")) : null;
+    const validFrom = eff && /^\d{4}/.test(eff) && +eff.slice(2, 4) >= 1 && +eff.slice(2, 4) <= 12 ? `${2000 + +eff.slice(0, 2)}-${eff.slice(2, 4)}` : null;
+    const labels = [preferred, appLabel, app.label];
     return {
-      pan, expiry: exp && +mm >= 1 && +mm <= 12 ? `${2000 + yy}-${mm}` : null, name: holderName(first(all, "5F20")),
-      network: label, aid: aidHex, issuerCountry: country ? hex(country).replace(/^0/, "") : null,
+      pan, expiry: exp && +mm >= 1 && +mm <= 12 ? `${2000 + yy}-${mm}` : null,
+      name: holderName(first(all, "5F20")) || holderName(first(all, "9F0B")),
+      network: label, aid: aidHex, label: preferred || appLabel || app.label || null,
+      issuer: labels.map(issuerFromLabel).find(Boolean) || null,
+      funding: fundingOf(labels, aidHex), validFrom, issuerCountry, country: countryAlpha2(issuerCountry),
     };
   }
   fail(apps.some((a) => !a.guess) ? "no_number" : "no_payment_app", "This card didn't share its number. Scan the front with the camera instead.");
