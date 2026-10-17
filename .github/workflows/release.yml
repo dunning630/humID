@@ -260,7 +260,8 @@ jobs:
           set -o pipefail
           if ! npm run tauri -- android build --apk --aab 2>&1 | tee android-build.log; then
             # the run's logs aren't always reachable: put what went wrong in the annotations too
-            echo "::error::$(grep -E 'What went wrong|error:|e: |ERROR|Execution failed|FAILURE|Caused by' android-build.log | head -25 | tr '\n' ' ' | cut -c1-3500)"
+            # the reason, not the deprecation warnings: Gradle's "What went wrong" and the lines after it
+            echo "::error::$(grep -v '^w: ' android-build.log | grep -A14 -E 'What went wrong|^e: |error:' | head -45 | tr '\n' ' ' | cut -c1-3500)"
             exit 1
           fi
       # No debug builds, ever: a debug APK is debuggable (adb run-as reads the app's data),
