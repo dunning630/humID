@@ -236,6 +236,14 @@ p { margin: 0; }
 .banner strong { display: block; font-weight: 600; }
 .banner.offline { grid-template-columns: 40px minmax(0, 1fr) auto; margin-bottom: 14px; }
 @media (max-width: 380px) { .banner.offline { grid-template-columns: 40px minmax(0, 1fr); } .banner.offline .btn { grid-column: 1 / -1; } }
+/* Check-in: when the next check-in is due, on every tab while it's armed */
+.banner.checkin { grid-template-columns: 40px minmax(0, 1fr) auto; margin-bottom: 14px; border-color: var(--line-strong); background: var(--surface); }
+.banner.checkin .b-ico { color: var(--mint); }
+.banner.checkin.warn { border-color: rgba(218,147,74,.35); background: var(--amber-wash); }
+.banner.checkin.warn .b-ico { color: var(--amber-hi); background: rgba(218,147,74,.18); }
+.banner.checkin.bad { border-color: rgba(242,104,92,.35); background: var(--danger-wash); }
+.banner.checkin.bad .b-ico { color: var(--danger); background: rgba(242,104,92,.18); }
+@media (max-width: 380px) { .banner.checkin { grid-template-columns: 40px minmax(0, 1fr); } .banner.checkin .btn { grid-column: 1 / -1; } }
 .banner span { color: var(--sage); font-size: var(--t-sm); }
 
 /* ---------- timeline ---------- */
@@ -604,7 +612,7 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 .s-label strong { display: block; font-weight: 600; }
 .s-label span { display: block; color: var(--sage); font-size: var(--t-sm); margin-top: 2px; }
 .seg { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 12px; background: var(--abyss); border: 1px solid var(--line); }
-.seg[data-n="2"] { --n: 2; } .seg[data-n="3"] { --n: 3; } .seg[data-n="4"] { --n: 4; }
+.seg[data-n="2"] { --n: 2; } .seg[data-n="3"] { --n: 3; } .seg[data-n="4"] { --n: 4; } .seg[data-n="5"] { --n: 5; }
 .seg button { min-height: 44px; padding: 6px 4px; border: 0; border-radius: 9px; background: transparent; color: var(--sage); font-size: var(--t-sm); font-weight: 500; line-height: 1.15; }
 .seg button[aria-checked="true"] { background: var(--surface-3); color: var(--text); box-shadow: inset 0 0 0 1px var(--mint-deep); }
 .item .name svg { width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; color: var(--amber-hi); }

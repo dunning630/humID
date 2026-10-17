@@ -45,6 +45,13 @@ export const cardCode = signal(null);        // a recovery card to show once, th
 // only decoy documents and a calm account, while the server has locked sensitive changes.
 export const decoy = signal(false);
 export const duressInfo = signal(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
+// This device's duress setting { enabled, gesture }, opened during the unlock check and only while
+// unlocked: it's sealed on the device, so a copy of the phone doesn't show whether it's on.
+export const duressSetting = signal(null);
+
+// Check-in (docs/CHECKIN.md): { state: off | armed | locked | erased, deadline, erasesAt, windowMs,
+// maxWindowMs, graceMs, armedAt, erasedAt } while unlocked, null otherwise or when the server doesn't offer it.
+export const checkin = signal(null);
 export const continuity = signal(null);      // public-log check: { ok, reason, size, cosigned, at }
 export const nfc = signal(null);             // { available, kind: "phone" | "reader" | "none", reason } — the ID chip reader
 export const chipRead = signal(null);        // { stage, message, fraction, error } while reading a chip

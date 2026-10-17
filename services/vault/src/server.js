@@ -12,7 +12,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, openDb, env, json, bytes, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
+import { createService, openDb, env, json, bytes, parseJson, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
 import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
@@ -38,6 +38,8 @@ export function createVault({
        interrupt_method TEXT, assurance TEXT, signer_fp TEXT)`,
     `CREATE INDEX objects_owner ON objects(owner, uploaded_at)`,
   ]);
+  // A deleted row's encrypted index entry is overwritten in the database file, not left in free pages.
+  db.exec("PRAGMA secure_delete = ON");
 
   const blobPath = (h) => `${blobDir}/${h.slice(0, 2)}/${h}`;
   const writeBlob = (data) => {
@@ -155,6 +157,24 @@ export function createVault({
       if (!db.prepare("SELECT 1 FROM objects WHERE blob = ? LIMIT 1").get(r.blob)) try { unlinkSync(blobPath(r.blob)); } catch {}
       return json(200, { undone: r.id });
     }],
+
+    // Check-in erased this account's document keys (docs/CHECKIN.md): its envelopes and index
+    // entries go too, except `keep`, the documents whose keys keyshare still holds (decoys, and
+    // anything sealed since). Gateway only; the holder's live check isn't there to ask for.
+    ["DELETE", "/internal/objects", ({ claims, body }) => {
+      if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
+      const owner = requireUser(claims);
+      const keep = new Set((parseJson(body)?.keep || []).map(String));
+      const rows = db.prepare("SELECT id, blob FROM objects WHERE owner = ?").all(owner).filter((r) => !keep.has(r.id));
+      const del = db.prepare("DELETE FROM objects WHERE id = ?");
+      db.exec("BEGIN IMMEDIATE");
+      try { for (const r of rows) del.run(r.id); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
+      for (const r of rows) {
+        if (!db.prepare("SELECT 1 FROM objects WHERE blob = ? LIMIT 1").get(r.blob)) try { unlinkSync(blobPath(r.blob)); } catch {}
+      }
+      try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {}
+      return json(200, { deleted: rows.length });
+    }, { bodyLimit: 4 << 20 }],
 
     // Erase everything (account closure). Needs a step-up like any destructive act.
     ["DELETE", "/objects", ({ claims }) => {

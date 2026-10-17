@@ -58,6 +58,10 @@ services:
       #   open  anyone
       HUMID_REGISTRATION: ${HUMID_REGISTRATION:-pass}
       HUMID_PASS_BUY_URL: ${HUMID_PASS_BUY_URL:-}                   # https page where people buy access codes; the app links to it
+      # Check-in (docs/CHECKIN.md): a holder can arm a timer that erases their vault unless they
+      # check in every hour or two. off (default) until push reminders exist. With it on, a restart
+      # of keyshare erases every armed vault: its fuse keys live in memory only.
+      HUMID_CHECKIN: ${HUMID_CHECKIN:-off}
       HUMID_ALLOWED_ORIGINS: ${HUMID_ALLOWED_ORIGINS:-tauri://localhost,http://tauri.localhost,https://tauri.localhost}
     volumes: [gateway-data:/data]
     healthcheck:

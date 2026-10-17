@@ -57,6 +57,8 @@ const stack = await startStack({
   cscas: [devCsca.pem], stations: ["*"], duressCoolOffMs: Number(process.env.HUMID_DURESS_COOLOFF_MS || 60_000),
   // Like production, a new HumID needs an access pass; "Use a demo access code" mints one here.
   registration: process.env.HUMID_REGISTRATION || "pass",
+  // Check-in is on here so you can try it (off by default on real servers until push reminders exist).
+  checkin: process.env.HUMID_CHECKIN || "on",
 });
 const gw = new URL(stack.baseUrl);
 

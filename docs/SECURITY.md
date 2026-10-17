@@ -198,6 +198,25 @@ How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suit
 What offline mode doesn't do: open documents. Keeping a document readable offline
 would mean its key on the device, which is what split keys exist to prevent.
 
+## Check-in
+
+A holder can arm a timer before a high-stakes situation (docs/CHECKIN.md):
+check in with a live check before each deadline, or the vault locks, then is
+erased for good. While it's armed, every split key of the account is sealed
+under a fuse key that keyshare keeps in memory only; destroying it is the
+erase, so every copy of those keys, live or in a backup made since arming,
+becomes unreadable. A duress unlock while armed erases at once and leaves the
+duress session looking ordinary. The duress gesture itself is sealed on the
+phone (2.0 review F1), so a copy of the phone doesn't tell a coercer which
+gesture to avoid.
+
+What it doesn't cover: an operator who changes keyshare to keep fuse keys;
+backups made before arming (they hold the keys of documents sealed before it);
+item names in vault backups, readable with a recovered account seed; anything
+already saved or exported; a server seized while running. A keyshare restart
+erases every armed vault, by design. Off by default (`HUMID_CHECKIN`) until
+push reminders exist.
+
 ## Before real data
 
 1. Independent review of HTP/1, the envelope format and the recovery flows.

@@ -1,5 +1,11 @@
 # HumID Server for Windows
 
+## 1.7.0
+
+- **Check-in** (docs/CHECKIN.md), off by default: `humid set HUMID_CHECKIN=on` lets holders arm a timer that erases their vault for good unless they check in every hour or two. The keys of an armed vault live in the server's memory only, so anything that stops the server (a restart, an update, a backup, restarting Windows) erases every armed vault.
+- The admin console says how many vaults are armed on every change that stops the server, before you approve it; `server-status.json` carries the count (a number, nothing more).
+- The web app it serves is HumID 1.14.0.
+
 ## 1.6.0
 
 - **HumID Admin, the admin console** (docs/ADMIN.md). A second background task, run as SYSTEM, at `http://127.0.0.1:8490` on this computer only. Open it with `humid console` in Terminal (Admin): a sign-in link that works once.
