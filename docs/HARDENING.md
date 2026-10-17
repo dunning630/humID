@@ -17,8 +17,8 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 | StrongBox preferred, TEE fallback recorded | `:234-242`; server records `level` and now `keymasterLevel` | TEE/StrongBox recorded from one level only | ✅ |
 | Signing only inside `BiometricPrompt` success with `CryptoObject(Signature)`, `BIOMETRIC_STRONG` only, no device credential | `:313-354`; device-credential results rejected at `:325` | Already so | ➖ 🔒 |
 | The 32-byte secret key (AES-GCM) is usable for 3 s after the same check | `:247-268` (`SECRET_WINDOW_S`) | By design: one prompt can unlock one `CryptoObject`, which is the liveness `Signature` | ◑ documented; the server never sees this key |
-| iOS: Secure Enclave key, `.privateKeyUsage + .biometryCurrentSet`, `WhenPasscodeSetThisDeviceOnly`; no `.userPresence`/`.biometryAny`/`.devicePasscode` | `HumidGatePlugin.swift:246-256` | Already so | ➖ 🔒 |
-| iOS: fresh `LAContext` per operation, reuse duration 0, action in `localizedReason` | `:197-210` | Fresh context; reuse duration not set explicitly | ✅ |
+| iOS: Secure Enclave key, `.privateKeyUsage + .biometryCurrentSet`, `WhenPasscodeSetThisDeviceOnly`; no `.userPresence`/`.biometryAny`/`.devicePasscode` | `HumidGatePlugin.swift:344-349` (`createLiveKey`) | Already so | ➖ 🔒 |
+| iOS: fresh `LAContext` per operation, reuse duration 0, action in `localizedReason` | `:298-308` | Fresh context; reuse duration not set explicitly | ✅ |
 | Desktop: biometric only, no Windows Hello / PIN; server default `attested` (phones only) | `plugins/humid-gate/src/desktop/*`, `services/gateway/src/server.js:154` | Already so | ➖ |
 | **Release builds:** Android was published as a `--debug` APK (debuggable, WebView remote debugging on, cleartext allowed, logs to logcat), signed with a key committed to the repo | `.github/workflows/release.yml`, `tools/android-test.keystore` | The worst finding | ✅ release key required, debug path removed, APK checked (signer, not debuggable), committed key deleted |
 
@@ -71,7 +71,7 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 | Signed / verified before acting | The 12-character code is a commitment to the keys behind it | ✅ see below. The scanning device recomputes it from the keys the server returns (`api/src/index.js` `getLink`/`getOffer`/`getHelp`), and now the **displaying** device does too, so a server can't hand back a code for keys of its own (`api/src/index.js:280,312,376`) |
 | Strict parser: size cap, unknown fields and versions | `parseQr` | ✅ 48 characters; one canonical spelling; unknown versions, kinds and extra fields refused; no bare codes from the camera; the scanner takes only the kind it asked for (`ui.jsx` `Scanner`) |
 | Never a URL or deep link | Never opened | ➖ (and URLs don't parse) |
-| Device link: short authentication string on both screens | `accountCheck` (`recovery/src/index.js:389`); new device `onboarding.jsx`, old device `security.jsx` `AddDeviceSheet` | ✅ the new device joins only after the person confirms the account check matches the other screen (`controller.js:1250`, `confirmJoin`) |
+| Device link: short authentication string on both screens | `accountCheck` (`recovery/src/index.js:389`); new device `onboarding.jsx`, old device `security.jsx` `AddDeviceSheet` | ✅ the new device joins only after the person confirms the account check matches the other screen (`controller.js` `confirmJoin`) |
 | Both devices confirm with a live biometric; the new device passes attestation | Approve is a step-up; joining is an attested enrolment | ➖ (P1) |
 | The new device's name is free text | `services/recovery/src/server.js:147` | ✅ control, zero-width and direction-override characters stripped; shown as "It calls itself …" |
 | Witness / recovery codes checked against the ledger and public log | — | ⬜ open: a witness checks the code's keys, not yet the public log |
@@ -109,7 +109,7 @@ then confirms which account the new device is joining.
 | Input fields: no suggestions or learning | ✅ `autocorrect`, `autocomplete` and `spellcheck` off on every text field. ◑ a WebView can't set `IME_FLAG_NO_PERSONALIZED_LEARNING`; with these attributes Chromium asks the keyboard for no suggestions |
 | Clipboard | ✅ removed: the seal card and ID numbers can't be copied (save or print the card instead) |
 | Accessibility-service warning (optional) | ⬜ |
-| iOS: block third-party keyboards, hide the app-switcher snapshot, react to screen capture | ✅ in code (`HumidGatePlugin.swift:95-152`): a cover in the app switcher and while the screen is recorded or mirrored; third-party keyboards refused. 🔒 needs a signed iPhone build to confirm |
+| iOS: block third-party keyboards, hide the app-switcher snapshot, react to screen capture | ✅ in code (`HumidGatePlugin.swift:97-190`, *screen exposure*): a cover in the app switcher and while the screen is recorded or mirrored; third-party keyboards refused. 🔒 needs a signed iPhone build to confirm |
 
 ## P2 — WebView and shell
 
@@ -128,6 +128,24 @@ then confirms which account the new device is joining.
 | App, packages and plugins log nothing sensitive | ➖ no client logging at all |
 | Server request log | ✅ logs the route pattern (`/links/:code`), never the path's codes or ids (`packages/svc/src/index.js:112`) |
 | Zero buffers after use | ✅ seeds and keys were already wiped; chip session keys now too |
+
+## 2.0 security pass (October 2026)
+
+A second pass over the app shell and the data it keeps on the device. Finding numbers
+are the review's; F3, F4, F8 and F9 were screen-level changes made alongside (the
+seal card's PDF viewer sandbox, CSS, and the screens calling `openExternal`).
+
+| # | Finding | Fix | Where |
+|---|---|---|---|
+| F1 | The duress setting (`{ enabled, gesture }`) sat in the identity record in the clear: anyone with the phone's storage could see duress was set up and which gesture triggers it | Sealed under a key derived from the account seed (`settingsKey`, HKDF info `HUMID-PQ1 device-settings`, AEAD `HUMID-SETTING-v1`) as `duressSealed`. The Lock screen reports which gesture was used; the controller opens the setting inside the live check and decides decoy-or-real **after** it. A plaintext setting from an earlier release is sealed on the first unlock. ✅ `tests/duress.test.js` proves the record holds no `duress`, `gesture` or state in the clear | `packages/crypto/src/suites/pq1.js` (`settingsKey`, `sealSetting`, `openSetting`), `apps/mobile/src/core/duress.js`, `controller.js` `unlock` / `unlockOffline` / `saveDuress` / `loadDuressSetting` |
+| F2 | iOS backups could carry the WebView's IndexedDB (wrapped identity, sealed offline copy, access pass) | `Library/WebKit` and `Caches/WebKit` excluded from backups at plugin load, every launch. ✅ 🔒 (Android already: `allowBackup=false`, data-extraction rules.) The join record's `pending` block is replaced by `null` when the join completes. ◑ the access pass is still stored as is; see SECURITY.md *Before real data* | `HumidGatePlugin.swift` `excludeWebDataFromBackups` |
+| F5 | Release bundles still contained the simulated vault server, the demo gate's callers and the `/dev/*` endpoints, switched off only at run time | The build flags are tested inline where used (the only form esbuild folds at parse time) and `startSim` is a conditional expression, so the branches and the sim chunk are gone from release builds. ✅ `tests/bundle.test.js` builds a release and checks. A simulation build is its own app, `app.humid.vault.sim` / "HumID Sim", and can't be published | `apps/mobile/build.mjs`, `controller.js`, `core/nfc.js`, `.github/workflows/release.yml` |
+| F6 | `knownNames` (item id → name, for Activity) survived lock and erase, and in a decoy session held every item's name | Cleared on `lock()` and `eraseEverything()`; a decoy session keeps only the decoy items' names | `controller.js` `refresh`, `lock`, `eraseEverything` |
+| F7 | `markPicking()` (a system file picker is up) suppressed lock-on-hide until a later focus event, so a picker that never came back left HumID unlocked off screen | Bounded: clears itself after 60 s; `pagehide` clears it and locks; a hidden span over 20 s locks anyway (timer while hidden, and on return) | `controller.js` `markPicking`, `wireGlobalEvents` |
+| F10 | `<a target=_blank>` links left the WebView free to navigate | `openExternal(url)`: only `https:`, `tel:`, `mailto:`; the Tauri opener plugin with a capability scoped to exactly those; in a browser `noopener,noreferrer`. The shell's `on_navigation` refuses anything but the app's own origin (`tauri://`, `tauri.localhost`, loopback in dev) | `apps/mobile/src/core/external.js`, `src-tauri/src/lib.rs` `own_origin`, `capabilities/default.json` |
+| F11 | A JPEG 2000 chip photo's header decided the canvas size: a hostile chip or file could declare a huge image | ≤ 2 MB and ≤ 4,000,000 declared pixels, checked before anything is allocated; no portrait is decoded from a chip whose files fail its own hash list | `core/scan.js` `jp2ToJpeg` / `portraitTooBig`, `controller.js` `readChipInto` |
+| F12 | A request with no timeout could hold a live check (keys in memory) open for as long as a proxy kept the socket | Every HTP request has a 45 s timeout (`AbortSignal.timeout`, injectable); the connection probe 15 s. A hung download ends the check. The ciphertext download stays inside the check on purpose: `GET /vault/objects/:id` *is* the step-up request, released only on the signature made during that check | `packages/htp/src/client.js` `request`, `controller.js` `fetchPlain` |
+| — | The seal card sheet and the payment-card sheet shared the type `"card"` | Seal card sheet is `recoveryCard` | `controller.js` `makeNewCard`, `security.jsx` |
 
 ## Out of scope, unchanged
 
