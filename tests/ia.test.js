@@ -35,7 +35,7 @@ test("the controller's toasts and prompts use the same words as the screens", ()
   assert.deepEqual(bad, []);
 });
 
-test("every sheet type is rendered in exactly one place: the recovery card and payment card sheets can't open together", () => {
+test("every sheet type is rendered in exactly one place, and the inventory is the 2.0 one", () => {
   const where = new Map(); // type → files that render it
   for (const f of files) {
     for (const m of noComments(read(f)).matchAll(/sheet\?\.type === "([a-zA-Z]+)"/g)) {
@@ -45,11 +45,28 @@ test("every sheet type is rendered in exactly one place: the recovery card and p
   }
   const shared = [...where].filter(([, fs]) => fs.size > 1).map(([t, fs]) => `${t}: ${[...fs].join(", ")}`);
   assert.deepEqual(shared, [], "a sheet type rendered from more than one file");
-  assert.deepEqual([...where.get("card")], ["main.jsx"], "the payment card sheet");
+  // main.jsx: one Add entry (a full-screen flow: camera first) and the pushed item screen
+  assert.deepEqual([...where].filter(([, fs]) => fs.has("main.jsx")).map(([t]) => t).sort(), ["add", "item"]);
+  assert.equal(where.has("id"), false, "the ID sheet is a step inside Add");
+  assert.equal(where.has("card"), false, "the payment card sheet is a step inside Add");
   assert.deepEqual([...where.get("recoveryCard")], ["screens/you.jsx"], "the recovery card sheet");
   // and the controller opens the recovery card under its own type
   assert.match(read("core/controller.js"), /type: "recoveryCard"/);
   assert.doesNotMatch(noComments(read("core/controller.js")), /S\.sheet\.value = \{ type: "card"/);
+  // the old entry points are gone for good
+  for (const f of files) assert.doesNotMatch(noComments(read(f)), /\bAddSheet\b|\bIdSheet\b|type: "id"|type: "card"/, `${f} still names a 1.x add sheet`);
+});
+
+test("the Add flow: camera first, with the file, typed-card and tap routes on the camera's own bar", () => {
+  const add = noComments(read("screens/add.jsx"));
+  assert.match(add, /step\.at === "camera" && \(\s*<DocCamera/, "the camera is the first step");
+  assert.match(add, /It's something else/, "the way to the picker");
+  for (const t of ["File", "Type a card"]) assert.match(add, new RegExp(`<span>${t}</span>`), `${t} on the bar`);
+  assert.match(add, /Tap a card/);
+  // every kind reviews through the one Review screen
+  assert.equal((add.match(/<Review /g) || []).length, 3, "photo, file and pass reviews");
+  assert.match(noComments(read("screens/ids.jsx")), /<Review kind="id"/);
+  assert.match(noComments(read("screens/cards.jsx")), /<Review kind="card"/);
 });
 
 test("three tabs: Vault, Activity, You", async () => {
