@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.js",
     "./issuer": "./src/issuer.js",
-    "./jwk": "./src/jwk.js"
+    "./jwk": "./src/jwk.js",
+    "./atrest": "./src/atrest.js"
   },
   "humid": {
     "provides": {
