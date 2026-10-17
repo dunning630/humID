@@ -1,6 +1,6 @@
 {
   "name": "@humid/recovery",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Moving an account seed to a new device without the server holding it: key codes, recovery cards, Shamir shares for recovery contacts.",
   "type": "module",
   "exports": "./src/index.js",

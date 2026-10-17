@@ -1,6 +1,6 @@
 {
   "name": "@humid/attest",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Hardware attestation of liveness keys (Android key attestation, Apple App Attest) and liveness signature checks. Server side.",
   "type": "module",
   "exports": {
