@@ -8,9 +8,8 @@ import { wireBack } from "./core/back.js";
 import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet, ConnectionBar } from "./ui.jsx";
 import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
-import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
-import { IdSheet } from "./screens/ids.jsx";
-import { CardSheet } from "./screens/cards.jsx";
+import { Vault, Item, Viewer } from "./screens/vault.jsx";
+import { Add } from "./screens/add.jsx";
 import { Activity } from "./screens/activity.jsx";
 import { You } from "./screens/you.jsx";
 import { applyPrefs } from "./core/prefs.js";
@@ -33,10 +32,8 @@ function App() {
           {S.tab.value === "activity" && <Activity />}
           {S.tab.value === "you" && <You />}
           <TabBar />
-          {sheet?.type === "add" && <AddSheet />}
-          {sheet?.type === "id" && <IdSheet />}
-          {sheet?.type === "card" && <CardSheet />}
-          {sheet?.type === "item" && <ItemSheet key={sheet.id} />}
+          {sheet?.type === "add" && <Add />}
+          {sheet?.type === "item" && <Item key={sheet.id} />}
           <Viewer />
         </>
       )}

@@ -47,6 +47,7 @@ const P = {
   torch: <path d="M13 3 6.5 13H11l-1 8 6.5-10H12l1-8Z" />,
   card: <><rect x="2.5" y="5" width="19" height="14" rx="2.5" /><path d="M2.5 9.5h19M6 15h4" /></>,
   ticket: <><path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h13A1.5 1.5 0 0 1 20 7.5V10a2 2 0 0 0 0 4v2.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 16.5V14a2 2 0 0 0 0-4V7.5Z" /><path d="M14 6v12" stroke-dasharray="1.5 2" /></>,
+  more: <><circle cx="6" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="18" cy="12" r="1.6" fill="currentColor" stroke="none" /></>,
   pushpin: <><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" /><path d="M12 14v6" /></>,
   person: <><circle cx="12" cy="8" r="3.6" /><path d="M5 20c.6-3.6 3.5-5.6 7-5.6s6.4 2 7 5.6" /><path d="M15.2 15.6 16.6 17l2.6-2.8" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7" /><circle cx="12" cy="12" r="6.2" /></>,
@@ -66,17 +67,6 @@ export function Icon({ name, label }) {
     </svg>
   );
 }
-
-export const CATEGORIES = [
-  { id: "identity", label: "Identity", icon: "idcard" },
-  { id: "health", label: "Health", icon: "health" },
-  { id: "money", label: "Money", icon: "money" },
-  { id: "home", label: "Home", icon: "home" },
-  { id: "personal", label: "Personal", icon: "user" },
-  { id: "passes", label: "Passes", icon: "ticket" },
-  { id: "other", label: "Other", icon: "folder" },
-];
-export const categoryOf = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES.find((c) => c.id === "other");
 
 export function kindIcon(type = "") {
   if (type === "application/vnd.humid.id+json") return "idcard";
