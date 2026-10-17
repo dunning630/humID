@@ -1907,7 +1907,9 @@ export async function readChipInto(record, access, { portrait } = {}) {
   try { mrz = readDg1(r.dg1).mrz; } catch { /* shown as unread below */ }
   const integrity = (() => { try { return checkIntegrity(r.sod, { 1: r.dg1, ...(r.dg2 ? { 2: r.dg2 } : {}), ...(r.dg15 ? { 15: r.dg15 } : {}) }); } catch { return null; } })();
   applyChip(record, r, { mrz, integrity, b64 });
-  if (r.dg2 && portrait) {
+  // A photo whose hash doesn't match the chip's own signed list isn't decoded or shown:
+  // the decoder would be parsing bytes no one vouches for.
+  if (r.dg2 && portrait && integrity?.ok !== false) {
     try { setImage(record, "portrait", await portrait(readDg2(r.dg2))); }
     catch { toast("Read the chip, but its photo is in a format HumID can't show yet. It's kept with the record.", "warn"); }
   }
