@@ -170,3 +170,23 @@ test("a rotated server key surfaces as 'server identity changed', even with stal
   const client = new HtpClient({ fetch, pinnedKid: before.kid });
   await assert.rejects(client.connect(), (e) => e.code === "server_identity_changed");
 });
+
+test("every request carries a timeout: a server that never answers ends the call instead of hanging", async () => {
+  const seen = [];
+  const hang = (url, init) => new Promise((_, reject) => {
+    seen.push(init.signal);
+    init.signal.addEventListener("abort", () => reject(init.signal.reason));
+  });
+  const client = new HtpClient({ fetch: hang, timeoutMs: 30 });
+  // AbortSignal.timeout's timer doesn't keep Node's event loop alive on its own
+  const alive = setTimeout(() => {}, 2000);
+  try { await assert.rejects(client.serverKeys(), (e) => e?.name === "TimeoutError"); }
+  finally { clearTimeout(alive); }
+  assert.ok(seen[0] instanceof AbortSignal);
+  // the default, for the app, is 45 s; a signal the caller passed is kept
+  assert.equal(new HtpClient({ fetch: hang }).timeoutMs, 45_000);
+  const own = new AbortController();
+  const c2 = new HtpClient({ fetch: async (u, init) => { seen.push(init.signal); return new Response("{}", { status: 500 }); }, timeoutMs: 10 });
+  await c2.request("http://x/", { signal: own.signal });
+  assert.equal(seen.at(-1), own.signal);
+});
