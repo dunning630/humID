@@ -52,16 +52,23 @@ export function explicit(n, inner) {
 const SIG = { "P-256": ["1.2.840.10045.4.3.2", "sha256"], "P-384": ["1.2.840.10045.4.3.3", "sha384"] };
 export const ecKeys = (curve = "P-256") => generateKeyPairSync("ec", { namedCurve: curve });
 const curveOf = (k) => (k.asymmetricKeyDetails.namedCurve === "secp384r1" ? "P-384" : "P-256");
-export const name = (cn) => seq(set(seq(oid("2.5.4.3"), utf8s(cn))));
+const printable = (s) => tlv([0x13], Buffer.from(s));
+/** An X.509 Name: CN, with a countryName first when given ({ cn, country } or a plain CN). */
+export const name = (n) => {
+  const { cn, country } = typeof n === "string" ? { cn: n } : n;
+  return seq(...(country ? [set(seq(oid("2.5.4.6"), printable(country)))] : []), set(seq(oid("2.5.4.3"), utf8s(cn))));
+};
+/** keyUsage BIT STRING with the given bits set (0 = digitalSignature, 5 = keyCertSign, 6 = cRLSign). */
+export const keyUsage = (...bits) => { let v = 0; for (const b of bits) v |= 0x80 >> b; return tlv([0x03], [7 - Math.max(...bits), v]); };
 export const extension = (id, value, critical = false) => seq(oid(id), ...(critical ? [bool(true)] : []), octet(value));
 
 let serial = 1000;
-export function certificate({ subject, issuer, publicKey, signingKey, extensions = [], ca = false, notBefore = new Date(Date.now() - 86400e3), notAfter = new Date(Date.now() + 365 * 86400e3) }) {
+export function certificate({ subject, issuer, publicKey, signingKey, extensions = [], ca = false, serialNumber = serial++, notBefore = new Date(Date.now() - 86400e3), notAfter = new Date(Date.now() + 365 * 86400e3) }) {
   const [algOid, hash] = SIG[curveOf(signingKey)];
   const alg = seq(oid(algOid));
   const exts = ca ? [...extensions, extension("2.5.29.19", seq(bool(true)), true)] : extensions;
   const tbs = seq(
-    explicit(0, int(2)), int(serial++), alg, name(issuer), seq(utcTime(notBefore), utcTime(notAfter)), name(subject),
+    explicit(0, int(2)), int(serialNumber), alg, name(issuer), seq(utcTime(notBefore), utcTime(notAfter)), name(subject),
     publicKey.export({ type: "spki", format: "der" }), ...(exts.length ? [explicit(3, seq(...exts))] : []),
   );
   return seq(tbs, alg, bitString(sign(hash, tbs, signingKey)));

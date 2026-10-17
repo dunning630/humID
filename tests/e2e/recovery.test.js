@@ -9,7 +9,7 @@ import { HumidApi } from "@humid/api";
 import { suite } from "@humid/crypto";
 import { identityId, random, toHex, sha3_256 } from "@humid/htp";
 import {
-  keyCode, LINK_LABEL, newCard, parseCard, cardTag, sealCard, openCard,
+  keyCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, newCard, parseCard, cardTag, sealCard, openCard,
   split, combine, thresholdFor, encodeShare, decodeShare,
 } from "@humid/recovery";
 import { makeHolder, anotherDevice, register, sealFor, sealBytes } from "./holder.js";
@@ -295,4 +295,49 @@ test("contacts: a contact code returning someone else's keys is caught", async (
   db.prepare("UPDATE offers SET kem_pk = ? WHERE code = ?").run(other.kemPk, code);
   db.close();
   await assert.rejects(phone.getOffer(code), (e) => e.code === "code_mismatch");
+});
+
+/* ---------------- the device that shows a code checks it too ---------------- */
+
+/** A server that answers with a code for keys of its own (here: by rewriting the reply). */
+function lyingServer(api, label, ...keys) {
+  const real = api.htp.call.bind(api.htp);
+  api.htp.call = async (...a) => {
+    const res = await real(...a);
+    const j = res.json();
+    if (!j?.code) return res;
+    const forged = { ...j, code: keyCode(label, ...keys) };
+    return { ...res, ok: res.ok, status: res.status, json: () => forged };
+  };
+  return api;
+}
+
+test("a server that hands back a code for its own keys is caught before the code is shown", async () => {
+  const mine = receiveKeys(), theirs = receiveKeys();
+  // adding a device
+  const a = lyingServer(new HumidApi({ baseUrl: stack.baseUrl }), LINK_LABEL, theirs.kemPk, theirs.xPk);
+  await assert.rejects(a.startLink({ kemPk: mine.kemPk, xPk: mine.xPk, platform: "x" }), (e) => e.code === "code_mismatch");
+  // asking for recovery help
+  const b = lyingServer(new HumidApi({ baseUrl: stack.baseUrl }), REQUEST_LABEL, theirs.kemPk, theirs.xPk);
+  await assert.rejects(b.startRecovery({ method: "contacts", kemPk: mine.kemPk, xPk: mine.xPk, platform: "x" }), (e) => e.code === "code_mismatch");
+  // offering to be a witness
+  const eve = makeHolder("eve-offer");
+  const c = lyingServer(await register(eve, stack.baseUrl), OFFER_LABEL, theirs.kemPk, theirs.xPk, eve.pub.dsaPk);
+  await assert.rejects(c.offerContact(eve.pub), (e) => e.code === "code_mismatch");
+  // an honest server's codes pass
+  const honest = receiveKeys();
+  const ok = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: honest.kemPk, xPk: honest.xPk, platform: "x" });
+  assert.equal(ok.code, keyCode(LINK_LABEL, honest.kemPk, honest.xPk));
+});
+
+test("a new device's name for itself is shown plainly: no control or direction-override characters", async () => {
+  const lk = receiveKeys();
+  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "\u202eenohPi\u202c\u200b Alice's\n phone" + "x".repeat(80) });
+  const req = await phone.getLink(code);
+  assert.doesNotMatch(req.platform, /[\u0000-\u001f\u200b-\u200f\u202a-\u202e]/);
+  assert.ok(req.platform.length <= 40);
+  assert.match(req.platform, /^enohPi Alice's phone/);
+  const bk = receiveKeys();
+  const blank = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: bk.kemPk, xPk: bk.xPk, platform: "\u200b\u2066 " });
+  assert.equal((await phone.getLink(blank.code)).platform, "a new device");
 });

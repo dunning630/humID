@@ -241,7 +241,7 @@ export function CardConfirm({ code, onChange }) {
   return (
     <div class="field" style={{ marginTop: 14 }}>
       <label for="card-check">To check your copy, type group {n} of {groups.length}</label>
-      <input id="card-check" class="mono up" maxLength={7} autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXXX"
+      <input autocorrect="off" id="card-check" class="mono up" maxLength={7} autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXXX"
         value={v} onInput={(e) => setV(e.currentTarget.value)} />
       {ok ? <span class="hint ok"><Icon name="check" />That matches</span>
         : norm(v).length >= 5 ? <span class="hint warn">That isn't group {n}. Check what you wrote.</span>
@@ -269,14 +269,15 @@ export function PrintableCard({ code }) {
 }
 
 /* ---------------- QR codes: show and scan ---------------- */
-// A QR carries the same 12-character code you could type. The code is what
-// commits to the keys, so scanning is only a convenience.
+// A QR carries the same 12-character code you could type, what it's for and when
+// it expires. The code is what commits to the keys, so scanning is only a
+// convenience: what's scanned is checked like a typed code, never opened or run.
 
 
-/** A QR code for a code: kind is link | recover | contact. */
-export function QrCode({ kind, code, size = 184 }) {
+/** A QR code for a code: kind is link | recover | contact; expiresAt in ms. */
+export function QrCode({ kind, code, expiresAt, size = 184 }) {
   let q;
-  try { q = qrcode(0, "M"); q.addData(qrPayload(kind, code)); q.make(); }
+  try { q = qrcode(0, "M"); q.addData(qrPayload(kind, code, expiresAt)); q.make(); }
   catch { return null; }
   const n = q.getModuleCount();
   let d = "";
@@ -291,14 +292,19 @@ export function QrCode({ kind, code, size = 184 }) {
   );
 }
 
+const QR_FOR = { link: "adding a device", recover: "a recovery", contact: "a witness offer" };
+
 /**
- * Point the camera at a HumID QR code. Calls onCode({ kind, code }).
+ * Point the camera at a HumID QR code of the `expect` kind. Calls onCode({ kind, code }).
+ * Anything else (another kind, an old or unknown format, an expired code, a URL) is
+ * ignored with a hint; nothing scanned is acted on until the code is checked.
  * Uses the platform's barcode detector where there is one, jsQR otherwise.
  * Typing the code always works too, so a missing camera is never a dead end.
  */
 export function Scanner({ onCode, onCancel, expect }) {
   const video = useRef(null);
   const [err, setErr] = useState(null);
+  const [hint, setHint] = useState(null);
   useEffect(() => {
     let stream = null, stop = false, timer = null, detector = null, jsqr = null;
     const canvas = document.createElement("canvas");
@@ -328,8 +334,13 @@ export function Scanner({ onCode, onCancel, expect }) {
                 text = jsqr(g.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" })?.data || null;
               }
             } catch { /* keep looking */ }
-            const hit = text && parseQr(text);
-            if (hit && (!expect || !hit.kind || hit.kind === expect)) { stop = true; onCode(hit); return; }
+            if (text) {
+              const hit = parseQr(text);
+              if (!hit) setHint("That isn't a HumID code. Type the code instead.");
+              else if (hit.kind !== expect) setHint(`That code is for ${QR_FOR[hit.kind]}, not this.`);
+              else if (hit.expiresAt <= Date.now()) setHint("That code has expired. Start again on the other device.");
+              else { stop = true; onCode(hit); return; }
+            }
           }
           timer = setTimeout(tick, 180);
         };
@@ -344,6 +355,7 @@ export function Scanner({ onCode, onCancel, expect }) {
     <div class="scanner">
       {err ? <div class="banner warn"><span class="b-ico"><Icon name="info" /></span><div><strong>Can't scan</strong><span>{err}</span></div></div>
         : <div class="scan-frame"><video ref={video} playsInline muted /><i /></div>}
+      {hint && !err && <p class="fine" role="status" style={{ textAlign: "center", marginTop: 8 }}>{hint}</p>}
       <button class="btn ghost block" style={{ marginTop: 12 }} data-back onClick={onCancel}>Type the code instead</button>
     </div>
   );
@@ -357,7 +369,7 @@ export function CodeInput({ id, label, value, onInput, expect }) {
     <div class="field">
       <label for={id}>{label}</label>
       <div class="code-input">
-        <input id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXX-XXXX-XXXX" value={value} onInput={(e) => onInput(e.currentTarget.value)} />
+        <input autocorrect="off" id={id} class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="XXXX-XXXX-XXXX" value={value} onInput={(e) => onInput(e.currentTarget.value)} />
         <button class="btn quiet sm" type="button" onClick={() => setScan(true)} aria-label="Scan a QR code"><Icon name="scan" />Scan</button>
       </div>
     </div>
@@ -428,14 +440,14 @@ export function ChipAccess({ onChange, title = "Details from the document", init
       </div>
       {mode === "mrz" ? (
         <>
-          <div class="field"><label for="doc-num">Document number</label><input id="doc-num" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} value={num} maxLength={22} onInput={(e) => setNum(e.currentTarget.value)} /></div>
+          <div class="field"><label for="doc-num">Document number</label><input autocorrect="off" id="doc-num" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} value={num} maxLength={22} onInput={(e) => setNum(e.currentTarget.value)} /></div>
           <div class="split">
             <div class="field"><label for="doc-birth">Date of birth</label><input id="doc-birth" type="date" value={birth} onInput={(e) => setBirth(e.currentTarget.value)} /></div>
             <div class="field"><label for="doc-exp">Expiry date</label><input id="doc-exp" type="date" value={expiry} onInput={(e) => setExpiry(e.currentTarget.value)} /></div>
           </div>
         </>
       ) : (
-        <div class="field"><label for="doc-can">6-digit card access number</label><input id="doc-can" class="mono" inputMode="numeric" autocomplete="off" maxLength={7} value={can} onInput={(e) => setCan(e.currentTarget.value)} />
+        <div class="field"><label for="doc-can">6-digit card access number</label><input autocorrect="off" spellcheck={false} id="doc-can" class="mono" inputMode="numeric" autocomplete="off" maxLength={7} value={can} onInput={(e) => setCan(e.currentTarget.value)} />
           <span class="hint">Printed on the front of most European and many other ID cards.</span></div>
       )}
       {DEMO_SIM && <DemoChipFill onFill={(h) => { setMode("mrz"); setNum(h.number); setBirth(`19${h.birth.slice(0, 2)}-${h.birth.slice(2, 4)}-${h.birth.slice(4)}`); setExpiry(`20${h.expiry.slice(0, 2)}-${h.expiry.slice(2, 4)}-${h.expiry.slice(4)}`); }} />}
@@ -453,7 +465,7 @@ function DemoChipFill({ onFill }) {
     <div class="field">
       <label for="demo-chip-holder">Development build: simulated chip for</label>
       <div class="code-input">
-        <input id="demo-chip-holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+        <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-chip-holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
         <button class="btn quiet sm" type="button" onClick={async () => { setDemoHolder(name); onFill(await demoChipHint(name)); }}>Fill details</button>
       </div>
     </div>

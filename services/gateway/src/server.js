@@ -104,6 +104,7 @@ const ROUTES = [
   // verification stations
   { m: "GET", p: re("/recovery/station"), to: "recovery", path: "/station", auth: true },
   { m: "GET", p: re(`/recovery/station/requests/(${CODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
   { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
   // recovering on a new device
   { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
@@ -475,9 +476,9 @@ export function createGateway({
       if (r.status !== 200) fail(r);
       const d = r.data;
       if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
-      await recordQuietly(d.account, "recovery.station_verified", { ref: d.ref, station: s.subject, country: d.country, kinds: d.kinds, releaseAt: d.releaseAt });
-      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, proof: stepUp.proof });
-      return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country } };
+      await recordQuietly(d.account, "recovery.station_verified", { ref: d.ref, station: s.subject, country: d.country, kinds: d.kinds, releaseAt: d.releaseAt, chipProof: !!d.chipProof });
+      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, proof: stepUp.proof, chipProof: !!d.chipProof });
+      return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country, chipProof: !!d.chipProof } };
     },
 
     // Every unlock reports presence the same way. d = 1 means the owner used their duress

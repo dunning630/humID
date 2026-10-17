@@ -423,7 +423,7 @@ export function IdSheet() {
   async function readChipNow() {
     const ok = await readChipInto(rec.current, access, { portrait: portraitImage });
     if (ok) {
-      setNote({ tone: "ok", text: rec.current.verified.chip?.integrity ? "Chip read. The details match the issuing country's signed data." : "Chip read." });
+      setNote({ tone: "ok", text: rec.current.verified.chip?.integrity ? "Chip read. Its files match the chip's own list of hashes." : "Chip read." });
       setName(recordTitle(rec.current));
       setStep("review");
       redraw();
@@ -561,12 +561,12 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
         {rec.kind !== "passport" && (rec.address || rec.kind === "driver_license" || rec.kind === "id_card") && (
           <fieldset class="id-addr">
             <legend>Address</legend>
-            <input aria-label="Street" placeholder="Street" value={addr.street} onInput={(e) => setAddr({ ...addr, street: e.currentTarget.value })} />
-            <input aria-label="Apartment, suite" placeholder="Apartment, suite (optional)" value={addr.street2} onInput={(e) => setAddr({ ...addr, street2: e.currentTarget.value })} />
+            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Street" placeholder="Street" value={addr.street} onInput={(e) => setAddr({ ...addr, street: e.currentTarget.value })} />
+            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Apartment, suite" placeholder="Apartment, suite (optional)" value={addr.street2} onInput={(e) => setAddr({ ...addr, street2: e.currentTarget.value })} />
             <div class="split3">
-              <input aria-label="City" placeholder="City" value={addr.city} onInput={(e) => setAddr({ ...addr, city: e.currentTarget.value })} />
-              <input aria-label="State" placeholder="State" maxLength={3} class="up" value={addr.region} onInput={(e) => setAddr({ ...addr, region: e.currentTarget.value.toUpperCase() })} />
-              <input aria-label="ZIP or postal code" placeholder="ZIP" value={addr.postalCode} onInput={(e) => setAddr({ ...addr, postalCode: e.currentTarget.value })} />
+              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="City" placeholder="City" value={addr.city} onInput={(e) => setAddr({ ...addr, city: e.currentTarget.value })} />
+              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="State" placeholder="State" maxLength={3} class="up" value={addr.region} onInput={(e) => setAddr({ ...addr, region: e.currentTarget.value.toUpperCase() })} />
+              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="ZIP or postal code" placeholder="ZIP" value={addr.postalCode} onInput={(e) => setAddr({ ...addr, postalCode: e.currentTarget.value })} />
             </div>
           </fieldset>
         )}
@@ -576,7 +576,7 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
 
       <div class="field">
         <label for="id-name">Name in your vault</label>
-        <input id="id-name" value={name} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
+        <input autocorrect="off" spellcheck={false} id="id-name" value={name} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
       </div>
       {missing.length > 0 && <p class="small" style={{ color: "var(--amber-hi)", marginTop: 10 }}>Add the {missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.</p>}
       <div class="actions">
@@ -596,7 +596,7 @@ function FieldInput({ f, value, onInput, source, unsure }) {
     <select id={id} value={value || ""} onChange={onInput}><option value="">—</option><option value="F">Female</option><option value="M">Male</option><option value="X">Unspecified (X)</option></select>
   );
   else if (f.type === "bool") input = <label class="check"><input id={id} type="checkbox" checked={value === true} onChange={onInput} /><span>Yes</span></label>;
-  else input = <input id={id} class={f.mono ? "mono up" : f.type === "country" || f.type === "region" ? "up" : ""} value={value ?? ""} onInput={onInput} autocomplete="off" spellcheck={false}
+  else input = <input autocorrect="off" id={id} class={f.mono ? "mono up" : f.type === "country" || f.type === "region" ? "up" : ""} value={value ?? ""} onInput={onInput} autocomplete="off" spellcheck={false}
     maxLength={f.type === "country" ? 3 : f.type === "region" ? 3 : 80} />;
   const hint = f.type === "country" && value ? countryName(value) : f.type === "region" && value ? regionName(value) : null;
   return (
@@ -620,7 +620,6 @@ export function IdView({ record: rec, item }) {
   const [side, setSide] = useState(rec.images.front ? "front" : rec.images.portrait ? "portrait" : "back");
   const st = idStatus(rec);
   const p = provenance(rec);
-  const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast("Copied. Clipboards can be read by other apps: clear it when you're done.", "ok"); } catch { toast("Couldn't copy here.", "warn"); } };
   const rows = fieldsFor(rec.kind).filter((f) => rec.fields[f.key] !== undefined && rec.fields[f.key] !== "" && rec.fields[f.key] !== null);
   const show = (f) => {
     const v = rec.fields[f.key];
@@ -648,13 +647,13 @@ export function IdView({ record: rec, item }) {
         <span class={`pill ${st.state === "expired" ? "danger" : st.state === "expiring" ? "amber" : st.state === "valid" ? "mint" : ""}`}>
           <Icon name="clock" />{st.state === "expired" ? `Expired ${fmtDay(rec.fields.expiry)}` : st.state === "expiring" ? `Expires in ${st.days} days` : st.state === "valid" ? `Valid to ${fmtDay(rec.fields.expiry)}` : "No expiry date"}
         </span>
-        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "From the MRZ" : "Typed"}</span>
+        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "From the MRZ" : "Typed"}</span>
       </div>
       <div class="card" style={{ marginTop: 14 }}>
         {rows.map((f) => (
           <div class="row">
             <span class="k">{f.label}</span>
-            <span class={`v${f.mono ? " mono" : ""}`}>{show(f)}{(f.key === "number" || f.key === "discriminator") && <button class="copy" aria-label={`Copy ${f.label.toLowerCase()}`} onClick={() => copy(String(rec.fields[f.key]))}><Icon name="copy" /></button>}</span>
+            <span class={`v${f.mono ? " mono" : ""}`}>{show(f)}</span>
           </div>
         ))}
         {rec.address && (

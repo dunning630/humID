@@ -5,9 +5,9 @@ import { Icon } from "../icons.jsx";
 import { AssurancePill, CodeBox, CardBox, CardConfirm, PrintableCard, CAN_PRINT, useNow, fmtLeft, QrCode, ProofMeter, tierText, ChipAccess } from "../ui.jsx";
 import * as S from "../core/state.js";
 import {
-  startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard, copyCard,
+  startEnroll, enroll, finishEnroll, unlock, connectServer, resetLocal, saveCard,
   redeemAccessCode, resumePass, demoAccessCode, serverPinned,
-  startJoin, beginJoin, pollJoin, cancelJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, DURESS_HOLD_MS,
+  startJoin, beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, DURESS_HOLD_MS,
 } from "../core/controller.js";
 import { useRef, useState } from "preact/hooks";
 import { parseCard } from "@humid/recovery";
@@ -176,7 +176,7 @@ function AccessStep({ eyebrow, onNext }) {
       ) : (
         <div class="field" style={{ marginTop: 22 }}>
           <label for="access">Access code</label>
-          <input id="access" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HA-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+          <input autocorrect="off" id="access" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HA-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
             value={text} onInput={(e) => setText(e.currentTarget.value)} disabled={busy} />
           {valid && <span class="hint ok"><Icon name="check" />Code looks right</span>}
           {!valid && typed >= 24 && <span class="hint warn">That code has a typo. Check each character.</span>}
@@ -214,7 +214,6 @@ function EnrollDone() {
           <div class="split" style={{ marginTop: 12 }}>
             {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
             <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
-            <button class="btn quiet sm" onClick={() => copyCard(code)}><Icon name="file" />Copy</button>
           </div>
           <CardConfirm code={code} onChange={setSaved} />
           <PrintableCard code={code} />
@@ -325,7 +324,7 @@ function QuorumEntry() {
       bindLabel="Bind" disabled={!!text.trim() && state !== "ok"} onBind={(demo, sole) => beginJoin("quorum", { useDemo: demo, cardInput: state === "ok" ? text : "", soleBiometric: sole })}>
       <div class="field">
         <label for="qcard">Seal card (if you have it)</label>
-        <input id="qcard" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+        <input autocorrect="off" id="qcard" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
           value={text} onInput={(e) => setText(e.currentTarget.value)} />
         {state === "ok" && <span class="hint ok"><Icon name="check" />Card code looks right</span>}
         {state && state !== "ok" && <span class="hint warn">{state}</span>}
@@ -344,7 +343,7 @@ function CardEntry() {
       bindLabel="Bind" disabled={state !== "ok"} onBind={(demo, sole) => beginJoin("card", { useDemo: demo, cardInput: text, soleBiometric: sole })}>
       <div class="field">
         <label for="card">Recovery card</label>
-        <input id="card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+        <input autocorrect="off" id="card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
           value={text} onInput={(e) => setText(e.currentTarget.value)} />
         {state === "ok" && <span class="hint ok"><Icon name="check" />Card code looks right</span>}
         {state && state !== "ok" && <span class="hint warn">{state}</span>}
@@ -367,11 +366,21 @@ function JoinWait() {
 
       {p.method === "link" && (
         <>
+          {st?.check ? (<>
+          <h1 style={{ marginTop: 8 }}>Does your other device show this?</h1>
+          <p class="lede" style={{ marginTop: 10 }}>Your other device approved. Before this one joins, check that it's your account: your other device shows an account check after approving.</p>
+          <CodeBox code={st.check} label="Account check" />
+          <div class="actions">
+            <button class="btn primary block" onClick={confirmJoin}><Icon name="fingerprint" />It matches: finish with biometric</button>
+            <button class="btn ghost block" onClick={rejectJoin}>It doesn't match</button>
+          </div>
+          </>) : (<>
           <h1 style={{ marginTop: 8 }}>Enter this code on your other device</h1>
           <p class="lede" style={{ marginTop: 10 }}>On the device that has your HumID: <b>Security → Add a device</b>. It checks that this code matches this device's keys, then asks for your biometric.</p>
           <CodeBox code={p.code} label="Device code" />
-          <QrCode kind="link" code={p.code} />
+          <QrCode kind="link" code={p.code} expiresAt={p.expiresAt} />
           {!ended && <p class="fine" style={{ textAlign: "center" }}>Scan it from your other device, or type it. Expires in {fmtLeft(p.expiresAt - now)}</p>}
+          </>)}
         </>
       )}
 
@@ -438,7 +447,7 @@ function QuorumWait({ p, st, now }) {
       {!releaseAt && !ended && (
         <>
           <CodeBox code={p.code} label="Recovery code" />
-          <QrCode kind="recover" code={p.code} />
+          <QrCode kind="recover" code={p.code} expiresAt={p.expiresAt} />
           <div class="card" style={{ marginTop: 14 }}>
             <div class="proof-row" data-done={kinds.includes("witness") ? "1" : "0"}>
               <span class="p-ico"><Icon name="users" /></span>
@@ -452,7 +461,7 @@ function QuorumWait({ p, st, now }) {
             </div>
             {!kinds.includes("card") && (
               <div class="field" style={{ marginTop: 0 }}>
-                <input aria-label="Seal card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-…" value={card} onInput={(e) => setCard(e.currentTarget.value)} />
+                <input autocorrect="off" aria-label="Seal card" class="mono up" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-…" value={card} onInput={(e) => setCard(e.currentTarget.value)} />
                 <button class="btn quiet sm" style={{ marginTop: 8 }} disabled={!cardOk} onClick={async () => { if (await addCardToJoin(card)) setCard(""); }}><Icon name="fingerprint" />Add seal card</button>
               </div>
             )}
@@ -469,7 +478,7 @@ function QuorumWait({ p, st, now }) {
             )}
             {DEMO_BUILD && !kinds.includes("anchor") && (
               <div class="field" style={{ marginTop: 0 }}>
-                <input aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+                <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Demo passport holder" value={name} onInput={(e) => setName(e.currentTarget.value)} />
                 <button class="btn quiet sm" style={{ marginTop: 8 }} disabled={busy} onClick={chip}><Icon name="passport" />Tap demo passport</button>
               </div>
             )}

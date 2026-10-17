@@ -24,8 +24,10 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse, kids, int, octets, oid, readTLV, CLASS, TAG } from "@humid/attest/der";
 import { parseMrz, stableIdentity, expiryDate, MrzError } from "./mrz.js";
+import { alpha2Of } from "./countries.js";
 
 export { parseMrz, stableIdentity, checkDigit, expiryDate, MrzError } from "./mrz.js";
+export { alpha2Of } from "./countries.js";
 
 export class AnchorError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -56,6 +58,10 @@ const OID = {
   ldsSecurityObject: "2.23.136.1.1.1",
   contentType: "1.2.840.113549.1.9.3",
   messageDigest: "1.2.840.113549.1.9.4",
+  countryName: "2.5.4.6",
+  subjectKeyId: "2.5.29.14",
+  keyUsage: "2.5.29.15",
+  basicConstraints: "2.5.29.19",
 };
 const HASH_LEN = { sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64 };
 
@@ -141,6 +147,61 @@ function verifyWith(publicKey, alg, digestAlg, data, signature) {
   return cryptoVerify(hash, data, publicKey, signature);
 }
 
+/* ---------------- certificates: the fields passive authentication needs ---------------- */
+
+/** countryName of an X.509 Name, or null. */
+function countryOf(nameTlv) {
+  for (const rdn of kids(nameTlv)) for (const atv of kids(rdn)) {
+    const [t, v] = kids(atv);
+    if (oid(t) === OID.countryName) return Buffer.from(v.value).toString("latin1").toUpperCase();
+  }
+  return null;
+}
+
+/**
+ * The parts of a certificate X509Certificate doesn't expose: issuer and serial as
+ * encoded (to match a CMS signer), subject key id, key usage, CA flag, countries.
+ */
+export function certFields(der) {
+  return tryRead(() => {
+    const tbs = kids(kids(parse(Buffer.from(der)))[0]);
+    let i = ctx(tbs[0], 0) ? 1 : 0;
+    const serial = Buffer.from(tbs[i].value); i++;
+    i++; // signature algorithm
+    const issuer = tbs[i]; i++;
+    i++; // validity
+    const subject = tbs[i]; i++;
+    i++; // subject public key info
+    let ski = null, keyUsage = null, ca = false;
+    for (; i < tbs.length; i++) {
+      if (!ctx(tbs[i], 3)) continue;
+      for (const ext of kids(kids(tbs[i])[0])) {
+        const e = kids(ext);
+        const id = oid(e[0]);
+        const val = parse(octets(e[e.length - 1]));
+        if (id === OID.subjectKeyId) ski = Buffer.from(val.value);
+        if (id === OID.keyUsage) keyUsage = Buffer.from(val.value); // BIT STRING: unused-bits byte, then bits
+        if (id === OID.basicConstraints) { const b = kids(val); ca = !!b[0] && b[0].tag === TAG.boolean && b[0].value[0] !== 0; }
+      }
+    }
+    return { serial, issuerDer: Buffer.from(issuer.raw), ski, keyUsage, ca, country: countryOf(subject), issuerCountry: countryOf(issuer) };
+  }, "bad_chip_data", "A certificate can't be read.");
+}
+
+const DIGITAL_SIGNATURE = 0x80; // keyUsage bit 0
+const canSign = (ku) => !!ku && ku.length >= 2 && (ku[1] & DIGITAL_SIGNATURE) !== 0;
+const stripInt = (b) => { let i = 0; while (i < b.length - 1 && b[i] === 0) i++; return b.subarray(i); };
+
+/** Does the CMS SignerIdentifier name this certificate? */
+function signerIs(sid, f) {
+  if (sid.cls === CLASS.universal && sid.tag === TAG.sequence) {
+    const [issuer, serial] = kids(sid);
+    return same(issuer.raw, f.issuerDer) && same(stripInt(serial.value), stripInt(f.serial));
+  }
+  if (ctx(sid, 0)) return !!f.ski && same(sid.value, f.ski);
+  return false;
+}
+
 /* ---------------- trust: country signing CAs ---------------- */
 
 /** Load CSCA certificates (PEM or DER files) from a directory. Missing directory = none. */
@@ -165,30 +226,41 @@ const asCert = (c) => (c instanceof X509Certificate ? c : new X509Certificate(c)
  * Check that the chip's data is genuine. chip: { dg1, sod, dg15? } (bytes).
  * cscas: trusted country signing CA certificates. Returns the parsed MRZ and what was proven.
  */
-export function passiveAuth(chip, { cscas = [], now = new Date() } = {}) {
+export function passiveAuth(chip, opts = {}) {
+  // Whatever a phone sends, the answer is a refusal with a reason, never a server error.
+  return tryRead(() => passiveAuthInner(chip, opts), "bad_chip_data", "The chip data can't be read.");
+}
+
+function passiveAuthInner(chip, { cscas = [], now = new Date() } = {}) {
   if (!chip?.dg1 || !chip?.sod) fail("bad_chip_data", "The chip data needs DG1 and the document security object.");
   if (!cscas.length) fail("no_trust", "This server has no country signing certificates configured, so it can't check ID chips yet.");
   const sod = parseSod(chip.sod);
 
-  // 1. Data groups match the signed hashes.
-  const dg1Hash = sod.dgHashes.get(1);
-  if (!dg1Hash || !same(digest(sod.hashAlg, chip.dg1), dg1Hash)) fail("data_altered", "The identity data doesn't match the chip's signed record.");
-  if (chip.dg15) {
-    const h = sod.dgHashes.get(15);
-    if (!h || !same(digest(sod.hashAlg, chip.dg15), h)) fail("data_altered", "The chip's authentication key doesn't match its signed record.");
+  // 1. Every data group sent matches its signed hash (and every signed hash is the right size).
+  for (const h of sod.dgHashes.values()) if (h.length !== HASH_LEN[sod.hashAlg]) fail("bad_chip_data", "The chip's signed record is malformed.");
+  for (const [key, bytes] of Object.entries(chip)) {
+    const m = /^dg([0-9]{1,2})$/.exec(key);
+    if (!m || bytes == null) continue;
+    const h = sod.dgHashes.get(Number(m[1]));
+    if (!h || !same(digest(sod.hashAlg, bytes), h)) fail("data_altered", key === "dg1" ? "The identity data doesn't match the chip's signed record." : `Data group ${m[1]} doesn't match the chip's signed record.`);
   }
 
-  // 2. Signed attributes bind the content.
+  // 2. Signed attributes bind the content: its type and its digest are both required.
   const mdAlg = sod.signerDigest || sod.hashAlg;
   const md = tryRead(() => octets(sod.messageDigestAttr), "bad_chip_data", "The document security object has no message digest.");
   if (!same(md, digest(mdAlg, sod.eContent))) fail("data_altered", "The chip's signed record was altered.");
-  if (sod.contentTypeAttr && tryRead(() => oid(sod.contentTypeAttr), "bad_chip_data", "Bad content type.") !== OID.ldsSecurityObject) fail("bad_chip_data", "The signed content type is wrong.");
+  if (!sod.contentTypeAttr || tryRead(() => oid(sod.contentTypeAttr), "bad_chip_data", "Bad content type.") !== OID.ldsSecurityObject) fail("bad_chip_data", "The signed content type is missing or wrong.");
 
-  // 3. The Document Signer signed it.
+  // 3. The Document Signer the SOD names signed it, and it's a signing certificate.
   if (!sod.certs.length) fail("bad_chip_data", "The chip doesn't include its document signer certificate.");
-  const dsCandidates = sod.certs.map((c) => tryRead(() => new X509Certificate(c), "bad_chip_data", "The document signer certificate can't be read."));
-  const ds = dsCandidates.find((c) => { try { return verifyWith(c.publicKey, sod.signatureAlg, mdAlg, sod.signedAttrsDer, sod.signature); } catch { return false; } });
-  if (!ds) fail("bad_signature", "The chip's signature doesn't verify. The document may be forged.");
+  const named = sod.certs.filter((c) => signerIs(sod.sid, certFields(c)));
+  if (named.length !== 1) fail("bad_signature", "The chip's signer doesn't match its certificate. The document may be forged.");
+  const dsFields = certFields(named[0]);
+  const ds = tryRead(() => new X509Certificate(named[0]), "bad_chip_data", "The document signer certificate can't be read.");
+  let signed = false;
+  try { signed = verifyWith(ds.publicKey, sod.signatureAlg, mdAlg, sod.signedAttrsDer, sod.signature); } catch (e) { if (e instanceof AnchorError) throw e; }
+  if (!signed) fail("bad_signature", "The chip's signature doesn't verify. The document may be forged.");
+  if (dsFields.ca || !canSign(dsFields.keyUsage)) fail("bad_signature", "The document signer certificate isn't one for signing documents.");
   if (now < new Date(ds.validFrom)) fail("bad_signature", "The document signer certificate isn't valid yet.");
 
   // 4. The Document Signer belongs to a trusted country.
@@ -199,7 +271,17 @@ export function passiveAuth(chip, { cscas = [], now = new Date() } = {}) {
   // 5. The MRZ, and the document must still be valid.
   const mrz = readDg1(chip.dg1);
   if (expiryDate(mrz.expiry) < now) fail("expired", "This document has expired. Use a valid passport or ID card.");
-  return { mrz, hashAlg: sod.hashAlg, hasAaKey: !!sod.dgHashes.get(15) && !!chip.dg15, issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+
+  // 6. One country throughout: the CSCA's, the document signer's, and the issuer the MRZ names.
+  //    Otherwise any trusted country's signer could vouch for another country's document.
+  const cscaCountry = certFields(csca.raw).country;
+  const want = alpha2Of(mrz.issuer);
+  if (!cscaCountry || !dsFields.country || cscaCountry !== dsFields.country || dsFields.issuerCountry !== cscaCountry) fail("country_mismatch", "The document's certificates don't agree on the issuing country.");
+  if (!want || want !== cscaCountry) fail("country_mismatch", "The document's issuing country doesn't match the country that signed it.");
+
+  // aaRequired: the SOD lists an Active Authentication key, so the chip can prove it's
+  // present and must; leaving DG15 out doesn't make it a chip that can't.
+  return { mrz, hashAlg: sod.hashAlg, hasAaKey: sod.dgHashes.has(15) && !!chip.dg15, aaRequired: sod.dgHashes.has(15), issuerCountry: mrz.issuer, cscaSubject: csca.subject };
 }
 
 /** DG1 (tag 0x61) → MRZ (tag 0x5F1F) → parsed fields. */

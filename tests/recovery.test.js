@@ -5,6 +5,7 @@ import {
   base32, unbase32, keyCode, formatCode, parseCode, LINK_LABEL,
   newCard, parseCard, formatCard, cardTag, sealCard, openCard,
   split, combine, thresholdFor, encodeShare, decodeShare,
+  qrPayload, parseQr, QR_MAX, accountCheck,
 } from "@humid/recovery";
 
 const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
@@ -100,4 +101,52 @@ test("share payload round-trips", () => {
   assert.equal(back.label, "Parker");
   assert.deepEqual(back.y, sh.y);
   assert.throws(() => decodeShare(new TextEncoder().encode('{"kind":"x"}')), /Not a HumID/);
+});
+
+/* ---------------- QR payloads ---------------- */
+
+test("QR: versioned, with purpose and expiry, and round-trips", () => {
+  const code = keyCode(LINK_LABEL, rnd(32), rnd(32));
+  const exp = Date.UTC(2030, 0, 1, 12, 0, 0);
+  const t = qrPayload("link", code, exp);
+  assert.match(t, /^HUMID:2:LINK:[0-9A-Z]{12}:[0-9A-Z]+$/);
+  assert.ok(t.length <= QR_MAX);
+  assert.deepEqual(parseQr(t), { kind: "link", code, expiresAt: exp });
+  for (const k of ["recover", "contact"]) assert.equal(parseQr(qrPayload(k, code, exp)).kind, k);
+  assert.throws(() => qrPayload("link", code), /Nothing/, "no expiry, no QR");
+  assert.throws(() => qrPayload("url", code, exp), /Nothing/);
+});
+
+test("QR: anything that isn't exactly the current format is refused", () => {
+  const code = keyCode(LINK_LABEL, rnd(32), rnd(32));
+  const good = qrPayload("recover", code, Date.UTC(2030, 0, 1));
+  const [, , , , exp] = good.split(":");
+  for (const bad of [
+    code,                                       // a bare code
+    formatCode(code),                           // a bare formatted code
+    `HUMID:RECOVER:${code}`,                    // version 1
+    `HUMID:1:RECOVER:${code}:${exp}`,           // another version
+    `HUMID:3:RECOVER:${code}:${exp}`,
+    `HUMID:02:RECOVER:${code}:${exp}`.replace(":02:", ":2x:"),
+    `HUMID:2:OPEN:${code}:${exp}`,              // unknown purpose
+    `HUMID:2:RECOVER:${code}:${exp}:EXTRA`,     // an extra field
+    `HUMID:2:RECOVER:${code}`,                  // no expiry
+    `HUMID:2:RECOVER:${formatCode(code)}:${exp}`, // dashes
+    good.toLowerCase(),
+    ` ${good}`, `${good}\n`,
+    `HUMID:2:RECOVER:${code.slice(0, 11)}O:${exp}`, // look-alike characters aren't normalised from a camera
+    `HUMID:2:RECOVER:${code.slice(0, 11)}U:${exp}`, // not in the alphabet
+    `https://evil.example/?q=${good}`,
+    `humid://open?${good}`,
+    good + "0".repeat(QR_MAX),
+    "", null, undefined, 42, {}, [good],
+  ]) assert.equal(parseQr(bad), null, String(bad));
+});
+
+test("account check: the same on both devices for one account, different for another", () => {
+  const a = accountCheck("hid_abc"), b = accountCheck("hid_abd");
+  assert.match(a, /^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+  assert.equal(a, accountCheck("hid_abc"));
+  assert.notEqual(a, b);
+  assert.throws(() => accountCheck(""));
 });

@@ -26,7 +26,7 @@ import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
-  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM,
+  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
@@ -506,10 +506,8 @@ export async function saveCard(code) {
   catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
-export async function copyCard(code) {
-  try { await navigator.clipboard.writeText(code); toast("Copied. Paste it somewhere safe, then clear your clipboard."); }
-  catch { toast("Couldn't copy. Write the code down instead.", "warn"); }
-}
+// No "copy" for the seal card or ID numbers: other apps (and keyboards, and clipboard
+// sync to other devices) can read the clipboard, and nothing can reliably clear it.
 
 /* ---------------- unlock / lock ---------------- */
 
@@ -937,6 +935,9 @@ export async function loadDevices() {
   if (me) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
 }
 
+/** This account's check string, shown when adding a device. */
+export const myAccountCheck = () => { const a = S.identity.value?.server?.id; return a ? accountCheck(a) : null; };
+
 /** Look up the code a new device is showing. The API checks the code against the keys. */
 export async function findLink(code) {
   try { needVault(); return await api.getLink(code); }
@@ -952,8 +953,7 @@ export async function approveLink(req) {
       const { envelope } = await Suite.seal({ bytes: seed, name: "HumID account key", type: KEY_TYPE }, keys, { kemPk: req.kemPk, xPk: req.xPk }, { identityCommit: id.commit, interrupt: rec });
       return api.approveLink(req.code, envelope, proof);
     });
-    S.sheet.value = null;
-    toast(`Approved. Finish on the ${req.platform}.`);
+    toast("Approved. Compare the account check on the new device.");
     setTimeout(loadDevices, 4000);
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -1245,7 +1245,11 @@ export async function pollJoin() {
   } catch (e) {
     S.joinStatus.value = { status: "error", message: friendly(e) };
   }
-  if (st && ["approved", "released"].includes(st.status)) return finishJoin(st);
+  if (st && ["approved", "released"].includes(st.status)) {
+    // Adding a device: the person compares the account check on both screens first.
+    if (p.method === "link") { S.joinStatus.value = { ...st, check: accountCheck(st.account) }; return; }
+    return finishJoin(st);
+  }
   if (st && ["expired", "cancelled", "completed"].includes(st.status)) return;
   const quick = p.method === "link" || st?.status === "collecting" || (st?.releaseAt && st.releaseAt - Date.now() < 60_000);
   if (p.method === "quorum" && st?.status === "collecting") { joinTimer = setTimeout(pollJoin, 5000); return; }
@@ -1426,6 +1430,18 @@ export const nfcChipSource = (access) => async (nonce) => {
   return r ? { chip: r, signature: r.aaSignature } : null;
 };
 
+/** Adding a device: the account check matched the other device's screen. */
+export function confirmJoin() {
+  const st = S.joinStatus.value;
+  if (st?.check && st.status === "approved") return finishJoin(st);
+}
+
+/** The account check didn't match: someone else's account was offered. Join nothing. */
+export async function rejectJoin() {
+  await cancelJoin();
+  toast("Nothing was added. The account offered wasn't yours: don't use this server until you know why.", "error");
+}
+
 /** Give up on a join: forget the half-made device and go back to the start. */
 export async function cancelJoin() {
   clearTimeout(joinTimer);
@@ -1602,12 +1618,28 @@ export async function stationLookup(code) {
   catch (e) { toast(friendly(e), "error"); return null; }
 }
 
+/**
+ * The station reads the chip in front of it, and the chip answers a fresh challenge
+ * from the server in the same session. source: a real reader (access details) or,
+ * in development builds, a demo passport's name.
+ */
+export async function stationReadChip(code, { access, demo } = {}) {
+  try {
+    const nonce = await api.stationChallenge(code);
+    if (demo != null) {
+      const c = await demoPassport(demo);
+      return c ? { ...c, aaSignature: await c.answer(nonce) } : null;
+    }
+    return await readChip(access, { nonce, purpose: "station" });
+  } catch (e) { toast(friendly(e), "error"); return null; }
+}
+
 /** The operator vouches: document genuine, face matches, person present. Their own live check signs it. */
 export async function stationVerify(code, chip, checks) {
   try {
     return await withStepUp("stationVerify", [code], "station", "Vouch for this person", async ({ proof }) => {
       showInterrupt({ progress: 0.6, message: "Checking the chip with its issuing country…" });
-      return api.stationVerify(code, { chip, checks }, proof);
+      return api.stationVerify(code, { chip, checks, signature: chip.aaSignature }, proof);
     });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
