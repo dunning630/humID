@@ -39,6 +39,7 @@ import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { validStamp, REASONS } from "./place.js";
+import { sealDuress, openDuress, isDuress, DEFAULT as DURESS_OFF } from "./duress.js";
 import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
@@ -59,6 +60,8 @@ let store = null;
 let api = null;
 let indexKey = null;        // decrypts item names while unlocked; wiped on lock
 let offlineKey = null;      // seals this device's offline copy while unlocked; wiped on lock
+let settingsKey = null;     // opens this device's sealed settings (duress gesture) while unlocked; wiped on lock
+let duressSetting = null;   // { enabled, gesture } once a live check opened it; cleared on lock
 let offline = null;         // the offline copy, as last saved (in memory while unlocked)
 let offlineWrite = Promise.resolve();
 let busy = false;
@@ -534,19 +537,23 @@ export async function saveCard(code) {
 /* ---------------- unlock / lock ---------------- */
 
 /**
- * Unlock. duress = true when the person used their duress gesture (Security → Duress
- * protection): the session opens exactly the same way, then shows only decoy documents,
- * while the server silently locks sensitive changes. Every unlock reports presence, so
- * the two look the same on the wire.
+ * Unlock. `used` is what the Lock screen saw: false for a plain unlock, "hold" or "taps"
+ * when that gesture was made, or true for "the duress gesture, whichever it is" (a
+ * decoy session reconnecting). Which gesture means duress is sealed on the device
+ * (core/duress.js) and opens only inside the live check, so the decision decoy-or-real
+ * is made AFTER the check: the session opens exactly the same way, then shows only
+ * decoy documents while the server silently locks sensitive changes. Every unlock
+ * reports presence, so the two look the same on the wire, and nothing on disk says
+ * whether duress is set up or how it's triggered.
  *
  * With no connection, the same live check opens the offline copy instead (unlockOffline).
  */
-export async function unlock(duress = false) {
+export async function unlock(used = false) {
   const id = S.identity.value;
-  duress = !!duress && !!id?.duress?.enabled;
   if (!id?.server?.id) return toast("This identity is not registered with a vault server.", "error");
   const wasOffline = !!S.offline.value;
-  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(duress);
+  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(used);
+  let duress = false;
   try {
     showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
     const sess = await api.login({
@@ -555,6 +562,7 @@ export async function unlock(duress = false) {
       // The secure chip signs the server's sign-in challenge during the live check.
       sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         sessionKeys(Suite, seed);
+        duress = isDuress(await loadDuressSetting(Suite), used);
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
@@ -576,11 +584,11 @@ export async function unlock(duress = false) {
       else if (!S.interrupt.value && !cancelled(e)) toast("Still can't reach your vault server.", "warn");
       return;
     }
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    clearKeys();
     if (wasOffline) lock();
     if (issue) S.lockIssue.value = e.code;
     // No connection: open the offline copy with a live check of its own.
-    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(duress); }
+    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(used); }
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e) && !issue) toast(friendly(e), "error"); // an issue has its own screen
   }
@@ -613,9 +621,14 @@ const unreachable = (e) => e instanceof TypeError || e?.code === "server_unreach
 // duress session, and it's deleted when the server says this device was removed.
 
 function sessionKeys(Suite, seed) {
-  wipe(indexKey, offlineKey);
+  wipe(indexKey, offlineKey, settingsKey);
   indexKey = Suite.indexKey(seed);
   offlineKey = Suite.offlineKey ? Suite.offlineKey(seed) : null;
+  settingsKey = Suite.settingsKey ? Suite.settingsKey(seed) : null;
+}
+function clearKeys() {
+  wipe(indexKey, offlineKey, settingsKey);
+  indexKey = null; offlineKey = null; settingsKey = null; duressSetting = null;
 }
 
 /** The offline copy for this account, opened with the session's key; null if there's none (or it doesn't open). */
@@ -647,15 +660,17 @@ function keepOffline(patch) {
 }
 
 /** Read-only, from the copy on this device, after a live check on this device. */
-async function unlockOffline(duress) {
+async function unlockOffline(used) {
+  let duress = false;
   try {
     await withKeys("launch", "Unlock HumID (offline)", async ({ seed, Suite }) => {
       showInterrupt({ progress: 0.7, message: "No connection to your vault. Opening the copy saved on this device…" });
       sessionKeys(Suite, seed);
+      duress = isDuress(await loadDuressSetting(Suite), used);
     });
     const copy = await readOffline();
     if (!copy) {
-      wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+      clearKeys();
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
     offline = copy;
@@ -667,12 +682,12 @@ async function unlockOffline(duress) {
     refresh();
     loadAlerts();
   } catch (e) {
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    clearKeys();
     if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
   }
 }
 
-/** Back online: one live check signs in and replaces the offline copy with the vault. */
+/** Back online: one live check signs in and replaces the offline copy with the vault. A decoy session stays a decoy session. */
 export function reconnect() { return unlock(S.decoy.value); }
 
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
@@ -697,7 +712,7 @@ async function reportPresence(duress) {
 export function lock(reason) {
   if (S.view.value !== "app") return;
   if (!S.offline.value) api.logout();
-  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null;
+  clearKeys(); offline = null;
   clearTimeout(idleTimer);
   batch(() => {
     S.view.value = "locked";
@@ -1599,7 +1614,7 @@ export async function eraseEverything() {
   try { await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
   await store.clearIdentity();
   await store.clearVault();
-  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null; S.offlineReady.value = false;
+  clearKeys(); offline = null; S.offlineReady.value = false;
   batch(() => {
     S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null;
     S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
@@ -1706,25 +1721,51 @@ export async function removeAnchor() {
 }
 
 /* ---------------- duress ---------------- */
-// The duress setting itself lives on this device (which gesture you use). What it
-// changes lives on the server (lockdown, slower recoveries, witness alerts).
+// The duress setting itself lives on this device (which gesture you use), sealed under
+// a key from the account seed (core/duress.js): nothing on disk says whether it's on
+// or which gesture it is. What it changes lives on the server (lockdown, slower
+// recoveries, witness alerts). Screens read the opened setting from
+// S.duressInfo.value.setting, never from the identity record.
+
+/** Inside a live check: the setting this device sealed, re-sealing one an older release left in the clear. */
+async function loadDuressSetting(Suite) {
+  const id = S.identity.value;
+  const { setting, record } = await openDuress(Suite, settingsKey, id);
+  if (record) {
+    try {
+      delete record.schema;
+      await store.putIdentity(record);
+      S.identity.value = { ...record, schema: id.schema ?? 4 };
+    } catch { /* next unlock tries again */ }
+  }
+  duressSetting = setting;
+  return setting;
+}
+
+/** The setting as the session opened it ({ enabled, gesture }); "off" in a decoy session or before unlock. */
+const currentDuress = () => (S.decoy.value || !duressSetting ? { ...DURESS_OFF } : { ...duressSetting });
 
 export async function saveDuress({ enabled, gesture }) {
   const id = S.identity.value;
   if (S.decoy.value) { S.sheet.value = null; return toast("Saved."); }
-  const record = { ...id, duress: { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" } };
-  delete record.schema;
-  await store.putIdentity(record);
-  S.identity.value = { ...record, schema: id.schema ?? 4 };
+  try {
+    const record = await sealDuress(suite(id.suite), settingsKey, id, { enabled, gesture });
+    delete record.schema;
+    await store.putIdentity(record);
+    duressSetting = { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" };
+    S.identity.value = { ...record, schema: id.schema ?? 4 };
+    S.duressInfo.value = { ...(S.duressInfo.value || {}), setting: currentDuress() };
+  } catch (e) { return toast(friendly(e), "error"); }
   toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
 }
 
 export async function loadDuress() {
-  if (S.decoy.value) { S.duressInfo.value = { lockdown: false }; return; }
-  if (S.offline.value) { S.duressInfo.value = offline?.duress || { lockdown: false }; return; }
+  if (S.decoy.value) { S.duressInfo.value = { lockdown: false, setting: currentDuress() }; return; }
+  if (S.offline.value) { S.duressInfo.value = { ...(offline?.duress || { lockdown: false }), setting: currentDuress() }; return; }
   const [st, settings] = await Promise.all([api.duressStatus().catch(() => null), api.settings().catch(() => null)]);
-  S.duressInfo.value = { ...(st || {}), alert: !!settings?.duressAlert };
-  if (st && settings) keepOffline({ duress: S.duressInfo.value });
+  const info = { ...(st || {}), alert: !!settings?.duressAlert };
+  S.duressInfo.value = { ...info, setting: currentDuress() };
+  if (st && settings) keepOffline({ duress: info });
 }
 
 export async function setWitnessAlert(on) {
