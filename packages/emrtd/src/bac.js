@@ -3,7 +3,7 @@
 // can't be read through a closed passport. Older and many current passports.
 import { sha1 } from "@noble/hashes/legacy.js";
 import { tdesCbc, retailMac, withParity } from "./des.js";
-import { concat, pad, utf8, u32be, random, equal, ChipError } from "./util.js";
+import { concat, pad, utf8, u32be, random, equal, wipe, ChipError } from "./util.js";
 
 const WEIGHTS = [7, 3, 1];
 const value = (c) => (c === "<" ? 0 : /[0-9]/.test(c) ? c.charCodeAt(0) - 48 : c.charCodeAt(0) - 55);
@@ -39,15 +39,18 @@ export function bacKeys(access) {
  * rndIfd / kIfd can be fixed for known-answer tests.
  */
 export async function bac(send, access, { rndIfd = random(8), kIfd = random(16) } = {}) {
-  const { kEnc, kMac } = bacKeys(access);
-  const ch = await send({ cla: 0x00, ins: 0x84, p1: 0, p2: 0, le: 8 });
-  if (ch.sw !== 0x9000 || ch.data.length !== 8) throw new ChipError("chip_refused", "The chip didn't start Basic Access Control.", ch.sw);
-  const rndIc = ch.data;
-  const eIfd = tdesCbc(kEnc, concat(rndIfd, rndIc, kIfd));
-  const mIfd = retailMac(kMac, pad(eIfd, 8));
-  const r = await send({ cla: 0x00, ins: 0x82, p1: 0, p2: 0, data: concat(eIfd, mIfd), le: 40 });
-  if (r.sw !== 0x9000 || r.data.length !== 40) {
-    throw new ChipError("access_denied", "These details don't open this chip. Check the document number, birth date and expiry date.", r.sw);
+  const { seed: kSeed, kEnc, kMac } = bacKeys(access);
+  try { return await run(); }
+  finally { wipe(kSeed, kEnc, kMac); } // the keys derived from the MRZ are only needed to open the session
+  async function run() {
+    const ch = await send({ cla: 0x00, ins: 0x84, p1: 0, p2: 0, le: 8 });
+    if (ch.sw !== 0x9000 || ch.data.length !== 8) throw new ChipError("chip_refused", "The chip didn't start Basic Access Control.", ch.sw);
+    const rndIc = ch.data;
+    const eIfd = tdesCbc(kEnc, concat(rndIfd, rndIc, kIfd));
+    const mIfd = retailMac(kMac, pad(eIfd, 8));
+    const r = await send({ cla: 0x00, ins: 0x82, p1: 0, p2: 0, data: concat(eIfd, mIfd), le: 40 });
+    if (r.sw !== 0x9000 || r.data.length !== 40) {
+      throw new ChipError("access_denied", "These details don't open this chip. Check the document number, birth date and expiry date.", r.sw);
   }
   const eIc = r.data.subarray(0, 32), mIc = r.data.subarray(32);
   if (!equal(retailMac(kMac, pad(eIc, 8)), mIc)) throw new ChipError("bad_sm", "The chip's BAC answer failed its check.");
@@ -55,5 +58,8 @@ export async function bac(send, access, { rndIfd = random(8), kIfd = random(16) 
   if (!equal(plain.subarray(0, 8), rndIc) || !equal(plain.subarray(8, 16), rndIfd)) throw new ChipError("bad_sm", "The chip's BAC answer doesn't match this session.");
   const kIc = plain.subarray(16, 32);
   const seed = kIfd.map((v, i) => v ^ kIc[i]);
-  return { cipher: "3des", ksEnc: kdf3des(seed, 1), ksMac: kdf3des(seed, 2), ssc: concat(rndIc.subarray(4), rndIfd.subarray(4)) };
+  const out = { cipher: "3des", ksEnc: kdf3des(seed, 1), ksMac: kdf3des(seed, 2), ssc: concat(rndIc.subarray(4), rndIfd.subarray(4)) };
+  wipe(seed, plain);
+  return out;
+  }
 }

@@ -10,7 +10,7 @@ import { brainpoolP256r1, brainpoolP384r1, brainpoolP512r1 } from "@noble/curves
 import { tdesCbc, retailMac } from "./des.js";
 import { aesCbc, cmac } from "./cmac.js";
 import { kdf3des, mrzInformation } from "./bac.js";
-import { concat, pad, utf8, u32be, tlv, readTlv, readTlvs, oidBytes, oidText, equal, random, ChipError } from "./util.js";
+import { concat, pad, utf8, u32be, tlv, readTlv, readTlvs, oidBytes, oidText, equal, random, wipe, ChipError } from "./util.js";
 
 const PACE = "0.4.0.127.0.7.2.2.4";
 export const PROTOCOLS = {
@@ -95,10 +95,19 @@ export async function pace(send, access, info) {
   if (mse.sw !== 0x9000) throw new ChipError("chip_refused", "The chip didn't accept the PACE settings.", mse.sw);
 
   // 1. Encrypted nonce, opened with the password key.
-  const kPi = paceKdf(pacePassword(access), 3, proto);
-  const z = (await generalAuthenticate(send, new Uint8Array(0))).get(0x80);
-  if (!z) throw new ChipError("bad_sm", "The chip sent no PACE nonce.");
-  const s = bytesToBig(blockCipher(proto, kPi, z, true)) % n;
+  const pw = pacePassword(access);
+  const kPi = paceKdf(pw, 3, proto);
+  wipe(pw);
+  let s;
+  try {
+    const z = (await generalAuthenticate(send, new Uint8Array(0))).get(0x80);
+    const block = proto.cipher === "aes" ? 16 : 8;
+    if (!z || !z.length || z.length % block || z.length > 64) throw new ChipError("bad_sm", "The chip sent no usable PACE nonce.");
+    const plain = blockCipher(proto, kPi, z, true);
+    s = bytesToBig(plain) % n;
+    wipe(plain);
+  } finally { wipe(kPi); }
+  if (s === 0n) throw new ChipError("bad_sm", "The chip's PACE nonce is invalid.");
 
   // 2. Generic mapping: G' = s·G + H, H = shared point of an ephemeral exchange.
   const skMap = randomScalar(curve);
@@ -116,6 +125,7 @@ export async function pace(send, access, info) {
   let K;
   try { K = bigToBytes(curve.Point.fromBytes(pkIc).multiply(sk).toAffine().x, L); } catch { throw new ChipError("bad_sm", "The chip's PACE key isn't on the curve."); }
   const ksEnc = paceKdf(K, 1, proto), ksMac = paceKdf(K, 2, proto);
+  wipe(K);
 
   // 4. Mutual authentication tokens over each other's public keys.
   const tIfd = authMac(proto, ksMac, publicKeyDo(info.oid, pkIc));

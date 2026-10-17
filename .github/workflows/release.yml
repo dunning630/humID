@@ -255,16 +255,38 @@ jobs:
           python3 tools/android-signing.py $APP/build.gradle.kts
       - name: Android · signed release .apk + .aab
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
-        run: npm run tauri -- android build --apk --aab
-      - name: Android · stable test signing key (so each test build installs over the last)
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run tauri -- android build --apk --aab 2>&1 | tee android-build.log; then
+            # the run's logs aren't always reachable: put what went wrong in the annotations too
+            # the reason, not the deprecation warnings: Gradle's "What went wrong" and the lines after it
+            echo "::error::$(grep -v '^w: ' android-build.log | grep -A14 -E 'What went wrong|^e: |error:' | head -45 | tr '\n' ' ' | cut -c1-3500)"
+            exit 1
+          fi
+      # No debug builds, ever: a debug APK is debuggable (adb run-as reads the app's data),
+      # has WebView remote debugging on, allows cleartext HTTP, and logs to logcat. Without
+      # the release key there is no Android build.
+      - name: Android · the release signing key is required
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
-        run: mkdir -p ~/.android && cp tools/android-test.keystore ~/.android/debug.keystore
-      - name: Android · installable test .apk (debug-signed, sideload)
-        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY != 'true'
-        # 64-bit ARM only (every phone on Android 11+), without Rust debug info: small enough to
-        # fit the runner and quick to download. The signed release build above covers every ABI.
-        env: { CARGO_PROFILE_DEV_DEBUG: "0" }
-        run: npm run tauri -- android build --apk --debug --target aarch64
+        run: |
+          echo "::error::Android builds need the release signing key: add the ANDROID_KEYSTORE, ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS secrets (RELEASING.md). HumID never ships a debug build."
+          exit 1
+      - name: Android · prove it's a release build signed with our key
+        if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
+        run: |
+          APK=$(find apps/mobile/src-tauri/gen/android -name '*.apk' -path '*release*' | head -1)
+          [ -n "$APK" ] || { echo "::error::no release APK was built"; exit 1; }
+          BT=$(ls -d "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" | tee signer.txt
+          grep -q "CN=HumID" signer.txt || { echo "::error::the APK isn't signed with the HumID release key"; exit 1; }
+          if "$BT/aapt" dump badging "$APK" | grep -q "application-debuggable"; then echo "::error::the APK is debuggable"; exit 1; fi
+          # Servers accept the certificate built into @humid/attest; a build signed with any other
+          # key would be refused by every server, so it must not ship.
+          GOT=$(grep -i "certificate SHA-256 digest" signer.txt | head -1 | awk '{print $NF}' | tr 'A-F' 'a-f')
+          WANT=$(grep -oE 'HUMID_ANDROID_RELEASE_CERT = "[0-9a-f]{64}"' packages/attest/src/roots.js | grep -oE '[0-9a-f]{64}')
+          echo "Signing certificate SHA-256: $GOT"
+          [ -n "$WANT" ] && [ "$GOT" = "$WANT" ] || { echo "::error::the APK's signing certificate ($GOT) isn't the one servers accept ($WANT, packages/attest/src/roots.js)"; exit 1; }
 
       # ---------------- collect ----------------
       - name: Collect artifacts

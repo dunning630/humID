@@ -37,6 +37,8 @@ export function parseMrz(text) {
       format: "TD3", documentCode: clean(a.slice(0, 2)), issuer: a.slice(2, 5), ...names(a.slice(5, 44)),
       number: b.slice(0, 9), numberCheck: b[9], nationality: b.slice(10, 13), birth: b.slice(13, 19), birthCheck: b[19],
       sex: b[20], expiry: b.slice(21, 27), expiryCheck: b[27],
+      personal: b.slice(28, 42), personalCheck: b[42],
+      composite: b.slice(0, 10) + b.slice(13, 20) + b.slice(21, 43), compositeCheck: b[43],
     };
   } else if (raw.length === 72) {
     const [a, b] = [raw.slice(0, 36), raw.slice(36)];
@@ -44,12 +46,14 @@ export function parseMrz(text) {
       format: "TD2", documentCode: clean(a.slice(0, 2)), issuer: a.slice(2, 5), ...names(a.slice(5, 36)),
       number: b.slice(0, 9), numberCheck: b[9], nationality: b.slice(10, 13), birth: b.slice(13, 19), birthCheck: b[19],
       sex: b[20], expiry: b.slice(21, 27), expiryCheck: b[27],
+      composite: b.slice(0, 10) + b.slice(13, 20) + b.slice(21, 35), compositeCheck: b[35],
     };
   } else if (raw.length === 90) {
     const [a, b, c] = [raw.slice(0, 30), raw.slice(30, 60), raw.slice(60)];
     f = {
       format: "TD1", documentCode: clean(a.slice(0, 2)), issuer: a.slice(2, 5), number: a.slice(5, 14), numberCheck: a[14],
       birth: b.slice(0, 6), birthCheck: b[6], sex: b[7], expiry: b.slice(8, 14), expiryCheck: b[14], nationality: b.slice(15, 18),
+      composite: a.slice(5, 30) + b.slice(0, 7) + b.slice(8, 15) + b.slice(18, 29), compositeCheck: b[29],
       ...names(c),
     };
   } else {
@@ -59,6 +63,9 @@ export function parseMrz(text) {
   if (!digitOk(f.number, f.numberCheck) && f.numberCheck !== "<") throw new MrzError("The document number fails its check digit.");
   if (!digitOk(f.birth, f.birthCheck)) throw new MrzError("The date of birth fails its check digit.");
   if (!digitOk(f.expiry, f.expiryCheck)) throw new MrzError("The expiry date fails its check digit.");
+  if (f.personal != null && !digitOk(f.personal, f.personalCheck)) throw new MrzError("The personal number fails its check digit.");
+  if (!/^[0-9]$/.test(f.compositeCheck) || checkDigit(f.composite) !== Number(f.compositeCheck)) throw new MrzError("The MRZ fails its overall check digit.");
+  delete f.composite; delete f.compositeCheck; delete f.personalCheck;
   if (!/^[MFX<]$/.test(f.sex)) throw new MrzError("The sex field is not M, F or X.");
   f.number = clean(f.number);
   f.issuer = clean(f.issuer);

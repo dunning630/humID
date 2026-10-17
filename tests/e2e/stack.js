@@ -22,12 +22,15 @@ export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolic
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
   const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
   const ik = newInternalKeys();
+  const revoked = new Set(); // Google's status list, as tests set it
   const url = (svc) => `http://127.0.0.1:${svc.server.address().port}`;
   const identity = createIdentity({
     port: 0, dataDir: join(root, "identity"), internalPk: ik.pk, duressCoolOffMs,
     attest: {
       roots: { android: [ROOTS.android.pem], apple: [ROOTS.apple.pem] },
       androidPackages: ["app.humid.vault"], iosAppId: IOS_APP_ID, appAttestEnvironment: "production", requireLockedBoot: true,
+      // the test chains' app signing certificate digest (tests/support/pki.js)
+      androidDigests: ["01".repeat(32)], revokedSerials: () => revoked,
     },
   });
   const vault = createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, quotaBytes: 5 * 1024 * 1024, maxObjectBytes: 2 * 1024 * 1024 });
@@ -44,6 +47,7 @@ export async function startStack({ port = 0, recoveryDelayMs = 1500, devicePolic
   });
   await gateway.start();
   return {
+    revoked,
     baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, keyshare, root, upstreams, internalSk: ik.sk,
     async stop() {
       await Promise.all([gateway, identity, vault, ledger, recovery, access, keyshare].map((s) => s.stop()));

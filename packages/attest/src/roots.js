@@ -71,3 +71,11 @@ CgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn
 53O5+FRXgeLhpJ06ysC5PrOyAjEAp5U4xDgEgllF7En3VcE3iexZZtKeYnpqtijV
 oyFraWVIyd/dganmrduC1bmTBGwD
 -----END CERTIFICATE-----`;
+
+/**
+ * SHA-256 of the certificate the official HumID Android app is signed with (the
+ * release key made 2026-10-16, CN=HumID, O=Router and Router LLC). Public, not a
+ * secret: it's in every copy of the app. Servers accept it by default; anyone who
+ * builds and signs their own app adds theirs with HUMID_ANDROID_CERT_DIGESTS.
+ */
+export const HUMID_ANDROID_RELEASE_CERT = "bfd3dc42aed6a3cbf4e518da390e6668eb3bc903eb2e4c06393205ff4966578e";

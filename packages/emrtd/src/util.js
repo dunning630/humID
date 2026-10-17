@@ -20,6 +20,8 @@ export function pad(data, block) {
   out.set(data); out[data.length] = 0x80;
   return out;
 }
+/** Zero secret bytes once they're no longer needed. */
+export const wipe = (...xs) => { for (const x of xs) if (x instanceof Uint8Array) x.fill(0); };
 export function unpad(data) {
   let i = data.length - 1;
   while (i >= 0 && data[i] === 0) i--;
@@ -48,42 +50,73 @@ export function encodeLength(n) {
 const tagBytes = (tag) => (tag > 0xffff ? Uint8Array.of(tag >> 16, (tag >> 8) & 255, tag & 255) : tag > 0xff ? Uint8Array.of(tag >> 8, tag & 255) : Uint8Array.of(tag));
 export const tlv = (tag, value) => concat(tagBytes(tag), encodeLength(value.length), value);
 
-/** Read one TLV at `pos`. Returns { tag, value, end, headerLength }. */
+/** Tag bytes and length bytes of one TLV header: how ICAO 9303 uses BER (tags up to 3 bytes, lengths up to 3). */
+const MAX_TAG_BYTES = 3, MAX_LENGTH_BYTES = 3;
+
+/**
+ * Read one TLV at `pos`. Returns { tag, value, end, headerLength }.
+ * Everything from a chip is untrusted: every read is bounds-checked, and
+ * anything malformed is a ChipError, never an out-of-range read.
+ */
 export function readTlv(b, pos = 0) {
+  if (!(b instanceof Uint8Array) || !Number.isInteger(pos) || pos < 0) throw new ChipError("bad_tlv", "Malformed data from the chip.");
   const start = pos;
   if (pos >= b.length) throw new ChipError("bad_tlv", "Truncated data from the chip.");
   let tag = b[pos++];
-  if ((tag & 0x1f) === 0x1f) { do { if (pos >= b.length) throw new ChipError("bad_tlv", "Truncated tag."); tag = (tag << 8) | b[pos]; } while (b[pos++] & 0x80); }
+  if ((tag & 0x1f) === 0x1f) {
+    let more = true;
+    while (more) {
+      if (pos >= b.length) throw new ChipError("bad_tlv", "Truncated tag.");
+      if (pos - start >= MAX_TAG_BYTES) throw new ChipError("bad_tlv", "A tag from the chip is too long.");
+      tag = tag * 256 + b[pos];
+      more = (b[pos++] & 0x80) !== 0;
+    }
+  }
   if (pos >= b.length) throw new ChipError("bad_tlv", "Truncated length.");
   let len = b[pos++];
   if (len & 0x80) {
     const n = len & 0x7f;
-    if (n < 1 || n > 3) throw new ChipError("bad_tlv", "Bad length from the chip.");
+    if (n < 1 || n > MAX_LENGTH_BYTES) throw new ChipError("bad_tlv", "Bad length from the chip.");
+    if (pos + n > b.length) throw new ChipError("bad_tlv", "Truncated length.");
     len = 0;
     for (let i = 0; i < n; i++) len = len * 256 + b[pos++];
   }
   if (pos + len > b.length) throw new ChipError("bad_tlv", "Length past the end of the chip's data.");
   return { tag, value: b.subarray(pos, pos + len), end: pos + len, headerLength: pos - start };
 }
+/** The TLVs one after another in `b`, by tag. A tag seen twice is refused (which one would count?). */
 export function readTlvs(b) {
   const out = new Map();
   let p = 0;
-  while (p < b.length) { if (b[p] === 0x00 || b[p] === 0xff) { p++; continue; } const t = readTlv(b, p); out.set(t.tag, t.value); p = t.end; }
+  while (p < b.length) {
+    if (b[p] === 0x00 || b[p] === 0xff) { p++; continue; }
+    const t = readTlv(b, p);
+    if (out.has(t.tag)) throw new ChipError("bad_tlv", "The chip sent the same field twice.");
+    out.set(t.tag, t.value); p = t.end;
+  }
   return out;
 }
 
-/** The total length of a file from its first bytes (tag + length), or null if more bytes are needed. */
+/** The total length of a file from its first bytes (tag + length), or null if they don't say. */
 export function tlvTotalLength(head) {
-  try { const t = readTlv(head, 0); return t.headerLength + t.value.length; }
-  catch (e) {
-    // readTlv throws when the value runs past `head`; work out the length from the header alone.
-    let pos = 1;
-    if ((head[0] & 0x1f) === 0x1f) while (head[pos++] & 0x80);
-    let len = head[pos++];
-    if (len === undefined) return null;
-    if (len & 0x80) { const n = len & 0x7f; if (pos + n > head.length) return null; len = 0; for (let i = 0; i < n; i++) len = len * 256 + head[pos++]; }
-    return pos + len;
+  if (!(head instanceof Uint8Array) || !head.length) return null;
+  let pos = 1;
+  if ((head[0] & 0x1f) === 0x1f) {
+    let more = true;
+    while (more) {
+      if (pos >= head.length || pos >= MAX_TAG_BYTES) return null;
+      more = (head[pos++] & 0x80) !== 0;
+    }
   }
+  if (pos >= head.length) return null;
+  let len = head[pos++];
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n < 1 || n > MAX_LENGTH_BYTES || pos + n > head.length) return null;
+    len = 0;
+    for (let i = 0; i < n; i++) len = len * 256 + head[pos++];
+  }
+  return pos + len;
 }
 
 /** DER OID text → content bytes (no tag/length). */

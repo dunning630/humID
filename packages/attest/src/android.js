@@ -7,9 +7,16 @@
 //   - can be used only after a strong (Class 3) biometric match, every time:
 //     no PIN or password (userAuthType has no PASSWORD bit), no "valid for N
 //     seconds" window, never without authentication;
-//   - belongs to the HumID app (package name) on a locked, verified-boot device;
-//   - was made for this session (attestation challenge = HTP transcript hash).
-// The chain must end in a pinned Google root.
+//   - is for signing only (purpose SIGN and nothing else);
+//   - belongs to the HumID app: its package name AND the release signing
+//     certificate (a re-signed or rebuilt copy has a different certificate);
+//   - is on a locked, verified-boot device, optionally at a minimum security patch;
+//   - was made for this enrolment (attestation challenge = the HTP transcript hash
+//     of a fresh session that may enrol once; see services/identity).
+// The chain must end in a pinned Google root, every certificate in it must be in
+// date (the leaf's dates aren't reliable on real devices and are left out, as
+// Google's own verifier does), every issuer must be a CA, and no certificate may be
+// on Google's revocation list.
 
 import { X509Certificate } from "node:crypto";
 import { parse, kids, int, bool, octets, certExtension, CLASS } from "./der.js";
@@ -21,8 +28,11 @@ export const SECURITY_LEVEL = ["software", "tee", "strongbox"];
 // Keymaster / KeyMint tags (hardware/interfaces/security/keymint/aidl/.../Tag.aidl)
 const T = {
   PURPOSE: 1, ALGORITHM: 2, EC_CURVE: 10, NO_AUTH_REQUIRED: 503, USER_AUTH_TYPE: 504,
-  AUTH_TIMEOUT: 505, ALLOW_WHILE_ON_BODY: 506, ROOT_OF_TRUST: 704, ATTESTATION_APPLICATION_ID: 709,
+  AUTH_TIMEOUT: 505, ALLOW_WHILE_ON_BODY: 506, ROOT_OF_TRUST: 704, OS_PATCHLEVEL: 706, ATTESTATION_APPLICATION_ID: 709,
+  UNLOCKED_DEVICE_REQUIRED: 509,
 };
+/** Security levels HumID accepts: 1 TrustedEnvironment, 2 StrongBox. Anything else (0 Software, KeyMint's 100 Keystore, unknown) is refused. */
+const HARDWARE = new Set([1, 2]);
 const PURPOSE_SIGN = 2;
 const ALGORITHM_EC = 3;
 const CURVE_P256 = 1;
@@ -80,6 +90,9 @@ function applicationId(r) {
   };
 }
 
+/** Serial numbers as Google's status list writes them: lower-case hex, no leading zeros. */
+export const serialKey = (s) => String(s).toLowerCase().replace(/^0+(?=.)/, "");
+
 /**
  * Verify the chain and decode the attestation record. No policy yet.
  * chain: leaf first, DER bytes each. roots: PEM strings (default: Google's).
@@ -96,10 +109,11 @@ export function readAndroidAttestation({ chain, roots = GOOGLE_ATTESTATION_ROOTS
   if (!root.verify(root.publicKey)) fail("bad_attestation", "Attestation chain does not end in a self-signed root.");
   const pinned = roots.map((p) => spki(new X509Certificate(p)));
   if (!pinned.some((k) => same(k, spki(root)))) fail("untrusted_root", "Attestation chain does not end in a trusted root.");
-  for (const c of certs.slice(1, -1)) {
-    if (now < new Date(c.validFrom) || now > new Date(c.validTo)) fail("bad_attestation", "An attestation intermediate certificate is expired.");
+  for (const c of certs.slice(1)) {
+    if (now < new Date(c.validFrom) || now > new Date(c.validTo)) fail("bad_attestation", "An attestation certificate in the chain is out of date.");
+    if (!c.ca) fail("bad_attestation", "A certificate that signed the attestation is not a certificate authority.");
   }
-  for (const c of certs) if (revokedSerials.has(c.serialNumber.toLowerCase())) fail("revoked", "An attestation certificate was revoked by Google.");
+  for (const c of certs) if (revokedSerials.has(serialKey(c.serialNumber))) fail("revoked", "An attestation certificate was revoked or suspended by Google.");
 
   const withRecord = certs.map((c) => certExtension(c.raw, KEY_DESCRIPTION_OID));
   if (!withRecord[0] || withRecord.slice(1).some(Boolean)) fail("bad_attestation", "The attested key must be the only certificate with a key description.");
@@ -109,12 +123,18 @@ export function readAndroidAttestation({ chain, roots = GOOGLE_ATTESTATION_ROOTS
 
 /**
  * HumID's rules for a liveness key. Returns a summary; throws AttestationError.
- * opts: { challenge, packageNames, signatureDigests?, requireLockedBoot = true }
+ * opts: { challenge, packageNames, signatureDigests, allowAnySigner = false, requireLockedBoot = true, minPatchLevel }
+ *   signatureDigests  SHA-256 (hex) of the release signing certificate(s). Required:
+ *                     without it, a rebuilt or re-signed copy of the app would pass.
+ *                     allowAnySigner: true skips it, for test builds only.
+ *   minPatchLevel     YYYYMM; phones on an older security patch are refused.
  */
-export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigests = [], requireLockedBoot = true }) {
+export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigests = [], allowAnySigner = false, requireLockedBoot = true, minPatchLevel } = {}) {
   if (!same(r.challenge, challenge)) fail("wrong_challenge", "The attestation was made for a different session.");
-  if (r.attestationSecurityLevel < 1 || r.keymasterSecurityLevel < 1) fail("software_key", "The key is not held in secure hardware.");
-  if (!intsOf(r.hw, T.PURPOSE).includes(PURPOSE_SIGN)) fail("bad_key", "The key cannot sign.");
+  if (!HARDWARE.has(r.attestationSecurityLevel) || !HARDWARE.has(r.keymasterSecurityLevel)) fail("software_key", "The key is not held in secure hardware.");
+  const purposes = intsOf(r.hw, T.PURPOSE);
+  if (!purposes.includes(PURPOSE_SIGN)) fail("bad_key", "The key cannot sign.");
+  if (purposes.some((p) => p !== PURPOSE_SIGN)) fail("bad_key", "The key may be used for more than signing.");
   // Some StrongBox implementations omit EC_CURVE (they state KEY_SIZE 256); the leaf's own key settles it.
   const curve = intOf(r.hw, T.EC_CURVE);
   if (intOf(r.hw, T.ALGORITHM) !== ALGORITHM_EC || (curve !== undefined && curve !== CURVE_P256)) fail("bad_key", "The key is not ECDSA P-256.");
@@ -131,11 +151,20 @@ export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigest
     if (!r.root) fail("bad_attestation", "The attestation has no root of trust.");
     if (!r.root.deviceLocked || r.root.verifiedBootState !== BOOT_VERIFIED) fail("unlocked_device", "The phone's bootloader is unlocked or its software is not verified.");
   }
-  if (packageNames?.length && !r.app.packages.some((p) => packageNames.includes(p))) fail("wrong_app", "The key was not made by the HumID app.");
+  if (minPatchLevel) {
+    const patch = intOf(r.hw, T.OS_PATCHLEVEL);
+    if (patch === undefined || patch < minPatchLevel) fail("old_patch", "The phone needs a newer security update before it can use HumID.");
+  }
+  if (!packageNames?.length) fail("not_configured", "The server doesn't know the HumID app's package name.");
+  if (!r.app.packages.some((p) => packageNames.includes(p))) fail("wrong_app", "The key was not made by the HumID app.");
+  if (!signatureDigests.length && !allowAnySigner) fail("not_configured", "The server isn't set up with the HumID app's signing certificate (HUMID_ANDROID_CERT_DIGESTS), so it can't tell the real app from a copy.");
   if (signatureDigests.length && !r.app.digests.some((d) => signatureDigests.includes(d))) fail("wrong_app", "The key was not made by a HumID build signed by us.");
   return {
     proof: `android-${SECURITY_LEVEL[r.attestationSecurityLevel]}`,
     level: SECURITY_LEVEL[r.attestationSecurityLevel],
+    keymasterLevel: SECURITY_LEVEL[r.keymasterSecurityLevel],
+    unlockedDeviceRequired: has(r, T.UNLOCKED_DEVICE_REQUIRED),
+    osPatchLevel: intOf(r.hw, T.OS_PATCHLEVEL) ?? null,
     attestationVersion: r.attestationVersion,
     keymasterVersion: r.keymasterVersion,
     packages: r.app.packages,

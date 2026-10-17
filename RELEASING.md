@@ -60,8 +60,11 @@ pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
   bug report pins the exact combination.
 
 Signing secrets are listed at the top of `.github/workflows/release.yml`.
-Without them you still get an installable Android test APK (debug-signed) and
-Linux packages.
+**Android needs its release key** (`ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`): without it there is no Android build. HumID never ships a
+debug build, which would be debuggable, remotely inspectable and signed with a
+key anyone could get. The workflow checks the APK is signed with the HumID key
+and not debuggable, and prints the certificate's SHA-256 for the server.
 
 **Live-check proof needs these on the server side** (`deploy/.env`):
 
@@ -72,10 +75,17 @@ Linux packages.
   TestFlight and App Store builds use App Attest's production environment;
   Xcode debug builds use development (`HUMID_APP_ATTEST_ENV=development` on a
   test server).
-- **Android:** the app needs Android 11 (API 30) or later. Set
-  `HUMID_ANDROID_CERT_DIGESTS` to the SHA-256 of your release signing
-  certificate (Play App Signing: the app-signing key's certificate) so only
-  your build can join. The debug-signed test APK works while it's empty.
+- **Android:** the app needs Android 11 (API 30) or later. Servers accept only
+  apps signed with the official HumID release certificate
+  (`HUMID_ANDROID_RELEASE_CERT` in `packages/attest/src/roots.js`), so a
+  re-signed or rebuilt copy can't join. If you build and sign your own, add your
+  certificate's SHA-256 with `HUMID_ANDROID_CERT_DIGESTS` (Play App Signing: the
+  app-signing key's certificate). `HUMID_ANDROID_ALLOW_ANY_SIGNER=1` accepts any
+  signer, for a test server only.
+- **Android, optional:** `HUMID_ANDROID_MIN_PATCH=YYYYMM` refuses phones on an
+  older security patch. Google's attestation revocation list is fetched every
+  6 hours (`HUMID_ATTESTATION_STATUS_URL`; `HUMID_ATTESTATION_STATUS_REQUIRED=1`
+  refuses phones until a copy has been fetched).
 
 ## 4. Shipping the server
 

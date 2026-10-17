@@ -94,3 +94,43 @@ test("a tampered answer stops the read; long answers arrive in pieces; no AA key
   assert.equal(plain.dg15, undefined);
   await assert.rejects(readDocument(simulatedChip({ passport: noAa, access: ACCESS }), { access: ACCESS, nonce: randomBytes(8) }), (e) => e.code === "no_chip_proof");
 });
+
+/* ---------------- a hostile chip ---------------- */
+
+test("secure messaging refuses malformed answers even with a valid MAC", () => {
+  const keys = { cipher: "3des", ksEnc: randomBytes(16), ksMac: randomBytes(16), ssc: new Uint8Array(8) };
+  const chip = new SecureMessaging(keys), reader = new SecureMessaging(keys);
+  // The chip side builds an answer with the right MAC around whatever DO87 it likes.
+  const answer = (do87, do99 = Uint8Array.of(0x90, 0)) => {
+    util.increment(chip.ssc);
+    const k = util.concat(do87 ? util.tlv(0x87, do87) : new Uint8Array(0), util.tlv(0x99, do99));
+    return util.concat(k, util.tlv(0x8e, chip.mac(k)));
+  };
+  const ct = chip.encrypt(util.pad(Uint8Array.of(1, 2, 3), 8));
+  assert.deepEqual(reader.unwrap(answer(util.concat(Uint8Array.of(1), ct)), 0x9000).data, Uint8Array.of(1, 2, 3));
+  for (const [what, do87, do99] of [
+    ["no padding indicator", util.concat(Uint8Array.of(2), ct)],
+    ["not whole blocks", util.concat(Uint8Array.of(1), ct.subarray(0, 7))],
+    ["no ciphertext", Uint8Array.of(1)],
+    ["a 3-byte status", util.concat(Uint8Array.of(1), ct), Uint8Array.of(0x90, 0, 0)],
+  ]) assert.throws(() => reader.unwrap(answer(do87, do99), 0x9000), (e) => e instanceof ChipError && e.code === "bad_sm", what);
+});
+
+test("a chip that keeps answering 61XX (\"there's more\") is cut off", async () => {
+  let calls = 0;
+  const endless = { transceive: async () => { calls++; return Uint8Array.of(1, 2, 3, 0x61, 0x10); } };
+  await assert.rejects(readDocument(endless, { access: ACCESS, preferBac: true }), (e) => e instanceof ChipError);
+  assert.ok(calls <= 40, `stopped after ${calls} exchanges`);
+});
+
+test("session keys are wiped once reading is over", async () => {
+  const passport = testPassport({ csca, mrz: MRZ });
+  const chip = simulatedChip({ passport, access: ACCESS });
+  const seen = [];
+  const orig = SecureMessaging.prototype.wipe;
+  SecureMessaging.prototype.wipe = function () { orig.call(this); seen.push([this.ksEnc, this.ksMac, this.ssc]); };
+  try { await readDocument(chip, { access: ACCESS, preferBac: true }); }
+  finally { SecureMessaging.prototype.wipe = orig; }
+  assert.equal(seen.length, 1);
+  for (const k of seen[0]) assert.ok(k.every((b) => b === 0), "zeroed");
+});
