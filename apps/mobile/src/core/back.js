@@ -2,7 +2,7 @@
 // default Android would treat "back" as "leave the app". Instead, back closes
 // whatever is on top, the way its own close or Back button would:
 //   the camera › an open document › the top sheet (or the step inside it) ›
-//   the screen's Back button › the Vault tab.
+//   the pushed screen's step (Add, an item) › the screen's Back button › the Vault tab.
 // At the bottom of that list it does nothing: back never exits HumID.
 //
 // Any control marked data-back is what back presses for its layer.
@@ -28,6 +28,13 @@ export function handleBack() {
     if (inner) { inner.click(); return "sheet-step"; }
     top(".scrim")?.click(); // the sheet closes the way a tap outside it does (a busy sheet stays)
     return "sheet";
+  }
+  // A pushed screen (the Add flow, an item): its innermost Back steps back; the top one leaves it.
+  const pushed = top(".pushed");
+  if (pushed) {
+    const inner = [...pushed.querySelectorAll("[data-back]")].reverse().find(visible);
+    if (inner) { inner.click(); return "pushed"; }
+    return "stay";
   }
   const back = [...document.querySelectorAll(".screen [data-back]")].find(visible);
   if (back) { back.click(); return "screen"; }

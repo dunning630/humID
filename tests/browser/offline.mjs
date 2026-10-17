@@ -48,7 +48,10 @@ async function hold(page) {
 }
 async function addDoc(page, name) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
+  await page.locator(".doccam").waitFor();
+  await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+  await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
+  await page.locator(".pushed .review").waitFor();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: name.replace(/\.\w+$/, "") }).waitFor({ timeout: 30_000 });
@@ -96,10 +99,10 @@ try {
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add sheet
-  await page.locator(".sheet").waitFor();
-  await page.keyboard.press("Escape").catch(() => {});
-  await page.locator(".sheet").waitFor({ state: "detached", timeout: 5000 }).catch(() => page.locator(".sheet button[aria-label=Close]").first().click());
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the camera)
+  await page.locator(".doccam").waitFor();
+  await page.getByRole("button", { name: "Close the camera" }).click();
+  await page.locator(".doccam").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Last will.txt");
   await addDoc(page, "Gym membership.txt");
 
