@@ -92,8 +92,11 @@ this cryptographic erase.
   backup. That's what makes a backup of keyshare (database and `share-key.bin`
   together) useless for an armed account. The cost: **a restart of keyshare
   erases every armed vault** (fail-deadly). Updating, backing up or restarting
-  the server, or restarting the computer, counts. The Windows admin console
-  says how many vaults are armed on any change that stops the server.
+  the server, or restarting the computer, counts. On Windows, the admin console
+  says how many vaults are armed before you approve any change that stops the
+  server, and the `humid` commands that stop it (`stop`, `restart`, `set`,
+  `backup`, `restore`, `expose`, an update, `uninstall`) go on only once you
+  type ERASE.
 - **The erase never waits.** Normal deletes are written to the ledger first
   and refused if it's down. An erase can't be: a ledger outage (or an attacker
   who causes one) would stop it. The keys go first; the vault and the ledger
