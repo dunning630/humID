@@ -25,8 +25,8 @@
 
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import {
-  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, stepUpMessage, liveMessage, sealLiveMessage,
-  identityId, deviceId, verify, proofHash, STEP_UP_MAX_AGE_MS,
+  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage,
+  identityId, deviceId, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS,
   ml_dsa87, sha3_256, toHex, fromHex, b64u, unb64u, utf8, fromUtf8, random,
 } from "@humid/htp";
 import { GENESIS, entryHash, headMessage, leafHash, treeHash, inclusionProof, consistencyProof, checkpointMessage } from "@humid/audit";
@@ -335,6 +335,17 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     return [200, { closed: true }];
   });
 
+  // a step-up approval for one action (method + path), this device, single use, 60 s
+  route("POST", "/auth/step-up", (s, r) => {
+    const m = String(r.m || "").toUpperCase(), p = String(r.p || "");
+    if (!["GET", "POST", "PUT", "DELETE"].includes(m) || !p.startsWith("/") || p.length > 512) throw fail(400, "bad_action", "Unknown action");
+    s.stepUps ||= new Map();
+    while (s.stepUps.size >= 8) s.stepUps.delete(s.stepUps.keys().next().value);
+    const nonce = random(16), exp = now() + STEP_UP_NONCE_MS;
+    s.stepUps.set(b64u(nonce), { m, p, exp });
+    return [200, { nonce: b64u(nonce), exp, device: s.deviceId }];
+  }, { auth: true });
+
   route("POST", "/auth/presence", (s, r) => {
     if (r.d === 1 && !s.duress) {
       s.duress = true;
@@ -525,10 +536,17 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     const p = meta.proof;
     const at = Number(p.at);
     const where = meta.p.replace(/[0-9a-f-]{36}/, ":id");
-    if (!Number.isSafeInteger(at) || Math.abs(now() - at) > STEP_UP_MAX_AGE_MS) throw fail(403, "step_up_stale", "Biometric check is too old. Try again.");
-    const checks = [pass("Approval is for this exact request", `${meta.m} ${where}, request #${seq}, under a minute old`)];
+    if (!Number.isSafeInteger(at) || now() - at > STEP_UP_MAX_AGE_MS || at - now() > CLOCK_SKEW_MS) throw fail(403, "step_up_stale", "Biometric check is too old. Try again.");
+    const key = typeof p.nonce === "string" ? p.nonce : "";
+    const issued = key && s.stepUps?.get(key);
+    if (!issued) throw fail(403, "step_up_unknown", key ? "That approval was already used or never issued. Try again." : "Update HumID to approve this.");
+    s.stepUps.delete(key);
+    if (issued.m !== meta.m || issued.p !== meta.p) throw fail(403, "step_up_mismatch", "That approval was for a different action.");
+    if (issued.exp < now() || Number(p.exp) !== issued.exp) throw fail(403, "step_up_stale", "Biometric check is too old. Try again.");
+    const action = actionBytes({ method: meta.m, path: meta.p, device: s.deviceId, nonce: unb64u(key), exp: issued.exp });
+    const checks = [pass("Approval is for this exact action", `${meta.m} ${where}, this device, a single-use approval issued for it, under a minute old`)];
     const sig = unb64u(String(p.sig));
-    if (!verify(sig, stepUpMessage(s.th, seq, meta.m, meta.p, body, at), s.dsaPk)) {
+    if (!verify(sig, stepUpMessage(s.th, seq, meta.m, meta.p, body, at, action), s.dsaPk)) {
       record(s.subject, "access.denied", { path: where, reason: "bad_step_up" });
       report("Request refused", [...checks, { ok: false, label: "Device key signature didn't verify" }], { kind: "denied" });
       throw fail(401, "bad_proof", "Biometric proof was rejected.");
@@ -537,7 +555,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (s.livePub) {
       let live = null;
       try { live = p.live ? unb64u(String(p.live)) : null; } catch {}
-      if (!liveOk(s.livePub, liveMessage(s.th, seq, meta.m, meta.p, at), live)) {
+      if (!liveOk(s.livePub, liveMessage(s.th, seq, meta.m, meta.p, at, action), live)) {
         record(s.subject, "access.denied", { path: where, reason: "no_live_biometric" });
         report("Request refused", [...checks, { ok: false, label: "No live biometric signature from the secure chip" }], { kind: "denied" });
         throw fail(401, "bad_live_proof", "This needs a live face or fingerprint check on this device.");

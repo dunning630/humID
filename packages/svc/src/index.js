@@ -109,23 +109,25 @@ export const parseJson = (buf) => {
  * Minimal router. Routes: [["GET", "/objects/:id", handler], ...].
  * Handler receives ({ req, params, query, body, claims }) and returns json()/bytes().
  */
+export const logPath = (route, pathname) => route ? route.pattern : `/${String(pathname).split("/")[1] || ""}/…`.replace(/[^\w/…-]/g, "");
+
 export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders }) {
   const log = logger(name);
   const compiled = routes.map(([method, pattern, handler, opts = {}]) => {
     const keys = [];
     const re = new RegExp("^" + pattern.replace(/:([a-zA-Z]+)/g, (_, k) => { keys.push(k); return "([^/]+)"; }) + "$");
-    return { method, re, keys, handler, opts };
+    return { method, pattern, re, keys, handler, opts };
   });
 
   const server = http.createServer(async (req, res) => {
     const started = Date.now();
     const url = new URL(req.url, "http://internal");
-    let out;
+    let out, route = null;
     try {
       if (req.method === "GET" && url.pathname === "/healthz") {
         out = json(200, { ok: true, service: name });
       } else {
-        const route = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
+        route = compiled.find((r) => r.method === req.method && r.re.test(url.pathname)) || null;
         if (!route) throw new HttpError(404, "not_found", "No such route");
         const m = url.pathname.match(route.re);
         const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
@@ -139,7 +141,9 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
     }
     res.writeHead(out.status, { "cache-control": "no-store", "x-content-type-options": "nosniff", ...(extraHeaders?.(req) || {}), ...out.headers });
     res.end(out.body);
-    if (url.pathname !== "/healthz") log.info("req", { m: req.method, p: url.pathname.replace(/[0-9a-f-]{20,}/gi, ":id"), s: out.status, ms: Date.now() - started });
+    // The route's pattern ("/links/:code"), never the path: paths carry recovery codes,
+    // request and object ids. An unmatched path logs only its first segment.
+    if (url.pathname !== "/healthz") log.info("req", { m: req.method, p: logPath(route, url.pathname), s: out.status, ms: Date.now() - started });
   });
   server.requestTimeout = 120_000;
   server.headersTimeout = 15_000;

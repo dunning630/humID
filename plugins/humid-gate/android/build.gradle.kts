@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "app.humid.gate"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 30 // Android 11: biometric-only, time-bound Keystore keys

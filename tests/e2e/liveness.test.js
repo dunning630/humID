@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { startStack } from "./stack.js";
 import { HumidApi } from "@humid/api";
 import { suite } from "@humid/crypto";
-import { ml_dsa87 } from "@humid/htp";
+import { ml_dsa87, actionBytes, liveMessage } from "@humid/htp";
 import { createGateway } from "../../services/gateway/src/server.js";
 import { newInternalKeys } from "@humid/svc";
 import { makeHolder, register, sealFor, ROOTS } from "./holder.js";
@@ -64,6 +64,39 @@ test("an attestation made for another session can't be replayed", async () => {
   await assert.rejects(api.register({ pub: bot.pub, commit: bot.commit, device: bot.device, sign }), code("wrong_challenge"));
 });
 
+test("an attestation is good for a few minutes only: an old session can't enrol", async () => {
+  const p = makeHolder("slowpoke");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  const real = api.htp.connect.bind(api.htp);
+  api.htp.connect = async () => { const s = await real(); stack.gateway.htp.sessions.get(s.sidText).createdAt -= 6 * 60_000; return s; };
+  await assert.rejects(api.register({ pub: p.pub, commit: p.commit, device: p.device, sign: p.registerSign }), code("attestation_stale"));
+});
+
+test("one attestation challenge enrols one device: a second device in the same session is refused", async () => {
+  const first = makeHolder("first");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  await api.register({ pub: first.pub, commit: first.commit, device: first.device, sign: first.registerSign });
+  // keep the same session (and so the same challenge) for a second, different device
+  const same = api.htp.session;
+  api.htp.connect = async () => same;
+  const second = makeHolder("second");
+  await assert.rejects(api.register({ pub: second.pub, commit: second.commit, device: second.device, sign: second.registerSign }), code("challenge_used"));
+});
+
+test("a phone whose attestation certificate Google revoked is refused", async () => {
+  const p = makeHolder("revoked-phone");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  const { X509Certificate } = await import("node:crypto");
+  const { serialKey } = await import("@humid/attest");
+  const sign = async (m) => {
+    const r = await p.registerSign(m);
+    for (const c of r.live.attestation.chain.slice(1, -1)) stack.revoked.add(serialKey(new X509Certificate(Buffer.from(c)).serialNumber));
+    return r;
+  };
+  try { await assert.rejects(api.register({ pub: p.pub, commit: p.commit, device: p.device, sign }), code("revoked")); }
+  finally { stack.revoked.clear(); }
+});
+
 test("an enrolment the liveness key didn't sign is refused", async () => {
   const bot = makeHolder("unsigned");
   const api = new HumidApi({ baseUrl: stack.baseUrl });
@@ -107,6 +140,46 @@ test("opening a document needs the liveness key's signature over that exact requ
   const env = await aliceApi.download(docId, { ticket: t, sign: async (m) => ({ sig: ml_dsa87.sign(m, alice.dkeys.dsaSk), interrupt: alice.interrupt, live: alice.liveKey.sign(t.live) }) });
   const { bytes } = await suite().open(env, alice.keys);
   assert.equal(new TextDecoder().decode(bytes), "Last will");
+});
+
+/* ---------------- sign the action, not just a nonce ---------------- */
+
+// Rebuild a ticket around a different server approval (what a tampering client would try).
+const withAction = (t, action) => {
+  const bytes = actionBytes(action);
+  return { ...t, action, actionBytes: bytes, live: liveMessage(aliceApi.htp.session.th, t.seq, t.method, t.path, t.at, bytes) };
+};
+const approve = (t) => ({ ticket: t, sign: async (m) => ({ sig: ml_dsa87.sign(m, alice.dkeys.dsaSk), interrupt: alice.interrupt, live: alice.liveKey.sign(t.live) }) });
+
+test("an approval is used once: after it opens a document, it can't open it again", async () => {
+  const t1 = await aliceApi.ticket("download", docId);
+  await aliceApi.download(docId, approve(t1));
+  const t2 = await aliceApi.ticket("download", docId); // a new request slot…
+  await assert.rejects(aliceApi.download(docId, approve(withAction(t2, t1.action))), code("step_up_unknown")); // …with the spent approval
+});
+
+test("an approval for one action can't approve another, even signed properly", async () => {
+  const forOpen = await aliceApi.ticket("download", docId);
+  const forDelete = await aliceApi.ticket("remove", docId);
+  // a delete, signed by the device and the secure chip, but carrying the approval issued for opening
+  await assert.rejects(aliceApi.remove(docId, approve(withAction(forDelete, { ...forDelete.action, nonce: forOpen.action.nonce, exp: forOpen.action.exp }))), code("step_up_mismatch"));
+  // and the approval it carried was burnt by that attempt: one try per approval
+  const again = await aliceApi.ticket("download", docId); // a fresh request slot, the burnt approval
+  await assert.rejects(aliceApi.download(docId, approve(withAction(again, forOpen.action))), code("step_up_unknown"));
+});
+
+test("an approval names its device and expiry: changing either breaks the signatures", async () => {
+  const t = await aliceApi.ticket("download", docId);
+  await assert.rejects(aliceApi.download(docId, approve(withAction(t, { ...t.action, device: "dev_" + "0".repeat(24) }))), code("bad_proof"));
+  const t2 = await aliceApi.ticket("download", docId);
+  await assert.rejects(aliceApi.download(docId, approve(withAction(t2, { ...t2.action, exp: t2.action.exp + 60_000 }))), code("step_up_stale"));
+});
+
+test("an approval left unused for over a minute has expired", async () => {
+  const t = await aliceApi.ticket("download", docId);
+  const s = [...stack.gateway.htp.sessions.values()].find((x) => x.stepUps?.has(Buffer.from(t.action.nonce).toString("base64url")));
+  s.stepUps.get(Buffer.from(t.action.nonce).toString("base64url")).exp = Date.now() - 1;
+  await assert.rejects(aliceApi.download(docId, approve(t)), code("step_up_stale"));
 });
 
 test("a ticket is bound to its request: it can't approve a different one", async () => {

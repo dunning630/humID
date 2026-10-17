@@ -61,6 +61,19 @@ class ForgetArgs: Decodable {
   let handle: HandleArg
 }
 
+/// Arguments come from the WebView: checked here, never trusted.
+private func b64ok(_ s: String?, _ max: Int) -> Bool {
+  guard let s = s else { return true }
+  return s.count <= max && s.range(of: "^[A-Za-z0-9+/_-]*={0,2}$", options: .regularExpression) != nil
+}
+private func badArgs(prompt: String?, challenge: String?, attest: String?, id: String? = nil) -> String? {
+  if let p = prompt, p.count > 120 || p.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) { return "The prompt isn't valid." }
+  if !b64ok(challenge, 8192) { return "The challenge isn't valid." }
+  if !b64ok(attest, 128) { return "The attestation challenge isn't valid." }
+  if !b64ok(id, 64) { return "The stored gate handle is malformed." }
+  return nil
+}
+
 enum GateError: Error, LocalizedError {
   case cancelled
   case invalidated
@@ -80,6 +93,61 @@ enum GateError: Error, LocalizedError {
 
 class HumidGatePlugin: Plugin {
   private let queue = DispatchQueue(label: "app.humid.gate", qos: .userInitiated)
+
+  /* ---------- screen exposure ----------
+   * The app switcher's snapshot, screen recording and mirroring see a plain cover,
+   * never the vault, codes or the camera. Third-party keyboards (which can log and
+   * send what's typed) are refused: only Apple's keyboard types into HumID. */
+  private var cover: UIView?
+  private var observers: [NSObjectProtocol] = []
+  private weak var web: WKWebView?
+
+  override func load(webview: WKWebView) {
+    super.load(webview: webview)
+    web = webview
+    let nc = NotificationCenter.default
+    observers.append(nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.setCovered(true) })
+    observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in self?.setCovered(true) })
+    observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.setCovered(HumidGatePlugin.captured(self?.web)) })
+    observers.append(nc.addObserver(forName: UIScreen.capturedDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.setCovered(HumidGatePlugin.captured(self?.web)) })
+    DispatchQueue.main.async { [weak self] in
+      HumidGatePlugin.refuseThirdPartyKeyboards()
+      self?.setCovered(HumidGatePlugin.captured(self?.web))
+    }
+  }
+
+  private static func captured(_ webview: WKWebView?) -> Bool {
+    return webview?.window?.windowScene?.screen.isCaptured ?? UIScreen.main.isCaptured
+  }
+
+  private func setCovered(_ on: Bool) {
+    guard let window = web?.window else { return }
+    if on {
+      if cover != nil { return }
+      let v = UIView(frame: window.bounds)
+      v.backgroundColor = UIColor(red: 0.024, green: 0.082, blue: 0.043, alpha: 1)
+      v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      window.addSubview(v)
+      cover = v
+    } else {
+      cover?.removeFromSuperview()
+      cover = nil
+    }
+  }
+
+  private static var keyboardsRefused = false
+  /** application(_:shouldAllowExtensionPointIdentifier:) → false for .keyboard, added to the app delegate. */
+  private static func refuseThirdPartyKeyboards() {
+    guard !keyboardsRefused, let delegate = UIApplication.shared.delegate else { return }
+    keyboardsRefused = true
+    let sel = #selector(UIApplicationDelegate.application(_:shouldAllowExtensionPointIdentifier:))
+    let cls: AnyClass = type(of: delegate)
+    if class_getInstanceMethod(cls, sel) != nil { return } // the app already decides
+    let block: @convention(block) (AnyObject, UIApplication, UIApplication.ExtensionPointIdentifier) -> Bool = { _, _, id in id != .keyboard }
+    guard class_addMethod(cls, sel, imp_implementationWithBlock(block), "B@:@@") else { return }
+    // UIKit notes which optional methods its delegate has when it's set: set it again.
+    UIApplication.shared.delegate = delegate
+  }
 
   private func biometryLabel(_ ctx: LAContext) -> String {
     switch ctx.biometryType {
@@ -106,6 +174,7 @@ class HumidGatePlugin: Plugin {
 
   @objc public func enroll(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(EnrollArgs.self)
+    if let bad = badArgs(prompt: args.prompt, challenge: args.challenge, attest: args.attest) { invoke.reject(bad); return }
     let id = Self.randomId()
     queue.async {
       do {
@@ -129,6 +198,7 @@ class HumidGatePlugin: Plugin {
 
   @objc public func release(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ReleaseArgs.self)
+    if let bad = badArgs(prompt: args.prompt, challenge: args.challenge, attest: args.attest, id: args.handle.id) { invoke.reject(bad); return }
     queue.async {
       do {
         let out = try Self.check(
@@ -143,6 +213,7 @@ class HumidGatePlugin: Plugin {
 
   @objc public func forget(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ForgetArgs.self)
+    if let bad = badArgs(prompt: nil, challenge: nil, attest: nil, id: args.handle.id) { invoke.reject(bad); return }
     Self.remove(id: args.handle.id)
     invoke.resolve()
   }
@@ -195,7 +266,8 @@ class HumidGatePlugin: Plugin {
   /// One Face ID / Touch ID check. No passcode fallback: the button is hidden
   /// and the policy is biometrics-only, so a lockout is an error, not a passcode prompt.
   private static func evaluate(_ prompt: String) throws -> LAContext {
-    let ctx = LAContext()
+    let ctx = LAContext()                               // a fresh context for every check, never reused
+    ctx.touchIDAuthenticationAllowableReuseDuration = 0 // no "unlocked a moment ago" reuse
     ctx.localizedFallbackTitle = ""
     ctx.localizedCancelTitle = "Cancel"
     var canErr: NSError?

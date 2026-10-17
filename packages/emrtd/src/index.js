@@ -20,6 +20,9 @@ import { bac, normalizeAccess } from "./bac.js";
 import { pace, parseCardAccess, choosePace } from "./pace.js";
 import { encodeApdu, swOf, bodyOf, concat, tlvTotalLength, readTlvs, ChipError } from "./util.js";
 
+/** Most GET RESPONSE rounds and bytes one answer may take: a chip can't keep us talking forever. */
+const MAX_CHAINED = 32, MAX_ANSWER = 64 * 1024;
+
 export { ChipError } from "./util.js";
 export { normalizeAccess, mrzInformation, checkDigit, bacKeys, bac } from "./bac.js";
 export { pace, parseCardAccess, choosePace, PROTOCOLS, CURVES } from "./pace.js";
@@ -40,10 +43,14 @@ async function exchange(transport, apdu) {
   let r = await transport.transceive(encodeApdu(apdu));
   if (r.length < 2) throw new ChipError("lost", "Lost contact with the chip. Hold the document still and try again.");
   if ((swOf(r) & 0xff00) === 0x6c00) r = await transport.transceive(encodeApdu({ ...apdu, le: swOf(r) & 0xff || 256 }));
+  if (r.length < 2) throw new ChipError("lost", "Lost contact with the chip. Hold the document still and try again.");
   let body = bodyOf(r);
-  while ((swOf(r) & 0xff00) === 0x6100) {
+  for (let rounds = 0; (swOf(r) & 0xff00) === 0x6100; rounds++) {
+    if (rounds >= MAX_CHAINED) throw new ChipError("bad_tlv", "The chip kept sending more. Reading stopped.");
     r = await transport.transceive(encodeApdu({ cla: 0x00, ins: 0xc0, p1: 0, p2: 0, le: swOf(r) & 0xff || 256 }));
+    if (r.length < 2) throw new ChipError("lost", "Lost contact with the chip. Hold the document still and try again.");
     body = concat(body, bodyOf(r));
+    if (body.length > MAX_ANSWER) throw new ChipError("bad_tlv", "The chip sent too much. Reading stopped.");
   }
   return { data: body, sw: swOf(r) };
 }
@@ -81,6 +88,7 @@ class Session {
         ? await this.ok({ cla: 0x00, ins: 0xb0, p1: (off >> 8) & 0x7f, p2: off & 255, le: want }, "Reading")
         : unwrap53(await this.ok({ cla: 0x00, ins: 0xb1, p1: 0, p2: 0, data: offsetDo(off), le: want + 4 }, "Reading"));
       if (!part.length) throw new ChipError("bad_tlv", "The chip stopped sending a file early.");
+      if (part.length > want) throw new ChipError("bad_tlv", "The chip sent more than was asked for.");
       out = concat(out, part);
       onBytes?.(out.length, total);
     }
@@ -122,6 +130,11 @@ export async function readDocument(transport, { access, nonce, onProgress = () =
   const useCan = !!access?.can;
   if (!useCan) normalizeAccess(access || {});
   const s = new Session(transport);
+  try { return await readWith(s, { access, useCan, nonce, onProgress, preferBac, photo }); }
+  finally { s.sm?.wipe(); } // the session keys go with the session, whatever happened
+}
+
+async function readWith(s, { access, useCan, nonce, onProgress, preferBac, photo }) {
   const step = (stepName, fraction, message) => onProgress({ step: stepName, fraction, message });
 
   step("access", 0.05, "Opening a secure connection to the chip…");
