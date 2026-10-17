@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "HumID main window: core IPC, the biometric gate and the ID chip reader. File saving goes through the shell's save_bytes command, not the fs/dialog JS APIs.",
+  "description": "HumID main window: core IPC, the biometric gate, the ID chip reader, and opening https:, tel: and mailto: links in the system's own apps (nothing else leaves the WebView). File saving goes through the shell's save_bytes command, not the fs/dialog JS APIs.",
   "windows": [
     "main"
   ],
@@ -15,6 +15,20 @@
   "permissions": [
     "core:default",
     "humid-gate:default",
-    "humid-nfc:default"
+    "humid-nfc:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://**"
+        },
+        {
+          "url": "tel:*"
+        },
+        {
+          "url": "mailto:*"
+        }
+      ]
+    }
   ]
 }
