@@ -2,8 +2,11 @@
 // moves APDUs; @humid/emrtd does ICAO 9303. iPhone and Android use the
 // phone's NFC; Windows and Mac use a USB contactless reader (PC/SC).
 import { fromB64, toB64, toHex } from "@humid/codec";
-import { DEMO_BUILD } from "@humid/gate";
 import { SERVER_URL } from "./config.js";
+
+/* global __HUMID_ALLOW_DEMO__ */
+// The development-build flag is tested inline (see controller.js): release builds fold
+// it to false and the simulated chip below, with its /dev/chip endpoints, is dropped.
 
 const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
 const invoke = (cmd, args) => globalThis.__TAURI_INTERNALS__.invoke(`plugin:humid-nfc|${cmd}`, args);
@@ -13,11 +16,11 @@ const msg = (e) => (typeof e === "string" ? e : e?.message || String(e));
 // demo passport holder named here (Security → ID chip, or Prove it's me).
 let demoHolder = "Demo Person";
 export const setDemoHolder = (name) => { demoHolder = name || "Demo Person"; };
-export const demoChipHint = async (name) => (await fetch(`${SERVER_URL}/dev/chip/hint?name=${encodeURIComponent(name)}`, { method: "POST" })).json();
+export const demoChipHint = async (name) => ((typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) ? (await fetch(`${SERVER_URL}/dev/chip/hint?name=${encodeURIComponent(name)}`, { method: "POST" })).json() : null);
 
 /** { available, kind: "phone" | "reader" | "demo" | "none", reason? } */
 export async function probeNfc() {
-  if (!inTauri() && DEMO_BUILD) return { available: true, kind: "demo" };
+  if (!inTauri() && (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) return { available: true, kind: "demo" };
   if (!inTauri()) return { available: false, kind: "none", reason: "Reading ID chips needs the HumID app on your phone, or on Windows or a Mac with a USB card reader." };
   try { return await invoke("probe"); }
   catch (e) { return { available: false, kind: "none", reason: msg(e) }; }
@@ -28,7 +31,7 @@ export async function probeNfc() {
  * { transceive(bytes), message(text), end({ message?, error? }) }.
  */
 export async function openChip({ prompt, timeoutMs = 60_000 } = {}) {
-  if (!inTauri() && DEMO_BUILD) {
+  if (!inTauri() && (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) {
     const s = await (await fetch(`${SERVER_URL}/dev/chip/begin?name=${encodeURIComponent(demoHolder)}`, { method: "POST" })).json();
     return {
       kind: "demo",

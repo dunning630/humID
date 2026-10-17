@@ -18,7 +18,7 @@
 import { batch } from "@preact/signals";
 import { toB64, fromB64, toHex, MEDIA_TYPE, EXTENSION } from "@humid/codec";
 import { suite, random, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
-import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE, DEMO_BUILD } from "@humid/gate";
+import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE } from "@humid/gate";
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
 import { HumidApi, ApiError } from "@humid/api";
@@ -40,7 +40,17 @@ import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { validStamp, REASONS } from "./place.js";
 import { sealDuress, openDuress, isDuress, DEFAULT as DURESS_OFF } from "./duress.js";
-import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
+import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
+
+/* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
+// Build flags (build.mjs `define`, always a literal true/false; `tools/dev.mjs` sets both):
+//   __HUMID_SIM__          simulation build: the vault server runs inside the app
+//   __HUMID_ALLOW_DEMO__   development build: demo gate, demo passports, /dev endpoints
+// They're tested INLINE below (the spelled-out `typeof … && … === true`), never through
+// an imported or local constant or a helper: esbuild folds a define only where it
+// appears, at parse time, and that's what makes every simulation and demo branch,
+// startSim and the ../sim/server.js chunk disappear from release builds
+// (tests/bundle.test.js). Under Node (tests) the defines don't exist: false.
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 const MAX_FILE = 50 * 1024 * 1024;
@@ -192,18 +202,21 @@ async function withStepUp(op, args, purpose, label, fn) {
 
 /* ---------------- simulation build: the server inside the app ---------------- */
 
+// Release builds have none of this: with the flag false, startSim is `null` and the
+// sim server chunk is never emitted (a conditional expression, not a function
+// declaration, so esbuild can drop the dynamic import).
 let sim = null;
-async function startSim() {
+const startSim = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? async () => {
   const { createSimServer } = await import("../sim/server.js");
   sim = await createSimServer({
-    platformPolicy: DEMO_BUILD ? "demo" : "biometric",
+    platformPolicy: (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) ? "demo" : "biometric",
     onCheck: (report) => {
       S.simLog.value = [report, ...S.simLog.value].slice(0, 40);
       if (!report.quiet) setTimeout(() => { S.simShow.value = report; }, report.kind === "enrol" ? 1600 : 900);
     },
   });
   return sim;
-}
+} : null;
 
 /** Wipe the simulated server and this phone's HumID, and start over. */
 export async function resetSimulation() {
@@ -225,7 +238,7 @@ export async function boot() {
   try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
   try { S.offlineReady.value = !!(await store.getOffline()); } catch { S.offlineReady.value = false; }
   const id = S.identity.value;
-  const raw = SIM ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
+  const raw = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
   api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, fetch: watchConnection(raw) });
   // The server no longer knows this session (it expired, or the server restarted and the
   // reconnected channel isn't signed in): either way, one live check signs back in.
@@ -289,7 +302,7 @@ export async function connectServer() {
   S.serverError.value = null;
   try {
     const s = await api.server();
-    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: SIM };
+    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
   } catch (e) {
     S.server.value = null;
     S.serverError.value = friendly(e);
@@ -440,10 +453,11 @@ async function keepPass(pass) {
   S.pass.value = rec;
 }
 
-/** A demo access code: in the simulation build, or from a local development server. */
+/** A demo access code: in the simulation build, or from a local development server. Release builds: nothing. */
 export async function demoAccessCode() {
+  if (!(typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) && !(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) return false;
   try {
-    if (SIM) return redeemAccessCode(sim.demoAccessCode());
+    if ((typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) return redeemAccessCode(sim.demoAccessCode());
     const r = await fetch("/dev/access-code", { method: "POST" });
     if (!r.ok) throw new Error("This server has no demo access codes.");
     return redeemAccessCode((await r.json()).code);
@@ -847,7 +861,7 @@ export async function readCardPhoto(canvas, { side = "front", pan = null } = {})
  * Apple's roots, pinned (@humid/wallet). A development build also trusts test roots a
  * browser check puts in globalThis.__humidExtraPassRoots; a release build never does.
  */
-const passRoots = () => (DEMO_BUILD && Array.isArray(globalThis.__humidExtraPassRoots)
+const passRoots = () => ((typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && Array.isArray(globalThis.__humidExtraPassRoots)
   ? [...APPLE_ROOTS, ...globalThis.__humidExtraPassRoots.map((d, i) => ({ name: `Test root ${i + 1}`, der: fromB64(d) }))]
   : APPLE_ROOTS);
 
@@ -1713,7 +1727,7 @@ export async function readChipFiles(files) {
 
 /** Development builds only: a demo passport from the local dev server, with a chip that answers challenges. */
 export async function demoPassport(name = "Demo Person") {
-  if (!DEMO_BUILD) return null;
+  if (!(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) return null;
   try {
     const res = await fetch(`${SERVER_URL}/dev/passport?name=${encodeURIComponent(name)}`, { method: "POST" });
     if (!res.ok) throw new Error("This server has no demo passports.");
