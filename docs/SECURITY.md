@@ -235,9 +235,44 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
 6. Account-key rotation after a device is removed.
 7. Penetration test of the deployed stack.
 8. Privacy policy, terms and data-handling review with counsel.
-9. Encrypt the access pass at rest on the device (between buying and spending it: today
-   it is stored as is, excluded from backups but readable from the phone's storage), and
-   the `pending` join record while a join waits.
+9. The access pass is now sealed at rest (see *The access pass at rest* below). Still
+   to do: hold the install key in the platform's secret store (a non-biometric Keychain,
+   Keystore, DPAPI or Secret Service slot via a new gate-plugin command) rather than in
+   the WebView's key store, and seal the `pending` join record while a join waits.
+
+## The access pass at rest
+
+Between buying an access pass and spending it (`docs/ANONYMITY.md`) there is no account,
+so no seed-derived key. Until 2.0 the wallet record (the draft: access code and blinded
+request; then the finished pass) sat in IndexedDB as it was. Now (`@humid/pass/atrest`,
+apps 1.13):
+
+- **Install key.** On first use the app generates a 256-bit AES-GCM key with WebCrypto as a
+  *non-extractable* `CryptoKey` and stores it in its own IndexedDB database (`humid-keys`),
+  apart from the wallet. JavaScript never sees the key's bytes: it can only ask the WebView's
+  crypto engine to encrypt or decrypt with it. The same mechanism works in all five native
+  builds and the web app; a private window with no IndexedDB keeps the key in memory, like
+  the pass itself there.
+- **Sealing.** The whole wallet record is JSON, sealed with AES-GCM, a fresh 96-bit IV per
+  write and the AAD `HUMID-PASS-v1`. Only the code, the draft and the pass live in it, so
+  none of them is readable as stored (`tests/pass-atrest.test.js`).
+- **Migration.** A clear record written by an older build is re-sealed on the first read and
+  the plaintext overwritten. A record that doesn't open (another install's key, damage) is
+  dropped rather than shown.
+
+Why not the gate plugin: `humid-gate@2` holds one secret per identity and releases it only
+after a live biometric check, which is the wrong shape for a value the app needs silently at
+boot and before any identity exists; a non-biometric slot would be a new native command on
+every platform. Why not a file in the app data directory: the shell's only file command is
+the save dialog, and a file next to the database is no stronger than the key record.
+
+Limits: the key is held by the WebView's crypto engine, not by the secure chip. Chromium and
+WebKit serialise non-extractable keys to the profile's storage in the clear, so a copy of the
+**whole** profile (root, a full-filesystem backup on a platform where the data store isn't
+excluded) carries both the key and the pass. What it defeats: reading the code or pass out of
+the wallet database alone, backups that include the database but not the key store, and
+casual inspection of the storage. Moving the key into a platform secret-store slot is the
+remaining item under *Before real data* #9.
 
 ## Live biometric checks
 

@@ -1,7 +1,7 @@
 name: CI
 
 # Every push / PR:
-#   1. unit, protocol and end-to-end tests (all services in-process)
+#   1. unit, protocol, end-to-end and penetration-regression tests (all services in-process)
 #   2. compile only the app platforms the change touches
 #   3. build only the service images the change touches, then boot the whole
 #      stack with docker compose and run the smoke test against it over TLS
@@ -35,8 +35,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Tests (crypto compatibility, HTP/1 protocol, services end to end)
-        run: npm test && npm run test:e2e
+      - name: Tests (crypto compatibility, HTP/1 protocol, services end to end, penetration regression)
+        run: npm test && npm run test:e2e && npm run test:pen
         env: { NODE_NO_WARNINGS: "1" }
       - name: Build the app bundle (module contract check included)
         run: npm run build:app
