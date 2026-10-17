@@ -212,7 +212,10 @@ export function createConsole({
     const code = newCode();
     const createdAt = now();
     const digest = requestDigest({ kid: kid(), code, kind, type, args, createdAt });
-    const { title, lines } = DESCRIBE[kind === "enrol" ? "enrol" : type](args);
+    const { title, lines: described } = DESCRIBE[kind === "enrol" ? "enrol" : type](args);
+    // Check-in keeps armed vaults' keys in memory only: anything that stops the server erases them.
+    const armed = MAINTENANCE.has(type) ? Number(S.status?.checkin?.armed || 0) : 0;
+    const lines = armed ? [...described, `Check-in: ${armed} armed vault${armed === 1 ? "" : "s"} will be erased for good when the server stops (their keys live in memory only). Ask ${armed === 1 ? "its holder" : "their holders"} to turn Check-in off first.`] : described;
     const r = { code, kind, type, args, title, lines, digest, check: digestCheck(digest), createdAt, expiresAt: createdAt + REQUEST_TTL_MS, state: "waiting" };
     S.requests.set(code, r);
     publishRequest(r);

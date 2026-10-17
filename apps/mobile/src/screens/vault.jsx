@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { guessCategory } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, CATEGORIES, categoryOf, kindIcon } from "../icons.jsx";
-import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, usePlaceStamp } from "../ui.jsx";
+import { Sheet, Steps, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, CheckinBar, ErasedBanner, usePlaceStamp } from "../ui.jsx";
 import { rotateCanvas, cleanCanvas } from "../core/scan.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
@@ -30,6 +30,8 @@ export function Vault() {
       </div>
 
       <OfflineBanner />
+      <CheckinBar />
+      <ErasedBanner />
 
       {S.alerts.value.length > 0 && (
         <button class="banner bad alert-banner" onClick={() => { S.tab.value = "security"; window.scrollTo({ top: 0 }); }}>
@@ -166,7 +168,7 @@ export function ProtectionCard() {
           {!i.done && <Icon name="chevron" />}
         </button>
       ))}
-      {!id?.duress?.enabled && (
+      {!S.duressSetting.value?.enabled && (
         <button class="proof-row linkrow" data-done="0" onClick={() => goSecurity("duress")}>
           <span class="p-ico"><Icon name="siren" /></span>
           <span><strong>Optional: duress gesture</strong><span>If you're ever forced to unlock, show only chosen documents</span></span>
@@ -464,7 +466,7 @@ export function ItemSheet() {
               <i aria-hidden="true" />
             </label>
           )}
-          {S.identity.value?.duress?.enabled && !S.decoy.value && !off && (
+          {S.duressSetting.value?.enabled && !S.decoy.value && !off && (
             <label class="toggle" style={{ marginTop: 12 }}>
               <span><strong>Show in decoy view</strong><span>What someone sees if you unlock with your duress gesture.</span></span>
               <input type="checkbox" role="switch" checked={!!item.decoy} onChange={(e) => setDecoy(item, e.currentTarget.checked)} />

@@ -123,7 +123,21 @@ const ROUTES = [
   { m: "GET", p: re("/admin/summary"), h: "adminSummary", auth: true },
   { m: "GET", p: re(`/admin/requests/(${CODE_RE})`), h: "adminRequest", auth: true },
   { m: "POST", p: re(`/admin/requests/(${CODE_RE})/approve`), h: "adminApprove", auth: true, guard: true },
+
+  // Check-in (docs/CHECKIN.md), when HUMID_CHECKIN=on: a timer the holder arms before a
+  // high-stakes situation. Check in with a live check before each deadline, or the vault's
+  // document keys are destroyed. Not guarded by lockdown: in a duress session these must
+  // look ordinary (handled inside), and arming or checking in is never a risk to the holder.
+  { m: "GET", p: re("/checkin"), h: "checkinStatus", auth: true },
+  { m: "POST", p: re("/checkin/arm"), h: "checkinArm", auth: true },
+  { m: "POST", p: re("/checkin/check"), h: "checkinCheck", auth: true },
+  { m: "POST", p: re("/checkin/disarm"), h: "checkinDisarm", auth: true },
 ];
+
+/** Check-in settings, as keyshare accepts them (CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS). Published in the policy hint. */
+const CHECKIN_POLICY = { windowsH: [1, 2, 4, 8, 24], graceMin: [0, 15, 30, 60] };
+const CHECKIN_WINDOWS = CHECKIN_POLICY.windowsH.map((h) => h * 3_600_000);
+const CHECKIN_GRACES = CHECKIN_POLICY.graceMin.map((m) => m * 60_000);
 
 /** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
 const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
@@ -172,8 +186,14 @@ export function createGateway({
    * Without it the /admin routes answer "not on this server".
    */
   admin = null,
+  /** Check-in (docs/CHECKIN.md): on | off. Off until push reminders exist, so nobody loses a vault to a missed notification by surprise. */
+  checkin = env("HUMID_CHECKIN", "off"),
+  /** How often the gateway tidies up after a Check-in erase: the vault's envelopes, and the ledger entry. */
+  checkinSweepMs = 10_000,
 } = {}) {
   const log = logger("gateway");
+  if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
+  const CHECKIN = checkin === "on";
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
   if (!REGISTRATION.includes(registration)) throw new Error(`HUMID_REGISTRATION must be one of ${REGISTRATION.join(", ")}`);
   if (passBuyUrl && !/^https:\/\//.test(passBuyUrl)) throw new Error("HUMID_PASS_BUY_URL must be an https:// URL");
@@ -279,6 +299,7 @@ export function createGateway({
         share.fill(0);
         if (put.status !== 201) {
           await internalJson("vault", "DELETE", `/internal/objects/${out.id}`, { claims }).catch((e) => log.warn("upload rollback failed", { err: e.message }));
+          if (put.status === 423) throw new HttpError(423, put.data.error, put.data.message); // a missed check-in
           throw new HttpError(503, "keyshare_unavailable", "Your document's key couldn't be stored, so it wasn't saved. Try again.");
         }
       }
@@ -298,8 +319,9 @@ export function createGateway({
       }
       const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
       if (ks.status !== 200 && ks.status !== 404) {
-        if (ks.status === 403) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
-        throw new HttpError(ks.status === 429 ? 429 : ks.status === 403 ? 403 : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+        // 423: a missed check-in locks the vault; 410: Check-in erased this document's key
+        if ([403, 410, 423].includes(ks.status)) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
+        throw new HttpError([403, 410, 423, 429].includes(ks.status) ? ks.status : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
       }
       const split = ks.status === 200;
       await record(s.subject, "object.opened", { id, split, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
@@ -522,16 +544,102 @@ export function createGateway({
 
     async presence(s, body) {
       const r = parseJson(body) || {};
+      // Check-in: every unlock asks where it stands (so a duress unlock takes the same time),
+      // and a duress session keeps a copy to show, as if nothing had happened.
+      const ck = CHECKIN ? await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null) : null;
       if (r.d === 1 && !s.duress) {
         s.duress = true;
+        const st = ck?.status === 200 ? ck.data : null;
+        s.decoyCheckin = st && (st.state === "armed" || st.state === "locked")
+          ? decoyFrom({ ...st, deadline: st.state === "armed" ? st.deadline : Date.now() + st.windowMs })
+          : null;
         const account = s.subject, device = s.deviceId, platform = s.platform;
         setImmediate(async () => {
+          // Check-in first: a duress signal while it's armed erases the vault now (decoys stay).
+          if (CHECKIN) await eraseNow(account);
           await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
           await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
           await recordQuietly(account, "duress.signaled", { device, platform });
         });
       }
       return { status: 200, json: { ok: true } };
+    },
+
+    /* ---- Check-in (docs/CHECKIN.md): keyshare holds the keys and the clock; this relays ---- */
+
+    async checkinStatus(s) {
+      needCheckin();
+      const r = await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => ({ status: 503 }));
+      if (s.duress) return { status: 200, json: decoyView(s.decoyCheckin) }; // same work, then the calm version
+      if (r.status !== 200) throw new HttpError(503, "keyshare_unavailable", "Check-in can't be reached right now. Try again.");
+      return { status: 200, json: r.data };
+    },
+
+    // Arm, or change the settings of an armed Check-in. The app sends its settings and which
+    // documents are decoys (kept out of the erase); the gateway adds every document the vault
+    // holds, so keyshare can refuse if any of them couldn't be erased for good.
+    async checkinArm(s, body, stepUp) {
+      needCheckin();
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Turning on Check-in needs a fresh biometric check.");
+      const r = parseJson(body) || {};
+      const settings = { windowMs: Number(r.windowMs), maxWindowMs: Number(r.maxWindowMs ?? r.windowMs), graceMs: Number(r.graceMs) };
+      const claims = claimsFor(s, { stepUp });
+      const list = await internalJson("vault", "GET", "/objects", { claims });
+      if (list.status !== 200) fail(list);
+      if (s.duress) {
+        checkSettings(settings);
+        const t = Date.now();
+        s.decoyCheckin = decoyFrom({ ...settings, deadline: t + settings.windowMs, armedAt: s.decoyCheckin?.armedAt ?? t });
+        return { status: 200, json: decoyView(s.decoyCheckin) };
+      }
+      const out = await internalJson("keyshare", "POST", "/internal/checkin/arm", {
+        claims, json: { ...settings, objects: list.data.items.map((i) => i.id), keep: Array.isArray(r.keep) ? r.keep : [] },
+      }).catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be turned on right now. Try again." } }));
+      if (out.status !== 200) return { status: out.status, json: out.data }; // e.g. unsplit_items, with which ones
+      await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, proof: stepUp.proof });
+      return { status: 200, json: out.data };
+    },
+
+    // A check-in: one live check sets the next deadline. Not in the ledger (see ledger/EVENT_TYPES).
+    async checkinCheck(s, body, stepUp) {
+      needCheckin();
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Checking in needs a fresh biometric check.");
+      const r = parseJson(body) || {};
+      const next = r.nextWindowMs == null ? null : Number(r.nextWindowMs);
+      if (s.duress) {
+        // It looks like a check-in. The vault was already erased when this session opened.
+        await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
+        setImmediate(() => eraseNow(s.subject));
+        const d = s.decoyCheckin, v = decoyView(d);
+        if (v.state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
+        if (v.state === "off") throw new HttpError(409, "checkin_off", "Check-in isn't on.");
+        const n = next ?? d.windowMs;
+        if (!CHECKIN_WINDOWS.includes(n)) throw new HttpError(400, "bad_checkin", "Check-in can't use that window.");
+        if (n > d.maxWindowMs) throw new HttpError(400, "bad_checkin", "That's longer than the longest window you allowed.");
+        d.deadline = Date.now() + n; d.erasesAt = d.deadline + d.graceMs;
+        return { status: 200, json: decoyView(d) };
+      }
+      const out = await internalJson("keyshare", "POST", "/internal/checkin/check", { claims: claimsFor(s, { stepUp }), json: next == null ? {} : { nextWindowMs: next } })
+        .catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be reached right now. Try again." } }));
+      if (out.status !== 200) fail(out);
+      return { status: 200, json: out.data };
+    },
+
+    async checkinDisarm(s, body, stepUp) {
+      needCheckin();
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Turning off Check-in needs a fresh biometric check.");
+      if (s.duress) {
+        await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
+        setImmediate(() => eraseNow(s.subject));
+        if (decoyView(s.decoyCheckin).state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
+        s.decoyCheckin = null;
+        return { status: 200, json: { state: "off" } };
+      }
+      const out = await internalJson("keyshare", "POST", "/internal/checkin/disarm", { claims: claimsFor(s, { stepUp }) })
+        .catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be reached right now. Try again." } }));
+      if (out.status !== 200) fail(out);
+      await recordQuietly(s.subject, "checkin.disarmed", { proof: stepUp.proof });
+      return { status: 200, json: out.data };
     },
 
     async duressStatus(s) {
@@ -692,6 +800,71 @@ export function createGateway({
     return r;
   }
 
+  /* ---------- Check-in ---------- */
+
+  function needCheckin() { if (!CHECKIN) throw new HttpError(404, "not_found", "No such endpoint"); }
+
+  /** The same checks keyshare makes, with the same answers, for a duress session that must look ordinary. */
+  function checkSettings({ windowMs, maxWindowMs, graceMs }) {
+    if (!CHECKIN_WINDOWS.includes(windowMs)) throw new HttpError(400, "bad_checkin", "Check-in can't use that window.");
+    if (!CHECKIN_WINDOWS.includes(maxWindowMs)) throw new HttpError(400, "bad_checkin", "Check-in can't use that longest window.");
+    if (!CHECKIN_GRACES.includes(graceMs)) throw new HttpError(400, "bad_checkin", "Check-in can't use that grace period.");
+    if (maxWindowMs < windowMs) throw new HttpError(400, "bad_checkin", "The longest window can't be shorter than the usual one.");
+  }
+
+  /** A duress session's Check-in: a copy of the real one as it was at unlock, moved only by that session. */
+  const decoyFrom = (st) => ({ deadline: st.deadline, erasesAt: st.deadline + st.graceMs, windowMs: st.windowMs, maxWindowMs: st.maxWindowMs, graceMs: st.graceMs, armedAt: st.armedAt });
+  /** It reads exactly like keyshare's status, field for field. */
+  function decoyView(d) {
+    if (!d) return { state: "off" };
+    const t = Date.now();
+    if (t >= d.erasesAt) return { state: "erased", erasedAt: d.erasesAt };
+    return { state: t < d.deadline ? "armed" : "locked", deadline: d.deadline, erasesAt: d.erasesAt, windowMs: d.windowMs, maxWindowMs: d.maxWindowMs, graceMs: d.graceMs, armedAt: d.armedAt };
+  }
+
+  /** A duress signal: if this account is armed, keyshare destroys its fuse key now. Then tidy up. */
+  async function eraseNow(account) {
+    const r = await internalJson("keyshare", "POST", "/internal/checkin/erase", { claims: { sub: account } })
+      .catch((e) => { log.warn("check-in erase: keyshare", { err: e.message }); return null; });
+    if (r?.data?.erased) await sweepCheckin().catch(() => {});
+  }
+
+  /**
+   * After keyshare destroys an account's keys (a missed check-in, a duress signal, a restart),
+   * drop the envelopes and index entries those keys opened, then write it in the holder's
+   * ledger. The keys are already gone, so nothing here is urgent: whatever fails now is tried
+   * again on the next sweep, the ledger entry included (written after the fact, never first).
+   */
+  let sweeping = null;
+  function sweepCheckin() {
+    if (!CHECKIN) return Promise.resolve(0);
+    sweeping ||= (async () => {
+      let n = 0;
+      const list = () => internalJson("keyshare", "GET", "/internal/checkin/erased");
+      const r = await list().catch(() => list()).catch(() => null); // once more: keyshare may have just restarted
+      for (const e of r?.status === 200 ? r.data.erased : []) {
+        const claims = { sub: e.owner };
+        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { keep: e.keep, before: e.erasedAt } }).catch(() => null);
+        if (v?.status !== 200) continue;
+        // Once per erase, however many sweeps it takes (a lost "cleaned" mustn't write it twice).
+        // The count is keyshare's: how many document keys were destroyed.
+        const at = new Date(e.erasedAt).toISOString();
+        const seen = await internalJson("ledger", "GET", "/events?limit=100", { claims }).catch(() => null);
+        if (seen?.status !== 200) continue;
+        const done = (seen.data.entries || []).some((x) => { try { const b = JSON.parse(x.body); return b.type === "checkin.erased" && b.detail?.at === at; } catch { return false; } });
+        if (!done) {
+          try { await record(e.owner, "checkin.erased", { count: e.count ?? v.data.deleted, at }); }
+          catch { continue; }
+        }
+        await internalJson("keyshare", "POST", `/internal/checkin/erased/${e.owner}/cleaned`).catch(() => {});
+        n++;
+      }
+      return n;
+    })().finally(() => { sweeping = null; });
+    return sweeping;
+  }
+  if (CHECKIN && checkinSweepMs > 0) setInterval(() => { sweepCheckin().catch(() => {}); }, checkinSweepMs).unref();
+
   async function lockedDown(s) {
     if (s.duress) return true;
     const r = await internalJson("identity", "GET", `/internal/lockdown/${s.subject}`).catch(() => null);
@@ -733,7 +906,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(passBuyUrl ? { passBuyUrl } : {}) } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }
@@ -758,7 +931,7 @@ export function createGateway({
   ];
 
   const svc = createService({ name: "gateway", port, routes, extraHeaders: cors });
-  return { ...svc, htp };
+  return { ...svc, htp, sweepCheckin };
 }
 
 if (isMain(import.meta.url)) {

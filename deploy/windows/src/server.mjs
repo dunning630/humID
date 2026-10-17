@@ -147,6 +147,7 @@ async function run({ service }) {
     upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery), access: local(access), keyshare: local(keyshare) },
     trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
     admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
+    checkin: S("HUMID_CHECKIN", "off"), // docs/CHECKIN.md
   });
   await gateway.start();
 
@@ -178,6 +179,7 @@ async function run({ service }) {
     root, version: VERSION, appVersion: APP_VERSION, log: logWatch, edgePort: port,
     services: { identity, vault, ledger, recovery, access, keyshare, gateway },
     sessions: () => gateway.htp.sessions.size,
+    checkinArmed: () => keyshare.armedCount(), // the console warns before anything that stops the server
     info: { kid: info.kid, fingerprint: info.fingerprint, publicUrl: info.publicUrl, devicePolicy: info.devicePolicy, registration: info.registration },
   });
   const tmp = join(root, "server.json.tmp");

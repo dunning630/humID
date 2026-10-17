@@ -95,6 +95,19 @@ batch name is for your records). `humid set HUMID_PASS_BUY_URL=https://…` make
 the app link to your shop. How it stays anonymous:
 [docs/ANONYMITY.md](../../docs/ANONYMITY.md).
 
+## Check-in
+
+`humid set HUMID_CHECKIN=on` lets holders arm Check-in: their vault is erased
+for good unless they check in every hour or two
+([docs/CHECKIN.md](../../docs/CHECKIN.md)). The keys of an armed vault live in
+the server's memory only, so **anything that stops the server erases every
+armed vault**: `humid restart`, an update, a backup, restarting Windows, a
+crash. `humid status` shows how many are armed. The admin console says so
+before you approve any of those, and `humid stop`, `restart`, `set`, `backup`,
+`restore`, `expose`, `uninstall` and an update say so and go on only once you
+type ERASE (with `-Quiet`, they go on after the warning). It's off by default
+until push reminders exist.
+
 ## Limits
 
 - The laptop has to be on, awake and online. The installer offers to keep it

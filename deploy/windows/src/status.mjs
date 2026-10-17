@@ -77,10 +77,10 @@ export function watchLog() {
 }
 
 /**
- * start({ root, version, appVersion, services: { name: server }, edgePort, sessions: () => n })
+ * start({ root, version, appVersion, services: { name: server }, edgePort, sessions: () => n, checkinArmed: () => n })
  * Writes the status file now and every STATUS_EVERY_MS. Returns { stop, write }.
  */
-export function startStatus({ root, version, appVersion, services, edgePort, sessions, info = {}, log = watchLog(), everyMs = STATUS_EVERY_MS }) {
+export function startStatus({ root, version, appVersion, services, edgePort, sessions, checkinArmed, info = {}, log = watchLog(), everyMs = STATUS_EVERY_MS }) {
   const lag = monitorEventLoopDelay({ resolution: 20 });
   lag.enable();
   const startedAt = new Date().toISOString();
@@ -107,6 +107,8 @@ export function startStatus({ root, version, appVersion, services, edgePort, ses
       uptimeS: Math.round(process.uptime()),
       process: { rssMB: Math.round(mem.rss / 1048576), heapMB: Math.round(mem.heapUsed / 1048576), cpuPct, loopLagP99Ms: Math.round(lag.percentile(99) / 1e6), node: process.version },
       services: checks, edge, sessions: sessions?.() ?? null, data: dataSizes,
+      // Check-in: how many vaults are armed (a count, nothing more). Stopping the server erases them.
+      checkin: { armed: checkinArmed?.() ?? null },
       log: log.snapshot(now),
     };
     lag.reset();

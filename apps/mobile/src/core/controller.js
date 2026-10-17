@@ -85,6 +85,8 @@ const UNREACHABLE = "Can't reach your vault server. Check your connection.";
 const SESSION_LOST = new Set(["session_unknown", "session_expired", "sign_in_required"]);
 const friendly = (e) => {
   if (SESSION_LOST.has(e?.code)) return null;
+  // the server says Check-in locked or erased the vault: show where it stands now
+  if (e?.code === "checkin_missed" || e?.code === "vault_erased") setTimeout(() => loadCheckin(), 0);
   if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
@@ -534,19 +536,21 @@ export async function saveCard(code) {
 /* ---------------- unlock / lock ---------------- */
 
 /**
- * Unlock. duress = true when the person used their duress gesture (Security → Duress
- * protection): the session opens exactly the same way, then shows only decoy documents,
- * while the server silently locks sensitive changes. Every unlock reports presence, so
- * the two look the same on the wire.
+ * Unlock. gesture = "hold" or "taps" when the person unlocked with one of the duress
+ * gestures (Security → Duress protection), null otherwise. Whether that gesture IS this
+ * device's duress gesture is sealed on the device (2.0 review F1), so it's decided only
+ * inside the live check: then a duress session opens exactly the same way, shows only
+ * decoy documents, and the server silently locks sensitive changes (and erases the vault,
+ * if Check-in is armed). Every unlock reports presence, so the two look the same on the wire.
+ * decoy: reconnecting a session that was already a decoy.
  *
  * With no connection, the same live check opens the offline copy instead (unlockOffline).
  */
-export async function unlock(duress = false) {
+export async function unlock(gesture = null, { decoy = false } = {}) {
   const id = S.identity.value;
-  duress = !!duress && !!id?.duress?.enabled;
   if (!id?.server?.id) return toast("This identity is not registered with a vault server.", "error");
   const wasOffline = !!S.offline.value;
-  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(duress);
+  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(gesture, decoy);
   try {
     showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
     const sess = await api.login({
@@ -559,9 +563,15 @@ export async function unlock(duress = false) {
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
+    const duress = decoy || await isDuress(gesture);
     await reportPresence(duress);
-    offline = duress ? null : await readOffline();
-    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.offline.value = null; S.decoy.value = duress; S.view.value = "app"; });
+    if (!duress) await keepDuressSealed();
+    // online from here on (also when reconnecting from the offline copy), so Check-in can be asked
+    batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; S.duressSetting.value = duress ? CALM_DURESS : duressCfg; });
+    if (!S.server.value) await connectServer(); // its policy says whether it offers Check-in
+    await loadCheckin(); // before anything is saved on this device: while Check-in is armed, nothing is
+    offline = duress || checkinArmed() ? null : await readOffline();
+    batch(() => { S.lockIssue.value = null; S.view.value = "app"; });
     await endInterrupt(true, wasOffline ? "Back online." : "Welcome back.", 500);
     refresh();
     loadAlerts();
@@ -576,14 +586,68 @@ export async function unlock(duress = false) {
       else if (!S.interrupt.value && !cancelled(e)) toast("Still can't reach your vault server.", "warn");
       return;
     }
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
+    batch(() => { S.session.value = null; S.decoy.value = false; S.duressSetting.value = null; S.checkin.value = null; });
     if (wasOffline) lock();
     if (issue) S.lockIssue.value = e.code;
     // No connection: open the offline copy with a live check of its own.
-    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(duress); }
+    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(gesture, decoy); }
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e) && !issue) toast(friendly(e), "error"); // an issue has its own screen
   }
+}
+
+/* ---------------- this device's duress setting (sealed: 2.0 review F1) ---------------- */
+// Which gesture means duress, and whether there is one, is sealed under the offline key,
+// which only a live check derives. A forensic copy of the phone, a backup or a rooted
+// phone shows a sealed record of the same size whatever it says, so a coercer can't learn
+// the gesture to avoid it. The lock screen watches for both gestures every time.
+
+let duressCfg = null; // { enabled, gesture } while unlocked; null while locked
+const CALM_DURESS = { enabled: false, gesture: "hold" }; // what a duress session shows
+
+async function openDuressSetting() {
+  const id = S.identity.value;
+  if (id?.duressSealed) {
+    try {
+      const d = offlineKey ? await suite(id.suite).openOffline(offlineKey, fromB64(id.duressSealed)) : null;
+      if (d?.kind === "duress") return { enabled: d.enabled === 1, gesture: d.gesture === "taps" ? "taps" : "hold" };
+    } catch {}
+    return { ...CALM_DURESS, unreadable: true };
+  }
+  // before apps 1.14 it was kept in the clear; keepDuressSealed seals it at this unlock
+  return { enabled: !!id?.duress?.enabled, gesture: id?.duress?.gesture === "taps" ? "taps" : "hold" };
+}
+
+/**
+ * Did the person just use this device's duress gesture? Needs the session's keys (call after
+ * the live check). If the sealed setting can't be read, a duress gesture counts as duress:
+ * for a coercion feature, failing toward the decoy is the safe direction.
+ */
+async function isDuress(gesture) {
+  duressCfg = await openDuressSetting();
+  if (duressCfg.unreadable) { const unreadable = !!gesture; duressCfg = { ...CALM_DURESS }; return unreadable; }
+  return !!gesture && duressCfg.enabled && duressCfg.gesture === gesture;
+}
+
+async function sealDuressSetting(cfg) {
+  const id = S.identity.value;
+  const Suite = suite(id.suite);
+  if (!offlineKey || !Suite.sealOffline) throw new Error("Lock HumID and unlock it again, then try this.");
+  // { enabled: 0|1, gesture: "hold"|"taps" }: the same length whatever it says
+  const blob = await Suite.sealOffline(offlineKey, { kind: "duress", enabled: cfg.enabled ? 1 : 0, gesture: cfg.gesture === "taps" ? "taps" : "hold" });
+  const record = { ...id, duressSealed: toB64(blob) };
+  delete record.duress;
+  delete record.schema;
+  await store.putIdentity(record);
+  S.identity.value = { ...record, schema: id.schema ?? 4 };
+}
+
+/** Every identity carries a sealed setting, on or off, so having one says nothing. An older one in the clear is sealed now. */
+async function keepDuressSealed() {
+  const id = S.identity.value;
+  if (id?.duressSealed && !id.duress) return;
+  try { await sealDuressSetting(duressCfg || CALM_DURESS); } catch { /* next unlock */ }
 }
 
 /**
@@ -631,7 +695,7 @@ async function readOffline() {
 /** Update part of the offline copy. Only from a real, online session. */
 function keepOffline(patch) {
   const account = S.identity.value?.server?.id;
-  if (S.offline.value || S.decoy.value || !offlineKey || !account || !store) return;
+  if (S.offline.value || S.decoy.value || checkinArmed() || !offlineKey || !account || !store) return;
   offline = { ...(offline || {}), ...patch, v: 1, account, savedAt: new Date().toISOString() };
   const copy = offline, key = offlineKey.slice();
   offlineWrite = offlineWrite.then(async () => {
@@ -647,33 +711,36 @@ function keepOffline(patch) {
 }
 
 /** Read-only, from the copy on this device, after a live check on this device. */
-async function unlockOffline(duress) {
+async function unlockOffline(gesture = null, decoy = false) {
   try {
     await withKeys("launch", "Unlock HumID (offline)", async ({ seed, Suite }) => {
       showInterrupt({ progress: 0.7, message: "No connection to your vault. Opening the copy saved on this device…" });
       sessionKeys(Suite, seed);
     });
+    const duress = decoy || await isDuress(gesture);
     const copy = await readOffline();
     if (!copy) {
-      wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+      wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
+    if (!duress) await keepDuressSealed();
     offline = copy;
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
+      S.duressSetting.value = duress ? CALM_DURESS : duressCfg;
       S.offline.value = { savedAt: copy.savedAt };
       S.view.value = "app";
     });
     refresh();
     loadAlerts();
   } catch (e) {
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null;
+    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
     if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
   }
 }
 
 /** Back online: one live check signs in and replaces the offline copy with the vault. */
-export function reconnect() { return unlock(S.decoy.value); }
+export function reconnect() { return unlock(null, { decoy: S.decoy.value }); }
 
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
 function needVault() {
@@ -697,10 +764,13 @@ async function reportPresence(duress) {
 export function lock(reason) {
   if (S.view.value !== "app") return;
   if (!S.offline.value) api.logout();
-  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null;
+  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null; duressCfg = null;
   clearTimeout(idleTimer);
+  clearTimeout(checkinTimer);
   batch(() => {
     S.view.value = "locked";
+    S.duressSetting.value = null;
+    S.checkin.value = null;
     S.session.value = null;
     S.items.value = [];
     S.ledger.value = null;
@@ -1709,13 +1779,13 @@ export async function removeAnchor() {
 // changes lives on the server (lockdown, slower recoveries, witness alerts).
 
 export async function saveDuress({ enabled, gesture }) {
-  const id = S.identity.value;
   if (S.decoy.value) { S.sheet.value = null; return toast("Saved."); }
-  const record = { ...id, duress: { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" } };
-  delete record.schema;
-  await store.putIdentity(record);
-  S.identity.value = { ...record, schema: id.schema ?? 4 };
-  toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
+  try {
+    await sealDuressSetting({ enabled, gesture });
+    duressCfg = { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" };
+    S.duressSetting.value = duressCfg;
+    toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
+  } catch (e) { toast(friendly(e), "error"); }
 }
 
 export async function loadDuress() {
@@ -1740,6 +1810,119 @@ export async function clearLockdown() {
     toast(r.cleared ? "Lockdown lifted." : "There was no lockdown.");
     loadDuress();
   } catch (e) { if (!cancelled(e)) toast(e?.code === "too_soon" ? "Lockdown can be lifted once things have been calm for a while. Try again later." : friendly(e), "error"); }
+}
+
+/* ---------------- Check-in (docs/CHECKIN.md) ---------------- */
+// A timer the holder arms before a high-stakes situation: check in with a live check before
+// each deadline, or the vault locks, then is erased for good (its document keys destroyed).
+// The server holds the clock and the keys. This keeps the app's view of it fresh while
+// unlocked, asks for the live checks, and keeps nothing on this device while it's armed.
+
+let checkinTimer = null;
+const warned = { deadline: 0, at: new Set() };
+/** Is Check-in armed (or locked by a missed check-in)? While it is, nothing is kept on this device. */
+export const checkinArmed = () => ["armed", "locked"].includes(S.checkin.value?.state);
+/** Does this server offer Check-in? (Its policy hint; the gateway enforces it.) */
+export const checkinOffered = () => !!S.server.value?.policy?.checkin;
+
+/** The offline copy goes, and none is written, while Check-in is armed: a phone held offline must show nothing. */
+function dropOfflineCopy() {
+  offline = null;
+  store?.clearOffline().catch(() => {});
+  S.offlineReady.value = false;
+}
+
+export async function loadCheckin() {
+  if (!checkinOffered() || S.offline.value || !S.session.value) { S.checkin.value = null; return; }
+  try {
+    S.checkin.value = await api.checkin();
+    if (checkinArmed()) dropOfflineCopy();
+  } catch { /* keep what's shown; the next look tries again */ }
+  watchCheckin();
+}
+
+/** Look again around the next moment that matters (the deadline, the erase), and every minute anyway. Warn as it nears. */
+function watchCheckin() {
+  clearTimeout(checkinTimer);
+  const st = S.checkin.value;
+  if (!st || !checkinArmed()) return;
+  const now = Date.now();
+  const next = st.state === "armed" ? st.deadline : st.erasesAt;
+  checkinTimer = setTimeout(loadCheckin, Math.max(1000, Math.min(60_000, next - now + 500)));
+  if (S.view.value !== "app") return;
+  if (warned.deadline !== st.deadline) { warned.deadline = st.deadline; warned.at.clear(); }
+  const left = st.deadline - now;
+  if (st.state === "locked") {
+    if (!warned.at.has("missed")) { warned.at.add("missed"); buzz([60, 80, 60]); toast(`Check-in missed. Check in now, or your vault is erased at ${clock(st.erasesAt)}.`, "error"); }
+    return;
+  }
+  for (const m of [2, 10, 30]) {
+    if (left <= m * 60_000 && !warned.at.has(m)) {
+      for (const k of [2, 10, 30]) if (k >= m) warned.at.add(k); // one warning per step, the nearest
+      buzz([40, 60, 40]);
+      toast(`Check in within ${m} minutes, by ${clock(st.deadline)}.`, "warn");
+      break;
+    }
+  }
+}
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/**
+ * Turn Check-in on, or change its settings (which starts a new window). Documents marked for
+ * the decoy view are kept out of the erase, so a forced unlock still shows them.
+ * Returns { ok } or { unsplit: [{ id, name }] }: documents sealed before split keys, which
+ * couldn't be erased for good, so Check-in refuses until they're re-sealed or deleted.
+ */
+export async function armCheckin({ windowMs, maxWindowMs, graceMs }) {
+  const was = S.checkin.value?.state;
+  try {
+    needVault();
+    const keep = S.decoy.value ? [] : S.items.value.filter((i) => i.decoy).map((i) => i.id);
+    const st = await withStepUp("armCheckin", [], "checkin", checkinArmed() ? "Change Check-in" : "Turn on Check-in",
+      async ({ proof }) => api.armCheckin({ windowMs, maxWindowMs, graceMs, keep }, proof));
+    S.checkin.value = st;
+    dropOfflineCopy();
+    watchCheckin();
+    toast(was === "armed" || was === "locked" ? `Check-in changed. Next by ${clock(st.deadline)}.` : `Check-in is on. Check in by ${clock(st.deadline)}.`);
+    return { ok: true };
+  } catch (e) {
+    if (cancelled(e)) return { ok: false };
+    if (e?.code === "unsplit_items") return { ok: false, unsplit: (e.details?.items || []).map((id) => ({ id, name: knownNames.get(id) || "An older document" })) };
+    toast(friendly(e), "error");
+    return { ok: false };
+  }
+}
+
+/** Check in: one live check, and the next deadline from now (nextWindowMs: a longer one, up to the maximum). */
+export async function checkIn(nextWindowMs) {
+  try {
+    needVault();
+    const st = await withStepUp("checkIn", [], "checkin", "Check in", async ({ proof }) => api.checkIn({ nextWindowMs }, proof));
+    S.checkin.value = st;
+    watchCheckin();
+    toast(`Checked in. Next by ${clock(st.deadline)}.`);
+    return true;
+  } catch (e) {
+    if (!cancelled(e)) toast(friendly(e), "error");
+    loadCheckin();
+    return false;
+  }
+}
+
+export async function disarmCheckin() {
+  try {
+    needVault();
+    const st = await withStepUp("disarmCheckin", [], "checkin", "Turn off Check-in", async ({ proof }) => api.disarmCheckin(proof));
+    S.checkin.value = st;
+    watchCheckin();
+    S.sheet.value = null;
+    toast("Check-in is off. Nothing will be erased.");
+    return true;
+  } catch (e) {
+    if (!cancelled(e)) toast(friendly(e), "error");
+    loadCheckin();
+    return false;
+  }
 }
 
 /* ---------------- verification station (operators) ---------------- */
