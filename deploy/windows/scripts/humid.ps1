@@ -12,6 +12,10 @@
   Windows and HumID updates, backups. It's on 127.0.0.1:8490 only, and every
   change it makes waits for a live check on an administrator's phone.
 
+  With Check-in on (docs/CHECKIN.md), an armed vault's keys live in the
+  server's memory only, so the commands that stop the server say how many
+  vaults that would erase and go on only once you type ERASE.
+
   Run from Terminal (Admin):
     humid install [-DevicePolicy attested|biometric|demo] [-AppleTeamId ABCDE12345] [-Port 8480] [-StayAwake]
     humid expose tailscale                        give it a public https address through Tailscale Funnel
@@ -112,6 +116,35 @@ function Confirm-Yes([string]$Question, [bool]$Default = $true) {
   $a = Read-Host "$Question $hint"
   if ([string]::IsNullOrWhiteSpace($a)) { return $Default }
   return $a.Trim().ToLower().StartsWith('y')
+}
+
+# Check-in (docs/CHECKIN.md) keeps an armed vault's keys in the server's memory only, so anything
+# that stops the server erases every armed vault for good. The server writes how many are armed to
+# server-status.json every 15 s; a file older than 45 s means it isn't running, and then none is left.
+function Get-ArmedCount {
+  $f = Join-Path $DataRoot 'server-status.json'
+  try {
+    $item = Get-Item -LiteralPath $f -ErrorAction Stop
+    if (((Get-Date).ToUniversalTime() - $item.LastWriteTimeUtc).TotalSeconds -gt 45) { return 0 }
+    $s = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+    if ($s.checkin -and $s.checkin.armed) { return [int]$s.checkin.armed }
+  } catch {}
+  return 0
+}
+
+# Before anything that stops the server: say how many armed vaults it would erase, and go on only
+# when ERASE is typed. -Quiet goes on after the warning, as the console's approved jobs do (the
+# console showed the same count before the phone approved).
+function Confirm-ArmedErase([string]$What) {
+  $n = Get-ArmedCount
+  if ($n -le 0) { return }
+  $which = if ($n -eq 1) { '1 vault is' } else { "$n vaults are" }
+  Warn "Check-in: $which armed. Their keys live only in the server's memory, so $What erases them for good."
+  if ($Quiet) { Warn 'Going ahead (-Quiet).'; return }
+  Say '   Ask their holders to turn Check-in off first.'
+  $a = $null
+  try { $a = Read-Host 'Type ERASE to go ahead anyway' } catch {}
+  if (("$a").Trim() -cne 'ERASE') { Die 'Stopped. Nothing was changed.' }
 }
 
 function Account-Of([string]$Sid) {
@@ -332,7 +365,7 @@ function Do-Install {
   Say ''
 
   $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if ($existing) { Step 'Updating an existing install (settings and data are kept).'; Stop-Server }
+  if ($existing) { Confirm-ArmedErase 'updating HumID Server'; Step 'Updating an existing install (settings and data are kept).'; Stop-Server }
   Stop-Admin
 
   # Program files
@@ -411,6 +444,7 @@ function Do-Install {
 
 function Do-Uninstall {
   Require-Admin
+  Confirm-ArmedErase 'uninstalling'
   Stop-Server
   Stop-Admin
   foreach ($n in @($TaskName, $AdminTask, $JobTask)) {
@@ -462,6 +496,10 @@ function Do-Status {
     if ($info.iphones) { Say "  iPhones         accepted" } else { Say "  iPhones         not yet (humid set HUMID_IOS_APP_ID=<TeamID>.app.humid.vault)" }
     Say "  Running since   $($info.startedAt)"
   }
+  if ((Get-Setting 'HUMID_CHECKIN' 'off') -eq 'on') {
+    $armed = Get-ArmedCount
+    if ($armed) { Say "  Check-in        on, $armed armed (anything that stops the server erases them)" } else { Say "  Check-in        on, none armed" }
+  }
   $at = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
   if ($at) { Say ("  Admin console   http://127.0.0.1:{0}  ({1}; open it with: humid console)" -f (Get-Setting 'HUMID_ADMIN_PORT' '8490'), $at.State) }
   else { Say "  Admin console   not installed (run humid install again)" }
@@ -474,6 +512,7 @@ function Do-Status {
 function Do-Set {
   Require-Admin; Require-Installed
   if (-not $Rest -or $Rest.Count -eq 0) { Die 'Usage: humid set KEY=VALUE [KEY=VALUE ...]' }
+  Confirm-ArmedErase 'changing a setting, which restarts the server,'
   Invoke-Server (@('set', '--root', $DataRoot) + $Rest)
   Stop-Server
   if (-not (Start-Server)) { exit 1 }
@@ -484,6 +523,7 @@ function Do-Backup {
   Require-Admin; Require-Installed
   $target = $Path
   if (-not $target) { $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("HumID-backup-{0}.zip" -f (Get-Date -Format 'yyyyMMdd-HHmm')) }
+  Confirm-ArmedErase 'a backup, which stops the server,'
   Step 'Stopping the server for a consistent copy...'
   Make-Backup $target
   Good "Backup written to $target"
@@ -493,6 +533,7 @@ function Do-Backup {
 function Do-Restore {
   Require-Admin; Require-Installed
   if (-not $Path -or -not (Test-Path $Path)) { Die 'Usage: humid restore -Path <backup.zip>' }
+  Confirm-ArmedErase 'restoring a backup'
   if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($Path)?" $false)) { return }
   Stop-Server
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -509,6 +550,7 @@ function Do-Expose {
   Require-Admin; Require-Installed
   $how = 'help'
   if ($Rest -and $Rest.Count -gt 0) { $how = $Rest[0].ToLower() }
+  if (@('tailscale', 'cloudflare', 'none') -contains $how) { Confirm-ArmedErase 'changing the public address, which restarts the server,' }
   $p = [int](Get-Setting 'HUMID_PORT' '8480')
   switch ($how) {
     'tailscale' {
@@ -983,8 +1025,8 @@ switch ($Command) {
   'install'   { Do-Install }
   'uninstall' { Do-Uninstall }
   'start'     { Require-Admin; Require-Installed; if (-not (Start-Server)) { exit 1 } }
-  'stop'      { Require-Admin; Stop-Server; Good 'Stopped.' }
-  'restart'   { Require-Admin; Require-Installed; Stop-Server; if (-not (Start-Server)) { exit 1 } }
+  'stop'      { Require-Admin; Confirm-ArmedErase 'stopping the server'; Stop-Server; Good 'Stopped.' }
+  'restart'   { Require-Admin; Require-Installed; Confirm-ArmedErase 'restarting the server'; Stop-Server; if (-not (Start-Server)) { exit 1 } }
   'status'    { Require-Admin; Do-Status }
   'logs'      { Require-Admin; Do-Logs }
   'set'       { Do-Set }

@@ -102,8 +102,11 @@ for good unless they check in every hour or two
 ([docs/CHECKIN.md](../../docs/CHECKIN.md)). The keys of an armed vault live in
 the server's memory only, so **anything that stops the server erases every
 armed vault**: `humid restart`, an update, a backup, restarting Windows, a
-crash. The admin console says how many are armed before you approve any of
-those. It's off by default until push reminders exist.
+crash. `humid status` shows how many are armed. The admin console says so
+before you approve any of those, and `humid stop`, `restart`, `set`, `backup`,
+`restore`, `expose`, `uninstall` and an update say so and go on only once you
+type ERASE (with `-Quiet`, they go on after the warning). It's off by default
+until push reminders exist.
 
 ## Limits
 

@@ -4,6 +4,7 @@
 
 - **Check-in** (docs/CHECKIN.md), off by default: `humid set HUMID_CHECKIN=on` lets holders arm a timer that erases their vault for good unless they check in every hour or two. The keys of an armed vault live in the server's memory only, so anything that stops the server (a restart, an update, a backup, restarting Windows) erases every armed vault.
 - The admin console says how many vaults are armed on every change that stops the server, before you approve it; `server-status.json` carries the count (a number, nothing more).
+- So do the `humid` commands that stop the server (`stop`, `restart`, `set`, `backup`, `restore`, `expose`, `uninstall`, and `install` over an existing install): with vaults armed they go on only once you type ERASE (`-Quiet` goes on after the warning). `humid status` shows the count while Check-in is on.
 - The web app it serves is HumID 1.14.0.
 
 ## 1.6.0
