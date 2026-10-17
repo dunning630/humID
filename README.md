@@ -16,7 +16,7 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
+doesn't yet), [docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
 
 ## Try it on your machine
 
@@ -91,6 +91,7 @@ packages/            independently versioned modules
   idscan                           reads IDs into one vault record: MRZ (OCR-tolerant), license barcodes (AAMVA), chip data
   cards                            payment cards: number checks, camera (both sides) + contactless capture, sealed record (no PIN, no back photo)
   wallet                           Apple Wallet passes: bounded unzip, manifest hashes, issuer signature through Apple's pinned roots
+  backup                           (3.0, provisional) computer backups: sealed pieces, 2-of-3 key parts (HumID, sheet, contact)
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare
