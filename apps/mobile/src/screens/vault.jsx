@@ -38,7 +38,7 @@ export function Vault() {
         <>
           <label class="search">
             <Icon name="search" />
-            <input id="vault-search" type="search" placeholder="Search your vault" value={S.query.value} onInput={(e) => (S.query.value = e.currentTarget.value)} autocomplete="off" />
+            <input autocorrect="off" spellcheck={false} id="vault-search" type="search" placeholder="Search your vault" value={S.query.value} onInput={(e) => (S.query.value = e.currentTarget.value)} autocomplete="off" />
           </label>
           <div class="chips" role="group" aria-label="Filter by category">
             <button class="chip" aria-pressed={S.filter.value === "all"} onClick={() => (S.filter.value = "all")}>All <span class="count">{S.counts.value.all}</span></button>
@@ -198,7 +198,7 @@ export function AddSheet() {
           </div>
           <div class="field">
             <label for="doc-name">Name</label>
-            <input id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
+            <input autocorrect="off" spellcheck={false} id="doc-name" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" />
           </div>
           <div class="field">
             <label>Category</label>
@@ -280,7 +280,7 @@ export function ItemSheet() {
 
       {mode === "edit" && (
         <>
-          <div class="field"><label for="rename">Name</label><input id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
+          <div class="field"><label for="rename">Name</label><input autocorrect="off" spellcheck={false} id="rename" value={name} onInput={(e) => setName(e.currentTarget.value)} maxLength={120} autocomplete="off" /></div>
           <div class="field"><label>Category</label><div class="cats">{CATEGORIES.map((x) => <button aria-pressed={cat === x.id} onClick={() => setCat(x.id)}><Icon name={x.icon} />{x.label}</button>)}</div></div>
           <div class="actions">
             <button class="btn primary block" onClick={() => renameItem(item, name, cat)}>Save changes</button>

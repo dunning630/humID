@@ -142,7 +142,9 @@ export function createRecovery({
     if (!c) throw new HttpError(400, "bad_code", "That code isn't valid. It has 12 letters and numbers.");
     return c;
   };
-  const platformOf = (s) => String(s || "a new device").slice(0, 40);
+  // A device's own name for itself: shown to the person, never trusted. No control,
+  // zero-width or direction-override characters (they can disguise what's shown).
+  const platformOf = (s) => String(s || "").replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, "").trim().slice(0, 40) || "a new device";
 
   /** A sealed envelope from the signed-in account, addressed to the given KEM key. */
   function checkEnvelope(bytes, { signerFp, recipientKemPk }) {
@@ -541,7 +543,7 @@ export function createRecovery({
       const r = parseJson(body);
       const chip = chipOf(r.chip);
       const ok = checkChip(chip);
-      if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", "This ID's chip can't prove it's present. Verify at a HumID station instead.");
+      if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", ok.aaRequired ? "Send the chip's authentication key (DG15) too." : "This ID's chip can't prove it's present. Verify at a HumID station instead.");
       const ch = db.prepare("SELECT nonce FROM challenges WHERE request_id = ? AND expires_at > ?").get(q.id, now());
       db.prepare("DELETE FROM challenges WHERE request_id = ?").run(q.id); // one answer per challenge
       if (!ch) throw new HttpError(409, "challenge_expired", "The chip challenge expired. Scan your ID again.");
@@ -651,6 +653,15 @@ export function createRecovery({
       const q = stationRequest(params.code);
       return json(200, { code: q.code, platform: q.platform, createdAt: q.created_at, status: q.status, kinds: kindsOf(q), anchorMode: q.anchor_mode || undefined });
     }],
+    // A fresh challenge for the chip in front of the operator. A chip that can answer
+    // (its SOD lists an Active Authentication key) must, so copied chip data isn't enough.
+    ["POST", "/station/requests/:code/challenge", ({ params, claims }) => {
+      needStation(claims);
+      const q = stationRequest(params.code);
+      const nonce = randomBytes(8);
+      db.prepare("INSERT OR REPLACE INTO challenges (request_id, nonce, expires_at) VALUES (?, ?, ?)").run(`station:${q.id}`, nonce, now() + challengeTtlMs);
+      return json(200, { nonce: b64u(nonce), expiresAt: now() + challengeTtlMs });
+    }],
     ["POST", "/station/requests/:code/verify", ({ params, claims, body }) => {
       needStation(claims);
       needStepUp(claims);
@@ -660,7 +671,17 @@ export function createRecovery({
       if (!(c.document === true && c.face === true && c.present === true)) {
         throw new HttpError(400, "checks_incomplete", "Confirm the document is genuine, the face matches its photo, and the person is here.");
       }
-      const ok = checkChip(chipOf(r.chip));
+      const chip = chipOf(r.chip);
+      const ok = checkChip(chip);
+      // One answer per challenge, whatever the outcome.
+      const ch = db.prepare("SELECT nonce FROM challenges WHERE request_id = ? AND expires_at > ?").get(`station:${q.id}`, now());
+      db.prepare("DELETE FROM challenges WHERE request_id = ?").run(`station:${q.id}`);
+      if (ok.aaRequired) {
+        if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", "Read the chip itself: its authentication key (DG15) is missing.");
+        if (!ch) throw new HttpError(409, "challenge_expired", "The chip challenge expired. Read the chip again.");
+        try { activeAuth({ dg15: chip.dg15, nonce: ch.nonce, signature: unb64u(String(r.signature || "")), hash: r.hash }); }
+        catch (e) { if (e instanceof AnchorError) throw new HttpError(422, e.code, e.message); throw e; }
+      }
       const { account, part } = openAnchor(ok.mrz);
       if (account === claims.sub) throw new HttpError(400, "self", "A station can't verify its own operator.");
       const first = bindAccount(q, account);
@@ -668,7 +689,7 @@ export function createRecovery({
       part.fill(0);
       const e = evaluate(q.id);
       // The operator learns the outcome, not whose HumID it is.
-      return json(200, { verified: true, kinds: kindsOf(e), releaseAt: e.release_at, platform: e.platform, ref: e.ref, account: e.account, first, country: ok.issuerCountry });
+      return json(200, { verified: true, kinds: kindsOf(e), releaseAt: e.release_at, platform: e.platform, ref: e.ref, account: e.account, first, country: ok.issuerCountry, chipProof: ok.aaRequired });
     }, { bodyLimit: 3 * CHIP_MAX }],
   ];
 

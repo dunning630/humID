@@ -21,6 +21,9 @@ package app.humid.gate
 
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.os.Build
+import android.view.WindowManager
+import android.webkit.WebView
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
@@ -53,6 +56,18 @@ private const val METHOD = "android-keystore-biometric"
 private const val KEYSTORE = "AndroidKeyStore"
 private const val TRANSFORM = "AES/GCM/NoPadding"
 private const val HANDLE_VERSION = 2
+/** Arguments come from the WebView: checked here, never trusted. */
+private const val MAX_PROMPT = 120
+private const val MAX_B64 = 8192
+private val B64_RE = Regex("^[A-Za-z0-9+/]*={0,2}$")
+private fun b64ok(s: String?, max: Int) = s == null || (s.length <= max && B64_RE.matches(s))
+private fun badArgs(prompt: String?, challenge: String?, attest: String?): String? = when {
+    prompt != null && (prompt.length > MAX_PROMPT || prompt.any { it.isISOControl() }) -> "The prompt isn't valid."
+    !b64ok(challenge, MAX_B64) -> "The challenge isn't valid."
+    !b64ok(attest, 128) -> "The attestation challenge isn't valid."
+    else -> null
+}
+
 /** Seconds the secret's key stays usable after the live check. Biometric-only. */
 private const val SECRET_WINDOW_S = 3
 
@@ -94,6 +109,26 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
     private fun liveAlias(id: String) = "humid-live-" + safe(id)
     private fun keyStore() = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
+    /**
+     * Screen exposure, for the whole app (every screen shows something private: the vault,
+     * codes, QR codes, the chip details form, the document camera):
+     *   FLAG_SECURE          no screenshots, screen recording, casting or recents thumbnail
+     *   hide overlays        other apps' windows (API 31+) can't draw over HumID
+     *   no recents snapshot  API 33+, on top of FLAG_SECURE
+     *   obscured touches     a tap that arrives through another app's window is dropped,
+     *                        so an overlay can't steer a person into tapping Approve
+     */
+    override fun load(webView: WebView) {
+        super.load(webView)
+        activity.runOnUiThread {
+            val w = activity.window
+            w.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            if (Build.VERSION.SDK_INT >= 31) w.setHideOverlayWindows(true)
+            if (Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(false)
+            webView.filterTouchesWhenObscured = true
+        }
+    }
+
     @Command
     fun probe(invoke: Invoke) {
         val res = BiometricManager.from(activity).canAuthenticate(BIOMETRIC_STRONG)
@@ -124,6 +159,7 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun enroll(invoke: Invoke) {
         val args = invoke.parseArgs(EnrollArgs::class.java)
+        badArgs(args.prompt, args.challenge, args.attest)?.let { invoke.reject(it); return }
         val id = b64(ByteArray(16).also { SecureRandom().nextBytes(it) })
         val (secretKey, live) = try {
             Pair(createSecretKey(secretAlias(id)), prepareLive(id, args.challenge, args.attest))
@@ -155,10 +191,11 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun release(invoke: Invoke) {
         val args = invoke.parseArgs(ReleaseArgs::class.java)
+        badArgs(args.prompt, args.challenge, args.attest)?.let { invoke.reject(it); return }
         val h = args.handle
         val iv = h.iv
         val ct = h.ct
-        if (iv == null || ct == null) { invoke.reject("The stored gate handle is malformed."); return }
+        if (iv == null || ct == null || !b64ok(h.id, 64) || !b64ok(iv, 64) || !b64ok(ct, 256)) { invoke.reject("The stored gate handle is malformed."); return }
         if (h.v != HANDLE_VERSION) { invoke.reject(OLD_VERSION); return }
         val (secretKey, live) = try {
             val k = loadSecretKey(secretAlias(h.id))
@@ -184,6 +221,7 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun forget(invoke: Invoke) {
         val args = invoke.parseArgs(ForgetArgs::class.java)
+        if (!b64ok(args.handle.id, 64)) { invoke.reject("The stored gate handle is malformed."); return }
         remove(args.handle.id)
         invoke.resolve()
     }

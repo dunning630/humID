@@ -12,6 +12,11 @@
 import { fromB64, toB64 } from "@humid/codec";
 import { GATE_CONTRACT, ASSURANCE, CANCELLED, interruptRecord } from "../contract.js";
 
+/** What the native side accepts (it checks too): one line, at most 120 characters. */
+const promptText = (s, fallback) => {
+  const t = String(s || fallback).replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim();
+  return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+};
 const invoke = (cmd, args) => globalThis.__TAURI_INTERNALS__.invoke(`plugin:humid-gate|${cmd}`, args);
 
 export const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
@@ -51,7 +56,7 @@ export const nativeAdapter = {
 
   async enroll({ prompt, challenge, attest } = {}) {
     try {
-      const r = await invoke("enroll", { prompt: prompt || "Bind HumID to your face or fingerprint", challenge: b64(challenge), attest: b64(attest) });
+      const r = await invoke("enroll", { prompt: promptText(prompt, "Bind HumID to your face or fingerprint"), challenge: b64(challenge), attest: b64(attest) });
       return {
         handle: r.handle,
         bindingId: r.handle.id,
@@ -64,7 +69,7 @@ export const nativeAdapter = {
 
   async release(handle, { purpose, prompt, challenge, attest } = {}) {
     try {
-      const r = await invoke("release", { handle, prompt: prompt || "Confirm it's you", challenge: b64(challenge), attest: b64(attest) });
+      const r = await invoke("release", { handle, prompt: promptText(prompt, "Confirm it's you"), challenge: b64(challenge), attest: b64(attest) });
       return {
         secret: fromB64(r.secret),
         interrupt: interruptRecord(r.method, purpose, r.assurance, r.detail || {}),
