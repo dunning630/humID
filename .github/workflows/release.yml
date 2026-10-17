@@ -51,7 +51,7 @@ on:
         required: false
         default: ""
       simulate:
-        description: "Simulation build: the vault server runs inside the app (no server needed; real biometric checks)"
+        description: "Simulation build: the vault server runs inside the app (no server needed; real biometric checks). Built as a separate app, app.humid.vault.sim / \"HumID Sim\"; can't be published as a release"
         type: boolean
         default: false
 
@@ -66,6 +66,13 @@ jobs:
       anyApps: ${{ steps.m.outputs.anyApps }}
       server: ${{ steps.m.outputs.server }}
     steps:
+      # A simulation build carries the vault server inside the app. It's a demo, never a
+      # release: it must not be published, and it must not install over the real app.
+      - name: Refuse to publish a simulation build
+        if: inputs.simulate == true && inputs.publish_apps == true
+        run: |
+          echo "::error::A simulation build (the server inside the app) can't be published as a release. Untick one of the two."
+          exit 1
       - id: m
         run: |
           WANT="${{ github.event.inputs.platforms || 'all' }}"
@@ -113,6 +120,20 @@ jobs:
       - run: npm ci
       - run: npm test
         env: { NODE_NO_WARNINGS: "1" }
+      # The simulation app is its own app: a different bundle identifier and name, so it
+      # installs beside the real HumID, never over it, and servers (which pin the
+      # identifier through attestation) never mistake it for the real one.
+      - name: Simulation build · separate app identity
+        if: env.HUMID_SIMULATE == '1'
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs"); const p = "apps/mobile/src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            c.identifier = "app.humid.vault.sim"; c.productName = "HumID Sim"; c.app.windows[0].title = "HumID Sim";
+            fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
+          '
+          echo "::warning::Simulation build: app.humid.vault.sim / HumID Sim (the vault server runs inside the app). Not a release."
       - name: Server the app will use
         shell: bash
         run: |
@@ -298,7 +319,7 @@ jobs:
                -o -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.aab' \) \
             -not -path '*/deps/*' -exec cp {} out/ \; 2>/dev/null || true
           if [ -z "$(ls -A out)" ] && [ "${{ matrix.platform }}" = "macos" ]; then
-            ( cd apps/mobile/src-tauri/target && find . -maxdepth 6 -name 'HumID.app' -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
+            ( cd apps/mobile/src-tauri/target && find . -maxdepth 6 \( -name 'HumID.app' -o -name 'HumID Sim.app' \) -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
           fi
           ls -la out
       - uses: actions/upload-artifact@v4
