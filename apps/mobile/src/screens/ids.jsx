@@ -5,7 +5,7 @@
 // uses it for any document. And the card view for a sealed ID.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { Sheet, Steps, ChipAccess, usePlaceStamp } from "../ui.jsx";
+import { Sheet, Steps, ChipAccess, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
 import * as S from "../core/state.js";
 import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy, buzz as buzzPref } from "../core/controller.js";
 import {
@@ -526,7 +526,7 @@ const CHOICES = [
   { kind: "other", icon: "file", title: "Another card", sub: "Insurance, membership, anything with two sides." },
 ];
 
-const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "MRZ", typed: "You" };
+const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "Scanned", typed: "You" };
 
 export function IdSheet() {
   const st = S.sheet.value;
@@ -575,8 +575,8 @@ export function IdSheet() {
     if (mrz) {
       applyMrz(rc, mrz, { consensus });
       n = mrz.valid
-        ? { tone: "ok", text: `Machine-readable lines read${consensus ? "" : " (check them)"}: ${fullName(rc) || mrz.number}.` }
-        : { tone: "warn", text: "Read part of the machine-readable lines. Check the details, or retake the photo." };
+        ? { tone: "ok", text: `Details read${consensus ? "" : " (check them)"}: ${fullName(rc) || mrz.number}.` }
+        : { tone: "warn", text: "Read only part of the details. Check them, or retake the photo." };
     }
     if (!n && (p.read.barcode || p.read.mrz)) n = { tone: "warn", text: p.read.barcode && !p.read.mrz ? "Couldn't read the barcode. Retake the back, or fill in the details yourself." : "Couldn't read the details from the photo. Retake it, or fill them in yourself." };
     if (!n) n = { tone: "ok", text: `${p.title} saved.` };
@@ -599,6 +599,13 @@ export function IdSheet() {
     setName(recordTitle(rc));
   }
 
+  /** One step back, keeping what's been captured: review → chip (if offered) or capture; chip → capture; capture → kind (drops the record). */
+  const stepBack = () => {
+    if (step === "review") { setStep(KINDS[r?.kind]?.chip && nfc && nfc.kind !== "none" && !r?.verified.chip ? "chip" : "capture"); return; }
+    if (step === "chip") { setStep("capture"); return; }
+    if (step === "capture") { rec.current = null; setNote(null); setStep("kind"); }
+  };
+
   function skipSide(p) {
     setCam(null);
     const rc = rec.current;
@@ -618,8 +625,10 @@ export function IdSheet() {
   }
 
   const head = (
-    <div class="s-head"><div class="grow"><div class="eyebrow">{r ? kindLabel(r.kind) : "New ID"}</div>
-      <h2 style={{ marginTop: 4 }}>{step === "kind" ? "Which document?" : step === "chip" ? "Read the chip" : step === "review" ? "Check the details" : "Scan it"}</h2></div>
+    <div class="s-head">
+      {step !== "kind" && !busy && !cam && <button class="icon-btn" aria-label="Back" data-back onClick={stepBack}><Icon name="back" /></button>}
+      <div class="grow"><div class="eyebrow">{r ? kindLabel(r.kind) : "New ID"}</div>
+      <h2 style={{ marginTop: 4 }}>{step === "kind" ? "Which document?" : step === "chip" ? "Read the ID chip" : step === "review" ? "Check the details" : "Scan it"}</h2></div>
       {!busy && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
   );
 
@@ -636,7 +645,7 @@ export function IdSheet() {
                 <button class="kind" onClick={() => choose(c.kind)}><span class="ico"><Icon name={c.icon} /></span><span><strong>{c.title}</strong><span>{c.sub}</span></span><Icon name="chevron" /></button>
               ))}
             </div>
-            <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are encrypted here before anything is sent.</p>
+            <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
           </>
         )}
 
@@ -657,11 +666,11 @@ export function IdSheet() {
           <>
             {note && <Note {...note} />}
             <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="nfc" /></span>
-              <div><strong>The chip has the verified details and photo</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
+              <div><strong>The ID chip has the verified details and photo</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
             {nfc && !nfc.available && <div class="banner warn" style={{ marginTop: 10 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Can't read chips right now</strong><span>{nfc.reason}</span></div></div>}
             <ChipAccess onChange={setAccess} initial={chipAccessFrom(r)} title="Details that open the chip" note="They only open the chip. What it holds is sealed with this record." />
             <div class="actions">
-              <button class="btn primary block" disabled={!access || !nfc?.available} onClick={readChipNow}><Icon name="nfc" />Read the chip</button>
+              <button class="btn primary block" disabled={!access || !nfc?.available} onClick={readChipNow}><Icon name="nfc" />Read the ID chip</button>
               {nfc && !nfc.available && <button class="btn quiet block" onClick={async () => setNfc(await chipReader({ fresh: true }))}>Check again</button>}
               <button class="btn ghost block" onClick={() => setStep("review")}>Skip, use the photo</button>
             </div>
@@ -669,7 +678,7 @@ export function IdSheet() {
         )}
 
         {step === "review" && r && (
-          busy ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
+          busy ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={SEAL_STEPS} />
             : <Review rec={r} name={name} setName={setName} note={note} plan={plan} onRetake={(p) => setCam(p)} onChange={redraw}
               onChip={KINDS[r.kind]?.chip && nfc && nfc.kind !== "none" && !r.verified.chip ? () => setStep("chip") : null}
               onSave={(place) => addIdRecord(r, name || recordTitle(r), place)} />
@@ -742,7 +751,7 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
       {note && <Note {...note} />}
       <div class={`id-proof lvl-${p.level}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} /><span>{p.text}</span></div>
       <Thumbs rec={rec} plan={plan} onRetake={retake} />
-      {toChip && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Read the chip for verified details</button>}
+      {toChip && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Read the ID chip for verified details</button>}
 
       <div class="id-form">
         {main.map((f) => <FieldInput f={f} value={vals[f.key]} onInput={set(f.key)} source={rec.source[f.key]} unsure={unsure(f.key)} />)}
@@ -769,9 +778,9 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
       {missing.length > 0 && <p class="small" style={{ color: "var(--amber-hi)", marginTop: 10 }}>Add the {missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.</p>}
       {place.element}
       <div class="actions">
-        <button class="btn primary block" disabled={missing.length > 0} onClick={save}><Icon name="fingerprint" />Seal &amp; store</button>
+        <button class="btn primary block" disabled={missing.length > 0} onClick={save}><Icon name="fingerprint" />Seal</button>
       </div>
-      <p class="fine" style={{ marginTop: 12 }}>The details, photos{rec.raw.chip ? " and the chip's signed data" : ""} are sealed together on this phone (ML-KEM-1024 + X25519, signed with ML-DSA-87). Only your face or fingerprint opens them.</p>
+      <p class="fine" style={{ marginTop: 12 }}>One check seals the details, photos{rec.raw.chip ? " and the chip's signed data" : ""} together on this phone. <HowProtectedLink /></p>
     </>
   );
 }
@@ -836,7 +845,7 @@ export function IdView({ record: rec, item }) {
         <span class={`pill ${st.state === "expired" ? "danger" : st.state === "expiring" ? "amber" : st.state === "valid" ? "mint" : ""}`}>
           <Icon name="clock" />{st.state === "expired" ? `Expired ${fmtDay(rec.fields.expiry)}` : st.state === "expiring" ? `Expires in ${st.days} days` : st.state === "valid" ? `Valid to ${fmtDay(rec.fields.expiry)}` : "No expiry date"}
         </span>
-        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "From the MRZ" : "Typed"}</span>
+        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
       </div>
       <div class="card" style={{ marginTop: 14 }}>
         {rows.map((f) => (
@@ -850,7 +859,7 @@ export function IdView({ record: rec, item }) {
         )}
       </div>
       <p class="fine" style={{ marginTop: 12 }}>{p.text}.{rec.edited?.length ? ` You edited: ${rec.edited.map((k) => fieldsFor(rec.kind).find((f) => f.key === k)?.label.toLowerCase() || k).join(", ")}.` : ""}</p>
-      {rec.raw?.mrz && <pre class="mrz-lines" aria-label="Machine-readable zone">{rec.raw.mrz.join("\n")}</pre>}
+      {rec.raw?.mrz && <details class="pass-back" style={{ marginTop: 12 }}><summary>Details</summary><pre class="mrz-lines" aria-label="The lines read from the document">{rec.raw.mrz.join("\n")}</pre></details>}
       <div class="actions"><button class="btn quiet block" onClick={() => saveCopy(item)}><Icon name="download" />Save a copy (JSON with photos)</button></div>
     </div>
   );

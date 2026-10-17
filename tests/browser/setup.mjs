@@ -1,8 +1,8 @@
 // Getting set up, in a real browser: the onboarding and first-run fixes from the
 // user flow review. Checks, on a small phone (375×667) and a common one (390×844):
 //   - each step's main button is on screen without scrolling
-//   - the seal card is confirmed by typing back one group of it
-//   - the vault shows what's left to protect, and each button opens the right place
+//   - the recovery card is confirmed by typing back one group of it
+//   - the You tab shows what's left to protect, and each button opens the right place
 //   - a new document's category is suggested from its name, not always "Identity"
 //   - toasts appear at the bottom, never over the back button or progress bar
 //   - every button, link and checkbox is at least 44 px in both directions
@@ -77,7 +77,7 @@ async function confirmCard(page) {
   assert.equal((await go.innerText()).trim(), "Check your card to continue");
   await go.click();
   await page.waitForFunction(() => document.activeElement?.id === "card-check");
-  assert.ok(await page.getByText("You're all set").isVisible(), "still on the seal card");
+  assert.ok(await page.getByText("You're all set").isVisible(), "still on the recovery card");
   const ask = await page.locator('label[for="card-check"]').innerText();
   const n = Number(/group (\d+)/.exec(ask)[1]);
   const groups = await page.locator(".cardcode span").allInnerTexts();
@@ -125,51 +125,82 @@ try {
   await page.getByText("You're all set").waitFor({ timeout: 30_000 });
   await confirmCard(page);
   await onScreen(page, page.getByRole("button", { name: "Open my vault" }), "Open my vault");
-  await targets(page, "Seal card"); await shot(page, "small-seal-card");
+  await targets(page, "Recovery card"); await shot(page, "small-recovery-card");
   await page.getByRole("button", { name: "Open my vault" }).click();
-  step("seal card: a wrong group is refused, the right one (written with O for 0, lower case) accepted");
+  step("recovery card: a wrong group is refused, the right one (written with O for 0, lower case) accepted");
 
-  // the vault: what's left to protect
+  // the vault: one way to add, and nothing to protect here (that's under You)
+  await page.getByRole("button", { name: "Add to your vault" }).waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator("section.protect").count(), 0, "the checklist lives under You, not in the vault");
+  assert.equal(await page.locator(".tabbar [role=tab]").count(), 3, "three tabs");
+  assert.equal(await page.locator(".tabbar [role=tablist]").count(), 1);
+  await targets(page, "Vault"); await shot(page, "small-vault-empty");
+
+  // You: what's left to protect, with a button for each
+  await page.locator(".tabbar button", { hasText: "You" }).click();
+  assert.equal(await page.locator(".tabbar [aria-selected=true]").innerText(), "You");
   const protect = page.locator("section.protect");
   await protect.waitFor({ timeout: 15_000 });
   await protect.getByText("1 of 3").waitFor();
-  assert.ok(await protect.locator("button.proof-row", { hasText: "Seal card" }).isDisabled(), "the seal card is done");
+  assert.ok(await protect.locator("button.proof-row", { hasText: "Recovery card" }).isDisabled(), "the recovery card is done");
   await protect.getByText("Optional: duress gesture").waitFor();
-  await targets(page, "Vault"); await shot(page, "small-vault-checklist");
+  await targets(page, "You"); await shot(page, "small-you-checklist");
   await protect.locator("button.proof-row", { hasText: "A second device" }).click();
   await page.getByText("Enter the code from your new device").waitFor();
-  assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "You");
   await page.locator(".sheet .icon-btn, .sheet button[aria-label=Close]").first().click().catch(() => page.keyboard.press("Escape"));
-  await page.locator(".tabbar button", { hasText: "Vault" }).click();
   await page.locator("section.protect button.proof-row", { hasText: "A second proof" }).click();
   await page.waitForTimeout(800);
   const rec = await page.locator("#recovery").boundingBox();
   assert.ok(rec && rec.y < page.viewportSize().height / 2, "A second proof scrolls to the Recovery card");
-  await targets(page, "You");
-  step("vault checklist: 1 of 3, and each button opens the right place under You");
+  // the plain-English security facts, from one place
+  await page.getByRole("button", { name: "How HumID protects you" }).click();
+  await page.locator(".sheet").getByText("Sealed on this phone first").waitFor();
+  await page.locator(".sheet").getByRole("button", { name: "Got it" }).click();
+  await page.locator(".sheet").waitFor({ state: "detached" });
+  // a new recovery card opens its own sheet, never the payment card sheet beside it
+  await page.locator("#recovery button.proof-row", { hasText: "Recovery card" }).click();
+  await page.locator(".sheet").getByRole("button", { name: /Make a new card/ }).click();
+  await hold(page);
+  await page.locator(".sheet").getByText("Write this down").waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".sheet").count(), 1, "one sheet: the recovery card");
+  assert.equal(await page.getByText("Add a payment card").count(), 0, "the payment card sheet didn't open with it");
+  await page.locator(".sheet .cardcode").waitFor();
+  await page.evaluate(() => globalThis.__humidBack());
+  await page.locator(".sheet").waitFor({ state: "detached" });
+  // the diagnostics are folded away
+  assert.equal(await page.getByText("Pinned server key").isVisible(), false, "About is collapsed");
+  await page.locator("details.about summary").click();
+  await page.getByText("Pinned server key").waitFor();
+  await page.locator("details.about summary").click();
+  step("You: checklist 1 of 3, each button opens the right place, protection facts in one sheet, About collapsed");
 
   // Android's back button / edge swipe (wired to the same handler): closes what's on top, never leaves HumID
   const back = () => page.evaluate(() => globalThis.__humidBack());
   assert.equal(await back(), "tab", "back from You goes to the Vault tab");
   assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault");
   assert.equal(await back(), "stay", "back at the Vault stays in HumID");
-  assert.ok(await page.locator("section.protect").isVisible());
-  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
   await page.locator(".sheet").waitFor();
   assert.equal(await back(), "sheet");
   await page.locator(".sheet").waitFor({ state: "detached" });
+  await page.locator(".tabbar button", { hasText: "You" }).click();
   await page.locator("section.protect button.proof-row", { hasText: "A second device" }).click();
   await page.locator(".sheet").waitFor();
   assert.equal(await back(), "sheet", "back closes a sheet opened from another tab");
   await page.locator(".sheet").waitFor({ state: "detached" });
   assert.equal(await back(), "tab");
   // the camera: back closes the camera first, then the sheet behind it
-  await page.getByRole("button", { name: /Scan an ID/ }).first().click().catch(async () => { await page.locator("button.fab").click(); await page.getByRole("button", { name: /Scan an ID/ }).click(); });
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.getByRole("button", { name: /Scan an ID/ }).click();
   await page.getByRole("button", { name: /Driver's license/ }).click();
   await page.locator(".doccam").waitFor();
   assert.equal(await back(), ".doccam");
   await page.locator(".doccam").waitFor({ state: "detached" });
   assert.ok(await page.locator(".sheet").isVisible(), "the ID sheet is still open behind the camera");
+  // inside a wizard, back goes one step back before it closes the sheet
+  assert.equal(await back(), "sheet-step", "back inside the ID sheet steps back to the choice of document");
+  await page.locator(".sheet").getByText("Which document?").waitFor();
+  assert.equal(await back(), "sheet");
   assert.equal(await back(), "sheet");
   await page.locator(".sheet").waitFor({ state: "detached" });
   assert.equal(await page.locator(".tabbar").count(), 1, "still in the app");
@@ -177,11 +208,11 @@ try {
 
   // a document's category is suggested from its name; the toast sits at the bottom
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
-  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
   await page.locator('input[type="file"]').setInputFiles({ name: "Apartment lease.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%lease\n") });
   await page.locator(".cats button[aria-pressed=true]", { hasText: "Home" }).waitFor();
-  await targets(page, "Add a document");
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await targets(page, "Add to your vault");
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const toast = page.locator(".toast").first();
   await toast.waitFor({ timeout: 30_000 });
@@ -217,9 +248,9 @@ try {
 
   // a second document, so there's an order to change
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
-  await page.getByRole("button", { name: "Add a document" }).first().click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
   await page.locator('input[type="file"]').setInputFiles({ name: "Zoo membership.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%zoo\n") });
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   const rows = page.locator(".list .item");
   await page.waitForFunction(() => document.querySelectorAll(".list .item").length === 2, null, { timeout: 30_000 });

@@ -69,3 +69,13 @@ test("labels", () => {
   assert.equal(idleLabel(60_000), "1 minute");
   assert.equal(idleLabel(MAX_IDLE_MS), "5 minutes");
 });
+
+test("first launch follows the device's reduce-motion setting; a choice, once made, wins", () => {
+  const s = memory();
+  assert.equal(loadPrefs(s, true).motion, false, "nothing chosen yet: reduced motion on the device turns animations off");
+  assert.equal(loadPrefs(s, false).motion, true);
+  savePrefs({ ...DEFAULTS, motion: true }, s);
+  assert.equal(loadPrefs(s, true).motion, true, "the person chose animations: the device setting no longer overrides");
+  savePrefs({ ...DEFAULTS, motion: false }, s);
+  assert.equal(loadPrefs(s, false).motion, false);
+});

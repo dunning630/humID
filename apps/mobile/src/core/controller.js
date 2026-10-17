@@ -85,12 +85,12 @@ const UNREACHABLE = "Can't reach your vault server. Check your connection.";
 const SESSION_LOST = new Set(["session_unknown", "session_expired", "sign_in_required"]);
 const friendly = (e) => {
   if (SESSION_LOST.has(e?.code)) return null;
-  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
+  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
   if (e?.code === "offline") return "You're offline. Opening or changing anything needs a connection to your vault.";
   if (e instanceof TypeError || e?.code === "server_unreachable") return UNREACHABLE;
-  return e?.message || "Something went wrong.";
+  return e?.message || "That didn't work. Try again, or lock and unlock.";
 };
 const cancelled = (e) => e?.name === "NotAllowedError" || e?.message === CANCELLED;
 const quietly = (p) => p.catch((e) => { if (!cancelled(e)) toast(friendly(e), "error"); return null; });
@@ -121,7 +121,7 @@ function haptic(ok) {
 }
 
 async function endInterrupt(ok, message, ms) {
-  if (ok || message !== "The biometric check was cancelled.") haptic(ok);
+  if (ok || message !== "The check was cancelled.") haptic(ok);
   showInterrupt({ state: ok ? "verified" : "failed", needsHold: false, progress: 1, message });
   await sleep(ms);
   S.interrupt.value = null;
@@ -146,7 +146,7 @@ async function withKeys(purpose, label, fn, { keepOpen = false, challenge, attes
     await waitForHold(gate);
     const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
     secret = rel.secret;
-    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed a live check. Unlocking your keys…" : "Unlocking your keys on this device…" });
+    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the check. Unlocking your keys…" : "Unlocking your keys on this device…" });
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     const seed = both.subarray(0, SEED);
     keys = Suite.deriveKeys(seed);
@@ -332,7 +332,7 @@ export const buzz = (pattern) => { if (!S.prefs.value.haptics) return; try { glo
 /** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 function chooseGate(useDemo) {
   if (useDemo) {
-    if (!S.demoAllowed.value) { toast("HumID needs a live face or fingerprint check.", "warn"); return null; }
+    if (!S.demoAllowed.value) { toast("HumID needs a face or fingerprint check.", "warn"); return null; }
     return demoGate();
   }
   const hw = S.hwGate.value;
@@ -447,7 +447,7 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
     const parts = quorumParts(seed);
     const cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
     for (const p of Object.values(parts)) wipe(p.y);
-    showInterrupt({ progress: 0.2, message: "Opening a post-quantum channel to your vault…" });
+    showInterrupt({ progress: 0.2, message: "Connecting to your vault…" });
 
     const sess = await api.register({
       pub, commit, card: cardBody, soleBiometric, pass,
@@ -455,9 +455,9 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
       sign: async ({ register, device, th }) => {
-        showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to bind HumID to you." });
+        showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to lock HumID to you." });
         await waitForHold(gate);
-        enrolled = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: device, attest: th });
+        enrolled = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: device, attest: th });
         secret = enrolled.secret;
         showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
         return {
@@ -514,7 +514,7 @@ export function finishEnroll() { S.cardCode.value = null; S.view.value = "app"; 
 /* ---------------- recovery card: show, save, copy ---------------- */
 
 const cardText = (code) => [
-  "HumID seal card", "",
+  "HumID recovery card", "",
   code, "",
   "One of the two proofs that bring your HumID back on a new phone if you lose all your devices.",
   "On its own it opens nothing: recovery also needs your witnesses or your ID, then waits and alerts your devices.",
@@ -524,7 +524,7 @@ const cardText = (code) => [
 
 export async function saveCard(code) {
   markPicking();
-  try { await saveBytes(utf8(cardText(code)), "HumID seal card.txt", "text/plain"); toast("Saved your seal card."); }
+  try { await saveBytes(utf8(cardText(code)), "HumID recovery card.txt", "text/plain"); toast("Saved your recovery card."); }
   catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -548,7 +548,7 @@ export async function unlock(duress = false) {
   const wasOffline = !!S.offline.value;
   if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(duress);
   try {
-    showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
+    showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Connecting to your vault…" });
     const sess = await api.login({
       id: id.server.id,
       device: id.device?.id || "dev_" + "0".repeat(24),
@@ -748,7 +748,7 @@ export async function refresh() {
 }
 
 export async function addDocument({ file, name, category, place = null }) {
-  if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. This POC seals files up to 50 MB.`, "warn"); return false; }
+  if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. HumID seals files up to 50 MB.`, "warn"); return false; }
   const bytes = await readFile(file);
   return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category, place });
 }
@@ -890,9 +890,9 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
 /** Download, verify, decrypt — all under one live check. Returns { bytes, meta }. */
 async function fetchPlain(item, purpose, label) {
   return withStepUp("download", [item.id], purpose, label, async ({ keys, proof, Suite }) => {
-    showInterrupt({ progress: 0.65, message: "Fetching sealed copy over HTP/1…" });
+    showInterrupt({ progress: 0.65, message: "Fetching the sealed copy from your vault…" });
     const { envelope, share } = await api.downloadWithShare(item.id, proof);
-    showInterrupt({ progress: 0.85, message: share ? "Verifying, then opening with both keys…" : "Verifying ML-DSA-87 signature and decrypting…" });
+    showInterrupt({ progress: 0.85, message: share ? "Checking, then opening with both keys…" : "Checking it's untouched, then opening…" });
     const out = await Suite.open(envelope, keys);
     if (!isSplit(out.meta)) { wipe(share); return out; }
     try { return await splitUnwrap(out.bytes, share); }
@@ -942,7 +942,7 @@ export async function saveCopy(item) {
       await saveBytes(bytes, meta.name, meta.type);
       wipe(bytes);
     }
-    toast("Saved a decrypted copy to your device.");
+    toast("Saved a copy to this device. It isn't sealed: keep it safe.");
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -951,7 +951,7 @@ export async function exportSealed(item) {
     needVault();
     const env = await withStepUp("download", [item.id], "export", `Export sealed ${item.name}`, async ({ proof }) => api.download(item.id, proof));
     await saveBytes(env, `${item.name}${EXTENSION}`, MEDIA_TYPE);
-    toast("Exported the sealed envelope. It stays encrypted.");
+    toast("Exported. The copy stays sealed: only your HumID can open it.");
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -1142,7 +1142,7 @@ export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
   try {
-    await withStepUp("setCard", [], "card", "Make a seal card", async ({ seed, proof }) => {
+    await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();
       const part = partOf(seed, "card");
       try { await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
@@ -1156,9 +1156,9 @@ export async function makeNewCard() {
 
 export async function removeCard() {
   try {
-    await withStepUp("removeCard", [], "card", "Remove seal card", async ({ proof }) => api.removeCard(proof));
+    await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => api.removeCard(proof));
     S.sheet.value = null;
-    toast("Seal card removed. The old card no longer works.");
+    toast("Recovery card removed. The old card no longer works.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
@@ -1177,7 +1177,7 @@ export async function findContact(code) {
 export async function saveContacts(contacts, ownerName) {
   const id = S.identity.value;
   const n = contacts.length;
-  if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} recovery contacts.`, "warn");
+  if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} witnesses.`, "warn");
   const t = thresholdFor(n);
   try {
     await withStepUp("setContacts", [], "contacts", "Save your witnesses", async ({ keys, seed, rec, proof, Suite }) => {
@@ -1307,12 +1307,12 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
   if (!gate) return;
   const Suite = suite();
   busy = true;
-  showInterrupt({ purpose: "enroll", label: "Bind this device", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
+  showInterrupt({ purpose: "enroll", label: "Lock this device to you", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
     message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor. Your HumID will open only for you on this device." });
   let secret, dseed, x, both, dkeys;
   try {
     await waitForHold(gate);
-    const e = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: localChallenge("bind") });
+    const e = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: localChallenge("bind") });
     secret = e.secret;
     showInterrupt({ needsHold: false, progress: 0.4, message: "Generating this device's keys…" });
     dseed = random(SEED);
@@ -1395,7 +1395,7 @@ async function finishJoin(st) {
   const Suite = suite(id.suite);
   const account = st.account;
   busy = true;
-  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
+  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Connecting to your vault…" });
   let secret, both, seed, keys, dkeys, xkeys, released;
   const pieces = [];
   try {
@@ -1475,7 +1475,7 @@ async function finishJoin(st) {
     await endInterrupt(true, "Welcome back. This device is part of your HumID.", 900);
     refresh();
     loadAlerts();
-    if (p.method !== "link") toast("Recovered. Check your proofs in Security, and make a new seal card if you used it.", "warn");
+    if (p.method !== "link") toast("Recovered. Check your proofs under You, and make a new recovery card if you used it.", "warn");
   } catch (err) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
     if (!cancelled(err)) S.joinStatus.value = { ...st, status: "error", message: friendly(err) };
@@ -1492,21 +1492,21 @@ export async function addCardToJoin(cardInput) {
   const id = S.identity.value;
   const p = id?.pending;
   if (p?.method !== "quorum") return false;
-  if (p.hasCard) { toast("Your seal card is already part of this recovery.", "warn"); return false; }
+  if (p.hasCard) { toast("Your recovery card is already part of this recovery.", "warn"); return false; }
   let cardSecret;
   try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return false; }
   const gate = gateAdapter(id.gate.adapter);
   const Suite = suite(id.suite);
   busy = true;
-  showInterrupt({ purpose: "card", label: "Add your seal card", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  showInterrupt({ purpose: "card", label: "Add your recovery card", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
   let secret, both, next;
   try {
     await waitForHold(gate);
-    const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your seal card", challenge: localChallenge("card") });
+    const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your recovery card", challenge: localChallenge("card") });
     secret = rel.secret;
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     next = concat(both.subarray(0, 2 * SEED), cardSecret);
-    showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your seal card…" });
+    showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your recovery card…" });
     const r = await api.recoveryAddCard(p.requestId, cardTag(cardSecret));
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
     const record = { ...id, wrapped, pending: { ...p, hasCard: true, account: r.account } };
@@ -1514,7 +1514,7 @@ export async function addCardToJoin(cardInput) {
     await store.putIdentity(record);
     S.identity.value = { ...record, schema: 4 };
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
-    await endInterrupt(true, "Seal card added.", 600);
+    await endInterrupt(true, "Recovery card added.", 600);
     pollJoin();
     return true;
   } catch (e) {
@@ -1682,14 +1682,14 @@ export async function demoPassport(name = "Demo Person") {
 /** Bind your passport or ID to your HumID: the anchor part, stored under the chip's identity. */
 export async function setAnchor(chip) {
   try {
-    const r = await withStepUp("setAnchor", [], "anchor", "Anchor your HumID to your ID", async ({ seed, proof }) => {
+    const r = await withStepUp("setAnchor", [], "anchor", "Link your HumID to your ID chip", async ({ seed, proof }) => {
       showInterrupt({ progress: 0.6, message: "Checking your ID chip's signature with its issuing country…" });
       const part = partOf(seed, "anchor");
       try { return await api.setAnchor({ chip, part: encodeQuorumPart(part) }, proof); }
       finally { wipe(part.y); }
     });
     S.sheet.value = null;
-    toast(`Anchored to your ${r.document}${r.country ? ` (${r.country})` : ""}.`);
+    toast(`Linked to your ${r.document}'s chip${r.country ? ` (${r.country})` : ""}.`);
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -1697,9 +1697,9 @@ export async function setAnchor(chip) {
 
 export async function removeAnchor() {
   try {
-    await withStepUp("removeAnchor", [], "anchor", "Remove your ID anchor", async ({ proof }) => api.removeAnchor(proof));
+    await withStepUp("removeAnchor", [], "anchor", "Unlink your ID chip", async ({ proof }) => api.removeAnchor(proof));
     S.sheet.value = null;
-    toast("ID anchor removed.");
+    toast("ID chip unlinked.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
