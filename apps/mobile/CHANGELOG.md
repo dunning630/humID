@@ -1,5 +1,26 @@
 # @humid/mobile
 
+## 2.1.0
+
+### Minor Changes
+
+- 1390a6d: Add document no longer opens the camera. It opens "What are you adding?" first; after a kind is chosen, a short "what to show" screen (with a lighting tip) has one primary **Start camera**. The chosen kind sets what the camera reads (license: barcode, passport: MRZ, card: card scan). The camera and its preview are released when you leave the screen, go back or switch apps, and Android Back still steps back one level at a time.
+- 5998690: Scanning is faster and always says what it is doing.
+  
+  - **Faster.** The camera analyses a 224 px copy of the picture (as exact as 320 px was) in a worker, off the main thread, one look at a time, paced by the video's own frames instead of a timer; it stops the moment a photo is taken. Barcodes are found and read in workers too (a second worker, so the outline never waits for a read); the MRZ reader straightens only the strip of the card the lines sit in, not the whole card. The scan engines start loading when the document type is chosen, in parallel with the camera, not after it. Where a phone's WebView has no worker or OffscreenCanvas, the same analysis runs on the main thread. On a phone-like CPU (4x slower than the build machine) the main thread spends about 4x less per look, 1.8x less per MRZ attempt and 3x less per barcode attempt.
+  - **Clear.** One card above the shutter shows the step (Find · Steady · Read · Verify · Done) and a plain line on what to do, with a progress bar, instead of a line of small print. Problems say what to fix: Too dark (with a light button), Too bright, Glare, Too far, Not the right document, Not a license barcode. The outline snaps onto the document and fills as it holds steady. A scan that finds nothing offers the shutter after 10 seconds and, after 30, stops and offers Try again or Take photo. Screen readers hear each change once; a short buzz marks a kept photo; every target is at least 44 px; motion follows the reduced-motion setting.
+  - **For the Add camera.** `scan.js` exports `scanOptions(mode)` (`license`, `passport`, `card`), `warmScan(mode)` and `<DocCamera mode="passport" />`.
+  
+  Everything stays on the phone; frames and text read from them are never logged or stored.
+
+### Patch Changes
+
+- a70c5d3: Fail closed on passport and ID chips. Chip data is used (and the chip photo decoded) only when its files match the chip's own signed list of hashes; a malformed SOD, an unchecked result or a hash mismatch now shows "Chip couldn't be verified", uses none of the chip's data, and offers to continue with the printed details, marked "Not verified". A chip that does match is now described as "Chip data integrity-checked" rather than verified, because the issuing country's signature isn't checked on the phone.
+- Updated dependencies [a70c5d3]
+- Updated dependencies [f216b9a]
+  - @humid/idscan@1.0.3
+  - @humid/cards@1.0.1
+
 ## 2.0.0
 
 ### Major Changes

@@ -1,5 +1,12 @@
 # @humid/idscan
 
+## 1.0.3
+
+### Patch Changes
+
+- a70c5d3: Fail closed on passport and ID chips. Chip data is used (and the chip photo decoded) only when its files match the chip's own signed list of hashes; a malformed SOD, an unchecked result or a hash mismatch now shows "Chip couldn't be verified", uses none of the chip's data, and offers to continue with the printed details, marked "Not verified". A chip that does match is now described as "Chip data integrity-checked" rather than verified, because the issuing country's signature isn't checked on the phone.
+- f216b9a: Fix a denial of service in reading ID and card text. The MRZ names field used a regex that took exponential time on a name followed by many `<` fillers (about 27 s at 30), which froze the scanner on crafted or misread OCR text. It is now a linear parser with identical results, `<`/`F` trailing-run trimming no longer does quadratic work, and MRZ and card OCR text is bounded in size and line length before it is read.
+
 ## 1.0.2
 
 ### Patch Changes
