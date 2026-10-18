@@ -4,7 +4,7 @@ import { DEMO_BUILD } from "@humid/gate";
 import { loadPrefs, sortItems } from "./prefs.js";
 
 export const view = signal("boot");          // boot | welcome | enroll | join | locked | app
-export const tab = signal("vault");          // vault | activity | security | settings
+export const tab = signal("vault");          // vault | activity | you
 export const prefs = signal(loadPrefs());     // this device's preferences (core/prefs.js)
 export const enrollStep = signal("connect"); // connect · access (when the server needs a pass) · bind · done + recovery card
 
@@ -28,7 +28,8 @@ export const lockIssue = signal(null);       // unknown_identity | server_identi
 export const items = signal([]);             // decrypted index entries
 export const usage = signal(null);
 export const loading = signal(false);
-export const filter = signal("all");
+export const filter = signal("all");         // all | a kind id (core/categories.js)
+export const tagFilter = signal(null);       // a tag id, or null for every tag
 export const query = signal("");
 export const ledger = signal(null);          // verified ledger page
 export const ledgerLoading = signal(false);
@@ -45,10 +46,6 @@ export const cardCode = signal(null);        // a recovery card to show once, th
 // only decoy documents and a calm account, while the server has locked sensitive changes.
 export const decoy = signal(false);
 export const duressInfo = signal(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
-// This device's duress setting { enabled, gesture }, opened during the unlock check and only while
-// unlocked: it's sealed on the device, so a copy of the phone doesn't show whether it's on.
-export const duressSetting = signal(null);
-
 // Check-in (docs/CHECKIN.md): { state: off | armed | locked | erased, deadline, erasesAt, windowMs,
 // maxWindowMs, graceMs, armedAt, erasedAt } while unlocked, null otherwise or when the server doesn't offer it.
 export const checkin = signal(null);
@@ -79,11 +76,20 @@ export const passNeeded = computed(() => server.value?.policy?.registration === 
 
 export const visibleItems = computed(() => {
   const q = query.value.trim().toLowerCase();
-  return sortItems(items.value.filter((i) => (filter.value === "all" || i.category === filter.value) && (!q || i.name.toLowerCase().includes(q))), prefs.value.sort);
+  const t = tagFilter.value;
+  return sortItems(items.value.filter((i) => (filter.value === "all" || i.kind === filter.value) && (!t || (i.tags || []).includes(t)) && (!q || i.name.toLowerCase().includes(q))), prefs.value.sort);
 });
 
+/** How many items of each kind: { all, id, card, pass, photo, file }. */
 export const counts = computed(() => {
   const c = { all: items.value.length };
-  for (const i of items.value) c[i.category] = (c[i.category] || 0) + 1;
+  for (const i of items.value) c[i.kind] = (c[i.kind] || 0) + 1;
+  return c;
+});
+
+/** How many items carry each tag (only tags in use appear). */
+export const tagCounts = computed(() => {
+  const c = {};
+  for (const i of items.value) for (const t of i.tags || []) c[t] = (c[t] || 0) + 1;
   return c;
 });

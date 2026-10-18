@@ -15,26 +15,38 @@ export class HtpError extends Error {
   }
 }
 
+/** How long one request may take before it's given up (a proxy that holds the connection open, a server that never answers). */
+export const REQUEST_TIMEOUT_MS = 45_000;
+
 export class HtpClient {
   /**
    * @param baseUrl   e.g. "https://vault.humidsecure.ai" or "" for same origin
    * @param pinnedKid hex server key id; when set, any other server is refused
    * @param fetch     injectable for tests
+   * @param timeoutMs every request is abandoned after this long (default 45 s; 0 = never)
    */
-  constructor({ baseUrl = "", pinnedKid = null, fetch = globalThis.fetch.bind(globalThis) } = {}) {
+  constructor({ baseUrl = "", pinnedKid = null, fetch = globalThis.fetch.bind(globalThis), timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
     this.base = baseUrl.replace(/\/$/, "");
     this.pinnedKid = pinnedKid ? pinnedKid.toLowerCase() : null;
     this.fetch = fetch;
+    this.timeoutMs = timeoutMs;
     this.server = null;
     this.session = null;
     this.seq = 0;
     this.onSessionLost = null;
   }
 
+  /** fetch with the request timeout: a hung connection surfaces as TimeoutError (a network failure) instead of waiting forever. */
+  request(url, init = {}) {
+    const ms = this.timeoutMs;
+    if (ms > 0 && !init.signal && typeof AbortSignal?.timeout === "function") init = { ...init, signal: AbortSignal.timeout(ms) };
+    return this.fetch(url, init);
+  }
+
   /** Fetch and authenticate the server's public keys. */
   async serverKeys() {
     if (this.server) return this.server;
-    const res = await this.fetch(`${this.base}/htp/v1/keys`, { headers: { accept: "application/json" }, cache: "no-store" });
+    const res = await this.request(`${this.base}/htp/v1/keys`, { headers: { accept: "application/json" }, cache: "no-store" });
     if (!res.ok) throw new HtpError("server_unreachable", `Server keys unavailable (${res.status})`);
     const j = await res.json();
     const keys = { kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) };
@@ -63,7 +75,7 @@ export class HtpClient {
   async connect() {
     const server = await this.serverKeys();
     const { wire, state } = clientHello(server);
-    const res = await this.fetch(`${this.base}/htp/v1/hello`, {
+    const res = await this.request(`${this.base}/htp/v1/hello`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(wire),
@@ -140,7 +152,7 @@ export class HtpClient {
     }
     const s = this.session;
     const frame = await sealFrame(s.c2s, DIR.request, s.sid, seq, meta, bytes);
-    const res = await this.fetch(`${this.base}/htp/v1/call`, {
+    const res = await this.request(`${this.base}/htp/v1/call`, {
       method: "POST",
       headers: { "content-type": MEDIA_TYPE },
       body: frame,

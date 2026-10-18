@@ -1,5 +1,65 @@
 # @humid/mobile
 
+## 2.0.0
+
+### Major Changes
+
+- App 2.0 layout: the information-architecture rebuild.
+  
+  - **Kinds replace categories.** Every vault item is an ID, a card, a pass, a photo or a file (`kind`, sealed in its index entry). Items sealed before 2.0 are classified on read and the kind is written back lazily on the next rename or pin, never in bulk. The old categories live on as optional **tags** (same ids), suggested from the name, shown as small labels and filterable from a "More filters" row that appears only once something carries a tag. The Vault's chip row is All · IDs · Cards · Passes · Photos · Files, for the kinds that exist.
+  - **One Add flow, camera first.** The + button opens the camera at once. The photo routes itself: a card with a license barcode or a page with an MRZ to the ID flow, a card with a payment number to the card review, anything else to the photo review; a live label says what the camera sees, with "It's something else" for the picker. File (a `.pkpass` is checked as a Wallet pass), Type a card and Tap a card sit on the camera's own bar. Every kind goes through one shared Review (name, kind with Change, the kind's fields, tags, location stamp, Seal). The Add, ID and payment-card sheets are gone.
+  - **Item detail is a pushed screen**, preview first (one Open = one check; a card's masked number with "Show the number"; a pass's summary), then the facts, then a ··· menu: Rename · Pin · Show in decoy · Export sealed · Delete. Save a copy lives in the opened Viewer.
+  - **Onboarding**: "You're all set" becomes "Your recovery card" (Print / Save, type-back check, "I've saved it") then "You're in". The sole-biometric checkbox becomes the one-line statement "Only I use Face ID / fingerprint on this phone" with a "What does this mean?" disclosure, still required and still recorded in the ledger.
+  - Android Back steps one level inside Add and the item screen before closing them.
+  
+  No security property changes: every check stays; envelope v1, HUMID-PQ1 and HTP/1 are untouched. The identity record's schema stays at 4.
+
+### Minor Changes
+
+- Information architecture and vocabulary pass ("Safe. Secure. Simple."):
+  
+  - Three tabs: Vault · Activity · **You**. Settings and Security merge into You, in the order they matter: protection checklist, devices, recovery (witnesses · ID chip · recovery card), duress with an inline decoy picker, help others, preferences, a collapsed "About this HumID" with the diagnostics, then Lock now and Close HumID once. The start-tab preference is gone; the app always opens on the vault.
+  - One word per concept everywhere a person reads: **Check** (the biometric prompt; the overlay says "Checking it's you"), **Seal / Sealed**, **Open**, **Save a copy**, **Export sealed**, **Recovery card**, **Witnesses**, **ID chip**, **Device / Witness / Recovery / Match code**, **Your vault server**, **Location stamp**. Crypto names, HTP/1, "step-up", "anchor", "seal card" and "biological interrupt" no longer appear in the UI; the plain facts live in one "How HumID protects you" sheet linked from You and from the seal screens.
+  - Photo choice shows one preview of the suggested version; "Looks wrong?" reveals the other versions, turning and retake.
+  - Wizards (ID, payment card, add device, ID chip, help) get a Back step that Android Back uses before closing the sheet. Terminal lock issues lead straight to "Set up HumID again". An expired witness offer gets "Make a new code".
+  - Delete, Remove this device and Cancel the recovery go straight to the check from the row itself; only Close HumID & erase keeps a confirm sheet.
+  - Empty states for Vault, Activity, Devices and Witnesses; a11y fixes (44 px text links, legible eyebrows, tablist roles, reduced-motion default, focus on the check overlay); no text selection or copy in the viewer, code boxes and card number; the recovery card sheet no longer shares a sheet type with the payment card sheet.
+- The access pass is sealed at rest. Before enrolment there is no seed-derived key, so the
+  pass draft (the access code and the blinded request) and the finished blind-signed pass
+  used to be stored in IndexedDB as they were. `@humid/pass/atrest` now seals the wallet
+  record under a per-install 256-bit AES-GCM key (a non-extractable WebCrypto `CryptoKey`
+  kept in its own IndexedDB database, apart from the wallet; AAD `HUMID-PASS-v1`, fresh IV
+  per write). A clear record from an older build is re-sealed on the first read and the
+  plaintext overwritten; a record that doesn't open is dropped. The RFC 9474 code is
+  unchanged. Limits and what remains are in docs/SECURITY.md (*The access pass at rest*).
+  
+  Also: `npm run test:pen`, a penetration regression pack against the in-process stack
+  (tests/pen), run in CI next to the end-to-end tests.
+- 2.0 security pass. The duress setting is sealed on the device under a key derived from
+  the account seed (@humid/crypto `settingsKey`, `sealSetting`, `openSetting`) and the
+  decoy-or-real decision is made after the live check, so nothing on disk says whether
+  duress is on or which gesture triggers it. The file-picker exemption from lock-on-hide
+  is bounded (60 s, cleared on `pagehide`, a long hidden span locks anyway). Item names
+  are forgotten on lock and erase, and a decoy session keeps only decoy names. A chip
+  photo's declared size is capped before decoding and no portrait is shown from a chip
+  that fails its own hash list. Every HTP request has a 45 s timeout. `openExternal(url)`
+  hands https:, tel: and mailto: links to the system (Tauri opener plugin, scoped), and
+  the native shell refuses navigation away from the app's own origin. Release builds no
+  longer contain the simulated server or demo code (checked by a test), and a simulation
+  build is a separate app, `app.humid.vault.sim`. The seal card sheet is `recoveryCard`,
+  no longer colliding with the payment-card sheet. iOS excludes the WebView data store
+  from backups.
+
+### Patch Changes
+
+- Web build: the browser-tab favicon, home-screen icon and install icons now use the peace-sign HumID logo. Tab sizes (16–48 px and favicon.svg) show the hand without the wordmark so it stays legible; 180 px and up show the full logo. A dedicated maskable icon keeps the logo inside the safe zone on Android. Native app icons are unchanged.
+- Updated dependencies
+- Updated dependencies
+  - @humid/pass@1.1.0
+  - @humid/crypto@1.5.0
+  - @humid/htp@1.4.1
+  - @humid/gate@2.0.3
+
 ## 1.14.0
 
 ### Minor Changes

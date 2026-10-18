@@ -18,7 +18,7 @@
 import { batch } from "@preact/signals";
 import { toB64, fromB64, toHex, MEDIA_TYPE, EXTENSION } from "@humid/codec";
 import { suite, random, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
-import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE, DEMO_BUILD } from "@humid/gate";
+import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE } from "@humid/gate";
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
 import { HumidApi, ApiError } from "@humid/api";
@@ -32,14 +32,27 @@ import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
 import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, readCardBack } from "@humid/cards";
 import { parseAccessCode } from "@humid/pass";
+import { sealedWallet } from "@humid/pass/atrest";
 import { probeNfc, openChip } from "./nfc.js";
 import { textReader } from "./scan.js";
 import { readPkpass, passIndex, MEDIA_TYPE as PASS_TYPE, APPLE_ROOTS, WalletError } from "@humid/wallet";
+import { classify, inferKind, kindFromType } from "./categories.js";
 import { createLink, isNetworkFailure } from "./link.js";
 import * as S from "./state.js";
 import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { validStamp, REASONS } from "./place.js";
-import { SERVER_URL, PINNED_KID, PLATFORM, SIM } from "./config.js";
+import { sealDuress, openDuress, isDuress, DEFAULT as DURESS_OFF } from "./duress.js";
+import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
+
+/* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
+// Build flags (build.mjs `define`, always a literal true/false; `tools/dev.mjs` sets both):
+//   __HUMID_SIM__          simulation build: the vault server runs inside the app
+//   __HUMID_ALLOW_DEMO__   development build: demo gate, demo passports, /dev endpoints
+// They're tested INLINE below (the spelled-out `typeof … && … === true`), never through
+// an imported or local constant or a helper: esbuild folds a define only where it
+// appears, at parse time, and that's what makes every simulation and demo branch,
+// startSim and the ../sim/server.js chunk disappear from release builds
+// (tests/bundle.test.js). Under Node (tests) the defines don't exist: false.
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 const MAX_FILE = 50 * 1024 * 1024;
@@ -59,10 +72,16 @@ let store = null;
 let api = null;
 let indexKey = null;        // decrypts item names while unlocked; wiped on lock
 let offlineKey = null;      // seals this device's offline copy while unlocked; wiped on lock
+let settingsKey = null;     // opens this device's sealed settings (duress gesture) while unlocked; wiped on lock
+let duressSetting = null;   // { enabled, gesture } once a live check opened it; cleared on lock
 let offline = null;         // the offline copy, as last saved (in memory while unlocked)
 let offlineWrite = Promise.resolve();
 let busy = false;
-let picking = false;
+let picking = false;        // a system file picker is open: HumID leaves the screen without locking
+let pickingTimer = null;
+let hiddenAt = 0;           // when HumID last left the screen, while picking
+const PICK_MS = 60_000;     // a picker that hasn't come back by then no longer excuses leaving the screen
+const PICK_HIDDEN_MS = 20_000; // behind the picker for longer than this (another app, the home screen) locks anyway
 let idleTimer = null;
 let holdWaiter = null;
 let joinTimer = null;
@@ -87,12 +106,12 @@ const friendly = (e) => {
   if (SESSION_LOST.has(e?.code)) return null;
   // the server says Check-in locked or erased the vault: show where it stands now
   if (e?.code === "checkin_missed" || e?.code === "vault_erased") setTimeout(() => loadCheckin(), 0);
-  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The biometric check was cancelled.";
+  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
   if (e?.code === "offline") return "You're offline. Opening or changing anything needs a connection to your vault.";
   if (e instanceof TypeError || e?.code === "server_unreachable") return UNREACHABLE;
-  return e?.message || "Something went wrong.";
+  return e?.message || "That didn't work. Try again, or lock and unlock.";
 };
 const cancelled = (e) => e?.name === "NotAllowedError" || e?.message === CANCELLED;
 const quietly = (p) => p.catch((e) => { if (!cancelled(e)) toast(friendly(e), "error"); return null; });
@@ -123,7 +142,7 @@ function haptic(ok) {
 }
 
 async function endInterrupt(ok, message, ms) {
-  if (ok || message !== "The biometric check was cancelled.") haptic(ok);
+  if (ok || message !== "The check was cancelled.") haptic(ok);
   showInterrupt({ state: ok ? "verified" : "failed", needsHold: false, progress: 1, message });
   await sleep(ms);
   S.interrupt.value = null;
@@ -148,7 +167,7 @@ async function withKeys(purpose, label, fn, { keepOpen = false, challenge, attes
     await waitForHold(gate);
     const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
     secret = rel.secret;
-    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed a live check. Unlocking your keys…" : "Unlocking your keys on this device…" });
+    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the check. Unlocking your keys…" : "Unlocking your keys on this device…" });
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     const seed = both.subarray(0, SEED);
     keys = Suite.deriveKeys(seed);
@@ -187,18 +206,21 @@ async function withStepUp(op, args, purpose, label, fn) {
 
 /* ---------------- simulation build: the server inside the app ---------------- */
 
+// Release builds have none of this: with the flag false, startSim is `null` and the
+// sim server chunk is never emitted (a conditional expression, not a function
+// declaration, so esbuild can drop the dynamic import).
 let sim = null;
-async function startSim() {
+const startSim = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? async () => {
   const { createSimServer } = await import("../sim/server.js");
   sim = await createSimServer({
-    platformPolicy: DEMO_BUILD ? "demo" : "biometric",
+    platformPolicy: (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) ? "demo" : "biometric",
     onCheck: (report) => {
       S.simLog.value = [report, ...S.simLog.value].slice(0, 40);
       if (!report.quiet) setTimeout(() => { S.simShow.value = report; }, report.kind === "enrol" ? 1600 : 900);
     },
   });
   return sim;
-}
+} : null;
 
 /** Wipe the simulated server and this phone's HumID, and start over. */
 export async function resetSimulation() {
@@ -217,10 +239,10 @@ export async function boot() {
   S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
   try { S.identity.value = await store.getIdentity(); } catch { S.identity.value = null; }
-  try { S.pass.value = await store.getPass(); } catch { S.pass.value = null; }
+  try { S.pass.value = await wallet().get(); } catch { S.pass.value = null; }
   try { S.offlineReady.value = !!(await store.getOffline()); } catch { S.offlineReady.value = false; }
   const id = S.identity.value;
-  const raw = SIM ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
+  const raw = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
   api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: id?.server?.kid || PINNED_KID, fetch: watchConnection(raw) });
   // The server no longer knows this session (it expired, or the server restarted and the
   // reconnected channel isn't signed in): either way, one live check signs back in.
@@ -243,7 +265,7 @@ function watchConnection(raw) {
   const unanswered = (r) => r.status >= 502 && r.status <= 504;
   link = createLink({
     // the server's public key bundle: unauthenticated, cheap, and touches no session
-    probe: () => raw(`${api.htp.base}/htp/v1/keys`, { cache: "no-store", headers: { accept: "application/json" } })
+    probe: () => raw(`${api.htp.base}/htp/v1/keys`, { cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) })
       .then((r) => { if (unanswered(r)) throw new Error(`HTTP ${r.status}`); }),
     onChange: (st) => { S.link.value = st; },
     onUp: reconnected,
@@ -284,7 +306,7 @@ export async function connectServer() {
   S.serverError.value = null;
   try {
     const s = await api.server();
-    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: SIM };
+    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
   } catch (e) {
     S.server.value = null;
     S.serverError.value = friendly(e);
@@ -299,18 +321,30 @@ function wireGlobalEvents() {
       S.idleDeadline.value = Date.now() + idleMs();
     }
   };
-  // Opening the app (unlock, a finished setup or join) shows the tab the person chose.
+  // Opening the app (unlock, a finished setup or join) always starts at the vault.
   let wasApp = false;
   S.view.subscribe((v) => {
-    if (v === "app") { if (!wasApp) S.tab.value = S.prefs.value.startTab; reset(); }
+    if (v === "app") { if (!wasApp) S.tab.value = "vault"; reset(); }
     wasApp = v === "app";
   });
   resetIdle = reset;
   for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reset, { passive: true });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && S.view.value === "app" && !busy && !picking) lock("Locked when HumID left the screen.");
+    if (!document.hidden) {
+      // back from the picker (or another app) while picking: if it was away long, lock anyway
+      if (picking && hiddenAt && Date.now() - hiddenAt > PICK_HIDDEN_MS && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
+      hiddenAt = 0;
+      return;
+    }
+    if (S.view.value !== "app" || busy) return;
+    if (!picking) return lock("Locked when HumID left the screen.");
+    // the file picker is up (it normally comes back within seconds): lock if that's not what this is
+    hiddenAt = Date.now();
+    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, PICK_HIDDEN_MS);
   });
-  addEventListener("focus", () => setTimeout(() => { picking = false; }, 1200));
+  // leaving the page entirely (closed, navigated, suspended) is never a file picker
+  addEventListener("pagehide", () => { stopPicking(); if (S.view.value === "app" && !busy) lock(); });
+  addEventListener("focus", () => setTimeout(stopPicking, 1200));
   addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
   addEventListener("offline", () => { S.online.value = false; link?.online(false); });
   // retries pause while HumID is off the screen, and resume when it's back
@@ -318,7 +352,13 @@ function wireGlobalEvents() {
   if (!S.online.value) link?.online(false);
 }
 
-export const markPicking = () => { picking = true; };
+/** A system file picker is about to open: leaving the screen for it isn't leaving HumID. Bounded: it clears itself after a minute. */
+export const markPicking = () => {
+  picking = true;
+  clearTimeout(pickingTimer);
+  pickingTimer = setTimeout(stopPicking, PICK_MS);
+};
+function stopPicking() { picking = false; hiddenAt = 0; clearTimeout(pickingTimer); pickingTimer = null; }
 
 let resetIdle = () => {};
 /** Change preferences: saved on this device, applied now. */
@@ -334,7 +374,7 @@ export const buzz = (pattern) => { if (!S.prefs.value.haptics) return; try { glo
 /** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 function chooseGate(useDemo) {
   if (useDemo) {
-    if (!S.demoAllowed.value) { toast("HumID needs a live face or fingerprint check.", "warn"); return null; }
+    if (!S.demoAllowed.value) { toast("HumID needs a face or fingerprint check.", "warn"); return null; }
     return demoGate();
   }
   const hw = S.hwGate.value;
@@ -368,6 +408,10 @@ export function startEnroll() {
 // came from. Before the code is sent, the request is saved here, so a crash or a lost
 // connection never loses a paid-for code: the same request is simply sent again.
 
+// The pass and its draft are sealed at rest under this install's key (@humid/pass/atrest):
+// before enrolment there is no seed-derived key, and the code must not sit readable in storage.
+const wallet = () => sealedWallet(store);
+
 const PASS_REFUSED = new Set(["code_invalid", "code_unknown", "code_used", "too_many_keys", "no_keys", "bad_key"]);
 
 export async function redeemAccessCode(input) {
@@ -381,7 +425,7 @@ export async function redeemAccessCode(input) {
     const pass = await api.getPass(code, {
       saveDraft: async (draft) => {
         const rec = { state: "draft", code, draft, savedAt: new Date().toISOString().slice(0, 10) };
-        await store.putPass(rec);
+        await wallet().put(rec);
         S.pass.value = rec;
         saved = true;
       },
@@ -390,7 +434,7 @@ export async function redeemAccessCode(input) {
     return true;
   } catch (e) {
     // A definite refusal: nothing was signed, so the saved request is worthless.
-    if (saved && PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; }
+    if (saved && PASS_REFUSED.has(e?.code)) { await wallet().clear(); S.pass.value = null; }
     toast(saved && !PASS_REFUSED.has(e?.code) ? "Your access code is saved on this phone. HumID will finish your pass when it can reach the vault." : friendly(e), "error");
     return false;
   } finally { S.passBusy.value = false; }
@@ -405,7 +449,7 @@ export async function resumePass() {
     await keepPass(await api.getPass(rec.code, { draft: rec.draft }));
     return true;
   } catch (e) {
-    if (PASS_REFUSED.has(e?.code)) { await store.clearPass(); S.pass.value = null; toast(friendly(e), "error"); }
+    if (PASS_REFUSED.has(e?.code)) { await wallet().clear(); S.pass.value = null; toast(friendly(e), "error"); }
     return false;
   } finally { S.passBusy.value = false; }
 }
@@ -413,14 +457,15 @@ export async function resumePass() {
 /** Keep the finished pass, and drop the access code: from here on, nothing ties the pass to it. */
 async function keepPass(pass) {
   const rec = { state: "ready", pass };
-  await store.putPass(rec);
+  await wallet().put(rec);
   S.pass.value = rec;
 }
 
-/** A demo access code: in the simulation build, or from a local development server. */
+/** A demo access code: in the simulation build, or from a local development server. Release builds: nothing. */
 export async function demoAccessCode() {
+  if (!(typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) && !(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) return false;
   try {
-    if (SIM) return redeemAccessCode(sim.demoAccessCode());
+    if ((typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) return redeemAccessCode(sim.demoAccessCode());
     const r = await fetch("/dev/access-code", { method: "POST" });
     if (!r.ok) throw new Error("This server has no demo access codes.");
     return redeemAccessCode((await r.json()).code);
@@ -449,7 +494,7 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
     const parts = quorumParts(seed);
     const cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
     for (const p of Object.values(parts)) wipe(p.y);
-    showInterrupt({ progress: 0.2, message: "Opening a post-quantum channel to your vault…" });
+    showInterrupt({ progress: 0.2, message: "Connecting to your vault…" });
 
     const sess = await api.register({
       pub, commit, card: cardBody, soleBiometric, pass,
@@ -457,9 +502,9 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
       sign: async ({ register, device, th }) => {
-        showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to bind HumID to you." });
+        showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to lock HumID to you." });
         await waitForHold(gate);
-        enrolled = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: device, attest: th });
+        enrolled = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: device, attest: th });
         secret = enrolled.secret;
         showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
         return {
@@ -493,13 +538,13 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       S.enrollStep.value = "done";
     });
     api.htp.pinnedKid = srv.kid;
-    if (pass) { await store.clearPass(); S.pass.value = null; } // spent: nothing to keep
+    if (pass) { await wallet().clear(); S.pass.value = null; } // spent: nothing to keep
     await endInterrupt(true, "Your HumID is bound to this device.", 700);
   } catch (err) {
     if (enrolled) try { await gate.forget(enrolled.handle); } catch {}
     // The vault refused the pass itself: it's no use to keep, so ask for another code.
     if (["pass_spent", "pass_invalid", "pass_expired", "pass_required"].includes(err?.code)) {
-      await store.clearPass();
+      await wallet().clear();
       batch(() => { S.pass.value = null; S.enrollStep.value = "access"; });
     }
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
@@ -516,7 +561,7 @@ export function finishEnroll() { S.cardCode.value = null; S.view.value = "app"; 
 /* ---------------- recovery card: show, save, copy ---------------- */
 
 const cardText = (code) => [
-  "HumID seal card", "",
+  "HumID recovery card", "",
   code, "",
   "One of the two proofs that bring your HumID back on a new phone if you lose all your devices.",
   "On its own it opens nothing: recovery also needs your witnesses or your ID, then waits and alerts your devices.",
@@ -526,7 +571,7 @@ const cardText = (code) => [
 
 export async function saveCard(code) {
   markPicking();
-  try { await saveBytes(utf8(cardText(code)), "HumID seal card.txt", "text/plain"); toast("Saved your seal card."); }
+  try { await saveBytes(utf8(cardText(code)), "HumID recovery card.txt", "text/plain"); toast("Saved your recovery card."); }
   catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -536,38 +581,39 @@ export async function saveCard(code) {
 /* ---------------- unlock / lock ---------------- */
 
 /**
- * Unlock. gesture = "hold" or "taps" when the person unlocked with one of the duress
- * gestures (Security → Duress protection), null otherwise. Whether that gesture IS this
- * device's duress gesture is sealed on the device (2.0 review F1), so it's decided only
- * inside the live check: then a duress session opens exactly the same way, shows only
- * decoy documents, and the server silently locks sensitive changes (and erases the vault,
- * if Check-in is armed). Every unlock reports presence, so the two look the same on the wire.
- * decoy: reconnecting a session that was already a decoy.
+ * Unlock. `used` is what the Lock screen saw: false for a plain unlock, "hold" or "taps"
+ * when that gesture was made, or true for "the duress gesture, whichever it is" (a
+ * decoy session reconnecting). Which gesture means duress is sealed on the device
+ * (core/duress.js) and opens only inside the live check, so the decision decoy-or-real
+ * is made AFTER the check: the session opens exactly the same way, then shows only
+ * decoy documents while the server silently locks sensitive changes. Every unlock
+ * reports presence, so the two look the same on the wire, and nothing on disk says
+ * whether duress is set up or how it's triggered.
  *
  * With no connection, the same live check opens the offline copy instead (unlockOffline).
  */
-export async function unlock(gesture = null, { decoy = false } = {}) {
+export async function unlock(used = false) {
   const id = S.identity.value;
   if (!id?.server?.id) return toast("This identity is not registered with a vault server.", "error");
   const wasOffline = !!S.offline.value;
-  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(gesture, decoy);
+  if (!wasOffline && !S.online.value && S.offlineReady.value) return unlockOffline(used);
+  let duress = false;
   try {
-    showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
+    showInterrupt({ purpose: "launch", label: "Unlock HumID", state: "scanning", progress: 0.04, needsHold: false, message: "Connecting to your vault…" });
     const sess = await api.login({
       id: id.server.id,
       device: id.device?.id || "dev_" + "0".repeat(24),
       // The secure chip signs the server's sign-in challenge during the live check.
       sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         sessionKeys(Suite, seed);
+        duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: duressUnreadable });
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
-    const duress = decoy || await isDuress(gesture);
     await reportPresence(duress);
-    if (!duress) await keepDuressSealed();
     // online from here on (also when reconnecting from the offline copy), so Check-in can be asked
-    batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; S.duressSetting.value = duress ? CALM_DURESS : duressCfg; });
+    batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
     if (!S.server.value) await connectServer(); // its policy says whether it offers Check-in
     await loadCheckin(); // before anything is saved on this device: while Check-in is armed, nothing is
     offline = duress || checkinArmed() ? null : await readOffline();
@@ -586,68 +632,15 @@ export async function unlock(gesture = null, { decoy = false } = {}) {
       else if (!S.interrupt.value && !cancelled(e)) toast("Still can't reach your vault server.", "warn");
       return;
     }
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
-    batch(() => { S.session.value = null; S.decoy.value = false; S.duressSetting.value = null; S.checkin.value = null; });
+    clearKeys();
+    batch(() => { S.session.value = null; S.decoy.value = false; S.checkin.value = null; });
     if (wasOffline) lock();
     if (issue) S.lockIssue.value = e.code;
     // No connection: open the offline copy with a live check of its own.
-    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(gesture, decoy); }
+    if (!issue && unreachable(e) && S.offlineReady.value) { S.interrupt.value = null; return unlockOffline(used); }
     if (S.interrupt.value && S.interrupt.value.state !== "failed") await endInterrupt(false, friendly(e), 1600);
     else if (!S.interrupt.value && !cancelled(e) && !issue) toast(friendly(e), "error"); // an issue has its own screen
   }
-}
-
-/* ---------------- this device's duress setting (sealed: 2.0 review F1) ---------------- */
-// Which gesture means duress, and whether there is one, is sealed under the offline key,
-// which only a live check derives. A forensic copy of the phone, a backup or a rooted
-// phone shows a sealed record of the same size whatever it says, so a coercer can't learn
-// the gesture to avoid it. The lock screen watches for both gestures every time.
-
-let duressCfg = null; // { enabled, gesture } while unlocked; null while locked
-const CALM_DURESS = { enabled: false, gesture: "hold" }; // what a duress session shows
-
-async function openDuressSetting() {
-  const id = S.identity.value;
-  if (id?.duressSealed) {
-    try {
-      const d = offlineKey ? await suite(id.suite).openOffline(offlineKey, fromB64(id.duressSealed)) : null;
-      if (d?.kind === "duress") return { enabled: d.enabled === 1, gesture: d.gesture === "taps" ? "taps" : "hold" };
-    } catch {}
-    return { ...CALM_DURESS, unreadable: true };
-  }
-  // before apps 1.14 it was kept in the clear; keepDuressSealed seals it at this unlock
-  return { enabled: !!id?.duress?.enabled, gesture: id?.duress?.gesture === "taps" ? "taps" : "hold" };
-}
-
-/**
- * Did the person just use this device's duress gesture? Needs the session's keys (call after
- * the live check). If the sealed setting can't be read, a duress gesture counts as duress:
- * for a coercion feature, failing toward the decoy is the safe direction.
- */
-async function isDuress(gesture) {
-  duressCfg = await openDuressSetting();
-  if (duressCfg.unreadable) { const unreadable = !!gesture; duressCfg = { ...CALM_DURESS }; return unreadable; }
-  return !!gesture && duressCfg.enabled && duressCfg.gesture === gesture;
-}
-
-async function sealDuressSetting(cfg) {
-  const id = S.identity.value;
-  const Suite = suite(id.suite);
-  if (!offlineKey || !Suite.sealOffline) throw new Error("Lock HumID and unlock it again, then try this.");
-  // { enabled: 0|1, gesture: "hold"|"taps" }: the same length whatever it says
-  const blob = await Suite.sealOffline(offlineKey, { kind: "duress", enabled: cfg.enabled ? 1 : 0, gesture: cfg.gesture === "taps" ? "taps" : "hold" });
-  const record = { ...id, duressSealed: toB64(blob) };
-  delete record.duress;
-  delete record.schema;
-  await store.putIdentity(record);
-  S.identity.value = { ...record, schema: id.schema ?? 4 };
-}
-
-/** Every identity carries a sealed setting, on or off, so having one says nothing. An older one in the clear is sealed now. */
-async function keepDuressSealed() {
-  const id = S.identity.value;
-  if (id?.duressSealed && !id.duress) return;
-  try { await sealDuressSetting(duressCfg || CALM_DURESS); } catch { /* next unlock */ }
 }
 
 /**
@@ -677,9 +670,14 @@ const unreachable = (e) => e instanceof TypeError || e?.code === "server_unreach
 // duress session, and it's deleted when the server says this device was removed.
 
 function sessionKeys(Suite, seed) {
-  wipe(indexKey, offlineKey);
+  wipe(indexKey, offlineKey, settingsKey);
   indexKey = Suite.indexKey(seed);
   offlineKey = Suite.offlineKey ? Suite.offlineKey(seed) : null;
+  settingsKey = Suite.settingsKey ? Suite.settingsKey(seed) : null;
+}
+function clearKeys() {
+  wipe(indexKey, offlineKey, settingsKey);
+  indexKey = null; offlineKey = null; settingsKey = null; duressSetting = null; duressUnreadable = false;
 }
 
 /** The offline copy for this account, opened with the session's key; null if there's none (or it doesn't open). */
@@ -711,36 +709,35 @@ function keepOffline(patch) {
 }
 
 /** Read-only, from the copy on this device, after a live check on this device. */
-async function unlockOffline(gesture = null, decoy = false) {
+async function unlockOffline(used) {
+  let duress = false;
   try {
     await withKeys("launch", "Unlock HumID (offline)", async ({ seed, Suite }) => {
       showInterrupt({ progress: 0.7, message: "No connection to your vault. Opening the copy saved on this device…" });
       sessionKeys(Suite, seed);
+      duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: duressUnreadable });
     });
-    const duress = decoy || await isDuress(gesture);
     const copy = await readOffline();
     if (!copy) {
-      wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
+      clearKeys();
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
-    if (!duress) await keepDuressSealed();
     offline = copy;
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
-      S.duressSetting.value = duress ? CALM_DURESS : duressCfg;
       S.offline.value = { savedAt: copy.savedAt };
       S.view.value = "app";
     });
     refresh();
     loadAlerts();
   } catch (e) {
-    wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; duressCfg = null;
+    clearKeys();
     if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
   }
 }
 
-/** Back online: one live check signs in and replaces the offline copy with the vault. */
-export function reconnect() { return unlock(null, { decoy: S.decoy.value }); }
+/** Back online: one live check signs in and replaces the offline copy with the vault. A decoy session stays a decoy session. */
+export function reconnect() { return unlock(S.decoy.value); }
 
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
 function needVault() {
@@ -750,7 +747,7 @@ function needVault() {
 /** After reconnecting, load what the open tab shows from the vault instead of the copy. */
 function reloadTab() {
   if (S.tab.value === "activity") loadLedger();
-  if (S.tab.value === "security") { loadRecovery(); loadDuress(); }
+  if (S.tab.value === "you") { loadRecovery(); loadDuress(); }
   loadDevices();
   if (S.tab.value === "vault" && !S.decoy.value) loadRecovery();
 }
@@ -764,12 +761,12 @@ async function reportPresence(duress) {
 export function lock(reason) {
   if (S.view.value !== "app") return;
   if (!S.offline.value) api.logout();
-  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null; duressCfg = null;
+  clearKeys(); offline = null;
+  knownNames.clear();
   clearTimeout(idleTimer);
   clearTimeout(checkinTimer);
   batch(() => {
     S.view.value = "locked";
-    S.duressSetting.value = null;
     S.checkin.value = null;
     S.session.value = null;
     S.items.value = [];
@@ -792,8 +789,8 @@ export function lock(reason) {
 /* ---------------- vault ---------------- */
 
 async function decodeIndex(raw) {
-  try { return await suite().openIndex(indexKey, fromB64u(raw)); }
-  catch { return { name: "Unreadable item", type: "", category: "other" }; }
+  try { return classify(await suite().openIndex(indexKey, fromB64u(raw))); }
+  catch { return classify({ name: "Unreadable item", type: "" }); }
 }
 const fromB64u = (s) => fromB64(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
 
@@ -805,11 +802,12 @@ export async function refresh() {
     keepOffline({ items, usage });
     const decoded = await Promise.all(items.map(async (it) => {
       const meta = await decodeIndex(it.index);
-      knownNames.set(it.id, meta.name);
       return { ...it, ...meta, id: it.id, size: meta.size ?? it.size, envelopeSize: it.size };
     }));
-    // A decoy session shows only the documents marked for it, and their usage.
+    // A decoy session shows only the documents marked for it, and their usage; only
+    // their names are kept in memory (for Activity), never the others'.
     const shown = S.decoy.value ? decoded.filter((i) => i.decoy) : decoded;
+    for (const i of shown) knownNames.set(i.id, i.name);
     const u = S.decoy.value ? { ...usage, bytes: shown.reduce((n, i) => n + (i.envelopeSize || 0), 0), count: shown.length } : usage;
     batch(() => { S.items.value = shown; S.usage.value = u; });
   } catch (e) {
@@ -817,10 +815,12 @@ export async function refresh() {
   } finally { S.loading.value = false; }
 }
 
-export async function addDocument({ file, name, category, place = null }) {
-  if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. This POC seals files up to 50 MB.`, "warn"); return false; }
+/** Seal a photo or a file. `tags`: what it's about (core/categories.js), chosen on the review screen. */
+export async function addDocument({ file, name, tags = [], place = null }) {
+  if (file.size > MAX_FILE) { toast(`${file.name} is over 50 MB. HumID seals files up to 50 MB.`, "warn"); return false; }
   const bytes = await readFile(file);
-  return sealAndStore({ bytes, type: file.type || "application/octet-stream", name: (name || file.name || "Document").trim().slice(0, 120), category, place });
+  const type = file.type || "application/octet-stream";
+  return sealAndStore({ bytes, type, name: (name || file.name || "Document").trim().slice(0, 120), kind: kindFromType(type, file.name), tags, place });
 }
 
 /**
@@ -828,20 +828,20 @@ export async function addDocument({ file, name, category, place = null }) {
  * with its photos, and a summary (kind, issuer, expiry) inside the encrypted index
  * so the list can show when it expires without opening it.
  */
-export async function addIdRecord(record, name, place = null) {
+export async function addIdRecord(record, name, place = null, { tags = ["identity"] } = {}) {
   const bytes = encodeRecord(record);
   if (bytes.length > MAX_FILE) { toast("Those photos are too large to seal. Retake them and try again.", "warn"); return false; }
-  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), category: "identity", extra: { idInfo: idSummary(record) }, place });
+  return sealAndStore({ bytes, type: ID_TYPE, name: (name || "ID").trim().slice(0, 120), kind: "id", tags, extra: { idInfo: idSummary(record) }, place });
 }
 
 /**
  * Seal a payment card record (@humid/cards) into the vault. The encrypted index
  * carries only network, last four digits, expiry and nickname, never the number.
  */
-export async function addCardRecord(record, name) {
+export async function addCardRecord(record, name, { tags = ["money"], place = null } = {}) {
   let bytes;
   try { bytes = encodeCard(record); } catch (e) { toast(e.message, "warn"); return false; }
-  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), category: "money", extra: { cardInfo: cardSummary(record) } });
+  return sealAndStore({ bytes, type: CARD_TYPE, name: (name || "Card").trim().slice(0, 120), kind: "card", tags, extra: { cardInfo: cardSummary(record) }, place });
 }
 
 /** Tap a contactless card (Android NFC, or a USB reader on a computer): number and expiry. No payment is made. */
@@ -878,7 +878,7 @@ export async function readCardPhoto(canvas, { side = "front", pan = null } = {})
  * Apple's roots, pinned (@humid/wallet). A development build also trusts test roots a
  * browser check puts in globalThis.__humidExtraPassRoots; a release build never does.
  */
-const passRoots = () => (DEMO_BUILD && Array.isArray(globalThis.__humidExtraPassRoots)
+const passRoots = () => ((typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && Array.isArray(globalThis.__humidExtraPassRoots)
   ? [...APPLE_ROOTS, ...globalThis.__humidExtraPassRoots.map((d, i) => ({ name: `Test root ${i + 1}`, der: fromB64(d) }))]
   : APPLE_ROOTS);
 
@@ -897,9 +897,9 @@ export async function checkPass(file) {
 }
 
 /** Seal a checked pass: exactly the bytes that were checked (the signed original, so it can go back into Wallet), with its summary in the encrypted index. */
-export async function addPass({ checked, name, place = null }) {
+export async function addPass({ checked, name, tags = [], place = null }) {
   const { result, bytes } = checked;
-  return sealAndStore({ bytes: Uint8Array.from(bytes), type: PASS_TYPE, name: (name || result.pass.description || "Pass").trim().slice(0, 120), category: "passes", extra: { passInfo: passIndex(result.pass, result.issuer) }, place });
+  return sealAndStore({ bytes: Uint8Array.from(bytes), type: PASS_TYPE, name: (name || result.pass.description || "Pass").trim().slice(0, 120), kind: "pass", tags, extra: { passInfo: passIndex(result.pass, result.issuer) }, place });
 }
 
 /**
@@ -907,7 +907,7 @@ export async function addPass({ checked, name, place = null }) {
  * place: a location watch (core/place.js) when the person chose to stamp where it was
  * sealed; the freshest fix at this moment goes into the encrypted index, beside the name.
  */
-async function sealAndStore({ bytes, type, name: finalName, category, extra = {}, place = null }) {
+async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], extra = {}, place = null }) {
   const id = S.identity.value;
   if (S.offline.value) { toast(friendly({ code: "offline" }), "warn"); return false; }
   S.sheet.value = { ...S.sheet.value, stage: "seal" };
@@ -937,7 +937,7 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
     wipe(bytes); bytes = null;
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
-      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, category, addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
+      const idx = await Suite.sealIndex(indexKey, { name: finalName, type, size, kind, ...(tags.length ? { tags } : {}), addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sheet.value = { ...S.sheet.value, stage: "upload" };
@@ -957,12 +957,19 @@ async function sealAndStore({ bytes, type, name: finalName, category, extra = {}
   }
 }
 
-/** Download, verify, decrypt — all under one live check. Returns { bytes, meta }. */
+/**
+ * Download, verify, decrypt — all under one live check. Returns { bytes, meta }.
+ * The download can't come before the check: GET /vault/objects/:id IS the step-up
+ * request, and the server releases the envelope (and, for a split document, its key)
+ * only on the proof the liveness key signs during the check. Every request has a
+ * 45 s timeout (@humid/htp), so a server that stops answering ends the check instead
+ * of holding the keys in memory.
+ */
 async function fetchPlain(item, purpose, label) {
   return withStepUp("download", [item.id], purpose, label, async ({ keys, proof, Suite }) => {
-    showInterrupt({ progress: 0.65, message: "Fetching sealed copy over HTP/1…" });
+    showInterrupt({ progress: 0.65, message: "Fetching the sealed copy from your vault…" });
     const { envelope, share } = await api.downloadWithShare(item.id, proof);
-    showInterrupt({ progress: 0.85, message: share ? "Verifying, then opening with both keys…" : "Verifying ML-DSA-87 signature and decrypting…" });
+    showInterrupt({ progress: 0.85, message: share ? "Checking, then opening with both keys…" : "Checking it's untouched, then opening…" });
     const out = await Suite.open(envelope, keys);
     if (!isSplit(out.meta)) { wipe(share); return out; }
     try { return await splitUnwrap(out.bytes, share); }
@@ -1012,7 +1019,7 @@ export async function saveCopy(item) {
       await saveBytes(bytes, meta.name, meta.type);
       wipe(bytes);
     }
-    toast("Saved a decrypted copy to your device.");
+    toast("Saved a copy to this device. It isn't sealed: keep it safe.");
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
@@ -1021,12 +1028,18 @@ export async function exportSealed(item) {
     needVault();
     const env = await withStepUp("download", [item.id], "export", `Export sealed ${item.name}`, async ({ proof }) => api.download(item.id, proof));
     await saveBytes(env, `${item.name}${EXTENSION}`, MEDIA_TYPE);
-    toast("Exported the sealed envelope. It stays encrypted.");
+    toast("Exported. The copy stays sealed: only your HumID can open it.");
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
+/**
+ * An item's index entry, to re-seal with a change. The kind and tags go in as the app
+ * now knows them: an item sealed before 2.0 (no kind, a category) gets its inferred kind
+ * written back here, on its next rename or pin, and never through a bulk re-upload.
+ */
 const indexEntry = (item, patch = {}) => ({
-  name: item.name, type: item.type, size: item.size, category: item.category, addedAt: item.addedAt, plainHash: item.plainHash,
+  name: item.name, type: item.type, size: item.size, kind: inferKind(item), addedAt: item.addedAt, plainHash: item.plainHash,
+  ...(item.tags?.length ? { tags: item.tags } : {}),
   ...(item.decoy ? { decoy: true } : {}), ...(item.pinned ? { pinned: true } : {}), ...(item.idInfo ? { idInfo: item.idInfo } : {}),
   ...(item.split ? { split: true } : {}), ...(item.place ? { place: item.place } : {}),
   ...(item.cardInfo ? { cardInfo: item.cardInfo } : {}), ...(item.passInfo ? { passInfo: item.passInfo } : {}), ...patch,
@@ -1063,10 +1076,13 @@ export async function setDecoy(item, on) {
   } catch (e) { toast(friendly(e), "error"); }
 }
 
-export async function renameItem(item, name, category) {
+/** Rename an item and set its tags (an array of tag ids; an empty one clears them). */
+export async function renameItem(item, name, tags = item.tags || []) {
   try {
     needVault();
-    const idx = await suite().sealIndex(indexKey, indexEntry(item, { name: name.trim().slice(0, 120) || item.name, category }));
+    const entry = indexEntry(item, { name: name.trim().slice(0, 120) || item.name });
+    if (tags.length) entry.tags = tags; else delete entry.tags;
+    const idx = await suite().sealIndex(indexKey, entry);
     await api.rename(item.id, idx);
     await refresh();
     S.sheet.value = null;
@@ -1212,13 +1228,14 @@ export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
   try {
-    await withStepUp("setCard", [], "card", "Make a seal card", async ({ seed, proof }) => {
+    await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();
       const part = partOf(seed, "card");
       try { await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
       finally { wipe(part.y); }
     });
-    S.sheet.value = { type: "card", code: card.code };
+    // "recoveryCard", not "card": the vault's "card" sheet is the payment-card form.
+    S.sheet.value = { type: "recoveryCard", code: card.code };
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
   finally { wipe(card?.secret); }
@@ -1226,9 +1243,9 @@ export async function makeNewCard() {
 
 export async function removeCard() {
   try {
-    await withStepUp("removeCard", [], "card", "Remove seal card", async ({ proof }) => api.removeCard(proof));
+    await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => api.removeCard(proof));
     S.sheet.value = null;
-    toast("Seal card removed. The old card no longer works.");
+    toast("Recovery card removed. The old card no longer works.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
@@ -1247,7 +1264,7 @@ export async function findContact(code) {
 export async function saveContacts(contacts, ownerName) {
   const id = S.identity.value;
   const n = contacts.length;
-  if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} recovery contacts.`, "warn");
+  if (n < MIN_CONTACTS || n > MAX_CONTACTS) return toast(`Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} witnesses.`, "warn");
   const t = thresholdFor(n);
   try {
     await withStepUp("setContacts", [], "contacts", "Save your witnesses", async ({ keys, seed, rec, proof, Suite }) => {
@@ -1377,12 +1394,12 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
   if (!gate) return;
   const Suite = suite();
   busy = true;
-  showInterrupt({ purpose: "enroll", label: "Bind this device", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
+  showInterrupt({ purpose: "enroll", label: "Lock this device to you", state: "scanning", progress: 0.06, needsHold: !!gate.needsHold,
     message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor. Your HumID will open only for you on this device." });
   let secret, dseed, x, both, dkeys;
   try {
     await waitForHold(gate);
-    const e = await gate.enroll({ prompt: "Bind HumID to your face or fingerprint", challenge: localChallenge("bind") });
+    const e = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: localChallenge("bind") });
     secret = e.secret;
     showInterrupt({ needsHold: false, progress: 0.4, message: "Generating this device's keys…" });
     dseed = random(SEED);
@@ -1465,7 +1482,7 @@ async function finishJoin(st) {
   const Suite = suite(id.suite);
   const account = st.account;
   busy = true;
-  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Opening a post-quantum channel to your vault…" });
+  showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Connecting to your vault…" });
   let secret, both, seed, keys, dkeys, xkeys, released;
   const pieces = [];
   try {
@@ -1523,6 +1540,7 @@ async function finishJoin(st) {
     const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
     wipe(rewrapped);
     const pub = Suite.publicOf(keys);
+    // pending (the link or recovery code, the request id) is spent here and dropped from the record.
     const record = {
       ...id, wrapped, pending: null,
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
@@ -1545,7 +1563,7 @@ async function finishJoin(st) {
     await endInterrupt(true, "Welcome back. This device is part of your HumID.", 900);
     refresh();
     loadAlerts();
-    if (p.method !== "link") toast("Recovered. Check your proofs in Security, and make a new seal card if you used it.", "warn");
+    if (p.method !== "link") toast("Recovered. Check your proofs under You, and make a new recovery card if you used it.", "warn");
   } catch (err) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 2200);
     if (!cancelled(err)) S.joinStatus.value = { ...st, status: "error", message: friendly(err) };
@@ -1562,21 +1580,21 @@ export async function addCardToJoin(cardInput) {
   const id = S.identity.value;
   const p = id?.pending;
   if (p?.method !== "quorum") return false;
-  if (p.hasCard) { toast("Your seal card is already part of this recovery.", "warn"); return false; }
+  if (p.hasCard) { toast("Your recovery card is already part of this recovery.", "warn"); return false; }
   let cardSecret;
   try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return false; }
   const gate = gateAdapter(id.gate.adapter);
   const Suite = suite(id.suite);
   busy = true;
-  showInterrupt({ purpose: "card", label: "Add your seal card", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  showInterrupt({ purpose: "card", label: "Add your recovery card", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
   let secret, both, next;
   try {
     await waitForHold(gate);
-    const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your seal card", challenge: localChallenge("card") });
+    const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your recovery card", challenge: localChallenge("card") });
     secret = rel.secret;
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     next = concat(both.subarray(0, 2 * SEED), cardSecret);
-    showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your seal card…" });
+    showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your recovery card…" });
     const r = await api.recoveryAddCard(p.requestId, cardTag(cardSecret));
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
     const record = { ...id, wrapped, pending: { ...p, hasCard: true, account: r.account } };
@@ -1584,7 +1602,7 @@ export async function addCardToJoin(cardInput) {
     await store.putIdentity(record);
     S.identity.value = { ...record, schema: 4 };
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
-    await endInterrupt(true, "Seal card added.", 600);
+    await endInterrupt(true, "Recovery card added.", 600);
     pollJoin();
     return true;
   } catch (e) {
@@ -1668,7 +1686,8 @@ export async function eraseEverything() {
   try { await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
   await store.clearIdentity();
   await store.clearVault();
-  wipe(indexKey, offlineKey); indexKey = null; offlineKey = null; offline = null; S.offlineReady.value = false;
+  clearKeys(); offline = null; S.offlineReady.value = false;
+  knownNames.clear();
   batch(() => {
     S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null;
     S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
@@ -1734,7 +1753,7 @@ export async function readChipFiles(files) {
 
 /** Development builds only: a demo passport from the local dev server, with a chip that answers challenges. */
 export async function demoPassport(name = "Demo Person") {
-  if (!DEMO_BUILD) return null;
+  if (!(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) return null;
   try {
     const res = await fetch(`${SERVER_URL}/dev/passport?name=${encodeURIComponent(name)}`, { method: "POST" });
     if (!res.ok) throw new Error("This server has no demo passports.");
@@ -1752,14 +1771,14 @@ export async function demoPassport(name = "Demo Person") {
 /** Bind your passport or ID to your HumID: the anchor part, stored under the chip's identity. */
 export async function setAnchor(chip) {
   try {
-    const r = await withStepUp("setAnchor", [], "anchor", "Anchor your HumID to your ID", async ({ seed, proof }) => {
+    const r = await withStepUp("setAnchor", [], "anchor", "Link your HumID to your ID chip", async ({ seed, proof }) => {
       showInterrupt({ progress: 0.6, message: "Checking your ID chip's signature with its issuing country…" });
       const part = partOf(seed, "anchor");
       try { return await api.setAnchor({ chip, part: encodeQuorumPart(part) }, proof); }
       finally { wipe(part.y); }
     });
     S.sheet.value = null;
-    toast(`Anchored to your ${r.document}${r.country ? ` (${r.country})` : ""}.`);
+    toast(`Linked to your ${r.document}'s chip${r.country ? ` (${r.country})` : ""}.`);
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -1767,33 +1786,62 @@ export async function setAnchor(chip) {
 
 export async function removeAnchor() {
   try {
-    await withStepUp("removeAnchor", [], "anchor", "Remove your ID anchor", async ({ proof }) => api.removeAnchor(proof));
+    await withStepUp("removeAnchor", [], "anchor", "Unlink your ID chip", async ({ proof }) => api.removeAnchor(proof));
     S.sheet.value = null;
-    toast("ID anchor removed.");
+    toast("ID chip unlinked.");
     loadRecovery();
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); }
 }
 
 /* ---------------- duress ---------------- */
-// The duress setting itself lives on this device (which gesture you use). What it
-// changes lives on the server (lockdown, slower recoveries, witness alerts).
+// The duress setting itself lives on this device (which gesture you use), sealed under
+// a key from the account seed (core/duress.js): nothing on disk says whether it's on
+// or which gesture it is. What it changes lives on the server (lockdown, slower
+// recoveries, witness alerts). Screens read the opened setting from
+// S.duressInfo.value.setting, never from the identity record.
+
+/** Inside a live check: the setting this device sealed, re-sealing one an older release left in the clear. */
+async function loadDuressSetting(Suite) {
+  const id = S.identity.value;
+  const { setting, record, unreadable } = await openDuress(Suite, settingsKey, id);
+  duressUnreadable = !!unreadable;
+  if (record) {
+    try {
+      delete record.schema;
+      await store.putIdentity(record);
+      S.identity.value = { ...record, schema: id.schema ?? 4 };
+    } catch { /* next unlock tries again */ }
+  }
+  duressSetting = setting;
+  return setting;
+}
+
+let duressUnreadable = false; // the sealed setting didn't open at the last unlock (see core/duress.js)
+
+/** The setting as the session opened it ({ enabled, gesture }); "off" in a decoy session or before unlock. */
+const currentDuress = () => (S.decoy.value || !duressSetting ? { ...DURESS_OFF } : { ...duressSetting });
 
 export async function saveDuress({ enabled, gesture }) {
+  const id = S.identity.value;
   if (S.decoy.value) { S.sheet.value = null; return toast("Saved."); }
   try {
-    await sealDuressSetting({ enabled, gesture });
-    duressCfg = { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" };
-    S.duressSetting.value = duressCfg;
-    toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
-  } catch (e) { toast(friendly(e), "error"); }
+    const record = await sealDuress(suite(id.suite), settingsKey, id, { enabled, gesture });
+    delete record.schema;
+    await store.putIdentity(record);
+    duressSetting = { enabled: !!enabled, gesture: gesture === "taps" ? "taps" : "hold" };
+    S.identity.value = { ...record, schema: id.schema ?? 4 };
+    S.duressInfo.value = { ...(S.duressInfo.value || {}), setting: currentDuress() };
+  } catch (e) { return toast(friendly(e), "error"); }
+  toast(enabled ? "Duress protection is on. Practise the gesture once so it's natural." : "Duress protection is off.");
 }
 
 export async function loadDuress() {
-  if (S.decoy.value) { S.duressInfo.value = { lockdown: false }; return; }
-  if (S.offline.value) { S.duressInfo.value = offline?.duress || { lockdown: false }; return; }
+  if (S.decoy.value) { S.duressInfo.value = { lockdown: false, setting: currentDuress() }; return; }
+  if (S.offline.value) { S.duressInfo.value = { ...(offline?.duress || { lockdown: false }), setting: currentDuress() }; return; }
   const [st, settings] = await Promise.all([api.duressStatus().catch(() => null), api.settings().catch(() => null)]);
-  S.duressInfo.value = { ...(st || {}), alert: !!settings?.duressAlert };
-  if (st && settings) keepOffline({ duress: S.duressInfo.value });
+  const info = { ...(st || {}), alert: !!settings?.duressAlert };
+  S.duressInfo.value = { ...info, setting: currentDuress() };
+  if (st && settings) keepOffline({ duress: info });
 }
 
 export async function setWitnessAlert(on) {
@@ -1962,7 +2010,7 @@ export async function stationVerify(code, chip, checks) {
 
 /** How the server is doing, for its administrators; null for everyone else (asked quietly). */
 export async function loadAdminSummary() {
-  if (S.offline.value || S.decoy.value || SIM) { S.adminSummary.value = null; return; }
+  if (S.offline.value || S.decoy.value || (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) { S.adminSummary.value = null; return; }
   try { S.adminSummary.value = await api.adminSummary(); } catch { S.adminSummary.value = null; }
 }
 
@@ -2052,7 +2100,9 @@ export async function readChipInto(record, access, { portrait } = {}) {
   try { mrz = readDg1(r.dg1).mrz; } catch { /* shown as unread below */ }
   const integrity = (() => { try { return checkIntegrity(r.sod, { 1: r.dg1, ...(r.dg2 ? { 2: r.dg2 } : {}), ...(r.dg15 ? { 15: r.dg15 } : {}) }); } catch { return null; } })();
   applyChip(record, r, { mrz, integrity, b64 });
-  if (r.dg2 && portrait) {
+  // A photo whose hash doesn't match the chip's own signed list isn't decoded or shown:
+  // the decoder would be parsing bytes no one vouches for.
+  if (r.dg2 && portrait && integrity?.ok !== false) {
     try { setImage(record, "portrait", await portrait(readDg2(r.dg2))); }
     catch { toast("Read the chip, but its photo is in a format HumID can't show yet. It's kept with the record.", "warn"); }
   }

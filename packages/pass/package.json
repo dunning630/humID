@@ -1,12 +1,13 @@
 {
   "name": "@humid/pass",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Anonymous access passes: blind signatures (RFC 9474, RSABSSA-SHA384-PSS-Randomized) and access codes, so paying for HumID never identifies the account.",
   "type": "module",
   "exports": {
     ".": "./src/index.js",
     "./issuer": "./src/issuer.js",
-    "./jwk": "./src/jwk.js"
+    "./jwk": "./src/jwk.js",
+    "./atrest": "./src/atrest.js"
   },
   "humid": {
     "provides": {

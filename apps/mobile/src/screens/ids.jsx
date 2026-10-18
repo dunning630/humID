@@ -1,11 +1,13 @@
 // Identity documents: scan a driver's license, passport or ID card with the
 // camera (and its chip, where there is one), check the details, and seal one
-// record into the vault. Also the camera itself (DocCamera), which finds the
-// document anywhere in view, straightens it and turns it upright; "Take a photo"
-// uses it for any document. And the card view for a sealed ID.
+// record into the vault (IdFlow, a step inside the Add screen). Also the camera
+// itself (DocCamera), which finds the document anywhere in view, straightens it
+// and turns it upright; the Add screen opens it first for anything. And the card
+// view for a sealed ID.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
-import { Sheet, Steps, ChipAccess, usePlaceStamp } from "../ui.jsx";
+import { ChipAccess } from "../ui.jsx";
+import { Review, Push } from "./review.jsx";
 import * as S from "../core/state.js";
 import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy, buzz as buzzPref } from "../core/controller.js";
 import {
@@ -37,7 +39,7 @@ function cameraError(e) {
  * the MRZ's check digits settle which way is right. Returns { barcode, mrz, consensus,
  * flipped } (flipped: the MRZ read only with the photo turned 180°).
  */
-async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) {
+export async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) {
   const out = { barcode: null, mrz: null, consensus: false, flipped: false };
   if (read.barcode) {
     try {
@@ -113,7 +115,7 @@ function barcodeCrop(src, spot, W, H) {
  * one that turned out not to be a license's, or one that won't read) are passed over
  * for the next one in view. { box (in src's pixels), upright } or null.
  */
-function findBarcode(src, W, H, skip = []) {
+export function findBarcode(src, W, H, skip = []) {
   const im = grayOf(src, 400), k = W / im.w;
   const free = (b) => !skip.some((x) => overlap(b, x) > 0.5);
   const spot = locateBarcodes(im).map((c) => ({ box: fromArea(c.box, { x: 0, y: 0 }, k), upright: c.upright })).find((c) => free(c.box));
@@ -196,7 +198,7 @@ const buzz = () => buzzPref(14);
  *           reason if it throws, so a photo is never silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
  */
-export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, title, hint, saved, onDone, onCancel, onSkip }) {
+export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, title, hint, saved, onDone, onCancel, onSkip, onLook, label, tools }) {
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
@@ -277,6 +279,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
           L.quad = t.quad ? scaleQuad(t.quad, k) : null;
           if (DEMO_BUILD) globalThis.__humidLook = { ...r, quad: L.quad }; // development builds: tests can see why it waits
           setLook({ ok: r.ok, found: !!t.quad, hint: r.hint, progress: track.progress, points: onScreen(v, L.quad) });
+          if (onLook) { try { onLook({ look: r, quad: L.quad, video: v }); } catch { /* a guess, never in the way */ } }
           if (!codes) {
             if (t.fire && !L.stop) { L.stop = true; shoot("auto"); return; }
           } else {
@@ -486,7 +489,14 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
           : bar?.note && status === (hint || "") ? bar.note
           : auto && look && status === (hint || "") && (!codes || look.found) ? look.hint : status}
       </div>
-      <footer class="dc-bottom">
+      {label && phase !== "reading" && phase !== "saved" && (
+        <div class="dc-label" role="status">
+          <span><Icon name={label.icon || "scan"} />{label.text}</span>
+          {label.action && <button class="linklike" type="button" onClick={label.action.onClick}>{label.action.text}</button>}
+        </div>
+      )}
+      <footer class="dc-bottom" data-tools={tools ? "1" : undefined}>
+        {tools && <div class="dc-tools">{tools}</div>}
         <button class="dc-side" disabled={phase === "reading" || phase === "saved"} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
         <button class="dc-shutter" aria-label="Take the photo" disabled={phase !== "live"} onClick={() => shoot()}><i /></button>
         {onSkip ? <button class="dc-side" onClick={skip}><Icon name="chevron" /><span>Skip</span></button> : <span class="dc-side" aria-hidden="true" />}
@@ -499,7 +509,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
 /* ---------------- the ID flow ---------------- */
 
 // What each kind of document asks the camera for, side by side.
-const PLAN = {
+export const PLAN = {
   passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Show the photo page, with the two lines of <<<. It finds the page by itself." }],
   driver_license: [
     { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
@@ -519,46 +529,82 @@ const PLAN = {
   ],
 };
 
-const CHOICES = [
+/** The ID kinds the picker offers. */
+export const ID_CHOICES = [
   { kind: "driver_license", icon: "idcard", title: "Driver's license", sub: "US or Canada. Reads the barcode on the back." },
   { kind: "passport", icon: "passport", title: "Passport", sub: "Reads the photo page, and the chip on phones with NFC." },
   { kind: "id_card", icon: "idcard", title: "ID card", sub: "A state ID, or a national ID card with a chip." },
   { kind: "other", icon: "file", title: "Another card", sub: "Insurance, membership, anything with two sides." },
 ];
 
-const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "MRZ", typed: "You" };
+const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "Scanned", typed: "You" };
 
-export function IdSheet() {
-  const st = S.sheet.value;
-  const rec = useRef(null);
+/**
+ * A record started from what the Add camera found: the side it photographed (with
+ * what it read), so the flow carries on from there. `found`: { kind, side, canvas,
+ * barcode, mrz, consensus }. The record's kind can still change (an MRZ names it).
+ */
+export async function recordFrom(found) {
+  const rc = newRecord(found.kind);
+  if (found.canvas) {
+    const img = await jpeg(found.canvas);
+    setImage(rc, found.side, img);
+  }
+  let note = null;
+  if (found.barcode) {
+    const a = parseAamva(found.barcode);
+    if (a) { applyAamva(rc, a); rc.raw.barcode = found.barcode; note = { tone: "ok", text: `Barcode read: ${[niceName(a.fields.given), niceName(a.fields.surname)].filter(Boolean).join(" ") || "details found"}.` }; }
+  }
+  if (found.mrz) {
+    applyMrz(rc, found.mrz, { consensus: found.consensus });
+    note = found.mrz.valid
+      ? { tone: "ok", text: `Details read${found.consensus ? "" : " (check them)"}: ${fullName(rc) || found.mrz.number}.` }
+      : { tone: "warn", text: "Read only part of the details. Check them, or retake the photo." };
+  }
+  return { rec: rc, note };
+}
+
+/**
+ * The ID flow, inside the Add screen: capture each side (the camera reads a barcode or
+ * MRZ as it goes), read the chip where there is one, check the details, seal.
+ *   start   { rec, note, step } — a record to carry on with (from the camera's find, or
+ *           a fresh newRecord(kind)); step: "capture" (default) or "chip"
+ *   onExit  the flow is left from its first step (Back): the caller shows what was before
+ */
+export function IdFlow({ start, onExit }) {
+  const rec = useRef(start.rec);
   const [, redraw] = useReducer((n) => n + 1, 0);
-  const [step, setStep] = useState("kind");      // kind | capture | chip | review
+  const [step, setStep] = useState(start.step === "auto" ? "capture" : start.step || "capture"); // capture | chip | review
   const [cam, setCam] = useState(null);         // the plan entry the camera is open for
   const [saved, setSaved] = useState(null);     // { text, img } the camera shows for the side just taken
-  const [note, setNote] = useState(null);       // { tone, text } about the last capture
+  const [note, setNote] = useState(start.note || null); // { tone, text } about the last capture
   const [nfc, setNfc] = useState(null);
   const [access, setAccess] = useState(null);
   const [name, setName] = useState("");
-  const busy = st.stage != null;
+  const [tags, setTags] = useState(["identity"]);
+  const fields = useRef(null);                  // { commit, missing } from IdFields
+  const busy = S.sheet.value?.stage != null;
 
-  useEffect(() => () => { releaseReaders(); }, []);
   const r = rec.current;
-  const plan = r ? PLAN[r.kind] || PLAN.other : [];
-  const done = r ? plan.filter((p) => r.images[p.side]) : [];
-  const next = r ? plan.find((p) => !r.images[p.side] && !r.skipped?.includes(p.side)) : null;
+  const plan = PLAN[r.kind] || PLAN.other;
+  const done = plan.filter((p) => r.images[p.side]);
+  const next = plan.find((p) => !r.images[p.side] && !r.skipped?.includes(p.side));
 
-  const close = () => { if (!busy) S.sheet.value = null; };
-  const choose = async (kind) => {
-    rec.current = newRecord(kind);
-    setStep("capture");
-    setCam(PLAN[kind][0]);
-    if (KINDS[kind].chip) chipReader().then(setNfc).catch(() => setNfc({ available: false }));
-  };
+  useEffect(() => {
+    if (KINDS[r.kind]?.chip || step === "chip") chipReader().then(setNfc).catch(() => setNfc({ available: false }));
+    if (start.step === "auto") {
+      // the Add camera already read one side: straight on to what's left, or past the capture
+      if (next) { setStep("capture"); setSaved({ text: done.length ? `${done[0].side === "back" ? "Back" : "Front"} saved. Now the ${next.side}.` : null, img: done[0] ? r.images[done[0].side] : null }); setCam(next); }
+      else afterCapture();
+    } else if (step === "capture" && next && !done.length && !start.note) setCam(next); // straight into the camera for the first side
+    return () => { releaseReaders(); };
+  }, []);
+  useEffect(() => { if (step === "review") setName((n) => n || recordTitle(rec.current)); }, [step]);
 
   /**
    * The camera took a photo. Keep it (if this throws, the camera stays open and says
    * why), then return what happens once the camera has shown its tick: straight on to
-   * the next side, or back to the sheet when everything's in or a read needs a look.
+   * the next side, or back to the screen when everything's in or a read needs a look.
    */
   async function captured(p, { canvas, barcode, mrz, consensus }) {
     const rc = rec.current;
@@ -575,8 +621,8 @@ export function IdSheet() {
     if (mrz) {
       applyMrz(rc, mrz, { consensus });
       n = mrz.valid
-        ? { tone: "ok", text: `Machine-readable lines read${consensus ? "" : " (check them)"}: ${fullName(rc) || mrz.number}.` }
-        : { tone: "warn", text: "Read part of the machine-readable lines. Check the details, or retake the photo." };
+        ? { tone: "ok", text: `Details read${consensus ? "" : " (check them)"}: ${fullName(rc) || mrz.number}.` }
+        : { tone: "warn", text: "Read only part of the details. Check them, or retake the photo." };
     }
     if (!n && (p.read.barcode || p.read.mrz)) n = { tone: "warn", text: p.read.barcode && !p.read.mrz ? "Couldn't read the barcode. Retake the back, or fill in the details yourself." : "Couldn't read the details from the photo. Retake it, or fill them in yourself." };
     if (!n) n = { tone: "ok", text: `${p.title} saved.` };
@@ -599,6 +645,15 @@ export function IdSheet() {
     setName(recordTitle(rc));
   }
 
+  const chipOffered = () => KINDS[r?.kind]?.chip && nfc && nfc.kind !== "none" && !r?.verified.chip;
+
+  /** One step back, keeping what's been captured: review → chip (if offered) or capture; chip → capture; capture → out. */
+  const stepBack = () => {
+    if (step === "review") { fields.current?.commit(); setStep(chipOffered() ? "chip" : "capture"); return; }
+    if (step === "chip") { if (start.step === "chip" && !done.length) onExit(); else setStep("capture"); return; }
+    onExit();
+  };
+
   function skipSide(p) {
     setCam(null);
     const rc = rec.current;
@@ -617,30 +672,15 @@ export function IdSheet() {
     }
   }
 
-  const head = (
-    <div class="s-head"><div class="grow"><div class="eyebrow">{r ? kindLabel(r.kind) : "New ID"}</div>
-      <h2 style={{ marginTop: 4 }}>{step === "kind" ? "Which document?" : step === "chip" ? "Read the chip" : step === "review" ? "Check the details" : "Scan it"}</h2></div>
-      {!busy && <button class="icon-btn" aria-label="Close" onClick={close}><Icon name="x" /></button>}</div>
-  );
+  const retake = (p) => { fields.current?.commit(); setCam(p); };
+  const toChip = () => { fields.current?.commit(); setStep("chip"); };
+  const seal = (place) => { fields.current?.commit(); addIdRecord(rec.current, name || recordTitle(rec.current), place, { tags }); };
+  const missing = step === "review" ? (fields.current?.missing?.() || []) : [];
 
   return (
     <>
-      <Sheet onClose={close} label="Add an ID">
-        {head}
-
-        {step === "kind" && (
-          <>
-            <p class="lede">HumID reads the details for you, you check them, and one sealed record goes into your vault with its photos.</p>
-            <div class="kinds">
-              {CHOICES.map((c) => (
-                <button class="kind" onClick={() => choose(c.kind)}><span class="ico"><Icon name={c.icon} /></span><span><strong>{c.title}</strong><span>{c.sub}</span></span><Icon name="chevron" /></button>
-              ))}
-            </div>
-            <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are encrypted here before anything is sent.</p>
-          </>
-        )}
-
-        {step === "capture" && r && (
+      <Push eyebrow={kindLabel(r.kind)} title={step === "chip" ? "Read the ID chip" : step === "review" ? "Check the details" : "Scan it"} onBack={stepBack} busy={busy} label="Add an ID">
+        {step === "capture" && (
           <>
             {note && <Note {...note} />}
             <Thumbs rec={r} plan={plan} onRetake={(p) => setCam(p)} />
@@ -653,28 +693,33 @@ export function IdSheet() {
           </>
         )}
 
-        {step === "chip" && r && (
+        {step === "chip" && (
           <>
             {note && <Note {...note} />}
             <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="nfc" /></span>
-              <div><strong>The chip has the verified details and photo</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
+              <div><strong>The ID chip has the verified details and photo</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
             {nfc && !nfc.available && <div class="banner warn" style={{ marginTop: 10 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Can't read chips right now</strong><span>{nfc.reason}</span></div></div>}
             <ChipAccess onChange={setAccess} initial={chipAccessFrom(r)} title="Details that open the chip" note="They only open the chip. What it holds is sealed with this record." />
             <div class="actions">
-              <button class="btn primary block" disabled={!access || !nfc?.available} onClick={readChipNow}><Icon name="nfc" />Read the chip</button>
+              <button class="btn primary block" disabled={!access || !nfc?.available} onClick={readChipNow}><Icon name="nfc" />Read the ID chip</button>
               {nfc && !nfc.available && <button class="btn quiet block" onClick={async () => setNfc(await chipReader({ fresh: true }))}>Check again</button>}
               <button class="btn ghost block" onClick={() => setStep("review")}>Skip, use the photo</button>
             </div>
           </>
         )}
 
-        {step === "review" && r && (
-          busy ? <Steps current={{ seal: 0, upload: 1, done: 2 }[st.stage]} steps={["Sealing on this device", "Sending over HTP/1", "Stored · signature verified by the vault"]} />
-            : <Review rec={r} name={name} setName={setName} note={note} plan={plan} onRetake={(p) => setCam(p)} onChange={redraw}
-              onChip={KINDS[r.kind]?.chip && nfc && nfc.kind !== "none" && !r.verified.chip ? () => setStep("chip") : null}
-              onSave={(place) => addIdRecord(r, name || recordTitle(r), place)} />
+        {step === "review" && (
+          <Review kind="id" name={name} setName={setName} tags={tags} setTags={setTags}
+            preview={<><IdProof rec={r} /><Thumbs rec={r} plan={plan} onRetake={retake} />{chipOffered() && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Read the ID chip for verified details</button>}</>}
+            note={note && <Note {...note} />}
+            fields={<IdFields rec={r} api={fields} onChange={redraw} />}
+            disabled={missing.length > 0}
+            error={missing.length > 0 ? `Add the ${missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.` : null}
+            onSeal={seal}
+            secondary={next ? { label: `Scan the ${next.side}`, onClick: () => retake(next) } : done.length ? { label: "Retake", onClick: () => retake(plan[0]) } : null}
+            fine={`One check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
         )}
-      </Sheet>
+      </Push>
       {cam && (
         <DocCamera key={cam.side + (r?.images[cam.side] ? "-again" : "")} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
           saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
@@ -687,7 +732,7 @@ export function IdSheet() {
 const chipAccessFrom = (r) => ({ number: r.fields.number || "", birth: r.fields.birth || "", expiry: r.fields.expiry || "" });
 
 function Note({ tone, text }) {
-  return <div class={`banner ${tone === "warn" ? "warn" : ""}`} style={{ marginTop: 4 }}><span class="b-ico"><Icon name={tone === "warn" ? "info" : "check"} /></span><div><span>{text}</span></div></div>;
+  return <div class={`banner ${tone === "warn" ? "warn" : ""}`} role="status" style={{ marginTop: 4 }}><span class="b-ico"><Icon name={tone === "warn" ? "info" : "check"} /></span><div><span>{text}</span></div></div>;
 }
 
 function Thumbs({ rec, plan, onRetake }) {
@@ -708,24 +753,29 @@ function Thumbs({ rec, plan, onRetake }) {
   );
 }
 
+function IdProof({ rec }) {
+  const p = provenance(rec);
+  return <div class={`id-proof lvl-${p.level}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} /><span>{p.text}</span></div>;
+}
+
 /* ---------------- check the details ---------------- */
 
-function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, onSave }) {
+/**
+ * The ID's own fields on the review. `api.current` gets { commit, missing }: typed
+ * changes go into the record before anything that leaves the form (sealing, a retake,
+ * the chip), so nothing typed is lost.
+ */
+function IdFields({ rec, api, onChange }) {
   const [vals, setVals] = useState(() => Object.fromEntries(fieldsFor(rec.kind).map((f) => [f.key, rec.fields[f.key] ?? ""])));
   const [addr, setAddr] = useState(() => rec.address || { street: "", street2: "", city: "", region: "", postalCode: "", country: rec.fields.issuer || "" });
   const [more, setMore] = useState(false);
-  const p = provenance(rec);
   const checks = rec.verified.mrz?.checks || {};
   const unsure = (k) => rec.source[k] === "mrz" && ((k === "number" && checks.number === false) || (k === "birth" && checks.birth === false) || (k === "expiry" && checks.expiry === false) || (k === "optional" && checks.optional === false));
   const set = (k) => (e) => setVals({ ...vals, [k]: e.currentTarget.type === "checkbox" ? e.currentTarget.checked : e.currentTarget.value });
   const fields = fieldsFor(rec.kind);
   const main = fields.filter((f) => !f.optional || vals[f.key] !== "" && vals[f.key] != null);
   const extra = fields.filter((f) => f.optional && (vals[f.key] === "" || vals[f.key] == null));
-  const missing = rec.kind === "other" ? [] : ["surname", "number"].filter((k) => !String(vals[k] || "").trim());
-  const place = usePlaceStamp();
-
-  // Typed changes go into the record before anything that leaves this form (sealing,
-  // a retake, the chip), so nothing typed is lost.
+  const missing = () => (rec.kind === "other" ? [] : ["surname", "number"].filter((k) => !String(vals[k] || "").trim()));
   const commit = () => {
     const typed = Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v]).filter(([k, v]) => (rec.fields[k] ?? "") !== (v ?? "")));
     applyTyped(rec, typed);
@@ -733,46 +783,27 @@ function Review({ rec, name, setName, note, plan, onRetake, onChange, onChip, on
     if (Object.values(a).some(Boolean) && JSON.stringify(a) !== JSON.stringify(rec.address || {})) { rec.address = a; rec.addressSource = "typed"; }
     onChange();
   };
-  const save = () => { commit(); onSave(place.take()); };
-  const retake = (side) => { commit(); onRetake(side); };
-  const toChip = onChip && (() => { commit(); onChip(); });
+  api.current = { commit, missing };
+  useEffect(() => { onChange(); }, [vals.surname, vals.number]); // the Seal button follows what's typed
 
   return (
-    <>
-      {note && <Note {...note} />}
-      <div class={`id-proof lvl-${p.level}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} /><span>{p.text}</span></div>
-      <Thumbs rec={rec} plan={plan} onRetake={retake} />
-      {toChip && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Read the chip for verified details</button>}
-
-      <div class="id-form">
-        {main.map((f) => <FieldInput f={f} value={vals[f.key]} onInput={set(f.key)} source={rec.source[f.key]} unsure={unsure(f.key)} />)}
-        {rec.kind !== "passport" && (rec.address || rec.kind === "driver_license" || rec.kind === "id_card") && (
-          <fieldset class="id-addr">
-            <legend>Address</legend>
-            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Street" placeholder="Street" value={addr.street} onInput={(e) => setAddr({ ...addr, street: e.currentTarget.value })} />
-            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Apartment, suite" placeholder="Apartment, suite (optional)" value={addr.street2} onInput={(e) => setAddr({ ...addr, street2: e.currentTarget.value })} />
-            <div class="split3">
-              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="City" placeholder="City" value={addr.city} onInput={(e) => setAddr({ ...addr, city: e.currentTarget.value })} />
-              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="State" placeholder="State" maxLength={3} class="up" value={addr.region} onInput={(e) => setAddr({ ...addr, region: e.currentTarget.value.toUpperCase() })} />
-              <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="ZIP or postal code" placeholder="ZIP" value={addr.postalCode} onInput={(e) => setAddr({ ...addr, postalCode: e.currentTarget.value })} />
-            </div>
-          </fieldset>
-        )}
-        {extra.length > 0 && !more && <button class="linklike" style={{ marginTop: 12 }} onClick={() => setMore(true)}>Add more details ({extra.map((f) => f.label.toLowerCase()).slice(0, 3).join(", ")}…)</button>}
-        {more && extra.map((f) => <FieldInput f={f} value={vals[f.key]} onInput={set(f.key)} source={null} />)}
-      </div>
-
-      <div class="field">
-        <label for="id-name">Name in your vault</label>
-        <input autocorrect="off" spellcheck={false} id="id-name" value={name} maxLength={120} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" />
-      </div>
-      {missing.length > 0 && <p class="small" style={{ color: "var(--amber-hi)", marginTop: 10 }}>Add the {missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.</p>}
-      {place.element}
-      <div class="actions">
-        <button class="btn primary block" disabled={missing.length > 0} onClick={save}><Icon name="fingerprint" />Seal &amp; store</button>
-      </div>
-      <p class="fine" style={{ marginTop: 12 }}>The details, photos{rec.raw.chip ? " and the chip's signed data" : ""} are sealed together on this phone (ML-KEM-1024 + X25519, signed with ML-DSA-87). Only your face or fingerprint opens them.</p>
-    </>
+    <div class="id-form">
+      {main.map((f) => <FieldInput f={f} value={vals[f.key]} onInput={set(f.key)} source={rec.source[f.key]} unsure={unsure(f.key)} />)}
+      {rec.kind !== "passport" && (rec.address || rec.kind === "driver_license" || rec.kind === "id_card") && (
+        <fieldset class="id-addr">
+          <legend>Address</legend>
+          <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Street" placeholder="Street" value={addr.street} onInput={(e) => setAddr({ ...addr, street: e.currentTarget.value })} />
+          <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Apartment, suite" placeholder="Apartment, suite (optional)" value={addr.street2} onInput={(e) => setAddr({ ...addr, street2: e.currentTarget.value })} />
+          <div class="split3">
+            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="City" placeholder="City" value={addr.city} onInput={(e) => setAddr({ ...addr, city: e.currentTarget.value })} />
+            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="State" placeholder="State" maxLength={3} class="up" value={addr.region} onInput={(e) => setAddr({ ...addr, region: e.currentTarget.value.toUpperCase() })} />
+            <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="ZIP or postal code" placeholder="ZIP" value={addr.postalCode} onInput={(e) => setAddr({ ...addr, postalCode: e.currentTarget.value })} />
+          </div>
+        </fieldset>
+      )}
+      {extra.length > 0 && !more && <button class="linklike" style={{ marginTop: 12 }} onClick={() => setMore(true)}>Add more details ({extra.map((f) => f.label.toLowerCase()).slice(0, 3).join(", ")}…)</button>}
+      {more && extra.map((f) => <FieldInput f={f} value={vals[f.key]} onInput={set(f.key)} source={null} />)}
+    </div>
   );
 }
 
@@ -836,7 +867,7 @@ export function IdView({ record: rec, item }) {
         <span class={`pill ${st.state === "expired" ? "danger" : st.state === "expiring" ? "amber" : st.state === "valid" ? "mint" : ""}`}>
           <Icon name="clock" />{st.state === "expired" ? `Expired ${fmtDay(rec.fields.expiry)}` : st.state === "expiring" ? `Expires in ${st.days} days` : st.state === "valid" ? `Valid to ${fmtDay(rec.fields.expiry)}` : "No expiry date"}
         </span>
-        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "From the MRZ" : "Typed"}</span>
+        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
       </div>
       <div class="card" style={{ marginTop: 14 }}>
         {rows.map((f) => (
@@ -850,7 +881,7 @@ export function IdView({ record: rec, item }) {
         )}
       </div>
       <p class="fine" style={{ marginTop: 12 }}>{p.text}.{rec.edited?.length ? ` You edited: ${rec.edited.map((k) => fieldsFor(rec.kind).find((f) => f.key === k)?.label.toLowerCase() || k).join(", ")}.` : ""}</p>
-      {rec.raw?.mrz && <pre class="mrz-lines" aria-label="Machine-readable zone">{rec.raw.mrz.join("\n")}</pre>}
+      {rec.raw?.mrz && <details class="pass-back" style={{ marginTop: 12 }}><summary>Details</summary><pre class="mrz-lines" aria-label="The lines read from the document">{rec.raw.mrz.join("\n")}</pre></details>}
       <div class="actions"><button class="btn quiet block" onClick={() => saveCopy(item)}><Icon name="download" />Save a copy (JSON with photos)</button></div>
     </div>
   );

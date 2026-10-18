@@ -114,6 +114,35 @@ class HumidGatePlugin: Plugin {
       HumidGatePlugin.refuseThirdPartyKeyboards()
       self?.setCovered(HumidGatePlugin.captured(self?.web))
     }
+    HumidGatePlugin.excludeWebDataFromBackups()
+  }
+
+  /* ---------- backups ----------
+   * The WebView's data store (IndexedDB: the wrapped identity, the sealed offline
+   * copy, an access pass) lives under Library/WebKit in the app container, which
+   * iCloud and iTunes backups would copy. The Secure Enclave key that unwraps it
+   * never leaves the phone, so a restored copy can't be opened, but it still
+   * shouldn't exist anywhere else. Excluded here, every launch (the attribute is
+   * per file and WebKit makes new ones). */
+  private static func excludeWebDataFromBackups() {
+    let fm = FileManager.default
+    guard let library = fm.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+    var dirs = [library.appendingPathComponent("WebKit", isDirectory: true)]
+    // Apps with a group or a custom data store may keep it under Caches as well.
+    if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+      dirs.append(caches.appendingPathComponent("WebKit", isDirectory: true))
+    }
+    for dir in dirs {
+      var isDir: ObjCBool = false
+      if !fm.fileExists(atPath: dir.path, isDirectory: &isDir) || !isDir.boolValue {
+        // not there yet on a first launch: make it, so the attribute is in place before WebKit writes
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+      }
+      var url = dir
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      try? url.setResourceValues(values)
+    }
   }
 
   private static func captured(_ webview: WKWebView?) -> Bool {

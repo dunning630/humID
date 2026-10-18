@@ -91,21 +91,23 @@ try {
   await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
   await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
+  await page.getByRole("button", { name: "I've saved it" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
   /* ---------------- 1. the camera finds the page by itself ---------------- */
+  // one way in: the + button (or the empty vault's one primary) opens the camera at once
   const openCamera = async () => {
     const add = page.locator("button.fab");
     if (await add.isVisible().catch(() => false)) await add.click();
     else await page.getByRole("button", { name: /Add/ }).first().click();
-    await page.getByRole("button", { name: /Take a photo/ }).click();
+    await page.locator(".doccam").waitFor({ timeout: 10_000 });
   };
   if (process.env.KEEP_PNG) await page.evaluate(() => { globalThis.__humidKeepPng = true; });
   await openCamera();
@@ -116,14 +118,19 @@ try {
   const q = look.quad;
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
   assert.ok(Math.abs(cx - 540) < 60 && Math.abs(cy - 765) < 60, `outline centred at ${cx.toFixed(0)},${cy.toFixed(0)}`);
+  await page.locator(".dc-label").getByText("Document").waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".dc-label").getByRole("button", { name: "It's something else" }).count(), 1, "the way to the picker is on the camera");
+  assert.equal(await page.locator(".dc-tools button").count() >= 2, true, "File and Type a card on the camera's bar");
   await shot(page, "1-outline");
-  step(`outline drawn over the page where it lies (${cx.toFixed(0)}, ${cy.toFixed(0)}), not in a frame`);
+  step(`outline drawn over the page where it lies (${cx.toFixed(0)}, ${cy.toFixed(0)}), not in a frame; the label says Document`);
   // nobody presses the shutter
   await page.locator(".photo-choice").waitFor({ timeout: 30_000 }).catch(async (e) => {
     const l = await page.evaluate(() => globalThis.__humidLook);
     throw new Error(`no photo taken: ${JSON.stringify({ ...l, quad: undefined })}`, { cause: e });
   });
-  step("photo taken by itself once the page held still");
+  assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "photo", "a page goes to the photo review");
+  assert.equal(await page.locator(".pushed .kindrow").innerText().then((t) => /Photo/.test(t)), true, "the review says it's a photo");
+  step("photo taken by itself once the page held still, and routed to the photo review");
 
   /* ---------------- 2. the proposal: straightened and upright; or the original ---------------- */
   const size = async () => page.locator(".photo-preview img").evaluate((img) => new Promise((res) => {
@@ -131,6 +138,10 @@ try {
     img.complete && img.naturalWidth ? go() : img.addEventListener("load", go, { once: true });
   }));
   await page.locator(".photo-preview img").waitFor();
+  // one preview of the suggested version; "Looks wrong?" reveals the other versions, turning and retake
+  assert.equal(await page.getByRole("radio").count(), 0, "no version picker until asked");
+  assert.equal(await page.getByRole("button", { name: "Turn right" }).count(), 0, "no turn buttons until asked");
+  await page.getByRole("button", { name: "Looks wrong?" }).click();
   await page.getByRole("radio", { name: /Clean scan/ }).getByText("Suggested").waitFor();
   assert.equal(await page.getByRole("radio", { name: /Clean scan/ }).getAttribute("aria-checked"), "true");
   // the clean scan's paper is white and even; the straightened photo keeps the room's light
@@ -162,16 +173,16 @@ try {
   const straight = await paper();
   assert.ok(clean.mean > 240 && clean.mean > straight.mean + 5, `clean scan's paper is white: ${clean.mean.toFixed(0)} (straightened ${straight.mean.toFixed(0)})`);
   assert.ok(clean.spread <= straight.spread + 2, `and even: spread ${clean.spread.toFixed(1)} (straightened ${straight.spread.toFixed(1)})`);
-  assert.equal(await page.getByRole("button", { name: /Seal the straightened photo/ }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Seal", exact: true }).count(), 1);
   await shot(page, "2b-straightened");
   step(`clean scan suggested: paper ${clean.mean.toFixed(0)}/255 against ${straight.mean.toFixed(0)} straightened`);
   await page.getByRole("radio", { name: /Original/ }).click();
   await page.waitForTimeout(400);
   const orig = await size();
   assert.ok(Math.abs(orig.w / orig.h - 1080 / 1920) < 0.02, `original is the camera's frame: ${orig.w}×${orig.h}`);
-  assert.equal(await page.getByRole("button", { name: /Seal the original/ }).count(), 1);
+  await page.getByText("The photo exactly as the camera took it.").waitFor();
   await shot(page, "3-original");
-  step("the original is the photo as taken, and the button says so");
+  step("the original is the photo as taken, and the note says so");
   await page.getByRole("radio", { name: /Clean scan/ }).click();
   await page.getByRole("button", { name: "Turn right" }).click();
   await page.waitForTimeout(400);
@@ -187,12 +198,12 @@ try {
   assert.equal(await stamp.getByRole("switch").isChecked(), true);
   await page.fill("#doc-name", "Assessment notice");
   await shot(page, "4-stamp");
-  await page.getByRole("button", { name: /Seal the clean scan/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().waitFor({ timeout: 30_000 });
   step("sealed, with the location stamp on");
   await page.locator(".item").filter({ hasText: "Assessment notice" }).first().click();
-  await page.getByText("Sealed at", { exact: true }).waitFor();
+  await page.getByText("Location stamp", { exact: true }).waitFor();
   await page.locator(".place-v").getByText(HERE).waitFor();
   await page.locator(".place-v").getByText(/within 14 m/).waitFor();
   await shot(page, "5-sealed-at");
@@ -224,13 +235,14 @@ try {
   await page.locator(".place-stamp").getByRole("switch").uncheck({ force: true });
   await page.locator(".place-stamp").getByText(/no location is kept/).waitFor();
   await page.fill("#doc-name", "No stamp");
+  await page.getByRole("button", { name: "Looks wrong?" }).click();
   await page.getByRole("radio", { name: /Straightened/ }).click();
-  await page.getByRole("button", { name: /Seal the straightened photo/ }).click();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item").filter({ hasText: "No stamp" }).first().waitFor({ timeout: 30_000 });
   await page.locator(".item").filter({ hasText: "No stamp" }).first().click();
   await page.getByText("Sealed with", { exact: true }).waitFor();
-  assert.equal(await page.getByText("Sealed at", { exact: true }).count(), 0, "no location with the stamp off");
+  assert.equal(await page.getByText("Location stamp", { exact: true }).count(), 0, "no location with the stamp off");
   step("with the stamp off, the document has no location");
   await ctx.close();
   console.log("ok — Take a photo finds, straightens and stamps documents in the browser");

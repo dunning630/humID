@@ -1,5 +1,5 @@
-// Check-in, in a real browser (apps 1.14.0, docs/CHECKIN.md). Checks that:
-//   - Security shows Check-in when the server offers it; turning it on takes one live check
+// Check-in, in a real browser (apps 2.0, docs/CHECKIN.md). Checks that:
+//   - You shows Check-in when the server offers it; turning it on takes one live check
 //   - while it's armed, every tab shows when the next check-in is due, with Check in
 //   - nothing is kept on the device while it's armed (no offline copy)
 //   - the duress setting is sealed on the device: no gesture readable in its storage (F1)
@@ -38,9 +38,12 @@ async function hold(page) {
   await page.locator(".interrupt").waitFor({ state: "detached", timeout: 20_000 });
 }
 async function addDoc(page, name) {
-  await page.getByRole("button", { name: "Add a document" }).first().click();
-  await page.locator('input[type="file"]').setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: keep this safe.\n`) });
-  await page.getByRole("button", { name: /Seal & store/ }).click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".doccam").waitFor();
+  await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+  await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: keep this safe.\n`) });
+  await page.locator(".pushed .review").waitFor();
+  await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: name.replace(/\.\w+$/, "") }).waitFor({ timeout: 30_000 });
 }
@@ -80,32 +83,36 @@ try {
   await page.goto(BASE);
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByText("Your body becomes the key").waitFor({ timeout: 30_000 });
-  await page.getByLabel(/Only my own face or fingerprints/).check();
+  await page.getByLabel(/Only I use/).waitFor({ timeout: 30_000 });
+  await page.getByLabel(/Only I use/).check();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
   await hold(page);
-  await page.getByText("You're all set").waitFor({ timeout: 30_000 });
+  await page.getByText("Save your recovery card").waitFor({ timeout: 30_000 });
   const ask = await page.locator('label[for="card-check"]').innerText();
   const groups = await page.locator(".cardcode span").allInnerTexts();
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.locator(".foot button:not([disabled])", { hasText: "Open my vault" }).click();
-  await page.getByRole("button", { name: "Add a document" }).first().click();
-  await page.locator(".sheet").waitFor();
-  await closeSheet(page);
-  await page.locator(".sheet").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+  await page.getByRole("button", { name: "I've saved it" }).click();
+  await page.getByRole("button", { name: "Open my vault" }).click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the camera)
+  await page.locator(".doccam").waitFor();
+  await page.getByRole("button", { name: "Close the camera" }).click();
+  await page.locator(".doccam").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Passport scan.txt");
   await addDoc(page, "Library card.txt");
 
-  await tab(page, "Security");
+  await tab(page, "You");
   await page.locator(".card", { hasText: "Duress protection" }).getByRole("button").first().click();
   await page.locator(".sheet label.toggle", { hasText: "Duress gesture" }).click();
   await page.getByRole("button", { name: /Tap the mark three times/ }).click();
   await page.locator(".sheet").getByRole("button", { name: "Save" }).click();
   await tab(page, "Vault");
+  // the item is pushed over the vault; its overflow menu holds the decoy switch
   await page.locator(".item", { hasText: "Library card" }).click();
-  await page.locator(".sheet label.toggle", { hasText: "Show in decoy view" }).click();
+  await page.locator(".pushed").getByRole("button", { name: "More" }).click();
+  await page.locator(".sheet [role=menuitem]", { hasText: "Show in decoy view" }).click();
   await toast(page, /will show in the decoy view/);
-  await closeSheet(page);
+  await page.locator(".pushed").getByRole("button", { name: "Back" }).click();
+  await page.locator(".pushed").waitFor({ state: "detached" });
   step("enrolled; two documents, the library card marked as the decoy; duress = three taps");
 
   const before = JSON.stringify(await idbDump(page));
@@ -114,7 +121,7 @@ try {
   step("F1: the duress setting is sealed on the device; no gesture in its storage");
 
   /* ---------------- turn on Check-in ---------------- */
-  await tab(page, "Security");
+  await tab(page, "You");
   const card = page.locator(".card#checkin");
   await card.waitFor();
   assert.match(await card.innerText(), /Off/);
@@ -148,7 +155,7 @@ try {
   await page.locator(".banner.checkin").getByRole("button", { name: "Check in" }).click();
   await hold(page);
   await toast(page, /Checked in\. Next by/);
-  await tab(page, "Security");
+  await tab(page, "You");
   await page.locator(".card#checkin").getByRole("button", { name: /Settings/ }).click();
   await page.locator(".sheet").getByRole("radiogroup", { name: /Next window/ }).getByRole("radio", { name: "1 h" }).waitFor();
   assert.equal(await page.locator(".sheet").getByRole("radiogroup", { name: /Next window/ }).getByRole("radio").count(), 4, "up to the 8 h maximum");
@@ -187,7 +194,7 @@ try {
   await shot(page, "5-erased");
   await tab(page, "Activity");
   await page.getByText("Vault erased by Check-in").waitFor({ timeout: 15_000 });
-  await tab(page, "Security");
+  await tab(page, "You");
   assert.match(await page.locator(".card#checkin").innerText(), /Off[\s\S]*erased/i);
   step("ordinary unlock: the vault says it was erased; only the decoy is left; Activity agrees");
 

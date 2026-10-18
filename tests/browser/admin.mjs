@@ -3,7 +3,7 @@
 //   1. the console's one-time sign-in link; read-only until a phone is added
 //   2. Add a phone: the console shows a code and QR; the app looks it up, approves with
 //      a live check, and shows an admin check; the console shows the same one; They match
-//   3. the app's Security tab now shows This server
+//   3. the app's You tab now shows This server
 //   4. Restart on the console: a code; the app approves exactly that; the console runs it
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
@@ -60,17 +60,18 @@ try {
   await app.goto(BASE);
   await app.getByRole("button", { name: "Create my HumID" }).click();
   await app.getByRole("button", { name: "Trust this server" }).click();
-  await app.getByText("Your body becomes the key").waitFor({ timeout: 30_000 });
-  await app.getByLabel(/Only my own face or fingerprints/).check();
+  await app.getByLabel(/Only I use/).waitFor({ timeout: 30_000 });
+  await app.getByLabel(/Only I use/).check();
   await app.getByRole("button", { name: /Use demo mode/ }).click();
   await hold();
-  await app.getByText("You're all set").waitFor({ timeout: 30_000 });
+  await app.getByText("Save your recovery card").waitFor({ timeout: 30_000 });
   const ask = await app.locator('label[for="card-check"]').innerText();
   const groups = await app.locator(".cardcode span").allInnerTexts();
   await app.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await app.locator(".foot button:not([disabled])", { hasText: "Open my vault" }).click();
-  await app.locator(".tabbar button", { hasText: "Security" }).click();
-  step("app: a new HumID, on the Security tab");
+  await app.getByRole("button", { name: "I've saved it" }).click();
+  await app.getByRole("button", { name: "Open my vault" }).click();
+  await app.locator(".tabbar button", { hasText: "You" }).click();
+  step("app: a new HumID, on the You tab");
 
   /* ---- enrol ---- */
   await desk.getByRole("button", { name: "Add a phone" }).click();
@@ -86,7 +87,7 @@ try {
   await app.getByText("Become an administrator of this server?").waitFor();
   assert.ok(await app.getByText(`Check ${check}`).isVisible(), "the app shows the same short check as the console");
   await shot(app, "app-enrol-request");
-  await app.getByRole("button", { name: "Approve with biometric" }).click();
+  await app.getByRole("button", { name: "Become an administrator" }).click();
   await hold();
   await app.getByText("Compare this with the console").waitFor({ timeout: 20_000 });
   const appCheck = (await app.locator(".codebox, .code-box, [aria-label='Admin check']").first().innerText()).replace(/[^0-9A-Z]/g, "");
@@ -102,9 +103,9 @@ try {
   step(`enrolled: the app's admin check and the console's agree (${deskCheck})`);
 
   /* ---- the app now shows the server ---- */
-  await app.getByRole("button", { name: "Done" }).click();
+  await app.locator(".sheet").getByRole("button", { name: "Done" }).click();
   await app.locator(".tabbar button", { hasText: "Vault" }).click();
-  await app.locator(".tabbar button", { hasText: "Security" }).click();
+  await app.locator(".tabbar button", { hasText: "You" }).click();
   await app.getByRole("heading", { name: "This server" }).waitFor({ timeout: 10_000 });
   await app.getByRole("heading", { name: "This server" }).scrollIntoViewIfNeeded();
   await shot(app, "app-this-server");
@@ -118,7 +119,7 @@ try {
   await app.fill("#admin-code", code2);
   await app.getByRole("button", { name: "Look it up" }).click();
   await app.getByRole("heading", { name: "Restart the HumID server" }).waitFor();
-  await app.getByRole("button", { name: "Approve with biometric" }).click();
+  await app.getByRole("button", { name: "Approve this change" }).click();
   await hold();
   await app.getByText("Approved").first().waitFor({ timeout: 20_000 });
   await desk.getByText("Done.").waitFor({ timeout: 15_000 });

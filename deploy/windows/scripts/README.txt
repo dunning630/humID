@@ -91,7 +91,7 @@ THE ADMIN CONSOLE
   1. In Terminal (Admin):  humid console
      Your browser opens a sign-in link (it works once, for two minutes).
   2. Add your phone: Administrators > Add a phone. In HumID on your phone:
-     Security > Manage this server, scan the code, approve with your face or
+     You > Manage this server, scan the code, approve with your face or
      fingerprint. Compare the admin check on both screens; if it's the same,
      choose "They match".
   3. Every change (an update, a restart, a backup) shows a code. Approve it

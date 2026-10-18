@@ -640,7 +640,7 @@ function Write-JsonAtomic([string]$File, $Value) {
 function Do-Console {
   Require-Admin; Require-Installed
   $t = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
-  if (-not $t) { Die 'The admin console is not installed yet. Run: humid install (from the HumID-Server folder of version 1.6.0 or later).' }
+  if (-not $t) { Die 'The admin console is not installed yet. Run: humid install (from the HumID-Server folder of version 2.0.0 or later).' }
   if ($t.State -ne 'Running') { Step 'Starting the admin console...'; Start-ScheduledTask -TaskName $AdminTask; Start-Sleep -Seconds 3 }
   # A one-time sign-in link: only its hash is stored, it works once, for two minutes.
   $token = New-Token

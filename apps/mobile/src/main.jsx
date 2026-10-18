@@ -8,12 +8,10 @@ import { wireBack } from "./core/back.js";
 import { InterruptOverlay, ChipReadOverlay, Toasts, TabBar, SimStrip, ChecksSheet, ConnectionBar } from "./ui.jsx";
 import { SIM } from "./core/config.js";
 import { Welcome, Enroll, Join, Lock } from "./screens/onboarding.jsx";
-import { Vault, AddSheet, ItemSheet, Viewer } from "./screens/vault.jsx";
-import { IdSheet } from "./screens/ids.jsx";
-import { CardSheet } from "./screens/cards.jsx";
+import { Vault, Item, Viewer } from "./screens/vault.jsx";
+import { Add } from "./screens/add.jsx";
 import { Activity } from "./screens/activity.jsx";
-import { Security } from "./screens/security.jsx";
-import { Settings } from "./screens/settings.jsx";
+import { You } from "./screens/you.jsx";
 import { applyPrefs } from "./core/prefs.js";
 import { Mark } from "./brand.jsx";
 
@@ -32,13 +30,10 @@ function App() {
         <>
           {S.tab.value === "vault" && <Vault />}
           {S.tab.value === "activity" && <Activity />}
-          {S.tab.value === "security" && <Security />}
-          {S.tab.value === "settings" && <Settings />}
+          {S.tab.value === "you" && <You />}
           <TabBar />
-          {sheet?.type === "add" && <AddSheet />}
-          {sheet?.type === "id" && <IdSheet />}
-          {sheet?.type === "card" && <CardSheet />}
-          {sheet?.type === "item" && <ItemSheet key={sheet.id} />}
+          {sheet?.type === "add" && <Add />}
+          {sheet?.type === "item" && <Item key={sheet.id} />}
           <Viewer />
         </>
       )}

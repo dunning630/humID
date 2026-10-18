@@ -148,7 +148,7 @@ export class HumidApi {
   async getPass(code, { saveDraft = async () => {}, draft = null } = {}) {
     const parsed = parseAccessCode(code);
     if (!parsed) throw new ApiError(400, "code_invalid", "That access code isn't valid. Check it and try again.");
-    const anon = new HtpClient({ baseUrl: this.htp.base, pinnedKid: this.htp.pinnedKid, fetch: this.htp.fetch });
+    const anon = new HtpClient({ baseUrl: this.htp.base, pinnedKid: this.htp.pinnedKid, fetch: this.htp.fetch, timeoutMs: this.htp.timeoutMs });
     const call = async (method, path, body) => {
       const res = await anon.call(method, path, body ? { body } : undefined);
       const j = res.json() || {};

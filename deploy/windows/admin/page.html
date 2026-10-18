@@ -378,7 +378,7 @@ function syncSheet() {
   if (r.state === "waiting") {
     openSheet(`${head}
       <div class="seal"><div class="qr">${r.qr || ""}</div><div><div class="code" aria-label="Approval code">${esc(r.display)}</div><div class="check">The phone must show <b>${esc(r.check)}</b></div><div class="small soft timer" data-expires="${r.expiresAt}"></div></div></div>
-      <ol class="howto"><li>In HumID on your phone, open <b>Security</b>, then <b>Manage this server</b>.</li><li>Scan the code, or type it.</li><li>Check it says the same thing, then approve with your face or fingerprint.</li></ol>
+      <ol class="howto"><li>In HumID on your phone, open <b>You</b>, then <b>Manage this server</b>.</li><li>Scan the code, or type it.</li><li>Check it says the same thing, then approve with your face or fingerprint.</li></ol>
       <div class="actions"><button data-cancel="${r.code}">Cancel</button></div>`);
   } else if (r.state === "matching") {
     openSheet(`<h3 id="sheet-title">Compare the admin check</h3>

@@ -6,7 +6,7 @@ import { sanitize, loadPrefs, savePrefs, applyPrefs, sortItems, DEFAULTS, MAX_ID
 
 const memory = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), m }; };
 
-test("defaults: night theme, 5-minute lock, vault first", () => {
+test("defaults: night theme, 5-minute lock", () => {
   assert.deepEqual(sanitize(null), { ...DEFAULTS });
   assert.equal(DEFAULTS.idleMs, MAX_IDLE_MS);
   assert.equal(MAX_IDLE_MS, 5 * 60_000);
@@ -18,17 +18,18 @@ test("auto-lock can only be shortened: anything longer or odd falls back to 5 mi
   assert.ok(Math.max(...IDLE_CHOICES) <= MAX_IDLE_MS);
 });
 
-test("tampered or unknown values are replaced, unknown keys dropped", () => {
-  const p = sanitize({ theme: "neon", text: 99, motion: "no", haptics: 0, startTab: "admin", sort: "random", expiryWarnDays: 7, evil: "<script>", __proto__: { idleMs: 1e9 } });
+test("tampered or unknown values are replaced, unknown keys dropped (startTab is gone: the app always opens on the vault)", () => {
+  const p = sanitize({ startTab: "settings", theme: "neon", text: 99, motion: "no", haptics: 0, sort: "random", expiryWarnDays: 7, evil: "<script>", __proto__: { idleMs: 1e9 } });
   assert.deepEqual(p, { ...DEFAULTS });
   assert.equal("evil" in p, false);
+  assert.equal("startTab" in p, false);
   assert.deepEqual(sanitize([1, 2]), { ...DEFAULTS });
 });
 
 test("saved and loaded on this device; broken or missing storage gives defaults", () => {
   const s = memory();
-  savePrefs({ ...DEFAULTS, theme: "light", idleMs: 60_000, startTab: "settings", sort: "name" }, s);
-  assert.deepEqual(loadPrefs(s), { ...DEFAULTS, theme: "light", idleMs: 60_000, startTab: "settings", sort: "name" });
+  savePrefs({ ...DEFAULTS, theme: "light", idleMs: 60_000, sort: "name" }, s);
+  assert.deepEqual(loadPrefs(s), { ...DEFAULTS, theme: "light", idleMs: 60_000, sort: "name" });
   s.m.set("humid.prefs.v1", "{not json");
   assert.deepEqual(loadPrefs(s), { ...DEFAULTS });
   const refusing = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
@@ -67,4 +68,14 @@ test("vault order: pinned first, then the chosen order", () => {
 test("labels", () => {
   assert.equal(idleLabel(60_000), "1 minute");
   assert.equal(idleLabel(MAX_IDLE_MS), "5 minutes");
+});
+
+test("first launch follows the device's reduce-motion setting; a choice, once made, wins", () => {
+  const s = memory();
+  assert.equal(loadPrefs(s, true).motion, false, "nothing chosen yet: reduced motion on the device turns animations off");
+  assert.equal(loadPrefs(s, false).motion, true);
+  savePrefs({ ...DEFAULTS, motion: true }, s);
+  assert.equal(loadPrefs(s, true).motion, true, "the person chose animations: the device setting no longer overrides");
+  savePrefs({ ...DEFAULTS, motion: false }, s);
+  assert.equal(loadPrefs(s, false).motion, false);
 });

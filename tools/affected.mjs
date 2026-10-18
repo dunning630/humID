@@ -15,6 +15,9 @@ const SERVICES = [...NODE_SERVICES, "edge"];
 // Which shared package feeds which service image. Every package also feeds the
 // app, except the server-only ones.
 const SERVER_ONLY = new Set(["svc", "attest", "anchor"]);
+// Modules no app or service imports yet (HumID 3.0 work in progress). Remove a
+// name from here in the same change that wires it into the app.
+const NOT_SHIPPED = new Set(["backup"]);
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
   attest: ["identity", "vault", "gateway", "recovery"],
@@ -25,7 +28,7 @@ const PKG_SERVICES = {
   audit: ["ledger"],
   recovery: ["recovery"],
   pass: ["access"],
-  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [],
+  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [], backup: [],
 };
 
 // [pattern, apps, services] — first match wins.
@@ -78,7 +81,7 @@ for (const f of files || []) {
   const pkg = f.match(/^packages\/([^/]+)\//);
   if (pkg) {
     modules.add(`@humid/${pkg[1]}`);
-    if (!SERVER_ONLY.has(pkg[1])) {
+    if (!SERVER_ONLY.has(pkg[1]) && !NOT_SHIPPED.has(pkg[1])) {
       APPS.forEach((a) => apps.add(a));
       services.add("edge");
     }
