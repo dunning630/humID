@@ -7,6 +7,13 @@
 
 import { digits, checkPan, parseExpiry } from "./pan.js";
 
+// OCR text is attacker-influenced (a card or a screen in front of the camera):
+// look at a bounded amount of it, and only short lines (a card line is far under 100 characters).
+const MAX_TEXT = 16384;
+const MAX_LINE = 256;
+const MAX_LINES = 200;
+const ocrLines = (text) => String(text ?? "").slice(0, MAX_TEXT).split(/\r?\n/, MAX_LINES).map((l) => (l.length > MAX_LINE ? "" : l));
+
 const FIX = { O: "0", o: "0", D: "0", Q: "0", I: "1", l: "1", "|": "1", "!": "1", Z: "2", S: "5", s: "5", B: "8", G: "6", b: "6", T: "7" };
 const fixDigits = (s) => s.replace(/[OoDQIl|!ZSsBGbT]/g, (c) => FIX[c]);
 
@@ -15,7 +22,7 @@ function panCandidates(text) {
   const out = new Set();
   // Digit groups (with OCR look-alikes) separated by single spaces.
   const re = /(?:[0-9OoDQIl|!ZSsBGbT]{3,6}[ \t]?){3,6}[0-9OoDQIl|!ZSsBGbT]{0,6}/g;
-  for (const line of String(text).split(/\r?\n/)) {
+  for (const line of ocrLines(text)) {
     for (const m of line.matchAll(re)) {
       const raw = m[0].trim();
       if ((raw.match(/[0-9]/g) || []).length < raw.replace(/\s/g, "").length * 0.6) continue; // mostly letters: a word, not a number
@@ -43,23 +50,23 @@ export function readCardText(text, { now = new Date() } = {}) {
   const pan = valid[0] || null;
   if (valid.length > 1 && valid[1].pan !== pan.pan) issues.push("several_numbers");
 
-  const dates = [...String(text).matchAll(/(?<![\d/])(0[1-9]|1[0-2]|[1-9])\s?[/\-]\s?(\d{2}|20\d{2})(?![\d/])/g)]
+  const dates = [...String(text ?? "").slice(0, MAX_TEXT).matchAll(/(?<![\d/])(0[1-9]|1[0-2]|[1-9])\s?[/\-]\s?(\d{2}|20\d{2})(?![\d/])/g)]
     .map((m) => parseExpiry(`${m[1]}/${m[2]}`)).filter(Boolean)
     .filter((e) => +e.slice(0, 4) <= now.getUTCFullYear() + 20);
   dates.sort();
   const expiry = dates.length ? dates[dates.length - 1] : null;
 
   let name = null;
-  for (const line of String(text).split(/\r?\n/)) {
+  for (const line of ocrLines(text)) {
     const s = line.trim().replace(/\s+/g, " ");
-    if (!/^[A-Z][A-Z.'\-]*(?: [A-Z][A-Z.'\-]*){1,3}$/.test(s) || s.length > 26 || NOT_NAME.test(s)) continue;
+    if (s.length > 26 || !/^[A-Z][A-Z.'\-]*(?: [A-Z][A-Z.'\-]*){1,3}$/.test(s) || NOT_NAME.test(s)) continue;
     name = s; break;
   }
   // American Express prints its 4-digit security code (CID) on the front, above the number.
   let cvv = null;
   if (pan?.brand === "amex") {
     const groups = new Set();
-    for (const line of String(text).split(/\r?\n/)) {
+    for (const line of ocrLines(text)) {
       if (digits(fixDigits(line)).includes(pan.pan.slice(0, 8))) continue; // the number's own line
       if (/SINCE|MEMBER|VALID|THRU|EXP|GOOD|FROM|YEAR/i.test(line)) continue; // a "member since" year, a date
       for (const m of line.matchAll(/(?<![\d/])(\d{4})(?![\d/])/g)) if (m[1] !== pan.pan.slice(0, 4)) groups.add(m[1]);
@@ -78,7 +85,7 @@ const SERVICE = /(CALL|CUSTOMER|SERVICE|LOST|STOLEN|TOLL|PHONE|TEL|COLLECT|ASSIS
 
 function phones(text) {
   const out = [];
-  for (const line of String(text).split(/\r?\n/)) {
+  for (const line of ocrLines(text)) {
     for (const m of line.matchAll(PHONE)) {
       const shown = m[1] ? `1-${m[1]}-${m[2]}-${m[3]}` : `+${m[4]} ${m[5].replace(/[\s.\-]+/g, " ").trim()}`;
       out.push({ shown, service: SERVICE.test(line), start: m.index, end: m.index + m[0].length, line });
@@ -94,14 +101,14 @@ function phones(text) {
  * A code is taken only when there's exactly one clear candidate; otherwise the holder types it.
  */
 export function readCardBack(text, { pan = null } = {}) {
-  const t = String(text);
+  const t = String(text ?? "").slice(0, MAX_TEXT);
   const issues = [];
   const want = pan ? checkPan(pan).brand === "amex" ? 4 : 3 : 3;
   const ph = phones(t);
   const phone = (ph.find((p) => p.service) || ph[0])?.shown || null;
 
   let cvv = null;
-  const fixed = t.split(/\r?\n/).map((line) => line.replace(/[0-9OoDQIl|!ZSsBGbT]{2,}/g, (g) => (/[0-9]/.test(g) ? fixDigits(g) : g)));
+  const fixed = ocrLines(t).map((line) => line.replace(/[0-9OoDQIl|!ZSsBGbT]{2,}/g, (g) => (/[0-9]/.test(g) ? fixDigits(g) : g)));
   const last4 = pan ? digits(pan).slice(-4) : null;
   // 1. next to the last four digits of the number, or after a "CVV / CVC / security code" label
   const near = [];

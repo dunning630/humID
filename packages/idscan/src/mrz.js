@@ -35,12 +35,38 @@ const digits = (s) => [...s].map((c) => TO_DIGIT[c] ?? c).join("");
 const alpha = (s) => [...s].map((c) => TO_ALPHA[c] ?? c).join("");
 const alphaFiller = (s) => [...s].map((c) => (c === "<" ? c : TO_ALPHA[c] ?? c)).join("");
 
-/** Names field: letters and fillers; anything after the last real name is filler. */
-function nameField(s) {
-  let t = alphaFiller(s).replace(/[^A-Z<]/g, "<");
-  // Trailing filler that OCR read as letters ("<<<K<<<E<<"): once the names end, it's all <.
-  const m = /^(.*?[A-Z]{2,})(?:<+[KCELXZ]?)*<*$/.exec(t);
-  if (m && t.length > m[1].length) t = m[1] + "<".repeat(t.length - m[1].length);
+// An MRZ line is 30, 36 or 44 characters. OCR output and typed text are
+// attacker-influenced, so nothing below does more than linear work, and
+// anything far longer than a line is refused before it is looked at.
+const MAX_RAW_LINE = 256; // an OCR line longer than this is not an MRZ line
+const MAX_RAW_TEXT = 4096; // typed or chip MRZ: 90 characters plus whitespace
+const MAX_OCR_LINES = 500;
+
+const isLetter = (c) => c >= "A" && c <= "Z";
+const FILLER_LOOKALIKES = "KCELXZ";
+
+/**
+ * Names field: letters and fillers; anything after the last real name is filler.
+ * Linear time. Equivalent to the former /^(.*?[A-Z]{2,})(?:<+[KCELXZ]?)*<*$/:
+ * the names end at the first point where two letters are followed by nothing
+ * but fillers, where a filler look-alike (K C E L X Z) may sit after a "<" but
+ * never next to another letter.
+ */
+export function nameField(s) {
+  const t = alphaFiller(s).replace(/[^A-Z<]/g, "<");
+  const n = t.length;
+  // e0: start of the longest suffix made only of "<" and look-alike letters, no two letters adjacent.
+  let e0 = n;
+  while (e0 > 0) {
+    const c = t[e0 - 1];
+    if (c === "<") e0--;
+    else if (FILLER_LOOKALIKES.includes(c) && !(e0 < n && isLetter(t[e0]))) e0--;
+    else break;
+  }
+  // Shortest names part that ends in two letters and is followed by "<" (or nothing).
+  for (let e = Math.max(e0, 2); e < n; e++) {
+    if (t[e] === "<" && isLetter(t[e - 1]) && isLetter(t[e - 2])) return t.slice(0, e) + "<".repeat(n - e);
+  }
   return t;
 }
 
@@ -68,7 +94,8 @@ function* choose(arr, k, start = 0, acc = []) {
   for (let i = start; i < arr.length; i++) yield* choose(arr, k, i + 1, [...acc, arr[i]]);
 }
 
-const clean = (s) => s.replace(/<+$/g, "").replace(/</g, " ").replace(/\s+/g, " ").trim();
+const stripTrailing = (s, ch) => { let e = s.length; while (e > 0 && s[e - 1] === ch) e--; return s.slice(0, e); };
+const clean = (s) => stripTrailing(s, "<").replace(/</g, " ").replace(/\s+/g, " ").trim();
 function splitNames(field) {
   const i = field.indexOf("<<");
   const [sur, giv] = i < 0 ? [field, ""] : [field.slice(0, i), field.slice(i + 2)];
@@ -111,7 +138,7 @@ export function parseMrzLines(lines, { now = new Date() } = {}) {
   if (!format || L.some((l) => l.length !== len)) return null;
   const code = alphaFiller(L[0].slice(0, 2));
   const visa = code[0] === "V";
-  const f = { format: visa ? (format === "TD3" ? "MRV-A" : "MRV-B") : format, documentCode: code.replace(/<+$/, ""), checks: {}, lines: L };
+  const f = { format: visa ? (format === "TD3" ? "MRV-A" : "MRV-B") : format, documentCode: stripTrailing(code, "<"), checks: {}, lines: L };
   const cd = (c) => (c === "<" ? "<" : digits(c));
   let compositeInput = null, composite = null;
 
@@ -191,6 +218,7 @@ export function parseMrzLines(lines, { now = new Date() } = {}) {
 
 /** Strict parse of an MRZ as stored on a chip (DG1) or typed: one string, lines joined or not. */
 export function parseMrz(text, opts) {
+  if (text == null || String(text).length > MAX_RAW_TEXT) return null;
   const raw = String(text).toUpperCase().replace(/[\r\n\s]/g, "");
   const shape = raw.length === 88 ? [44, 2] : raw.length === 72 ? [36, 2] : raw.length === 90 ? [30, 3] : null;
   if (!shape) return null;
@@ -241,7 +269,7 @@ const score = (f, cost = 0) => (f ? Object.values(f.checks).filter(Boolean).leng
  * best parse, with `valid` true only when every check digit agrees, or null.
  */
 export function findMrz(text, opts) {
-  const lines = String(text).split(/\r?\n/).map(normalizeOcrLine).filter((l) => l.length >= 26);
+  const lines = String(text).split(/\r?\n/, MAX_OCR_LINES).filter((l) => l.length <= MAX_RAW_LINE).map(normalizeOcrLine).filter((l) => l.length >= 26);
   let best = null, bestScore = -1;
   for (const [format, [n, count]] of Object.entries(LAYOUTS)) {
     for (let i = 0; i + count <= lines.length; i++) {
