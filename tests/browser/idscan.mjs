@@ -69,16 +69,21 @@ async function hold(page) {
   await page.keyboard.up(" ");
 }
 
-/** One way in: the + button (or the empty vault's one primary) opens the camera; "It's something else" opens the picker. */
+/** One way in: the + button (or the empty vault's one primary) opens the list of what to add; Photo, then Start camera, opens the camera. */
 async function openAdd(page) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
+  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
+  await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam").waitFor({ timeout: 10_000 });
 }
 async function pickKind(page, name) {
-  await openAdd(page);
-  await page.getByRole("button", { name: "It's something else" }).click();
-  await page.locator(".pushed").getByText("What is it?").waitFor();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
   await page.locator(".pushed button.kind", { hasText: name }).click();
+  assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
+  await page.locator(".pushed [data-start-camera]").click();
 }
 
 try {
@@ -243,13 +248,12 @@ try {
   assert.equal(await back(), "pushed", "back inside the ID flow is a step");
   await page.locator(".pushed").getByText("Scan it").waitFor();
   assert.equal(await back(), "pushed", "back from the first step leaves the ID flow for the picker");
-  await page.locator(".pushed").getByText("What is it?").waitFor();
-  assert.equal(await back(), "pushed", "back from the picker returns to the camera");
-  await page.locator(".doccam").waitFor();
-  assert.equal(await back(), ".doccam", "back from the camera closes Add");
-  await page.locator(".doccam").waitFor({ state: "detached" });
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "no camera behind the picker");
+  assert.equal(await back(), "pushed", "back from the picker closes Add");
+  await page.locator(".pushed").waitFor({ state: "detached" });
   assert.equal(await page.locator(".pushed").count(), 0, "Add is closed");
-  step("Android Back: review → capture → picker → camera → closed, one level at a time");
+  step("Android Back: review → capture → picker → closed, one level at a time");
   await ctx.close();
 
   /* ---------------- 3. nothing but a table in view: it never takes a photo by itself ---------------- */
@@ -258,15 +262,38 @@ try {
   await page.getByRole("button", { name: /^Unlock$/ }).click();
   await hold(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
-  await pickKind(page, /Another card/);
+  // count the camera streams the page opens, to show none starts before a kind is chosen and all are released
+  await page.evaluate(() => {
+    globalThis.__tracks = []; globalThis.__gum = 0;
+    const md = navigator.mediaDevices, real = md.getUserMedia.bind(md);
+    md.getUserMedia = async (c) => { globalThis.__gum++; const st = await real(c); globalThis.__tracks.push(...st.getTracks()); return st; };
+  });
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  await page.waitForTimeout(800);
+  assert.equal(await page.evaluate(() => globalThis.__gum), 0, "no camera request while the picker is up");
+  await page.locator(".pushed button.kind", { hasText: /Another card/ }).click();
+  await page.locator(".pushed [data-start-camera]").waitFor();
+  await page.waitForTimeout(800);
+  assert.equal(await page.evaluate(() => globalThis.__gum), 0, "no camera request on the what-to-show screen");
+  await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  assert.equal(await page.evaluate(() => globalThis.__gum), 1, "one camera request after Start camera");
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
   await page.locator(".dc-status").getByText(/Point the camera at the card/).waitFor();
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
-  step("an empty table: the camera keeps waiting and says what it needs");
+  await page.locator(".doccam").waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "closing the camera releases the stream");
+  await page.locator(".pushed [data-start-camera]").click();
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  assert.equal(await page.evaluate(() => globalThis.__tracks.some((t) => t.readyState === "live")), true, "the camera is on again");
+  // the app goes to the background: the stream is released at once
+  await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
+  step("an empty table: the camera keeps waiting and says what it needs; nothing starts before Start camera; closing or backgrounding releases the stream");
   await ctx.close();
   console.log("ok — Scan an ID works end to end in the browser");
 } catch (e) {
