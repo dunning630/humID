@@ -29,7 +29,7 @@ import {
   quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck, adminCheck,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
-import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
+import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, safeCheckIntegrity, chipIntegrityOk, applyChip, setImage } from "@humid/idscan";
 import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, readCardBack } from "@humid/cards";
 import { parseAccessCode } from "@humid/pass";
 import { sealedWallet } from "@humid/pass/atrest";
@@ -2065,7 +2065,7 @@ export async function readChip(access, { nonce, purpose = "anchor", photo = fals
       onProgress: ({ fraction, message }) => { show({ stage: "reading", fraction, message }); if (message !== said) { said = message; chip.message(message); } },
     });
     await chip.end({ message: "Done. You can move your document away." });
-    show({ stage: "done", fraction: 1, message: "Read and checked. You can move your document away." });
+    show({ stage: "done", fraction: 1, message: "Read. You can move your document away." });
     await sleep(700);
     S.chipRead.value = null;
     return r;
@@ -2090,7 +2090,13 @@ export async function chipReader({ fresh = false } = {}) {
 /**
  * Read a passport or ID card chip for the holder's own vault copy: the MRZ data,
  * the photo, and the signed hashes, checked against each other. Fills the record
- * in place. Returns true if it read. The chip data stays in the record (sealed).
+ * in place. Fails closed: chip data is used only when the files match the chip's own
+ * hash list (integrity.ok === true). A malformed SOD, a null result or a mismatch
+ * means nothing from the chip is applied or decoded.
+ * Returns true if read and integrity-checked, "unverified" if the chip was read but
+ * couldn't be verified (record untouched except a chipFailed note), false if not read.
+ * Note: integrity-checked is not "genuine": the issuing country's signature (CSCA)
+ * is not checked on this phone.
  */
 export async function readChipInto(record, access, { portrait } = {}) {
   const r = await readChip(access, { purpose: "vault", photo: true });
@@ -2098,14 +2104,14 @@ export async function readChipInto(record, access, { portrait } = {}) {
   const b64 = (b) => toB64(b);
   let mrz = null;
   try { mrz = readDg1(r.dg1).mrz; } catch { /* shown as unread below */ }
-  const integrity = (() => { try { return checkIntegrity(r.sod, { 1: r.dg1, ...(r.dg2 ? { 2: r.dg2 } : {}), ...(r.dg15 ? { 15: r.dg15 } : {}) }); } catch { return null; } })();
+  const integrity = safeCheckIntegrity(r.sod, { 1: r.dg1, ...(r.dg2 ? { 2: r.dg2 } : {}), ...(r.dg15 ? { 15: r.dg15 } : {}) });
   applyChip(record, r, { mrz, integrity, b64 });
-  // A photo whose hash doesn't match the chip's own signed list isn't decoded or shown:
-  // the decoder would be parsing bytes no one vouches for.
-  if (r.dg2 && portrait && integrity?.ok !== false) {
+  if (!chipIntegrityOk(integrity)) return "unverified";
+  // A photo is decoded only from a chip whose files match its own signed list:
+  // the decoder would otherwise be parsing bytes no one vouches for.
+  if (r.dg2 && portrait) {
     try { setImage(record, "portrait", await portrait(readDg2(r.dg2))); }
     catch { toast("Read the chip, but its photo is in a format HumID can't show yet. It's kept with the record.", "warn"); }
   }
-  if (integrity && !integrity.ok) toast("The chip's data doesn't match its own signed hashes. Check the document.", "warn");
   return true;
 }

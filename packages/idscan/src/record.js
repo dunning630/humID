@@ -3,6 +3,7 @@
 // seals into the vault (media type application/vnd.humid.id+json), so it's
 // plain JSON with a schema tag, and every field says where it came from.
 import { countryName, regionName } from "./places.js";
+import { chipIntegrityOk } from "./chip.js";
 
 export const SCHEMA = "humid.id/1";
 export const MEDIA_TYPE = "application/vnd.humid.id+json";
@@ -101,8 +102,17 @@ export function applyAamva(rec, a) {
 /**
  * From a chip: chip = { dg1, sod, dg2?, dg15?, access }, parsed = { mrz, portrait? }, integrity from checkIntegrity.
  * The chip's own files are kept (base64) so the integrity check can be repeated later.
+ * Only applied when integrity.ok === true (see chipIntegrityOk); returns the record either way.
  */
 export function applyChip(rec, chip, { mrz, integrity, b64 }) {
+  // Fail closed: chip data is applied only when its files matched the chip's own hash list.
+  // Otherwise nothing from the chip is used or kept, and the record says the chip failed.
+  if (!chipIntegrityOk(integrity)) {
+    rec.verified.chipFailed = { reason: integrity?.reason || (integrity?.ok === false ? "hash mismatch" : "not checked"), readAt: nowIso() };
+    rec.updatedAt = nowIso();
+    return rec;
+  }
+  delete rec.verified.chipFailed;
   if (mrz) {
     if (rec.kind === "other" || !rec.kind) rec.kind = mrz.kind;
     put(rec, "chip", {
@@ -111,7 +121,7 @@ export function applyChip(rec, chip, { mrz, integrity, b64 }) {
     });
     rec.raw.mrz = mrz.lines;
   }
-  rec.verified.chip = { integrity: integrity?.ok ?? null, algorithm: integrity?.algorithm || null, groups: integrity?.groups || {}, access: chip.access || null, readAt: nowIso() };
+  rec.verified.chip = { integrity: true, algorithm: integrity?.algorithm || null, groups: integrity?.groups || {}, access: chip.access || null, readAt: nowIso() };
   rec.raw.chip = Object.fromEntries(["dg1", "dg2", "dg15", "sod", "com"].filter((k) => chip[k]).map((k) => [k, b64(chip[k])]));
   return rec;
 }
@@ -164,9 +174,11 @@ export function provenance(rec) {
   const v = rec.verified || {};
   const typed = Object.values(rec.source || {}).includes("typed");
   if (v.chip && typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
-  if (v.chip?.integrity) return { level: "chip", text: "Read from the chip; its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
-  if (v.chip) return { level: "chip-unchecked", text: "Read from the chip" };
+  if (v.chip?.integrity) return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
+  if (v.chip) return { level: "chip-unchecked", text: "Not verified: read from the chip, but its files weren't checked" };
+  if (v.chipFailed && !v.barcode && !v.mrz) return { level: "chip-failed", text: "Not verified: the chip couldn't be verified, so its data was not used" };
   if (v.barcode) return { level: "barcode", text: `Read from the barcode (AAMVA v${v.barcode.version})` };
+  if (v.chipFailed) return { level: "mrz-unverified", text: "Not verified: chip couldn't be verified. Details are from the printed document only" };
   if (v.mrz?.valid && v.mrz.consensus) return { level: "mrz", text: "Read from the machine-readable lines; every check digit agrees" };
   if (v.mrz?.valid) return { level: "mrz-single", text: "Read from the machine-readable lines; check digits agree" };
   if (v.mrz) return { level: "mrz-partial", text: "Partly read from the machine-readable lines; check the details" };

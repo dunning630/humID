@@ -17,7 +17,7 @@
 // accepts desktop biometric-only gates without hardware proof, "demo" accepts
 // anything (local development only).
 
-import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
@@ -195,7 +195,7 @@ export function createIdentity({
     // First device: creates the account (proof of possession of the account keys) and enrols the device.
     ["POST", "/internal/register", ({ body, claims }) => {
       gatewayOnly(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const keys = {};
       for (const k of Object.keys(SIZES)) keys[k] = key(r[k], k, SIZES[k]);
       const commit = String(r.commit || "");
@@ -222,7 +222,7 @@ export function createIdentity({
     // Another device joins an existing account (after a device link or a recovery).
     ["POST", "/internal/devices", ({ body, claims }) => {
       gatewayOnly(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const account = active(String(r.account));
       const { device, created } = addDevice(account, unb64u(String(r.th)), r.device, String(r.via), r.policy, Number(r.sessionAgeMs));
       return respondWithDevice(created ? 201 : 200, account, device);
@@ -231,7 +231,7 @@ export function createIdentity({
     // Check a sign-in signature made by one device of an account.
     ["POST", "/internal/verify", ({ body, claims }) => {
       gatewayOnly(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const account = active(String(r.account));
       const device = getDevice.get(String(r.device));
       if (!device || device.account_id !== account.id) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
@@ -250,7 +250,7 @@ export function createIdentity({
     // Duress. The gateway sets and reads this; it is never shown in /me.
     ["POST", "/internal/duress", ({ body, claims }) => {
       gatewayOnly(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       active(String(r.account));
       const t = new Date().toISOString();
       db.prepare("UPDATE identities SET lockdown_at = COALESCE(lockdown_at, ?), last_duress_at = ? WHERE id = ?").run(t, t, String(r.account));
