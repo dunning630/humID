@@ -211,6 +211,13 @@ try {
   await page.locator(".place-v").getByText(/within 14 m/).waitFor();
   await shot(page, "5-sealed-at");
   step("the document shows where it was sealed (and how accurately)");
+  // when: the vault server's clock (to the minute), not the phone's; the clocks agree, so no note
+  const sealedRow = page.locator(".row").filter({ has: page.locator(".k", { hasText: /^Sealed$/ }) });
+  const sealedText = await sealedRow.locator(".v").innerText();
+  assert.match(sealedText, /\d{1,2}:\d{2}/, `the seal time has the time of day: ${sealedText}`);
+  assert.doesNotMatch(sealedText, /phone's clock/);
+  assert.equal(await page.locator(".row.clock-gap").count(), 0, "no clock note when the clocks agree");
+  step(`sealed ${sealedText}, by the vault server's clock`);
   // the server's view: everything it stores, every file; the coordinates are in none of it
   const files = (d) => readdirSync(d).flatMap((n) => { const f = join(d, n); return statSync(f).isDirectory() ? files(f) : [f]; });
   const stored = files(data);

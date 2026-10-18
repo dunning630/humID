@@ -3,7 +3,8 @@ import { useState } from "preact/hooks";
 import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, kindIcon } from "../icons.jsx";
-import { Sheet, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, CheckinBar, ErasedBanner } from "../ui.jsx";
+import { Sheet, fmtSize, fmtDate, fmtTime, fmtAgo, AssurancePill, OfflineBanner, CheckinBar, ErasedBanner } from "../ui.jsx";
+import { sealTime } from "../core/sealtime.js";
 import { openExternal } from "../core/external.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
@@ -179,6 +180,7 @@ export function Item() {
   const [tags, setTags] = useState(item?.tags || []);
   if (!item) return null;
   const k = kindOf(item.kind);
+  const sealed = sealTime(item);
   const close = () => (S.sheet.value = null);
   const off = !!S.offline.value;
   const card = item.cardInfo, pi = item.passInfo, id = item.idInfo;
@@ -223,7 +225,8 @@ export function Item() {
               <div class="row"><span class="k">Kind</span><span class="v">{k.one}</span></div>
               {item.tags?.length > 0 && <div class="row"><span class="k">Tags</span><span class="v"><TagLabels tags={item.tags} /></span></div>}
               <div class="row"><span class="k">Size</span><span class="v">{fmtSize(item.size)}</span></div>
-              <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(item.sealedAt || item.uploadedAt)}</span></div>
+              {sealed && <div class="row"><span class="k">Sealed</span><span class="v">{fmtDate(sealed.at)}, {fmtTime(sealed.at)}{sealed.by === "phone" && <span class="muted"> (phone's clock)</span>}</span></div>}
+              {sealed?.phoneAt && <div class="row clock-gap"><span class="k">Phone's clock</span><span class="v">said {fmtDate(sealed.phoneAt)}, {fmtTime(sealed.phoneAt)}. The time above is your vault server's.</span></div>}
               <SealedAt place={item.place} />
               {(id?.expiry || card?.expiry || pi?.expires) && <div class="row"><span class="k">Expires</span><span class="v">{id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)}</span></div>}
               <div class="row"><span class="k">Sealed with</span><span class="v"><AssurancePill assurance={item.assurance} /></span></div>

@@ -8,7 +8,7 @@ Security hardening from the October 18 2026 audit, paired with **HumID 2.1.0**. 
 - **Size limits before sign-in.** An anonymous request is limited to 512 KiB (`GATEWAY_MAX_ANON_CALL_BYTES`); only a signed-in session can send up to `GATEWAY_MAX_CALL_BYTES` (64 MiB, for vault uploads). Each address can have 16 uploads in flight and the server 1,024.
 - **Sign-in attempts and Check-in.** Only failed proofs count toward the limits (10 per account, 20 per address, 200 for the server, per 5 minutes); a valid proof from the real holder always signs in. A refused sign-in can never erase an armed vault (docs/CHECKIN.md).
 - Recovery, identity and ledger answer 400 to a JSON body that isn't an object (it used to be 500).
-- The web app it serves is **HumID 2.1.0**: the camera opens only after you choose what you're adding; a faster scanner that says what it is doing; a passport chip that fails its check is no longer treated as verified; a crafted passport name line can no longer freeze the app.
+- The web app it serves is **HumID 2.1.0**: the camera opens only after you choose what you're adding; a faster scanner that says what it is doing; a passport chip that fails its check is no longer treated as verified; a crafted passport name line can no longer freeze the app. A document's Sealed time now comes from this server's clock, not the phone's.
 - **Compatibility.** Apps 1.8.0 and later keep working with this server.
 - Not changed here: the audit's larger design findings are listed in docs/HARDENING.md.
 
