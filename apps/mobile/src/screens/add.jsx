@@ -1,5 +1,8 @@
-// Add to your vault: one flow, camera first. The camera opens at once and the photo
-// goes where it belongs: an ID-1 card with a license barcode or a page with an MRZ to
+// Add to your vault: one flow, choose first. "Add" opens the list of what is being added
+// and no camera starts until a kind is chosen. An ID goes to the ID flow, which says what
+// to show and starts its camera on one tap (and reads a barcode or MRZ, per kind); a card
+// and a photo get a short "what to hold up" screen with Start camera. Once the camera is
+// open the photo goes where it belongs: an ID-1 card with a license barcode or a page with an MRZ to
 // the ID flow (ids.jsx), a card with a payment number to the card flow (cards.jsx),
 // anything else to the photo review. A slim bar on the camera offers a file (a .pkpass
 // is checked as a Wallet pass), typing a card, and tapping one where NFC exists. A live
@@ -9,7 +12,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon, kindIcon } from "../icons.jsx";
 import { fmtSize } from "../ui.jsx";
 import { suggestTags, kindFromType } from "../core/categories.js";
-import { shapeOf, liveLabel, mrzBandLikely, idKindFrom } from "../core/addroute.js";
+import { shapeOf, liveLabel, mrzBandLikely, idKindFrom, guideFor, LIGHT_TIP } from "../core/addroute.js";
 import { cleanCanvas, grayOf, grab, rotateCanvas } from "../core/scan.js";
 import * as S from "../core/state.js";
 import { addDocument, checkPass, addPass, toast, markPicking } from "../core/controller.js";
@@ -35,19 +38,21 @@ const PICK = [
 ];
 
 export function Add() {
-  const [step, setStep] = useState({ at: "camera" }); // { at: camera | pick | photo | file | pass | id | card, ... }
+  const [step, setStep] = useState({ at: "pick" }); // { at: pick | ready | camera | photo | file | pass | id | card, ... }
   const [nfc, setNfc] = useState(null);
   const [label, setLabel] = useState(null);           // what the live view thinks it sees
   const chooser = useRef(null);
   const current = useRef(null);                       // the file on screen: a check that finishes for another one is dropped
   const when = useRef(null);
-  const from = useRef("camera");                      // where Back from a sub-step returns to
+  const from = useRef("pick");                        // where Back from a sub-step returns to: pick | camera (the photo's ready screen) | readycard
   const barSeen = useRef(0);
   const looks = useRef(0);
   useEffect(() => { cardTapReader().then(setNfc); }, []);
 
   const go = (next, origin) => { from.current = origin || step.at; setStep(next); };
-  const back = () => setStep({ at: from.current === "pick" ? "pick" : "camera" });
+  const back = () => setStep(from.current === "pick" ? { at: "pick" } : { at: "ready", kind: from.current === "readycard" ? "card" : "photo" });
+  const toPick = () => setStep({ at: "pick" });
+  const toReady = (kind) => setStep({ at: "ready", kind });
   const choose = (accept) => { markPicking(); chooser.current.accept = accept || ""; chooser.current.click(); };
 
   /* ---------------- the camera ---------------- */
@@ -139,11 +144,11 @@ export function Add() {
     }
     if (c.go === "card") {
       if (shot) { const r = await readFrontEitherWay(shot.canvas); return go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "pick"); }
-      return go({ at: "card", start: {} }, "pick");
+      return go({ at: "ready", kind: "card" }, "pick");
     }
     if (c.go === "pass") return choose(".pkpass,application/vnd.apple.pkpass");
     if (c.go === "file") return choose("");
-    go({ at: "camera" });
+    go({ at: "ready", kind: "photo" }, "pick");
   }
 
   /* ---------------- render ---------------- */
@@ -160,21 +165,30 @@ export function Add() {
   return (
     <>
       <input ref={chooser} id="add-file" type="file" hidden onChange={onFile} />
+      {step.at === "ready" && <Ready kind={step.kind} nfc={nfc} onBack={toPick}
+        onStart={() => setStep({ at: step.kind === "card" ? "cardcam" : "camera" })}
+        onType={() => go({ at: "card", start: {} }, "readycard")} onTap={() => go({ at: "card", start: { tap: true } }, "readycard")}
+        onFile={() => choose("")} />}
       {step.at === "camera" && (
-        <DocCamera shape="full" title="Add to your vault" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
-          onCancel={closeAdd} onDone={photographed} onLook={looked} label={liveLabelEl} tools={tools} />
+        <DocCamera shape="full" title="Photograph a document" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
+          onCancel={() => toReady("photo")} onDone={photographed} onLook={looked} label={liveLabelEl} tools={tools} />
+      )}
+      {step.at === "cardcam" && (
+        <DocCamera shape="id1" eyebrow="Payment card" title="The front of the card" hint="Fit the card in the frame, number side up. Never the PIN."
+          onCancel={() => toReady("card")}
+          onDone={async ({ canvas }) => { const r = await readFrontEitherWay(canvas); return () => go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "readycard"); }} />
       )}
       {step.at === "pick" && (
-        <Push title="What is it?" onBack={() => setStep({ at: "camera" })} label="What to add">
+        <Push title="What are you adding?" onBack={() => (step.shot ? toReady("photo") : closeAdd())} label="What to add">
           <div class="kinds">
             {PICK.map((c) => (
               <button class="kind" onClick={() => picked(c, step.shot)}><span class="ico"><Icon name={c.icon} /></span><span><strong>{c.title}</strong><span>{c.sub}</span></span><Icon name="chevron" /></button>
             ))}
           </div>
-          <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
+          <p class="fine" style={{ marginTop: 14 }}>The camera starts only after you choose. Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
         </Push>
       )}
-      {step.at === "photo" && <PhotoReview step={step} setStep={setStep} when={when} onBack={back} onPick={() => go({ at: "pick", shot: step.shot }, "camera")} />}
+      {step.at === "photo" && <PhotoReview step={step} setStep={setStep} when={when} onBack={back} onRetake={() => setStep({ at: "camera" })} onPick={() => go({ at: "pick", shot: step.shot }, "camera")} />}
       {step.at === "file" && <FileReview file={step.file} onBack={back} onAnother={() => choose("")} onPick={() => go({ at: "pick" }, "camera")} />}
       {step.at === "pass" && <PassReview step={step} setStep={setStep} onBack={back} onAnother={() => choose(".pkpass,application/vnd.apple.pkpass")} />}
       {step.at === "id" && <IdFlow key={step.start.rec.createdAt} start={step.start} onExit={back} />}
@@ -183,9 +197,29 @@ export function Add() {
   );
 }
 
+/* ---------------- before the camera ---------------- */
+
+/** What to hold up and one clear "Start camera"; nothing touches the camera until it's tapped. */
+function Ready({ kind, nfc, onBack, onStart, onType, onTap, onFile }) {
+  const g = guideFor(kind);
+  return (
+    <Push eyebrow={g.eyebrow} title={g.title} onBack={onBack} label={`Before the camera: ${g.eyebrow}`}>
+      <div class="banner" data-ready={kind}><span class="b-ico"><Icon name={kind === "card" ? "card" : "camera"} /></span><div><strong>What to show</strong><span>{g.hold}</span></div></div>
+      <p class="small muted" style={{ marginTop: 12 }}>{LIGHT_TIP}</p>
+      <div class="actions">
+        <button class="btn primary block" data-start-camera onClick={onStart}><Icon name="camera" />Start camera</button>
+        {kind === "card" && <button class="btn ghost block" onClick={onType}><Icon name="pencil" />Type it instead</button>}
+        {kind === "card" && nfc?.available && <button class="btn ghost block" onClick={onTap}><Icon name="nfc" />{nfc.kind === "reader" ? "Read a chip" : "Tap the card"}</button>}
+        {kind === "photo" && <button class="btn ghost block" onClick={onFile}><Icon name="file" />Choose a file or photo instead</button>}
+      </div>
+      <p class="fine" style={{ marginTop: 14 }}>The camera stays on this phone and stops when you leave this screen.</p>
+    </Push>
+  );
+}
+
 /* ---------------- the reviews ---------------- */
 
-function PhotoReview({ step, setStep, when, onBack, onPick }) {
+function PhotoReview({ step, setStep, when, onBack, onRetake, onPick }) {
   const [name, setName] = useState(() => `Photo ${(when.current || new Date()).toLocaleDateString()}`);
   const [tags, setTags] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -207,10 +241,10 @@ function PhotoReview({ step, setStep, when, onBack, onPick }) {
   return (
     <Push eyebrow="Photo" title="Check it, then seal it" onBack={onBack} busy={S.sheet.value?.stage != null} label="Add a photo">
       <Review kind="photo" name={name} setName={setName} tags={tags} setTags={setTags}
-        preview={<PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={onBack} />}
+        preview={<PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={onRetake} />}
         note={step.shape === "card" ? <p class="small muted" style={{ marginTop: 8 }}>Looks like a card, but nothing could be read from it. It's kept as a photo; <button class="linklike" type="button" onClick={onPick}>say what it is</button> to file it as an ID or a payment card.</p> : null}
         onChangeKind={onPick} onSeal={seal} disabled={busy}
-        secondary={{ label: "Retake", onClick: onBack }}
+        secondary={{ label: "Retake", onClick: onRetake }}
         fine="One check seals it on this phone. Only the version shown is kept." />
     </Push>
   );

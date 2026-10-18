@@ -107,6 +107,9 @@ try {
     const add = page.locator("button.fab");
     if (await add.isVisible().catch(() => false)) await add.click();
     else await page.getByRole("button", { name: /Add/ }).first().click();
+    await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
+    assert.equal(await page.locator(".doccam").count(), 0, "the camera waits for Start camera");
+    await page.locator(".pushed [data-start-camera]").click();
     await page.locator(".doccam").waitFor({ timeout: 10_000 });
   };
   if (process.env.KEEP_PNG) await page.evaluate(() => { globalThis.__humidKeepPng = true; });

@@ -53,3 +53,21 @@ test("idKindFrom: a license barcode, or the MRZ's own document code", () => {
   assert.equal(idKindFrom({ mrz: { kind: "residence_permit" } }), "residence_permit");
   assert.equal(idKindFrom({}), null);
 });
+
+import { guideFor, GUIDE, SCAN_MODE, LIGHT_TIP } from "../apps/mobile/src/core/addroute.js";
+
+test("choose first: each kind that opens the camera from Add has its own guidance and scan mode", () => {
+  assert.equal(guideFor("card").mode, "card");
+  assert.equal(guideFor("card").shape, "id1");
+  assert.equal(guideFor("photo").mode, "photo");
+  assert.equal(guideFor("photo").shape, "full");
+  assert.equal(guideFor("file"), null, "a file has no camera");
+  for (const g of Object.values(GUIDE)) assert.ok(g.hold.length > 20 && g.title && g.eyebrow);
+  assert.match(LIGHT_TIP, /light/i);
+});
+
+test("the scan mode follows the kind picked: license=barcode, passport=MRZ, card=card scan", () => {
+  assert.equal(SCAN_MODE.driver_license, "barcode");
+  assert.equal(SCAN_MODE.passport, "mrz");
+  assert.equal(SCAN_MODE.card, "card");
+});
