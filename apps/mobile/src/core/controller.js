@@ -26,7 +26,7 @@ import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
   split, combine, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
-  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck,
+  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck, adminCheck,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
 import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, checkIntegrity, applyChip, setImage } from "@humid/idscan";
@@ -104,6 +104,8 @@ const UNREACHABLE = "Can't reach your vault server. Check your connection.";
 const SESSION_LOST = new Set(["session_unknown", "session_expired", "sign_in_required"]);
 const friendly = (e) => {
   if (SESSION_LOST.has(e?.code)) return null;
+  // the server says Check-in locked or erased the vault: show where it stands now
+  if (e?.code === "checkin_missed" || e?.code === "vault_erased") setTimeout(() => loadCheckin(), 0);
   if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The check was cancelled.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";
@@ -604,14 +606,18 @@ export async function unlock(used = false) {
       // The secure chip signs the server's sign-in challenge during the live check.
       sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         sessionKeys(Suite, seed);
-        duress = isDuress(await loadDuressSetting(Suite), used);
+        duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: duressUnreadable });
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
         return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
     await reportPresence(duress);
-    offline = duress ? null : await readOffline();
-    batch(() => { S.session.value = sess; S.lockIssue.value = null; S.offline.value = null; S.decoy.value = duress; S.view.value = "app"; });
+    // online from here on (also when reconnecting from the offline copy), so Check-in can be asked
+    batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
+    if (!S.server.value) await connectServer(); // its policy says whether it offers Check-in
+    await loadCheckin(); // before anything is saved on this device: while Check-in is armed, nothing is
+    offline = duress || checkinArmed() ? null : await readOffline();
+    batch(() => { S.lockIssue.value = null; S.view.value = "app"; });
     await endInterrupt(true, wasOffline ? "Back online." : "Welcome back.", 500);
     refresh();
     loadAlerts();
@@ -627,6 +633,7 @@ export async function unlock(used = false) {
       return;
     }
     clearKeys();
+    batch(() => { S.session.value = null; S.decoy.value = false; S.checkin.value = null; });
     if (wasOffline) lock();
     if (issue) S.lockIssue.value = e.code;
     // No connection: open the offline copy with a live check of its own.
@@ -670,7 +677,7 @@ function sessionKeys(Suite, seed) {
 }
 function clearKeys() {
   wipe(indexKey, offlineKey, settingsKey);
-  indexKey = null; offlineKey = null; settingsKey = null; duressSetting = null;
+  indexKey = null; offlineKey = null; settingsKey = null; duressSetting = null; duressUnreadable = false;
 }
 
 /** The offline copy for this account, opened with the session's key; null if there's none (or it doesn't open). */
@@ -686,7 +693,7 @@ async function readOffline() {
 /** Update part of the offline copy. Only from a real, online session. */
 function keepOffline(patch) {
   const account = S.identity.value?.server?.id;
-  if (S.offline.value || S.decoy.value || !offlineKey || !account || !store) return;
+  if (S.offline.value || S.decoy.value || checkinArmed() || !offlineKey || !account || !store) return;
   offline = { ...(offline || {}), ...patch, v: 1, account, savedAt: new Date().toISOString() };
   const copy = offline, key = offlineKey.slice();
   offlineWrite = offlineWrite.then(async () => {
@@ -708,7 +715,7 @@ async function unlockOffline(used) {
     await withKeys("launch", "Unlock HumID (offline)", async ({ seed, Suite }) => {
       showInterrupt({ progress: 0.7, message: "No connection to your vault. Opening the copy saved on this device…" });
       sessionKeys(Suite, seed);
-      duress = isDuress(await loadDuressSetting(Suite), used);
+      duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: duressUnreadable });
     });
     const copy = await readOffline();
     if (!copy) {
@@ -757,8 +764,10 @@ export function lock(reason) {
   clearKeys(); offline = null;
   knownNames.clear();
   clearTimeout(idleTimer);
+  clearTimeout(checkinTimer);
   batch(() => {
     S.view.value = "locked";
+    S.checkin.value = null;
     S.session.value = null;
     S.items.value = [];
     S.ledger.value = null;
@@ -1794,7 +1803,8 @@ export async function removeAnchor() {
 /** Inside a live check: the setting this device sealed, re-sealing one an older release left in the clear. */
 async function loadDuressSetting(Suite) {
   const id = S.identity.value;
-  const { setting, record } = await openDuress(Suite, settingsKey, id);
+  const { setting, record, unreadable } = await openDuress(Suite, settingsKey, id);
+  duressUnreadable = !!unreadable;
   if (record) {
     try {
       delete record.schema;
@@ -1805,6 +1815,8 @@ async function loadDuressSetting(Suite) {
   duressSetting = setting;
   return setting;
 }
+
+let duressUnreadable = false; // the sealed setting didn't open at the last unlock (see core/duress.js)
 
 /** The setting as the session opened it ({ enabled, gesture }); "off" in a decoy session or before unlock. */
 const currentDuress = () => (S.decoy.value || !duressSetting ? { ...DURESS_OFF } : { ...duressSetting });
@@ -1848,6 +1860,119 @@ export async function clearLockdown() {
   } catch (e) { if (!cancelled(e)) toast(e?.code === "too_soon" ? "Lockdown can be lifted once things have been calm for a while. Try again later." : friendly(e), "error"); }
 }
 
+/* ---------------- Check-in (docs/CHECKIN.md) ---------------- */
+// A timer the holder arms before a high-stakes situation: check in with a live check before
+// each deadline, or the vault locks, then is erased for good (its document keys destroyed).
+// The server holds the clock and the keys. This keeps the app's view of it fresh while
+// unlocked, asks for the live checks, and keeps nothing on this device while it's armed.
+
+let checkinTimer = null;
+const warned = { deadline: 0, at: new Set() };
+/** Is Check-in armed (or locked by a missed check-in)? While it is, nothing is kept on this device. */
+export const checkinArmed = () => ["armed", "locked"].includes(S.checkin.value?.state);
+/** Does this server offer Check-in? (Its policy hint; the gateway enforces it.) */
+export const checkinOffered = () => !!S.server.value?.policy?.checkin;
+
+/** The offline copy goes, and none is written, while Check-in is armed: a phone held offline must show nothing. */
+function dropOfflineCopy() {
+  offline = null;
+  store?.clearOffline().catch(() => {});
+  S.offlineReady.value = false;
+}
+
+export async function loadCheckin() {
+  if (!checkinOffered() || S.offline.value || !S.session.value) { S.checkin.value = null; return; }
+  try {
+    S.checkin.value = await api.checkin();
+    if (checkinArmed()) dropOfflineCopy();
+  } catch { /* keep what's shown; the next look tries again */ }
+  watchCheckin();
+}
+
+/** Look again around the next moment that matters (the deadline, the erase), and every minute anyway. Warn as it nears. */
+function watchCheckin() {
+  clearTimeout(checkinTimer);
+  const st = S.checkin.value;
+  if (!st || !checkinArmed()) return;
+  const now = Date.now();
+  const next = st.state === "armed" ? st.deadline : st.erasesAt;
+  checkinTimer = setTimeout(loadCheckin, Math.max(1000, Math.min(60_000, next - now + 500)));
+  if (S.view.value !== "app") return;
+  if (warned.deadline !== st.deadline) { warned.deadline = st.deadline; warned.at.clear(); }
+  const left = st.deadline - now;
+  if (st.state === "locked") {
+    if (!warned.at.has("missed")) { warned.at.add("missed"); buzz([60, 80, 60]); toast(`Check-in missed. Check in now, or your vault is erased at ${clock(st.erasesAt)}.`, "error"); }
+    return;
+  }
+  for (const m of [2, 10, 30]) {
+    if (left <= m * 60_000 && !warned.at.has(m)) {
+      for (const k of [2, 10, 30]) if (k >= m) warned.at.add(k); // one warning per step, the nearest
+      buzz([40, 60, 40]);
+      toast(`Check in within ${m} minutes, by ${clock(st.deadline)}.`, "warn");
+      break;
+    }
+  }
+}
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/**
+ * Turn Check-in on, or change its settings (which starts a new window). Documents marked for
+ * the decoy view are kept out of the erase, so a forced unlock still shows them.
+ * Returns { ok } or { unsplit: [{ id, name }] }: documents sealed before split keys, which
+ * couldn't be erased for good, so Check-in refuses until they're re-sealed or deleted.
+ */
+export async function armCheckin({ windowMs, maxWindowMs, graceMs }) {
+  const was = S.checkin.value?.state;
+  try {
+    needVault();
+    const keep = S.decoy.value ? [] : S.items.value.filter((i) => i.decoy).map((i) => i.id);
+    const st = await withStepUp("armCheckin", [], "checkin", checkinArmed() ? "Change Check-in" : "Turn on Check-in",
+      async ({ proof }) => api.armCheckin({ windowMs, maxWindowMs, graceMs, keep }, proof));
+    S.checkin.value = st;
+    dropOfflineCopy();
+    watchCheckin();
+    toast(was === "armed" || was === "locked" ? `Check-in changed. Next by ${clock(st.deadline)}.` : `Check-in is on. Check in by ${clock(st.deadline)}.`);
+    return { ok: true };
+  } catch (e) {
+    if (cancelled(e)) return { ok: false };
+    if (e?.code === "unsplit_items") return { ok: false, unsplit: (e.details?.items || []).map((id) => ({ id, name: knownNames.get(id) || "An older document" })) };
+    toast(friendly(e), "error");
+    return { ok: false };
+  }
+}
+
+/** Check in: one live check, and the next deadline from now (nextWindowMs: a longer one, up to the maximum). */
+export async function checkIn(nextWindowMs) {
+  try {
+    needVault();
+    const st = await withStepUp("checkIn", [], "checkin", "Check in", async ({ proof }) => api.checkIn({ nextWindowMs }, proof));
+    S.checkin.value = st;
+    watchCheckin();
+    toast(`Checked in. Next by ${clock(st.deadline)}.`);
+    return true;
+  } catch (e) {
+    if (!cancelled(e)) toast(friendly(e), "error");
+    loadCheckin();
+    return false;
+  }
+}
+
+export async function disarmCheckin() {
+  try {
+    needVault();
+    const st = await withStepUp("disarmCheckin", [], "checkin", "Turn off Check-in", async ({ proof }) => api.disarmCheckin(proof));
+    S.checkin.value = st;
+    watchCheckin();
+    S.sheet.value = null;
+    toast("Check-in is off. Nothing will be erased.");
+    return true;
+  } catch (e) {
+    if (!cancelled(e)) toast(friendly(e), "error");
+    loadCheckin();
+    return false;
+  }
+}
+
 /* ---------------- verification station (operators) ---------------- */
 
 export async function stationLookup(code) {
@@ -1878,6 +2003,36 @@ export async function stationVerify(code, chip, checks) {
       showInterrupt({ progress: 0.6, message: "Checking the chip with its issuing country…" });
       return api.stationVerify(code, { chip, checks, signature: chip.aaSignature }, proof);
     });
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
+}
+
+/* ---------------- managing a HumID server (docs/ADMIN.md) ---------------- */
+
+/** How the server is doing, for its administrators; null for everyone else (asked quietly). */
+export async function loadAdminSummary() {
+  if (S.offline.value || S.decoy.value || (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) { S.adminSummary.value = null; return; }
+  try { S.adminSummary.value = await api.adminSummary(); } catch { S.adminSummary.value = null; }
+}
+
+/** What a code from the server's admin console asks for. */
+export async function findAdminRequest(code) {
+  try { needVault(); return await api.adminRequest(code); }
+  catch (e) { toast(friendly(e), "error"); return null; }
+}
+
+/**
+ * Approve exactly that request with a live check. For becoming an administrator, returns the
+ * admin check computed from this device's own key: the console must show the same.
+ */
+export async function approveAdminRequest(req) {
+  try {
+    let check = null;
+    await withStepUp("approveAdmin", [req.code], "admin", req.kind === "enrol" ? "Become a server administrator" : req.title, async ({ dkeys, proof }) => {
+      check = adminCheck(dkeys.dsaPk);
+      return api.approveAdmin(req.code, req.digest, proof);
+    });
+    loadAdminSummary();
+    return { check };
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
 

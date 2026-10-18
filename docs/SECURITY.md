@@ -200,6 +200,25 @@ How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suit
 What offline mode doesn't do: open documents. Keeping a document readable offline
 would mean its key on the device, which is what split keys exist to prevent.
 
+## Check-in
+
+A holder can arm a timer before a high-stakes situation (docs/CHECKIN.md):
+check in with a live check before each deadline, or the vault locks, then is
+erased for good. While it's armed, every split key of the account is sealed
+under a fuse key that keyshare keeps in memory only; destroying it is the
+erase, so every copy of those keys, live or in a backup made since arming,
+becomes unreadable. A duress unlock while armed erases at once and leaves the
+duress session looking ordinary. The duress setting itself is sealed on the
+phone (see the 2.0 security pass below), so a copy of the phone doesn't tell a
+coercer which gesture to avoid.
+
+What it doesn't cover: an operator who changes keyshare to keep fuse keys;
+backups made before arming (they hold the keys of documents sealed before it);
+item names in vault backups, readable with a recovered account seed; anything
+already saved or exported; a server seized while running. A keyshare restart
+erases every armed vault, by design. Off by default (`HUMID_CHECKIN`) until
+push reminders exist.
+
 ## 2.0 security pass
 
 A review of the app shell and what it keeps on the device (October 2026); the item-by-item
@@ -233,7 +252,7 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
    separate storage from the vault; encrypted, tested backups of every volume.
 5. Push and email alerts for new devices and recoveries.
 6. Account-key rotation after a device is removed.
-7. Penetration test of the deployed stack.
+7. Penetration test of the deployed stack, including the admin console (docs/ADMIN.md).
 8. Privacy policy, terms and data-handling review with counsel.
 9. The access pass is now sealed at rest (see *The access pass at rest* below). Still
    to do: hold the install key in the platform's secret store (a non-biometric Keychain,

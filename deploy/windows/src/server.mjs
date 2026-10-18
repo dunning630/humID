@@ -33,9 +33,12 @@ import { createKeyshare } from "../../../services/keyshare/src/server.js";
 import { readEnvFile, updateEnvFile, initialEnvText, validate, DEFAULTS } from "./config.mjs";
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
+import { createAdminBridge } from "./adminbridge.mjs";
+import { startStatus, watchLog } from "./status.mjs";
 
-/* global __HUMID_SERVER_VERSION__ */
+/* global __HUMID_SERVER_VERSION__, __HUMID_APP_VERSION__ */
 const VERSION = typeof __HUMID_SERVER_VERSION__ === "string" ? __HUMID_SERVER_VERSION__ : "dev";
+const APP_VERSION = typeof __HUMID_APP_VERSION__ === "string" ? __HUMID_APP_VERSION__ : "dev";
 const here = dirname(fileURLToPath(import.meta.url));
 
 const argv = process.argv.slice(2);
@@ -111,6 +114,7 @@ function show() {
 async function run({ service }) {
   if (!existsSync(envFile)) fail(`${envFile} doesn't exist. Run: humid-server.mjs init`);
   teeToFile(join(root, "logs", "humid-server.log"), { quiet: service });
+  const logWatch = watchLog(); // errors and warnings of the last hour, for the admin console
   const log = (level, msg, extra = {}) => process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level, service: "windows-host", msg, ...extra }) + "\n");
   process.on("uncaughtException", (e) => { log("error", "uncaught", { err: e.stack }); process.exit(1); });
   process.on("unhandledRejection", (e) => { log("error", "unhandled rejection", { err: e?.stack || String(e) }); process.exit(1); });
@@ -142,6 +146,8 @@ async function run({ service }) {
     port: 0, dataDir: data("gateway"), internalSk: process.env.HUMID_INTERNAL_SK,
     upstreams: { identity: local(identity), vault: local(vault), ledger: local(ledger), recovery: local(recovery), access: local(access), keyshare: local(keyshare) },
     trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
+    admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
+    checkin: S("HUMID_CHECKIN", "off"), // docs/CHECKIN.md
   });
   await gateway.start();
 
@@ -158,6 +164,7 @@ async function run({ service }) {
 
   const info = {
     version: VERSION,
+    appVersion: APP_VERSION,
     localUrl: url(edge),
     publicUrl: S("HUMID_PUBLIC_URL", "") || null,
     kid: gateway.htp.kid,
@@ -168,6 +175,13 @@ async function run({ service }) {
     startedAt: new Date().toISOString(),
     pid: process.pid,
   };
+  startStatus({
+    root, version: VERSION, appVersion: APP_VERSION, log: logWatch, edgePort: port,
+    services: { identity, vault, ledger, recovery, access, keyshare, gateway },
+    sessions: () => gateway.htp.sessions.size,
+    checkinArmed: () => keyshare.armedCount(), // the console warns before anything that stops the server
+    info: { kid: info.kid, fingerprint: info.fingerprint, publicUrl: info.publicUrl, devicePolicy: info.devicePolicy, registration: info.registration },
+  });
   const tmp = join(root, "server.json.tmp");
   writeFileSync(tmp, JSON.stringify(info, null, 2));
   renameSync(tmp, join(root, "server.json"));

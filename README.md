@@ -16,7 +16,10 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), [docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups), and [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC).
+doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC),
+[docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone),
+[docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in), and
+[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups).
 
 ## Try it on your machine
 
@@ -70,7 +73,12 @@ and "Use a demo access code" pays for a new HumID.
   with witnesses, 7 days otherwise); every surviving device is alerted and can
   veto. See [docs/CONTINUITY.md](docs/CONTINUITY.md).
 - **Duress gesture:** unlock into a decoy view while the server silently locks
-  sensitive changes and slows recoveries.
+  sensitive changes and slows recoveries. Which gesture it is stays sealed on
+  the phone until a live check.
+- **Check-in:** before a high-stakes situation, arm a timer and check in with
+  a live check every hour or two. Miss one and the vault locks; miss the grace
+  period, or unlock with the duress gesture, and its documents' keys are
+  destroyed for good. See [docs/CHECKIN.md](docs/CHECKIN.md).
 - **Offline, read only:** with no connection, the same live check still
   opens your document list, Activity and Security as of the last sync.
   Documents themselves open only with the vault. See

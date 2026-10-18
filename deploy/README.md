@@ -56,6 +56,7 @@ Android apps.
 | `HUMID_REQUIRE_LOCKED_BOOT` | `1` | Refuse Android phones with an unlocked bootloader or failed verified boot. |
 | `RECOVERY_DELAY_MS` | `259200000` (72 h) | How long a card or contacts recovery waits before release. |
 | `VAULT_QUOTA_BYTES` | `262144000` (250 MB) | Storage per account. |
+| `HUMID_CHECKIN` | `off` | `on` lets holders arm Check-in: their vault is erased for good unless they check in every hour or two ([docs/CHECKIN.md](../docs/CHECKIN.md)). Its keys live in keyshare's memory only, so **restarting or updating keyshare erases every armed vault**. Off until push reminders exist. |
 | `HUMID_REGISTRY`, `HUMID_VERSION` | `ghcr.io/dunning630`, `latest` | Where to pull images from, and which version. |
 
 ## Updating

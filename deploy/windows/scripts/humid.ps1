@@ -3,10 +3,18 @@
   HumID Server for Windows (__HUMID_SERVER_VERSION__): install, run and manage the HumID vault server.
 
 .DESCRIPTION
-  Runs the five HumID services and a local web edge as one background task
+  Runs the HumID services and a local web edge as one background task
   that starts with Windows, even when nobody is signed in. It listens on
   127.0.0.1 only; phones reach it through a tunnel (Tailscale Funnel or
   Cloudflare Tunnel), so nothing on your router needs to change.
+
+  Beside it runs HumID Admin, the admin console (docs/ADMIN.md): server health,
+  Windows and HumID updates, backups. It's on 127.0.0.1:8490 only, and every
+  change it makes waits for a live check on an administrator's phone.
+
+  With Check-in on (docs/CHECKIN.md), an armed vault's keys live in the
+  server's memory only, so the commands that stop the server say how many
+  vaults that would erase and go on only once you type ERASE.
 
   Run from Terminal (Admin):
     humid install [-DevicePolicy attested|biometric|demo] [-AppleTeamId ABCDE12345] [-Port 8480] [-StayAwake]
@@ -18,6 +26,9 @@
     humid show                                    print the settings (secret key hidden)
     humid mint 50 [batch-name]                    print 50 new access codes to sell (cash or online)
     humid backup [-Path file.zip] | restore -Path file.zip
+    humid console                                 open the admin console (a sign-in link that works once)
+    humid admin token <github-token>              let the console check the private repository for HumID updates
+    humid admin token clear | admin repo owner/name | admin reset (forget every administrator phone)
     humid uninstall [-RemoveData]
 
   ("humid" works once installed. Before that, run .\humid.ps1 from the unzipped folder,
@@ -26,7 +37,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'expose', 'help')]
+  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'expose', 'console', 'admin', 'probe', 'job-run', 'help')]
   [string]$Command = 'help',
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
   [string[]]$Rest = @(),
@@ -62,6 +73,13 @@ $LogFile     = Join-Path $DataRoot 'logs\humid-server.log'
 $NodeExe     = Join-Path $InstallDir 'node\node.exe'
 $ServerJs    = Join-Path $InstallDir 'humid-server.mjs'
 $PackageDir  = $PSScriptRoot
+$AdminJs     = Join-Path $InstallDir 'humid-admin.mjs'
+$AdminDir    = Join-Path $DataRoot 'admin'        # the console's own records: SYSTEM and Administrators only
+$BackupDir   = Join-Path $DataRoot 'backups'      # SYSTEM and Administrators only
+$AdminLog    = Join-Path $DataRoot 'logs\humid-admin.log'
+$PrevDir     = "$InstallDir.previous"             # the version before the last update, for rollback
+$AdminTask   = 'HumID Admin'
+$JobTask     = 'HumID Admin Job'
 
 # Well-known SIDs, so this works on every Windows language.
 $SidSystem       = 'S-1-5-18'
@@ -98,6 +116,35 @@ function Confirm-Yes([string]$Question, [bool]$Default = $true) {
   $a = Read-Host "$Question $hint"
   if ([string]::IsNullOrWhiteSpace($a)) { return $Default }
   return $a.Trim().ToLower().StartsWith('y')
+}
+
+# Check-in (docs/CHECKIN.md) keeps an armed vault's keys in the server's memory only, so anything
+# that stops the server erases every armed vault for good. The server writes how many are armed to
+# server-status.json every 15 s; a file older than 45 s means it isn't running, and then none is left.
+function Get-ArmedCount {
+  $f = Join-Path $DataRoot 'server-status.json'
+  try {
+    $item = Get-Item -LiteralPath $f -ErrorAction Stop
+    if (((Get-Date).ToUniversalTime() - $item.LastWriteTimeUtc).TotalSeconds -gt 45) { return 0 }
+    $s = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+    if ($s.checkin -and $s.checkin.armed) { return [int]$s.checkin.armed }
+  } catch {}
+  return 0
+}
+
+# Before anything that stops the server: say how many armed vaults it would erase, and go on only
+# when ERASE is typed. -Quiet goes on after the warning, as the console's approved jobs do (the
+# console showed the same count before the phone approved).
+function Confirm-ArmedErase([string]$What) {
+  $n = Get-ArmedCount
+  if ($n -le 0) { return }
+  $which = if ($n -eq 1) { '1 vault is' } else { "$n vaults are" }
+  Warn "Check-in: $which armed. Their keys live only in the server's memory, so $What erases them for good."
+  if ($Quiet) { Warn 'Going ahead (-Quiet).'; return }
+  Say '   Ask their holders to turn Check-in off first.'
+  $a = $null
+  try { $a = Read-Host 'Type ERASE to go ahead anyway' } catch {}
+  if (("$a").Trim() -cne 'ERASE') { Die 'Stopped. Nothing was changed.' }
 }
 
 function Account-Of([string]$Sid) {
@@ -200,6 +247,51 @@ function Set-DataAcl {
   if ($code -ne 0) { Die "Couldn't set permissions on $DataRoot." }
 }
 
+function Set-PrivateAcl([string]$Dir) {
+  # SYSTEM and Administrators only: the HumID server's own account (LOCAL SERVICE) can't read it.
+  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+  $code = Run-Native 'icacls.exe' @($Dir, '/inheritance:r', '/grant:r', "*$($SidSystem):(OI)(CI)F", "*$($SidAdmins):(OI)(CI)F") -Silent
+  if ($code -ne 0) { throw "Couldn't set permissions on $Dir." }
+}
+
+function Stop-Admin {
+  $t = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
+  if ($t -and $t.State -eq 'Running') { Stop-ScheduledTask -TaskName $AdminTask; Start-Sleep -Seconds 1 }
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($AdminJs) } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Start-Admin {
+  if (Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $AdminTask }
+}
+
+function Register-AdminTasks {
+  # The console runs as SYSTEM: it installs Windows updates and new HumID versions, but only
+  # what an administrator's phone approved (docs/ADMIN.md). It listens on 127.0.0.1 only.
+  $system = New-ScheduledTaskPrincipal -UserId (Account-Of $SidSystem) -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+  $action = New-ScheduledTaskAction -Execute $NodeExe -Argument "--no-warnings `"$AdminJs`" run --service --root `"$DataRoot`"" -WorkingDirectory $InstallDir
+  Register-ScheduledTask -TaskName $AdminTask -Description "HumID admin console ($Version). 127.0.0.1 only; changes need an administrator's phone." `
+    -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal $system -Settings $settings -Force | Out-Null
+  # Approved work (updates, backups, restarts) runs here, apart from the console, so an
+  # update can replace the console and restart it without stopping itself.
+  $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $jobAction = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'humid.ps1')`" job-run" -WorkingDirectory $InstallDir
+  $jobSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName $JobTask -Description "HumID admin jobs: runs what an administrator approved in the console." `
+    -Action $jobAction -Principal $system -Settings $jobSettings -Force | Out-Null
+}
+
+function Make-Backup([string]$Target) {
+  # A consistent copy needs the databases closed: stop, zip settings + data, start again.
+  New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
+  Stop-Server
+  try { Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $Target -Force }
+  finally { Start-Server | Out-Null }
+}
+
 function Find-Tool([string]$Name, [string[]]$Candidates) {
   $c = Get-Command $Name -ErrorAction SilentlyContinue
   if ($c) { return $c.Source }
@@ -273,7 +365,8 @@ function Do-Install {
   Say ''
 
   $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if ($existing) { Step 'Updating an existing install (settings and data are kept).'; Stop-Server }
+  if ($existing) { Confirm-ArmedErase 'updating HumID Server'; Step 'Updating an existing install (settings and data are kept).'; Stop-Server }
+  Stop-Admin
 
   # Program files
   $samePlace = (Resolve-Path $PackageDir).Path.TrimEnd('\') -eq $InstallDir.TrimEnd('\')
@@ -304,6 +397,8 @@ function Do-Install {
   if ($Port) { $sets += @('--set', "HUMID_PORT=$Port") }
   Invoke-Server (@('init', '--root', $DataRoot) + $sets)
   Set-DataAcl
+  Set-PrivateAcl $AdminDir
+  Set-PrivateAcl $BackupDir
 
   # Background task: at startup, as LOCAL SERVICE, restarted if it stops.
   Step "Registering the '$TaskName' task (starts with Windows, runs as LOCAL SERVICE)"
@@ -315,6 +410,8 @@ function Do-Install {
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -Priority 5
   Register-ScheduledTask -TaskName $TaskName -Description "HumID vault server ($Version). Listens on 127.0.0.1; reached through a tunnel." `
     -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Step "Registering '$AdminTask' (the admin console, as SYSTEM, 127.0.0.1 only) and '$JobTask'"
+  Register-AdminTasks
 
   # "humid" on the PATH for administrators' terminals
   $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -335,6 +432,7 @@ function Do-Install {
 
   if ($NoStart) { Good 'Installed. Start it with: humid start'; return }
   if (-not (Start-Server)) { exit 1 }
+  Start-Admin
   Do-Status
   if (-not (Get-Setting 'HUMID_PUBLIC_URL')) {
     Say ''
@@ -346,11 +444,16 @@ function Do-Install {
 
 function Do-Uninstall {
   Require-Admin
+  Confirm-ArmedErase 'uninstalling'
   Stop-Server
-  if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Good 'Background task removed.'
+  Stop-Admin
+  foreach ($n in @($TaskName, $AdminTask, $JobTask)) {
+    if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) {
+      Unregister-ScheduledTask -TaskName $n -Confirm:$false
+      Good "Background task '$n' removed."
+    }
   }
+  if (Test-Path $PrevDir) { Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue }
   $url = Get-Setting 'HUMID_PUBLIC_URL'
   if ($url -like '*.ts.net') {
     $ts = Find-Tool 'tailscale' @("$env:ProgramFiles\Tailscale\tailscale.exe")
@@ -393,6 +496,13 @@ function Do-Status {
     if ($info.iphones) { Say "  iPhones         accepted" } else { Say "  iPhones         not yet (humid set HUMID_IOS_APP_ID=<TeamID>.app.humid.vault)" }
     Say "  Running since   $($info.startedAt)"
   }
+  if ((Get-Setting 'HUMID_CHECKIN' 'off') -eq 'on') {
+    $armed = Get-ArmedCount
+    if ($armed) { Say "  Check-in        on, $armed armed (anything that stops the server erases them)" } else { Say "  Check-in        on, none armed" }
+  }
+  $at = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
+  if ($at) { Say ("  Admin console   http://127.0.0.1:{0}  ({1}; open it with: humid console)" -f (Get-Setting 'HUMID_ADMIN_PORT' '8490'), $at.State) }
+  else { Say "  Admin console   not installed (run humid install again)" }
   Say "  Data            $DataRoot"
   Say "  Log             $LogFile"
   if (-not $healthy) { Show-RecentErrors }
@@ -402,29 +512,28 @@ function Do-Status {
 function Do-Set {
   Require-Admin; Require-Installed
   if (-not $Rest -or $Rest.Count -eq 0) { Die 'Usage: humid set KEY=VALUE [KEY=VALUE ...]' }
+  Confirm-ArmedErase 'changing a setting, which restarts the server,'
   Invoke-Server (@('set', '--root', $DataRoot) + $Rest)
   Stop-Server
   if (-not (Start-Server)) { exit 1 }
+  Stop-Admin; Start-Admin
 }
 
 function Do-Backup {
   Require-Admin; Require-Installed
   $target = $Path
   if (-not $target) { $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("HumID-backup-{0}.zip" -f (Get-Date -Format 'yyyyMMdd-HHmm')) }
+  Confirm-ArmedErase 'a backup, which stops the server,'
   Step 'Stopping the server for a consistent copy...'
-  Stop-Server
-  try {
-    Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $target -Force
-    Good "Backup written to $target"
-    Warn 'It holds the server keys and every sealed document. Keep it somewhere safe and offline.'
-  } finally {
-    Start-Server | Out-Null
-  }
+  Make-Backup $target
+  Good "Backup written to $target"
+  Warn 'It holds the server keys and every sealed document. Keep it somewhere safe and offline.'
 }
 
 function Do-Restore {
   Require-Admin; Require-Installed
   if (-not $Path -or -not (Test-Path $Path)) { Die 'Usage: humid restore -Path <backup.zip>' }
+  Confirm-ArmedErase 'restoring a backup'
   if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($Path)?" $false)) { return }
   Stop-Server
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -441,6 +550,7 @@ function Do-Expose {
   Require-Admin; Require-Installed
   $how = 'help'
   if ($Rest -and $Rest.Count -gt 0) { $how = $Rest[0].ToLower() }
+  if (@('tailscale', 'cloudflare', 'none') -contains $how) { Confirm-ArmedErase 'changing the public address, which restarts the server,' }
   $p = [int](Get-Setting 'HUMID_PORT' '8480')
   switch ($how) {
     'tailscale' {
@@ -508,12 +618,415 @@ function Do-Logs {
   if ($Follow) { Get-Content -LiteralPath $LogFile -Tail 60 -Wait } else { Get-Content -LiteralPath $LogFile -Tail 60 }
 }
 
+# ---------------------------------------------------------------- admin console (docs/ADMIN.md)
+
+function New-Token {
+  $bytes = New-Object byte[] 32
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Sha256-Hex([string]$Text) {
+  $h = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+  return (($h | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Write-JsonAtomic([string]$File, $Value) {
+  $tmp = "$File.$PID.tmp"
+  [IO.File]::WriteAllText($tmp, ($Value | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
+  Move-Item -LiteralPath $tmp -Destination $File -Force
+}
+
+function Do-Console {
+  Require-Admin; Require-Installed
+  $t = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
+  if (-not $t) { Die 'The admin console is not installed yet. Run: humid install (from the HumID-Server folder of version 2.0.0 or later).' }
+  if ($t.State -ne 'Running') { Step 'Starting the admin console...'; Start-ScheduledTask -TaskName $AdminTask; Start-Sleep -Seconds 3 }
+  # A one-time sign-in link: only its hash is stored, it works once, for two minutes.
+  $token = New-Token
+  $logins = Join-Path $AdminDir 'logins'
+  New-Item -ItemType Directory -Force -Path $logins | Out-Null
+  $exp = [DateTimeOffset]::UtcNow.AddMinutes(2).ToUnixTimeMilliseconds()
+  [IO.File]::WriteAllText((Join-Path $logins "$(Sha256-Hex $token).json"), "{`"exp`":$exp}")
+  $url = "http://127.0.0.1:$(Get-Setting 'HUMID_ADMIN_PORT' '8490')/#login=$token"
+  # Explorer opens it in your normal (not elevated) browser.
+  try { Start-Process -FilePath 'explorer.exe' -ArgumentList $url } catch {}
+  try { Set-Clipboard -Value $url } catch {}
+  Good 'Opening the admin console in your browser. The link works once, for two minutes (also copied to the clipboard):'
+  Say "   $url"
+}
+
+function Do-AdminCmd {
+  Require-Admin; Require-Installed
+  $sub = ''; if ($Rest -and $Rest.Count -gt 0) { $sub = $Rest[0].ToLower() }
+  $envFile = Join-Path $AdminDir 'admin.env'
+  Set-PrivateAcl $AdminDir
+  switch ($sub) {
+    'token' {
+      $tok = ''; if ($Rest.Count -gt 1) { $tok = $Rest[1].Trim() }
+      if ($tok -eq 'clear') { $tok = '' }
+      elseif ($tok -notmatch '^(github_pat_|ghp_)[A-Za-z0-9_]{20,}$') {
+        Say 'Make a token at github.com > Settings > Developer settings > Fine-grained tokens:'
+        Say '   Repository access: only the HumID repository. Permissions: Contents, read-only. Nothing else.'
+        Say 'Then run:  humid admin token github_pat_...'
+        exit 1
+      }
+      Set-AdminSetting $envFile 'HUMID_UPDATE_TOKEN' $tok
+      if ($tok) { Good 'Saved. The console can now check the repository for HumID updates (it never shows the token).' } else { Good 'Token removed.' }
+    }
+    'repo' {
+      $r = ''; if ($Rest.Count -gt 1) { $r = $Rest[1].Trim() }
+      if ($r -notmatch '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') { Die 'Usage: humid admin repo owner/name' }
+      Set-AdminSetting $envFile 'HUMID_UPDATE_REPO' $r
+      Good "Updates come from github.com/$r"
+    }
+    'reset' {
+      if (-not $Quiet -and -not (Confirm-Yes 'Forget every administrator phone? Until you add one again, nothing can be changed from the console.' $false)) { return }
+      $code = Run-Native $NodeExe @('--no-warnings', $AdminJs, 'reset-admins', '--root', $DataRoot)
+      if ($code -ne 0) { Die 'Reset failed.' }
+    }
+    default {
+      Say 'Usage:'
+      Say '   humid admin token <github-token>    read-only token for the private repository (HumID updates)'
+      Say '   humid admin token clear'
+      Say '   humid admin repo owner/name         where HumID updates come from (default dunning630/humID)'
+      Say '   humid admin reset                   forget every administrator phone (break-glass)'
+    }
+  }
+}
+
+function Set-AdminSetting([string]$File, [string]$Name, [string]$Value) {
+  $lines = @()
+  if (Test-Path $File) { $lines = @(Get-Content -LiteralPath $File | Where-Object { $_ -notmatch "^\s*$Name\s*=" }) }
+  if ($Value) { $lines += "$Name=$Value" }
+  [IO.File]::WriteAllText($File, (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
+}
+
+function Read-PackageVersion([string]$Dir) {
+  $f = Join-Path $Dir 'VERSION.txt'
+  if (-not (Test-Path $f)) { return $null }
+  $m = [regex]::Match((Get-Content -LiteralPath $f -TotalCount 1), 'HumID Server for Windows (\d+\.\d+\.\d+)')
+  if ($m.Success) { return $m.Groups[1].Value } else { return $null }
+}
+
+# One JSON line about this computer, for the admin console.
+function Do-Probe {
+  $o = [ordered]@{}
+  $o.computer = $env:COMPUTERNAME
+  try {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $o.os = @{ caption = [string]$os.Caption; version = [string]$os.Version; build = [string]$os.BuildNumber }
+    $o.lastBoot = $os.LastBootUpTime.ToUniversalTime().ToString('o')
+  } catch {}
+  $o.disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue | ForEach-Object {
+    @{ drive = [string]$_.DeviceID; label = [string]$_.VolumeName; sizeBytes = [int64]$_.Size; freeBytes = [int64]$_.FreeSpace } })
+  try {
+    $mp = Get-MpComputerStatus -ErrorAction Stop
+    $o.defender = @{ available = $true; antivirus = [bool]$mp.AntivirusEnabled; realtime = [bool]$mp.RealTimeProtectionEnabled; signatureAgeDays = [int]$mp.AntivirusSignatureAge; signatureVersion = [string]$mp.AntivirusSignatureVersion }
+  } catch { $o.defender = @{ available = $false } }
+  try { $o.firewall = @(Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object { @{ profile = [string]$_.Name; enabled = ([string]$_.Enabled -eq 'True') } }) } catch { $o.firewall = @() }
+  try {
+    $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+    $o.bitlocker = @{ drive = $env:SystemDrive; status = $(if ([string]$bl.ProtectionStatus -eq 'On') { 'on' } else { 'off' }) }
+  } catch { $o.bitlocker = $null }
+  $reasons = @()
+  if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $reasons += 'Windows Update' }
+  if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $reasons += 'Component servicing' }
+  $o.pendingReboot = ($reasons.Count -gt 0)
+  $o.pendingRebootReasons = $reasons
+  $o.tasks = @(foreach ($n in @($TaskName, $AdminTask, $JobTask)) {
+    $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+    if ($t) { $i = Get-ScheduledTaskInfo -TaskName $n; @{ name = $n; state = [string]$t.State; lastResult = [int64]$i.LastTaskResult; lastRun = $(if ($i.LastRunTime) { $i.LastRunTime.ToUniversalTime().ToString('o') } else { $null }) } }
+  })
+  $o.installed = @{ version = (Read-PackageVersion $InstallDir) }
+  $prev = Read-PackageVersion $PrevDir
+  $o.previous = $(if ($prev) { @{ version = $prev } } else { $null })
+  $url = Get-Setting 'HUMID_PUBLIC_URL'
+  if ($url -like '*.ts.net') { $svc = Get-Service -Name 'Tailscale' -ErrorAction SilentlyContinue; $o.tunnel = @{ kind = 'Tailscale'; state = $(if ($svc) { [string]$svc.Status } else { 'not installed' }) } }
+  elseif ($url) { $svc = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue; $o.tunnel = @{ kind = 'Cloudflare Tunnel'; state = $(if ($svc) { [string]$svc.Status } else { 'not installed' }) } }
+  [Console]::Out.WriteLine(($o | ConvertTo-Json -Depth 6 -Compress))
+}
+
+# ---------------------------------------------------------------- approved jobs
+
+$script:Job = $null
+$script:JobFile = $null
+
+function Job-Save { Write-JsonAtomic $script:JobFile $script:Job }
+function Job-Step([string]$Msg) {
+  $script:Job.steps += @(@{ t = (Get-Date).ToUniversalTime().ToString('o'); msg = $Msg })
+  Job-Save
+}
+
+function Do-JobRun {
+  $dir = Join-Path $AdminDir 'jobs'
+  if (-not (Test-Path $dir)) { return }
+  # A job left "running" by a process that's gone (a crash, a power cut) failed.
+  foreach ($f in Get-ChildItem -LiteralPath $dir -Filter '*.json' | Where-Object { $_.Name -notlike '*.request.json' }) {
+    try {
+      $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
+      if ($j.state -eq 'running' -and -not (Get-Process -Id $j.pid -ErrorAction SilentlyContinue)) {
+        $j.state = 'failed'; $j | Add-Member -Force -NotePropertyName error -NotePropertyValue 'Interrupted (the computer restarted or the job stopped).'
+        Write-JsonAtomic $f.FullName $j
+      }
+    } catch {}
+  }
+  while ($true) {
+    $next = Get-ChildItem -LiteralPath $dir -Filter '*.request.json' | Sort-Object Name |
+      Where-Object { -not (Test-Path (Join-Path $dir ($_.Name -replace '\.request\.json$', '.json'))) } | Select-Object -First 1
+    if (-not $next) { break }
+    Run-Job $next.FullName
+  }
+}
+
+function Run-Job([string]$RequestFile) {
+  $req = Get-Content -LiteralPath $RequestFile -Raw | ConvertFrom-Json
+  $script:JobFile = $RequestFile -replace '\.request\.json$', '.json'
+  $script:Job = [ordered]@{ id = $req.id; state = 'running'; pid = $PID; startedAt = (Get-Date).ToUniversalTime().ToString('o'); steps = @(); result = $null }
+  Job-Save
+  try {
+    $result = switch ($req.type) {
+      'restart-server'  { Job-Restart }
+      'backup'          { Job-Backup }
+      'update-humid'    { Job-Update $req.args }
+      'rollback-humid'  { Job-Rollback $req.args }
+      'os-scan'         { Job-OsScan }
+      'os-install'      { Job-OsInstall $req.args }
+      'defender-update' { Job-Defender }
+      'reboot'          { Job-Reboot }
+      default           { throw "Unknown job type $($req.type)" }
+    }
+    $script:Job.result = $result
+    $script:Job.state = 'done'
+  } catch {
+    $script:Job.state = 'failed'
+    $script:Job.error = $_.Exception.Message
+  }
+  $script:Job.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
+  Job-Save
+}
+
+function Job-Restart {
+  Job-Step 'Stopping the HumID server'
+  Stop-Server
+  Job-Step 'Starting it again'
+  if (-not (Start-Server)) { throw "The server didn't come up within 90 seconds. See $LogFile" }
+  Job-Step 'It answers its health check'
+  return @{ ok = $true }
+}
+
+function Prune-Backups([int]$Keep = 10) {
+  Get-ChildItem -LiteralPath $BackupDir -Filter '*.zip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
+function Job-Backup([string]$Name) {
+  Set-PrivateAcl $BackupDir
+  if (-not $Name) { $Name = "HumID-backup-$(Get-Date -Format 'yyyyMMdd-HHmm').zip" }
+  $target = Join-Path $BackupDir $Name
+  Job-Step "Backing up to backups\$Name (the server stops for a moment)"
+  Make-Backup $target
+  if (-not (Test-Path $target)) { throw 'The backup file was not written.' }
+  Job-Step ("Backup written ({0:N0} MB)" -f ((Get-Item -LiteralPath $target).Length / 1MB))
+  Prune-Backups 10
+  return @{ file = $Name; bytes = (Get-Item -LiteralPath $target).Length }
+}
+
+# Same server identity, the expected version, healthy: or the reason it isn't.
+function Test-Updated([string]$Want, [string]$Kid, [datetime]$Since) {
+  if (-not (Wait-Healthy -Seconds 120 -Since $Since)) { return "it didn't answer its health check within 2 minutes" }
+  $info = Get-Info
+  if ($info.version -ne $Want) { return "it reports version $($info.version), not $Want" }
+  if ($Kid -and $info.kid -ne $Kid) { return "its server identity changed ($($info.kid)); phones would refuse it" }
+  try {
+    $keys = Invoke-RestMethod -Uri "http://127.0.0.1:$(Get-Setting 'HUMID_PORT' '8480')/htp/v1/keys" -TimeoutSec 10
+    if ($Kid -and $keys.kid -ne $Kid) { return "it serves a different server key" }
+  } catch { return "its key bundle doesn't answer" }
+  return $null
+}
+
+function Install-Package([string]$Dir) {
+  $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  return (Run-Native $ps @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Dir 'humid.ps1'), 'install', '-Quiet', '-NoStart') -Silent)
+}
+
+function Copy-Program([string]$From, [string]$To) {
+  if (Test-Path $To) { Remove-Item -LiteralPath $To -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path $To | Out-Null
+  Get-ChildItem -LiteralPath $From -Force | Where-Object { $_.Name -ne 'node' } |
+    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $To -Recurse -Force }
+}
+
+function Restore-Quietly([string]$Zip) {
+  Stop-Server
+  $old = Join-Path $DataRoot "before-restore-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+  New-Item -ItemType Directory -Force -Path $old | Out-Null
+  foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
+  Expand-Archive -LiteralPath $Zip -DestinationPath $DataRoot -Force
+  Set-DataAcl
+}
+
+# Switch the program to the package in $Pkg; on any failure, put $Fallback back (and the data, if needed).
+function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [string]$FallbackVersion, [string]$Kid, [string]$BackupZip) {
+  $since = (Get-Date).AddSeconds(-2)
+  Job-Step "Installing $Want"
+  $code = Install-Package $Pkg
+  $problem = $null
+  if ($code -ne 0) { $problem = "the installer stopped (exit $code)" }
+  else {
+    Start-Server | Out-Null
+    $problem = Test-Updated $Want $Kid $since
+  }
+  if (-not $problem) { Start-Admin; Job-Step "$Want is running with the same server identity"; return }
+
+  Job-Step "$Want didn't work: $problem. Putting $FallbackVersion back"
+  $since = (Get-Date).AddSeconds(-2)
+  $code = Install-Package $FallbackDir
+  Start-Server | Out-Null
+  $again = $null
+  if ($code -ne 0) { $again = "the installer stopped (exit $code)" } else { $again = Test-Updated $FallbackVersion $Kid $since }
+  if ($again) {
+    Job-Step "$FallbackVersion didn't come up either ($again). Restoring the data from the backup taken first"
+    Restore-Quietly $BackupZip
+    $since = (Get-Date).AddSeconds(-2)
+    Start-Server | Out-Null
+    $again = Test-Updated $FallbackVersion $Kid $since
+  }
+  Start-Admin
+  if ($again) { throw "$Want failed ($problem), and so did putting $FallbackVersion back ($again). Run humid status in Terminal (Admin); the backup is backups\$(Split-Path $BackupZip -Leaf)." }
+  throw "$Want failed ($problem). $FallbackVersion is running again; nothing was lost."
+}
+
+function Job-Update($A) {
+  $file = [string]$A.file
+  if ($file -notmatch '^HumID-Server-Windows-\d+\.\d+\.\d+\.zip$') { throw 'Bad update file name.' }
+  $zip = Join-Path $AdminDir "downloads\$file"
+  if (-not (Test-Path $zip)) { throw "$file isn't in the console's downloads." }
+  Job-Step 'Checking the file against the approved SHA-256'
+  $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+  if ($got -ne ([string]$A.sha256).ToLower()) { throw "The file changed since it was approved (SHA-256 $($got.Substring(0, 16))...). Nothing was installed." }
+  $work = Join-Path $AdminDir "work\$($script:Job.id)"
+  if (Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+  Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+  $pkg = Join-Path $work 'HumID-Server'
+  $v = Read-PackageVersion $pkg
+  if ($v -ne [string]$A.version) { throw "The zip holds version $v, not $($A.version)." }
+  foreach ($need in @('humid.ps1', 'humid-server.mjs', 'humid-admin.mjs')) { if (-not (Test-Path (Join-Path $pkg $need))) { throw "The zip has no $need." } }
+  Get-ChildItem -LiteralPath $pkg -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+  $from = Read-PackageVersion $InstallDir
+  $kid = (Get-Info).kid
+  $backup = Job-Backup "pre-update-$from-to-$v-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  Job-Step "Keeping $from for rollback"
+  Copy-Program $InstallDir $PrevDir
+  Switch-Program $pkg $v $PrevDir $from $kid (Join-Path $BackupDir $backup.file)
+  Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+  return @{ from = $from; to = $v }
+}
+
+function Job-Rollback($A) {
+  $to = Read-PackageVersion $PrevDir
+  if (-not $to -or $to -ne [string]$A.to) { throw "The kept version is $to, not $($A.to)." }
+  $from = Read-PackageVersion $InstallDir
+  $kid = (Get-Info).kid
+  $backup = Job-Backup "pre-rollback-$from-to-$to-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  $current = "$InstallDir.rollback"
+  Job-Step "Keeping $from aside"
+  Copy-Program $InstallDir $current
+  Switch-Program $PrevDir $to $current $from $kid (Join-Path $BackupDir $backup.file)
+  # Now $from is the one kept, so it can be rolled forward again.
+  Copy-Program $current $PrevDir
+  Remove-Item -LiteralPath $current -Recurse -Force -ErrorAction SilentlyContinue
+  return @{ from = $from; to = $to }
+}
+
+function New-UpdateSession {
+  $s = New-Object -ComObject Microsoft.Update.Session
+  $s.ClientApplicationID = 'HumID Admin'
+  return $s
+}
+
+function Job-OsScan {
+  $out = Join-Path $AdminDir 'os-updates.json'
+  Job-Step 'Asking Windows Update'
+  try {
+    $session = New-UpdateSession
+    $searcher = $session.CreateUpdateSearcher()
+    $r = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+    $list = @(foreach ($u in $r.Updates) {
+      $cats = @($u.Categories | ForEach-Object { [string]$_.Name })
+      $sev = [string]$u.MsrcSeverity
+      @{
+        id = [string]$u.Identity.UpdateID; title = [string]$u.Title; kb = @($u.KBArticleIDs | ForEach-Object { "KB$_" })
+        severity = $sev; categories = $cats; security = (($cats -contains 'Security Updates') -or ($cats -contains 'Critical Updates') -or [bool]$sev)
+        sizeMB = [math]::Round($u.MaxDownloadSize / 1MB); downloaded = [bool]$u.IsDownloaded
+        rebootRequired = ([int]$u.InstallationBehavior.RebootBehavior -ne 0)
+        published = $(try { $u.LastDeploymentChangeTime.ToUniversalTime().ToString('o') } catch { $null })
+      }
+    })
+    $last = $null
+    $n = $searcher.GetTotalHistoryCount()
+    if ($n -gt 0) {
+      foreach ($h in $searcher.QueryHistory(0, [Math]::Min($n, 20))) { if ($h.ResultCode -eq 2 -and $h.Title) { $last = @{ title = [string]$h.Title; date = $h.Date.ToUniversalTime().ToString('o') }; break } }
+    }
+    Write-JsonAtomic $out @{ checkedAt = (Get-Date).ToUniversalTime().ToString('o'); updates = $list; lastInstalled = $last }
+    Job-Step "$($list.Count) update(s) available"
+    return @{ count = $list.Count }
+  } catch {
+    Write-JsonAtomic $out @{ checkedAt = (Get-Date).ToUniversalTime().ToString('o'); updates = @(); error = $_.Exception.Message }
+    throw
+  }
+}
+
+function Job-OsInstall($A) {
+  $ids = @($A.updates | ForEach-Object { [string]$_.id })
+  $session = New-UpdateSession
+  Job-Step 'Finding the approved updates'
+  $r = $session.CreateUpdateSearcher().Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+  $coll = New-Object -ComObject Microsoft.Update.UpdateColl
+  foreach ($u in $r.Updates) {
+    if ($ids -contains [string]$u.Identity.UpdateID) {
+      if (-not $u.EulaAccepted) { $u.AcceptEula() }
+      $coll.Add($u) | Out-Null
+    }
+  }
+  if ($coll.Count -eq 0) { Job-OsScan | Out-Null; throw 'None of the approved updates are still needed.' }
+  Job-Step "Downloading $($coll.Count) update(s)"
+  $d = $session.CreateUpdateDownloader(); $d.Updates = $coll; $d.Download() | Out-Null
+  Job-Step 'Installing'
+  $i = $session.CreateUpdateInstaller(); $i.Updates = $coll
+  $res = $i.Install()
+  $ok = 0; $bad = @()
+  for ($k = 0; $k -lt $coll.Count; $k++) {
+    $rc = $res.GetUpdateResult($k).ResultCode
+    if ($rc -eq 2 -or $rc -eq 3) { $ok++ } else { $bad += [string]$coll.Item($k).Title }
+  }
+  Job-Step "$ok installed$(if ($bad.Count) { ", $($bad.Count) failed" })$(if ($res.RebootRequired) { '; Windows needs a restart to finish' })"
+  Job-OsScan | Out-Null
+  if ($bad.Count -and -not $ok) { throw "Windows Update couldn't install: $($bad -join '; ')" }
+  return @{ installed = $ok; failed = $bad; rebootRequired = [bool]$res.RebootRequired }
+}
+
+function Job-Defender {
+  Job-Step 'Updating Microsoft Defender definitions'
+  Update-MpSignature -ErrorAction Stop
+  $mp = Get-MpComputerStatus
+  Job-Step "Definitions $($mp.AntivirusSignatureVersion)"
+  return @{ version = [string]$mp.AntivirusSignatureVersion }
+}
+
+function Job-Reboot {
+  Job-Step 'Restarting this computer in 60 seconds'
+  $code = Run-Native 'shutdown.exe' @('/r', '/t', '60', '/d', 'p:2:17', '/c', 'HumID: restarting to finish updates, as approved on an administrator''s phone.') -Silent
+  if ($code -ne 0) { throw "shutdown.exe refused (exit $code)." }
+  return @{ at = (Get-Date).AddSeconds(60).ToUniversalTime().ToString('o') }
+}
+
 switch ($Command) {
   'install'   { Do-Install }
   'uninstall' { Do-Uninstall }
   'start'     { Require-Admin; Require-Installed; if (-not (Start-Server)) { exit 1 } }
-  'stop'      { Require-Admin; Stop-Server; Good 'Stopped.' }
-  'restart'   { Require-Admin; Require-Installed; Stop-Server; if (-not (Start-Server)) { exit 1 } }
+  'stop'      { Require-Admin; Confirm-ArmedErase 'stopping the server'; Stop-Server; Good 'Stopped.' }
+  'restart'   { Require-Admin; Require-Installed; Confirm-ArmedErase 'restarting the server'; Stop-Server; if (-not (Start-Server)) { exit 1 } }
   'status'    { Require-Admin; Do-Status }
   'logs'      { Require-Admin; Do-Logs }
   'set'       { Do-Set }
@@ -522,5 +1035,9 @@ switch ($Command) {
   'backup'    { Do-Backup }
   'restore'   { Do-Restore }
   'expose'    { Do-Expose }
+  'console'   { Do-Console }
+  'admin'     { Do-AdminCmd }
+  'probe'     { Do-Probe }
+  'job-run'   { Require-Admin; Do-JobRun }
   default     { Get-Help $PSCommandPath -Detailed | Out-Host }
 }

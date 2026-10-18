@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>HumID Admin</title>
+<style nonce="__NONCE__">
+:root {
+  --ground: #13261F; --raised: #1B3329; --rule: #2E4B40; --text: #E4ECE7; --soft: #9DB5AA;
+  --signal: #5EA8FF; --ember: #FF7A2F; --amber: #E8B84A; --ok: #6FD39B;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root { --ground: #EEF2EF; --raised: #FFFFFF; --rule: #CCD9D2; --text: #13261F; --soft: #4F675D; --signal: #1D5BD0; --ember: #C2410C; --amber: #9A6A00; --ok: #18794E; color-scheme: light; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--text); font: 15px/1.5 var(--sans); }
+body { padding: 0 20px 60px; }
+a { color: var(--signal); }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--rule); background: transparent; color: var(--text); padding: 6px 12px; }
+button:hover { border-color: var(--signal); }
+button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+button.go { background: var(--signal); border-color: var(--signal); color: var(--ground); font-weight: 600; }
+button.stop { border-color: var(--ember); color: var(--ember); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.mono { font-family: var(--mono); }
+.soft { color: var(--soft); }
+.small { font-size: 13px; }
+
+header { max-width: 1240px; margin: 0 auto; display: flex; align-items: baseline; gap: 16px; padding: 22px 0 6px; flex-wrap: wrap; }
+header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+header .host { color: var(--soft); }
+header .grow { flex: 1; }
+
+.verdict { max-width: 1240px; margin: 4px auto 22px; font-size: clamp(26px, 3.4vw, 38px); line-height: 1.15; font-weight: 600; letter-spacing: -.01em; }
+.verdict .lamp { display: inline-block; width: .5em; height: .5em; border-radius: 50%; margin-right: .35em; vertical-align: .12em; background: var(--ok); }
+.verdict[data-level="warn"] .lamp { background: var(--amber); }
+.verdict[data-level="bad"] .lamp { background: var(--ember); }
+.verdict .sub { display: block; font-size: 15px; font-weight: 400; color: var(--soft); margin-top: 6px; letter-spacing: 0; }
+
+main { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 0 44px; }
+.wide { grid-column: 1 / -1; }
+section { border-top: 1px solid var(--rule); padding: 16px 0 22px; }
+section > h2 { font-size: 17px; margin: 0 0 10px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+section > h2 .tools { margin-left: auto; display: flex; gap: 8px; }
+section > h2 .tools button { font-size: 13px; font-weight: 400; padding: 4px 10px; }
+
+.alerts { list-style: none; padding: 0; margin: 0; }
+.alerts li { display: grid; grid-template-columns: 4px 1fr; gap: 12px; padding: 8px 0; }
+.alerts li::before { content: ""; border-radius: 2px; background: var(--soft); }
+.alerts li[data-level="bad"]::before { background: var(--ember); }
+.alerts li[data-level="warn"]::before { background: var(--amber); }
+.alerts strong { font-weight: 600; }
+.alerts span { display: block; color: var(--soft); font-size: 14px; }
+
+.glass { border: 1px solid var(--ember); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.glass p { margin: 0; flex: 1; min-width: 240px; }
+
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; margin: 0; }
+dl.facts dt { color: var(--soft); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 500; color: var(--soft); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--rule); }
+td { padding: 6px 8px 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent); vertical-align: top; }
+th.num { text-align: right; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
+.dot.bad { background: var(--ember); } .dot.warn { background: var(--amber); } .dot.off { background: var(--soft); }
+
+.meter { margin: 8px 0 12px; }
+.meter .row { display: flex; justify-content: space-between; font-size: 14px; }
+.meter .bar { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; margin-top: 4px; }
+.meter .bar i { display: block; height: 100%; background: var(--signal); }
+.meter .bar i.warn { background: var(--amber); } .meter .bar i.bad { background: var(--ember); }
+
+svg.spark { width: 100%; height: 44px; display: block; margin: 4px 0 2px; }
+svg.spark path.line { fill: none; stroke: var(--signal); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+svg.spark path.area { fill: color-mix(in srgb, var(--signal) 14%, transparent); stroke: none; }
+svg.spark rect.down { fill: color-mix(in srgb, var(--ember) 40%, transparent); }
+.spark-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--soft); }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--soft); font-size: 14px; }
+pre.notes { white-space: pre-wrap; font: 13px/1.5 var(--mono); color: var(--soft); max-height: 260px; overflow: auto; background: var(--raised); padding: 10px 12px; border-radius: 6px; }
+.updates-list label { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent); font-size: 14px; }
+.updates-list .tag { font-size: 12px; color: var(--soft); white-space: nowrap; }
+.updates-list .tag.sec { color: var(--ember); }
+.empty { color: var(--soft); margin: 4px 0; }
+.log { font-size: 13px; }
+.log td:first-child { white-space: nowrap; color: var(--soft); font-variant-numeric: tabular-nums; }
+.steps { margin: 6px 0 0; padding-left: 18px; color: var(--soft); font-size: 13px; }
+
+/* the approval sheet: the one loud thing on the page */
+dialog { border: 0; padding: 0; background: transparent; color: var(--text); max-width: min(620px, calc(100vw - 24px)); width: 100%; }
+dialog::backdrop { background: rgba(5, 12, 9, .72); }
+.sheet { background: var(--raised); border: 1px solid var(--rule); border-radius: 14px; padding: 26px 28px 22px; }
+.sheet h3 { margin: 0 0 4px; font-size: 20px; line-height: 1.25; }
+.sheet ul { margin: 6px 0 0; padding-left: 18px; color: var(--soft); font-size: 14px; }
+.seal { margin: 22px 0 14px; display: grid; grid-template-columns: 150px 1fr; gap: 20px; align-items: center; }
+.seal .qr { background: #fff; border-radius: 8px; padding: 6px; width: 150px; height: 150px; }
+.seal .qr svg { width: 100%; height: 100%; display: block; }
+.seal .code { font: 600 clamp(22px, 4.6vw, 34px)/1.1 var(--mono); letter-spacing: .03em; color: var(--signal); white-space: nowrap; }
+.seal .check { margin-top: 10px; font-size: 14px; color: var(--soft); }
+.seal .check b { font-family: var(--mono); color: var(--text); font-weight: 600; }
+.howto { margin: 0; padding-left: 20px; font-size: 14px; }
+.howto li { margin: 3px 0; }
+.compare { font: 600 clamp(26px, 5vw, 34px)/1.1 var(--mono); letter-spacing: .04em; margin: 16px 0; color: var(--signal); }
+.timer { font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .seal { grid-template-columns: 1fr; justify-items: start; } body { padding: 0 14px 40px; } }
+@media (prefers-reduced-motion: no-preference) { dialog[open] .sheet { animation: rise .18s ease-out; } @keyframes rise { from { transform: translateY(8px); opacity: 0; } } }
+
+.gate { max-width: 560px; margin: 12vh auto 0; }
+.gate h2 { font-size: 26px; margin: 0 0 10px; }
+.gate code { font-family: var(--mono); background: var(--raised); padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="app" aria-live="polite"></div>
+<dialog id="sheet" aria-labelledby="sheet-title"><div class="sheet" id="sheet-body"></div></dialog>
+<script nonce="__NONCE__">
+"use strict";
+const VERSION = "__VERSION__";
+const $app = document.getElementById("app");
+const $sheet = document.getElementById("sheet");
+const $sheetBody = document.getElementById("sheet-body");
+let state = null, watching = null, watchingJob = null, selected = new Set(), busy = false, lastError = null;
+
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ago = (t) => { if (!t) return "never"; const s = Math.round((Date.now() - (typeof t === "number" ? t : Date.parse(t))) / 1000); if (s < 60) return "just now"; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 172800) return `${Math.round(s / 3600)} h ago`; return `${Math.round(s / 86400)} days ago`; };
+const dur = (s) => { if (s == null) return ""; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+const gb = (n) => (n == null ? "" : n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : `${Math.round(n / 2 ** 20)} MB`);
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const when = (t) => (t ? new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "");
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-humid-console": "1" }, body: JSON.stringify(body) };
+  const res = await fetch(path, { credentials: "same-origin", ...opts });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(out.message || `Error ${res.status}`), { status: res.status, code: out.error });
+  return out;
+}
+
+/* ---------- sign-in from the one-time link `humid console` opens ---------- */
+async function boot() {
+  const m = /^#login=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (m) {
+    history.replaceState(null, "", location.pathname);
+    try { await api("/api/login", { token: m[1] }); } catch (e) { return gate(e.message); }
+  }
+  await refresh();
+  setInterval(refresh, 5000);
+  setInterval(tickSheet, 1000);
+}
+
+function gate(msg) {
+  $app.innerHTML = `<div class="gate"><h2>Open the console from an admin terminal</h2>
+    <p>${esc(msg || "You're signed out.")}</p>
+    <p>On this computer, open <b>Terminal (Admin)</b> and run <code>humid console</code>. It opens a sign-in link that works once, for two minutes.</p>
+    <p class="soft small">HumID Admin ${esc(VERSION)} · listens on this computer only</p></div>`;
+}
+
+async function refresh() {
+  try { state = await api("/api/state"); lastError = null; }
+  catch (e) { if (e.status === 401) return gate(e.message); lastError = e.message; }
+  if (state) render();
+}
+
+async function act(fn) {
+  if (busy) return;
+  busy = true; render();
+  try { await fn(); } catch (e) { alertBox(e.message); }
+  finally { busy = false; await refresh(); }
+}
+function alertBox(msg) { openSheet(`<h3 id="sheet-title">That didn't work</h3><p>${esc(msg)}</p><div class="actions"><button class="go" data-close>OK</button></div>`); }
+
+/* ---------- rendering ---------- */
+function keyOf(el) { return el ? JSON.stringify(el.dataset) + el.tagName : null; }
+function render() {
+  const open = new Set([...$app.querySelectorAll("details[open]")].map((d) => d.dataset.k));
+  const focusKey = $app.contains(document.activeElement) ? keyOf(document.activeElement) : null;
+  draw();
+  for (const d of $app.querySelectorAll("details[data-k]")) if (open.has(d.dataset.k)) d.open = true;
+  if (focusKey) { const el = [...$app.querySelectorAll("button, input")].find((x) => keyOf(x) === focusKey); el?.focus({ preventScroll: true }); }
+  syncSheet();
+}
+function draw() {
+  const s = state;
+  const al = s.alerts;
+  const level = al.some((a) => a.level === "bad") ? "bad" : al.some((a) => a.level === "warn") ? "warn" : "ok";
+  const problems = al.filter((a) => a.level !== "info").length;
+  const verdict = level === "ok" ? "Everything is running normally." : level === "bad" ? `${problems} problem${problems === 1 ? "" : "s"} need${problems === 1 ? "s" : ""} attention.` : `${problems} thing${problems === 1 ? "" : "s"} to look at.`;
+  const srv = s.server;
+  const st = srv.status;
+  $app.innerHTML = `
+  <header>
+    <h1>HumID Admin</h1><span class="host">${esc(s.machine.computer)} · server ${esc(s.updates.humid.installed)}</span>
+    <span class="grow"></span>
+    ${lastError ? `<span class="small" style="color:var(--ember)">Lost contact with the console: ${esc(lastError)}</span>` : `<span class="small soft">Updated ${new Date(s.console.now).toLocaleTimeString()}</span>`}
+    <button data-act="logout" class="small">Sign out</button>
+  </header>
+  <p class="verdict" data-level="${level}"><span class="lamp"></span>${esc(verdict)}
+    <span class="sub">${srv.up ? `HumID server up ${dur(st?.uptimeS)}, ${st?.sessions ?? 0} open session${st?.sessions === 1 ? "" : "s"}.` : srv.down ? "The HumID server isn't answering." : "Waiting for the server's status."} ${s.admins.length ? `Changes are approved on ${s.admins.length === 1 ? "your phone" : `one of ${s.admins.length} administrator phones`}.` : "No administrator phone yet, so nothing can be changed from here."}</span>
+  </p>
+  <main>
+    <section class="wide">
+      ${s.breakGlass ? `<div class="glass"><p><b>The server has been down for a while.</b> Your phone can't reach it to approve anything, so restarting it is allowed without approval. This is logged.</p><button class="stop" data-act="breakglass">Restart the server now</button></div>` : ""}
+      ${al.length ? `<ul class="alerts">${al.map((a) => `<li data-level="${a.level}"><div><strong>${esc(a.title)}</strong>${a.detail ? `<span>${esc(a.detail)}</span>` : ""}</div></li>`).join("")}</ul>` : `<p class="empty">Nothing needs you right now.</p>`}
+    </section>
+    <div class="col">${serverSection(s)}${updatesSection(s)}</div>
+    <div class="col">${machineSection(s)}${securitySection(s)}${adminsSection(s)}${backupsSection(s)}</div>
+    ${activitySection(s)}
+  </main>`;
+}
+
+function spark(points, key, { max = 100, downKey = null } = {}) {
+  const pts = points.filter((p) => p[key] != null);
+  if (pts.length < 2) return `<p class="small soft">Collecting… a point a minute.</p>`;
+  const t0 = points[0].t, t1 = points[points.length - 1].t, span = Math.max(1, t1 - t0);
+  const top = Math.max(max, ...pts.map((p) => p[key]));
+  const x = (t) => ((t - t0) / span) * 100, y = (v) => 40 - (v / top) * 38;
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(2)},${y(p[key]).toFixed(2)}`).join("");
+  const downs = downKey ? points.filter((p) => p[downKey] === 0).map((p) => `<rect class="down" x="${x(p.t).toFixed(2)}" y="0" width="${(100 / Math.max(60, points.length)).toFixed(2)}" height="40"/>`).join("") : "";
+  return `<svg class="spark" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="${esc(key)} over the last ${Math.round(span / 3600000) || 1} hours">${downs}<path class="area" d="${line}L100,40L0,40Z"/><path class="line" d="${line}"/></svg>
+    <div class="spark-label"><span>${Math.round(span / 3600000) ? `${Math.round(span / 3600000)} h ago` : `${Math.round(span / 60000)} min ago`}</span><span>now</span></div>`;
+}
+
+function meter(label, used, total, text) {
+  const p = total ? Math.min(100, (used / total) * 100) : 0;
+  const cls = p > 92 ? "bad" : p > 85 ? "warn" : "";
+  return `<div class="meter"><div class="row"><span>${esc(label)}</span><span class="soft">${esc(text)}</span></div><div class="bar" role="meter" aria-valuenow="${Math.round(p)}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}"><i class="${cls}" style="width:${p.toFixed(1)}%"></i></div></div>`;
+}
+
+function serverSection(s) {
+  const srv = s.server, st = srv.status, info = srv.info || {}, pub = srv.public || {};
+  const services = st?.services || [];
+  const errs = st?.log?.recent || [];
+  return `<section>
+    <h2>HumID server <span class="tools"><button data-req="backup" ${dis(s)}>Back up now</button><button data-req="restart-server" ${dis(s)}>Restart</button></span></h2>
+    <dl class="facts">
+      <dt>State</dt><dd><span class="dot ${srv.up ? "" : srv.down ? "bad" : "warn"}"></span>${srv.up ? "Answering" : srv.down ? `Not answering for ${Math.round(srv.downFor / 1000)} s` : srv.stale ? "Answering, but not reporting status" : "Starting"}${srv.edge?.ms != null ? ` <span class="soft">· ${srv.edge.ms} ms</span>` : ""}</dd>
+      <dt>Version</dt><dd>${esc(st?.version || info.version || "")} <span class="soft">· serves the HumID app ${esc(st?.appVersion || info.appVersion || "")}</span></dd>
+      <dt>Public address</dt><dd>${pub.url ? `<span class="dot ${pub.ok ? "" : pub.ok === false ? "bad" : "off"}"></span>${esc(pub.url)}${pub.ok === false ? ` <span class="soft">· ${esc(pub.status ? `HTTP ${pub.status}` : pub.error)}</span>` : ""}${pub.certExpires ? ` <span class="soft">· certificate until ${esc(new Date(pub.certExpires).toLocaleDateString())}</span>` : ""}` : `<span class="soft">None. Run <span class="mono">humid expose tailscale</span>.</span>`}</dd>
+      <dt>Fingerprint</dt><dd class="mono small">${esc(info.fingerprint || st?.fingerprint || "")}</dd>
+      <dt>Device policy</dt><dd>${esc(st?.devicePolicy || info.devicePolicy || "")}${(st?.registration || info.registration) === "pass" ? " · new accounts need an access pass" : " · open registration"}</dd>
+      ${st?.process ? `<dt>Process</dt><dd>${st.process.rssMB} MB memory · ${st.process.cpuPct}% CPU · ${st.process.loopLagP99Ms} ms delay (p99) · Node ${esc(st.process.node)}</dd>` : ""}
+    </dl>
+    ${services.length ? `<table style="margin-top:14px"><thead><tr><th>Service</th><th>Health</th><th class="num">Response</th><th class="num">Data</th></tr></thead><tbody>
+      ${services.map((x) => `<tr><td>${esc(x.name)}</td><td><span class="dot ${x.ok ? "" : "bad"}"></span>${x.ok ? "ok" : esc(x.error || `HTTP ${x.status}`)}</td><td class="num">${x.ms ?? ""} ms</td><td class="num">${gb((st.data || []).find((d) => d.name === x.name)?.bytes)}</td></tr>`).join("")}
+    </tbody></table>` : ""}
+    <h2 style="margin-top:18px;font-size:15px">Gateway response, last 24 hours</h2>
+    ${spark(s.history, "ms", { max: 50, downKey: "ok" })}
+    <details data-k="errors"${errs.length ? "" : " hidden"}><summary>${plural(st?.log?.errorsLastHour || 0, "error")} and ${plural(st?.log?.warningsLastHour || 0, "warning")} in the last hour</summary>
+      <table class="log"><tbody>${errs.map((e) => `<tr><td>${new Date(e.t).toLocaleTimeString()}</td><td>${esc(e.service)}</td><td>${esc(e.msg)}${e.err ? `<br><span class="soft">${esc(e.err)}</span>` : ""}</td></tr>`).join("")}</tbody></table>
+    </details>
+  </section>`;
+}
+
+const dis = (s) => (busy || !s.admins.length ? "disabled" : "");
+
+function updatesSection(s) {
+  const h = s.updates.humid, osu = s.updates.os;
+  const list = (osu?.updates || []).slice().sort((a, b) => (b.security - a.security) || String(a.title).localeCompare(b.title));
+  for (const id of [...selected]) if (!list.some((u) => u.id === id)) selected.delete(id);
+  return `<section>
+    <h2>Updates</h2>
+    <h2 style="font-size:15px">HumID Server <span class="tools"><button data-check="humid" ${busy ? "disabled" : ""}>${h.checking ? "Checking…" : "Check now"}</button></span></h2>
+    <dl class="facts">
+      <dt>Installed</dt><dd>${esc(h.installed)}${h.previous ? ` <span class="soft">· ${esc(h.previous)} kept for rollback</span>` : ""}</dd>
+      <dt>Checked</dt><dd>${h.checkedAt ? ago(h.checkedAt) : "not yet"} <span class="soft">· ${esc(h.repo)}${h.tokenSet ? "" : " · no GitHub token"}</span></dd>
+    </dl>
+    ${h.latest ? `<p><b>${esc(h.latest.version)}</b> is available${h.latest.publishedAt ? `, released ${esc(new Date(h.latest.publishedAt).toLocaleDateString())}` : ""}.</p>
+      ${h.latest.notes ? `<details data-k="notes"><summary>What's new</summary><pre class="notes">${esc(h.latest.notes)}</pre></details>` : ""}
+      ${h.latest.asset?.sha256 ? "" : `<p class="small" style="color:var(--ember)">GitHub publishes no digest for this release's zip, so it can't be checked here.</p>`}`
+      : h.error ? `<p class="small soft">${esc(h.error)}</p>` : `<p class="empty">You have the newest version.</p>`}
+    ${!h.tokenSet && h.error ? `<p class="small soft">The repository is private. Make a fine-grained GitHub token with read-only access to its contents, then run <span class="mono">humid admin token &lt;token&gt;</span> in Terminal (Admin).</p>` : ""}
+    <div class="actions">
+      ${h.latest?.asset?.sha256 ? `<button class="go" data-req="update-humid" ${dis(s)}>Update to ${esc(h.latest.version)}</button>` : ""}
+      ${h.previous ? `<button data-req="rollback-humid" ${dis(s)}>Roll back to ${esc(h.previous)}</button>` : ""}
+    </div>
+
+    <h2 style="font-size:15px;margin-top:22px">Windows <span class="tools"><button data-check="os" ${busy ? "disabled" : ""}>Check now</button></span></h2>
+    <p class="small soft" style="margin-top:0">${osu?.checkedAt ? `Checked ${ago(osu.checkedAt)}.` : "Not checked yet. Windows Update is checked every 6 hours."}${osu?.lastInstalled ? ` Last installed: ${esc(osu.lastInstalled.title)} (${ago(osu.lastInstalled.date)}).` : ""}</p>
+    ${list.length ? `<div class="updates-list">${list.map((u) => `<label><input type="checkbox" data-pick="${esc(u.id)}" ${selected.has(u.id) ? "checked" : ""}><span>${esc(u.title)}${u.rebootRequired ? ` <span class="soft small">· needs a restart</span>` : ""}</span><span class="tag ${u.security ? "sec" : ""}">${u.security ? esc(u.severity || "Security") : esc((u.categories || [])[0] || "Update")}${u.sizeMB ? ` · ${u.sizeMB} MB` : ""}</span></label>`).join("")}</div>
+      <div class="actions"><button data-pickall>Select security updates</button><button class="go" data-req="os-install" ${dis(s)} ${selected.size ? "" : "disabled"}>Install ${selected.size || ""} selected</button></div>`
+      : osu?.checkedAt ? `<p class="empty">Windows is up to date.</p>` : ""}
+  </section>`;
+}
+
+function machineSection(s) {
+  const m = s.machine;
+  return `<section>
+    <h2>This computer</h2>
+    <dl class="facts">
+      <dt>Windows</dt><dd>${esc(m.os?.caption || "")} ${esc(m.os?.build ? `build ${m.os.build}` : m.os?.version || "")}</dd>
+      <dt>Up</dt><dd>${dur(m.uptimeS)}</dd>
+      <dt>Processor</dt><dd>${m.cpu.cores} cores</dd>
+    </dl>
+    ${meter("Processor", m.cpu.pct || 0, 100, m.cpu.pct == null ? "measuring" : `${m.cpu.pct}%`)}
+    ${spark(s.history, "cpu")}
+    ${meter("Memory", m.memory.total - m.memory.free, m.memory.total, `${gb(m.memory.total - m.memory.free)} of ${gb(m.memory.total)}`)}
+    ${m.disks.map((d) => meter(`Drive ${d.drive}${d.label ? ` (${d.label})` : ""}`, d.sizeBytes - d.freeBytes, d.sizeBytes, `${gb(d.freeBytes)} free of ${gb(d.sizeBytes)}`)).join("")}
+    ${m.tasks?.length ? `<table><thead><tr><th>Background task</th><th>State</th></tr></thead><tbody>${m.tasks.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="dot ${t.state === "Running" ? "" : t.name === "HumID Admin Job" ? "off" : "bad"}"></span>${esc(t.state)}${t.lastResult && t.lastResult !== 0 && t.lastResult !== 267009 ? ` <span class="soft">· last result ${esc(t.lastResult)}</span>` : ""}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${m.tunnel ? `<p class="small soft">Tunnel: ${esc(m.tunnel.kind)} ${esc(m.tunnel.state || "")}</p>` : ""}
+  </section>`;
+}
+
+function securitySection(s) {
+  const x = s.security, d = x.defender;
+  return `<section>
+    <h2>Protection <span class="tools"><button data-req="defender-update" ${dis(s)}>Update Defender</button></span></h2>
+    <dl class="facts">
+      <dt>Defender</dt><dd>${d ? d.available === false ? `<span class="dot off"></span>Not reporting` : `<span class="dot ${d.antivirus && d.realtime ? (d.signatureAgeDays > 3 ? "warn" : "") : "bad"}"></span>${d.antivirus && d.realtime ? "On" : "Off"}${d.signatureAgeDays != null ? ` <span class="soft">· definitions ${d.signatureAgeDays === 0 ? "from today" : `${d.signatureAgeDays} days old`}</span>` : ""}` : `<span class="soft">checking…</span>`}</dd>
+      <dt>Firewall</dt><dd>${x.firewall.length ? x.firewall.map((f) => `<span class="dot ${f.enabled ? "" : "bad"}"></span>${esc(f.profile)}`).join(" &nbsp;") : `<span class="soft">checking…</span>`}</dd>
+      <dt>Disk encryption</dt><dd>${x.bitlocker ? `<span class="dot ${x.bitlocker.status === "on" ? "" : "warn"}"></span>BitLocker ${x.bitlocker.status === "on" ? "on" : "off"} for ${esc(x.bitlocker.drive)}` : `<span class="soft">not reported</span>`}</dd>
+      <dt>Restart</dt><dd>${x.pendingReboot ? `<span class="dot warn"></span>Needed to finish updates` : "Not needed"}</dd>
+    </dl>
+    <div class="actions"><button data-req="reboot" ${dis(s)} class="${x.pendingReboot ? "go" : ""}">Restart this computer</button></div>
+  </section>`;
+}
+
+function adminsSection(s) {
+  return `<section>
+    <h2>Administrators <span class="tools"><button data-act="enrol" ${busy ? "disabled" : ""}>Add a phone</button></span></h2>
+    ${s.admins.length ? `<table><tbody>${s.admins.map((a) => `<tr><td>${esc(a.platform)}<br><span class="soft small">${a.proofLevel && a.proofLevel !== "none" ? `secure chip (${esc(a.proofLevel)})` : "no hardware proof"} · added ${esc(new Date(a.addedAt).toLocaleDateString())}</span><br><span class="mono small soft">${esc(a.check)}</span></td><td class="num"><button class="small" data-remove="${esc(a.device)}" ${busy ? "disabled" : ""}>Remove</button></td></tr>`).join("")}</tbody></table>`
+      : `<p>Add your phone to approve changes. You'll need the HumID app signed in to this server.</p>`}
+    <p class="small soft">Lost the only phone? In Terminal (Admin): <span class="mono">humid admin reset</span>, then add a new one.</p>
+  </section>`;
+}
+
+function backupsSection(s) {
+  return `<section>
+    <h2>Backups</h2>
+    ${s.backups.length ? `<table><tbody>${s.backups.slice(0, 6).map((b) => `<tr><td class="small">${esc(b.name)}</td><td class="num small soft">${gb(b.bytes)}</td><td class="num small soft">${ago(b.at)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">None yet.</p>`}
+    <p class="small soft">In ProgramData\\HumID\\backups, readable by administrators only. Each holds the server keys and every sealed document: copy one somewhere offline now and then.</p>
+  </section>`;
+}
+
+const AUDIT = {
+  "console.started": "Console started", "console.signed_in": "Signed in to the console", "console.signed_out": "Signed out",
+  "request.created": "Asked for approval", "request.expired": "Request expired", "request.cancelled": "Request cancelled",
+  "approval.verified": "Approved on a phone (signature checked)", "approval.rejected": "Approval refused", "approval.ignored": "Approval ignored",
+  "job.queued": "Job started", "admin.enrolled": "Administrator phone added", "admin.removed": "Administrator phone removed", "admin.reset": "All administrator phones removed (admin terminal)",
+  "admin.enrol_mismatch": "Enrolment refused: check codes didn't match", "breakglass.restart": "Break-glass restart",
+};
+
+function activitySection(s) {
+  return `<section class="wide">
+    <h2>Activity</h2>
+    ${s.jobs.length ? `<table class="log"><thead><tr><th>Started</th><th>Job</th><th>State</th></tr></thead><tbody>${s.jobs.map((j) => `<tr><td>${esc(when(j.requestedAt))}</td><td>${esc(j.title)}${j.by?.platform ? ` <span class="soft">· approved on ${esc(j.by.platform)}</span>` : j.by?.breakGlass ? ` <span class="soft">· break-glass</span>` : ""}${j.steps.length ? `<details data-k="job-${esc(j.id)}"><summary>${j.steps.length} step${j.steps.length === 1 ? "" : "s"}</summary><ol class="steps">${j.steps.map((x) => `<li>${esc(x.msg)}</li>`).join("")}</ol></details>` : ""}${j.error ? `<br><span style="color:var(--ember)">${esc(j.error)}</span>` : ""}</td><td><span class="dot ${j.state === "done" ? "" : j.state === "failed" ? "bad" : "warn"}"></span>${esc(j.state)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">No jobs yet.</p>`}
+    <details data-k="audit"><summary>Console audit log · ${s.console.audit.count} entries, chained (head ${esc(s.console.audit.head.slice(0, 12))}…)</summary>
+      <table class="log"><tbody>${s.audit.map((a) => `<tr><td>${esc(when(a.t))}</td><td>${esc(AUDIT[a.type] || a.type)}${a.title ? `: ${esc(a.title)}` : ""}${a.platform ? ` <span class="soft">· ${esc(a.platform)}</span>` : ""}${a.message ? ` <span class="soft">· ${esc(a.message)}</span>` : ""}</td></tr>`).join("")}</tbody></table>
+    </details>
+  </section>`;
+}
+
+/* ---------- the approval sheet ---------- */
+function openSheet(html) { $sheetBody.innerHTML = html; if (!$sheet.open) $sheet.showModal(); }
+function closeSheet() { watching = null; watchingJob = null; if ($sheet.open) $sheet.close(); }
+
+function syncSheet() {
+  if (!watching) return;
+  let r = state.requests.find((x) => x.code === watching);
+  // An update restarts the console, which forgets its requests: keep following the job.
+  if (!r && watchingJob) { const j = state.jobs.find((x) => x.id === watchingJob.jobId); if (j) r = { ...watchingJob, state: "running" }; }
+  if (!r) return closeSheet();
+  if (r.jobId) watchingJob = { ...r };
+  const job = r.jobId && state.jobs.find((j) => j.id === r.jobId);
+  const key = `${r.state}:${job?.state}:${job?.steps.length}`;
+  if ($sheetBody.dataset.key === key) return;
+  $sheetBody.dataset.key = key;
+  const head = `<h3 id="sheet-title">${esc(r.title)}</h3>${r.lines?.length ? `<ul>${r.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}`;
+  if (r.state === "waiting") {
+    openSheet(`${head}
+      <div class="seal"><div class="qr">${r.qr || ""}</div><div><div class="code" aria-label="Approval code">${esc(r.display)}</div><div class="check">The phone must show <b>${esc(r.check)}</b></div><div class="small soft timer" data-expires="${r.expiresAt}"></div></div></div>
+      <ol class="howto"><li>In HumID on your phone, open <b>You</b>, then <b>Manage this server</b>.</li><li>Scan the code, or type it.</li><li>Check it says the same thing, then approve with your face or fingerprint.</li></ol>
+      <div class="actions"><button data-cancel="${r.code}">Cancel</button></div>`);
+  } else if (r.state === "matching") {
+    openSheet(`<h3 id="sheet-title">Compare the admin check</h3>
+      <p>${esc(r.candidate.platform)} approved. Its HumID app now shows an admin check. It must be exactly:</p>
+      <div class="compare">${esc(r.candidate.check)}</div>
+      <p class="small soft">${r.candidate.proofLevel && r.candidate.proofLevel !== "none" ? `Its live checks are proven by its secure chip (${esc(r.candidate.proofLevel)}).` : "This device has no hardware proof of its live checks."} If the codes differ, someone is in the middle: refuse it.</p>
+      <div class="actions"><button class="go" data-match="${r.code}">They match: trust this phone</button><button class="stop" data-nomatch="${r.code}">They don't match</button></div>`);
+  } else if (r.state === "running" || (r.state === "done" && job)) {
+    const st = job?.state || "queued";
+    openSheet(`${head}<p style="margin-top:14px"><span class="dot ${st === "done" ? "" : st === "failed" ? "bad" : "warn"}"></span>${r.by?.platform ? `Approved on ${esc(r.by.platform)}. ` : ""}${st === "done" ? "Done." : st === "failed" ? "It failed." : "Working…"}</p>
+      ${job?.steps.length ? `<ol class="steps">${job.steps.map((x) => `<li>${esc(x.msg)}</li>`).join("")}</ol>` : ""}${job?.error ? `<p style="color:var(--ember)">${esc(job.error)}</p>` : ""}
+      <div class="actions"><button data-close>${st === "done" || st === "failed" ? "Close" : "Hide; it keeps going"}</button></div>`);
+  } else {
+    const msg = { done: r.kind === "enrol" ? "This phone can now approve changes." : "Done.", expired: "The code expired before a phone approved it.", cancelled: "Cancelled.", rejected: r.error || "Refused.", failed: r.error || "It failed." }[r.state] || r.state;
+    openSheet(`<h3 id="sheet-title">${esc(r.kind === "enrol" && r.state === "done" ? "Administrator added" : r.title)}</h3><p>${esc(msg)}</p><div class="actions"><button class="go" data-close>OK</button></div>`);
+  }
+}
+
+function tickSheet() {
+  const el = $sheetBody.querySelector("[data-expires]");
+  if (el) { const s = Math.max(0, Math.round((Number(el.dataset.expires) - Date.now()) / 1000)); el.textContent = `Expires in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+}
+
+/* ---------- clicks ---------- */
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button, input[data-pick]");
+  if (!b) return;
+  const d = b.dataset;
+  if (d.pick !== undefined) { b.checked ? selected.add(d.pick) : selected.delete(d.pick); return render(); }
+  if (d.close !== undefined) { closeSheet(); return refresh(); }
+  if (d.pickall !== undefined) { for (const u of state.updates.os?.updates || []) if (u.security) selected.add(u.id); return render(); }
+  if (d.act === "logout") return act(async () => { await api("/api/logout", {}); gate("Signed out."); });
+  if (d.act === "enrol") return act(async () => { const r = await api("/api/enrol", {}); watching = r.code; });
+  if (d.act === "breakglass") return act(() => api("/api/breakglass/restart", {}));
+  if (d.check) return act(() => api("/api/check", { what: d.check }));
+  if (d.req) return act(async () => { const r = await api("/api/requests", { type: d.req, ids: [...selected] }); watching = r.code; if (d.req === "os-install") selected.clear(); });
+  if (d.remove) return act(async () => { const r = await api("/api/requests", { type: "remove-admin", device: d.remove }); watching = r.code; });
+  if (d.cancel) return act(async () => { await api(`/api/requests/${d.cancel}/cancel`, {}); });
+  if (d.match) return act(() => api(`/api/enrol/${d.match}/confirm`, { match: true }));
+  if (d.nomatch) return act(() => api(`/api/enrol/${d.nomatch}/confirm`, { match: false }));
+});
+$sheet.addEventListener("cancel", () => { watching = null; });
+
+boot();
+</script>
+</body>
+</html>

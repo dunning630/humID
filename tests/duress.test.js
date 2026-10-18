@@ -79,3 +79,17 @@ test("decoy-or-real is decided from the opened setting and the gesture that was 
   assert.equal(isDuress(undefined, true), false);
   assert.deepEqual(normalize({ enabled: 1, gesture: "wink" }), { enabled: true, gesture: "hold" });
 });
+
+test("a sealed setting that won't open fails toward duress when a duress gesture was used", async () => {
+  const saved = await sealDuress(Suite, key, record, { enabled: true, gesture: "taps" });
+  const tampered = { ...saved, duressSealed: saved.duressSealed.slice(0, -4) + "AAAA" };
+  const r = await openDuress(Suite, key, tampered);
+  assert.equal(r.unreadable, true);
+  assert.equal(isDuress(r.setting, "hold", r), true, "either gesture counts: which one was set can't be read");
+  assert.equal(isDuress(r.setting, "taps", r), true);
+  assert.equal(isDuress(r.setting, false, r), false, "a plain unlock stays a plain unlock");
+  // what opens, or was never set, is not "unreadable"
+  assert.equal((await openDuress(Suite, key, saved)).unreadable, undefined);
+  assert.equal((await openDuress(Suite, key, record)).unreadable, undefined);
+  assert.equal(isDuress({ enabled: false }, "hold", { unreadable: false }), false);
+});

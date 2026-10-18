@@ -37,6 +37,7 @@ export const ledgerLoading = signal(false);
 export const devices = signal(null);         // this account's devices (from the identity service)
 export const recovery = signal(null);        // { card, contacts: { n, threshold, names[], scheme }, anchor, settings, ready }
 export const protecting = signal([]);        // alerts about people this HumID protects: recoveries, duress signals
+export const adminSummary = signal(null);    // { health, alerts, updates, version } — this HumID administers its server
 export const station = signal(null);         // { station: bool, countries } — this HumID runs a verification station
 export const alerts = signal([]);            // recoveries in progress for this account
 export const cardCode = signal(null);        // a recovery card to show once, then forget
@@ -45,6 +46,9 @@ export const cardCode = signal(null);        // a recovery card to show once, th
 // only decoy documents and a calm account, while the server has locked sensitive changes.
 export const decoy = signal(false);
 export const duressInfo = signal(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
+// Check-in (docs/CHECKIN.md): { state: off | armed | locked | erased, deadline, erasesAt, windowMs,
+// maxWindowMs, graceMs, armedAt, erasedAt } while unlocked, null otherwise or when the server doesn't offer it.
+export const checkin = signal(null);
 export const continuity = signal(null);      // public-log check: { ok, reason, size, cosigned, at }
 export const nfc = signal(null);             // { available, kind: "phone" | "reader" | "none", reason } — the ID chip reader
 export const chipRead = signal(null);        // { stage, message, fraction, error } while reading a chip

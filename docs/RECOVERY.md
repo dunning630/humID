@@ -152,6 +152,14 @@ identity service marks it revoked; the gateway drops its sessions and refuses
 its sign-ins. Nothing on a lost device opens without its owner's live
 biometric, and a removed device can no longer reach the vault even then.
 
+## After a Check-in erase
+
+Check-in (docs/CHECKIN.md) erases vault data only: the identity, its devices
+and its recovery proofs stay. A later recovery restores the HumID, but the
+erased documents' keys are gone, so there is nothing of them to open. Recovery
+also can't save an armed vault from a lost phone: it waits 24 hours or more,
+longer than any check-in window.
+
 ## Limits in this POC
 
 - Alerts appear when the owner (or a witness) opens HumID. There are no push or email alerts yet.

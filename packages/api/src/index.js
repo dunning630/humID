@@ -38,6 +38,10 @@ const STEP_UP = {
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
   clearDuress: () => ["POST", "/auth/duress/clear"],
+  approveAdmin: (code) => ["POST", `/admin/requests/${codeOf(code)}/approve`],
+  armCheckin: () => ["POST", "/checkin/arm"],
+  checkIn: () => ["POST", "/checkin/check"],
+  disarmCheckin: () => ["POST", "/checkin/disarm"],
 };
 
 /** Chip data for the wire: { dg1, sod, dg15? } bytes → base64url. */
@@ -94,7 +98,8 @@ export class HumidApi {
     if (!res.ok) {
       const e = res.json() || {};
       if (res.status === 401 && e.error === "sign_in_required") { this.session = null; this.onSignedOut?.("required"); }
-      throw new ApiError(res.status, e.error || "error", e.message || `Request failed (${res.status})`);
+      // details: the server's whole answer, for errors that say more (e.g. which documents)
+      throw Object.assign(new ApiError(res.status, e.error || "error", e.message || `Request failed (${res.status})`), { details: e });
     }
     return res;
   }
@@ -221,6 +226,27 @@ export class HumidApi {
     this.session = null;
     return r;
   }
+
+  /* ---------------- Check-in (docs/CHECKIN.md) ---------------- */
+
+  /**
+   * Where Check-in stands: { state: "off" | "armed" | "locked" | "erased", deadline?, erasesAt?,
+   * windowMs?, maxWindowMs?, graceMs?, armedAt?, erasedAt? }. Times are milliseconds since the epoch.
+   * locked: a check-in was missed and the vault opens nothing until the next one; at erasesAt it's erased.
+   */
+  checkin() { return this.#json("GET", "/checkin"); }
+  /**
+   * Arm Check-in, or change its settings (which also starts a new window). Needs a step-up.
+   * keep: ids of the documents marked for the decoy view, which an erase leaves in place.
+   * A 409 unsplit_items error lists, in error.details.items, documents that must be re-sealed first.
+   */
+  armCheckin({ windowMs, maxWindowMs, graceMs, keep = [] }, stepUp) {
+    return this.#json("POST", "/checkin/arm", { body: { windowMs, maxWindowMs, graceMs, keep }, stepUp });
+  }
+  /** Check in: the next deadline, from now. nextWindowMs: a longer one (e.g. for the night), up to the armed maximum. Needs a step-up. */
+  checkIn({ nextWindowMs } = {}, stepUp) { return this.#json("POST", "/checkin/check", { body: nextWindowMs ? { nextWindowMs } : {}, stepUp }); }
+  /** Turn Check-in off. Needs a step-up. */
+  disarmCheckin(stepUp) { return this.#json("POST", "/checkin/disarm", { body: {}, stepUp }); }
 
   /* ---------------- vault ---------------- */
 
@@ -349,6 +375,15 @@ export class HumidApi {
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
+
+  /* ---------------- server administration (docs/ADMIN.md) ---------------- */
+
+  /** For an administrator of this server: { health, alerts, updates, version, at }. Throws not_admin otherwise. */
+  adminSummary() { return this.#json("GET", "/admin/summary"); }
+  /** What a code from the server's admin console asks for: { code, kind: "enrol" | "action", title, lines, digest, check, expiresAt }. */
+  adminRequest(code) { return this.#json("GET", `/admin/requests/${codeOf(code)}`); }
+  /** Approve exactly that request (its digest), with a live check. */
+  approveAdmin(code, digest, stepUp) { return this.#json("POST", `/admin/requests/${codeOf(code)}/approve`, { body: { digest }, stepUp }); }
 
   /* ---------------- verification stations ---------------- */
 
