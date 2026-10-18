@@ -73,18 +73,29 @@ jobs:
         run: |
           echo "::error::A simulation build (the server inside the app) can't be published as a release. Untick one of the two."
           exit 1
+      # Desktop apps are paused (2026-10-17): a desktop gate has no hardware proof a
+      # server can check, so macOS, Windows and Linux apps are not published. They can
+      # still be built to test (unpublished). Set the repository variable
+      # HUMID_DESKTOP_RELEASES=on to publish them again.
       - id: m
+        env:
+          PUBLISHING: ${{ (startsWith(github.ref, 'refs/tags/app-v') || inputs.publish_apps == true) && '1' || '' }}
+          DESKTOP_RELEASES: ${{ vars.HUMID_DESKTOP_RELEASES }}
         run: |
           WANT="${{ github.event.inputs.platforms || 'all' }}"
           WANT="${WANT/all/ios,android,macos,windows,linux}"
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
-          import json, sys
+          import json, os, sys
           runners = {"ios": "macos-14", "macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
           want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
           server = "server-windows" in want
           apps = [p for p in want if p != "server-windows"]
           bad = [p for p in apps if p not in runners]
           if bad: sys.exit(f"Unknown platform(s): {bad}")
+          desktop = [p for p in apps if p in ("macos", "windows", "linux")]
+          if desktop and os.environ.get("PUBLISHING") and os.environ.get("DESKTOP_RELEASES") != "on":
+              print(f"::warning::Desktop apps are paused and won't be published: left out {', '.join(desktop)}", file=sys.stderr)
+              apps = [p for p in apps if p not in desktop]
           print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in apps]}))
           print("anyApps=" + json.dumps(bool(apps)))
           print("server=" + json.dumps(server))
