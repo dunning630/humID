@@ -8,7 +8,7 @@
 //   record  the one record they all fill, with where each field came from
 export { checkDigit, parseMrz, parseMrzLines, findMrz, MrzConsensus, vote, mrzDate, kindOfCode, accessFromMrz } from "./mrz.js";
 export { parseAamva, isAamva, aamvaDate } from "./aamva.js";
-export { readDg1, readDg2, sodHashes, checkIntegrity, tlvAt, tlvChildren } from "./chip.js";
+export { readDg1, readDg2, sodHashes, checkIntegrity, safeCheckIntegrity, chipIntegrityOk, tlvAt, tlvChildren } from "./chip.js";
 export {
   SCHEMA, MEDIA_TYPE, KINDS, FIELDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyChip, applyTyped, setImage,
   niceName, fullName, title, status, summary, provenance, encodeRecord, decodeRecord,
