@@ -1,5 +1,7 @@
 // Penetration regression: sign-in brute force. 10 wrong proofs per identity per
-// 5 minutes, then rate_limited, whatever key the attacker tries next. Own stack: the
+// 5 minutes, then rate_limited for further WRONG proofs. A valid proof is never refused
+// because of other people's failures (SRV-02): the account id is not a secret, and a holder
+// locked out of sign-in could miss a Check-in and lose the vault. Own stack: the
 // handshake bucket (one hello per sign-in attempt) is shared per process.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +15,7 @@ let stack, holder;
 before(async () => { stack = await startStack(); });
 after(async () => { await stack?.stop(); });
 
-test("15 wrong sign-ins: 10 bad_proof, then rate_limited, and the right key is locked out too", async () => {
+test("15 wrong sign-ins: 10 bad_proof, then rate_limited, and the right key still signs in", async () => {
   const r = await registered(stack, "brute-victim");
   holder = r.holder;
   await r.api.logout();
@@ -27,8 +29,9 @@ test("15 wrong sign-ins: 10 bad_proof, then rate_limited, and the right key is l
   }
   assert.deepEqual(codes.slice(0, 10), Array(10).fill("bad_proof"));
   assert.deepEqual(codes.slice(10), Array(5).fill("rate_limited"));
-  // the limit is per identity: the holder's own, correct key is refused until the window passes
-  await assert.rejects(new HumidApi({ baseUrl: stack.baseUrl }).login({ id: holder.id, device: holder.deviceId, sign: holder.sign }), (e) => e.code === "rate_limited" && e.status === 429);
+  // the throttle counts failures only: the holder's own, correct key is never refused because of them
+  const ok = await new HumidApi({ baseUrl: stack.baseUrl }).login({ id: holder.id, device: holder.deviceId, sign: holder.sign });
+  assert.equal(ok.id, holder.id);
 });
 
 test("the limit is per identity, not per server: another account signs in normally", async () => {
@@ -38,7 +41,7 @@ test("the limit is per identity, not per server: another account signs in normal
   assert.equal(s.id, other.id);
 });
 
-test("every refused sign-in is in the victim's ledger as access.denied", async () => {
+test("every failed sign-in up to the budget is in the victim's ledger as access.denied, then one throttle note", async () => {
   // the ledger is read through a signed-in session; the victim is locked out, so read the service directly
   const { verifyLedger } = await import("@humid/audit");
   const { signAssertion } = await import("@humid/svc");
@@ -50,4 +53,6 @@ test("every refused sign-in is in the victim's ledger as access.denied", async (
   assert.equal(verifyLedger(page).ok, true);
   const denied = page.entries.map((e) => JSON.parse(e.body)).filter((e) => e.type === "access.denied" && e.detail?.reason === "bad_login_proof");
   assert.equal(denied.length, 10);
+  const notes = page.entries.map((e) => JSON.parse(e.body)).filter((e) => e.type === "access.denied" && e.detail?.reason === "sign_in_throttled");
+  assert.equal(notes.length, 1, "the 5 throttled failures leave one note, not five entries");
 });

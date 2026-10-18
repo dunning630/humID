@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, loginMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, loginMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
 const ID_RE = "hid_[0-9a-f]{40}";
@@ -175,6 +175,8 @@ export function createGateway({
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
+  /** Largest frame accepted from a session that has not signed in (recovery requests carry up to three ID-chip reads). */
+  maxAnonCallBytes = Number(env("GATEWAY_MAX_ANON_CALL_BYTES", String(512 * 1024))),
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
   registration = env("HUMID_REGISTRATION", "pass"),
   passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
@@ -210,8 +212,26 @@ export function createGateway({
 
   const helloLimit = new Buckets(30, 60_000);   // per client IP
   const callLimit = new Buckets(600, 60_000);   // per session
-  const loginLimit = new Buckets(10, 300_000);  // per identity
+  // Sign-in throttles count FAILED proofs only and never refuse a request before its proof has been
+  // checked. See the note at `login` and docs/CHECKIN.md: a lockout must never keep the holder from
+  // checking in, because a missed Check-in erases the vault.
+  const loginFailId = new Buckets(10, 300_000);     // failed proofs per identity
+  const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source address
+  const loginFailAll = new Buckets(200, 300_000);   // failed proofs, whole server (ledger-write budget)
+  const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
+
+  // Bodies still being uploaded before the frame is authenticated: per source address and in total.
+  const inflight = new Map();
+  let inflightAll = 0;
+  const admitBody = (perIp = 16, all = 1024) => (req) => {
+    const ip = clientIp(req);
+    const n = inflight.get(ip) || 0;
+    if (n >= perIp || inflightAll >= all) throw new HttpError(429, "rate_limited", "Too many requests in flight");
+    inflight.set(ip, n + 1); inflightAll++;
+    let released = false;
+    return () => { if (released) return; released = true; inflightAll--; const k = (inflight.get(ip) || 1) - 1; if (k > 0) inflight.set(ip, k); else inflight.delete(ip); };
+  };
 
   const clientIp = (req) => (trustProxy && req.headers["x-forwarded-for"]?.split(",")[0].trim()) || req.socket.remoteAddress;
 
@@ -431,10 +451,22 @@ export function createGateway({
       const c = s.challenge;
       s.challenge = null; // one attempt per challenge
       if (!c || c.id !== r.id || c.device !== r.device || Date.now() > c.exp) throw new HttpError(400, "challenge_invalid", "Request a new challenge");
-      if (!loginLimit.take(r.id)) throw new HttpError(429, "rate_limited", "Too many sign-in attempts. Wait a few minutes.");
+      // Throttling, and why it is shaped this way (SRV-02). The account id is public to anyone who
+      // has ever been offered a recovery link or contact slot, so nobody may spend the holder's
+      // allowance by guessing: a request is never refused before its proof is checked, and only
+      // FAILED proofs are counted. Past the budget a failure is answered 429 and kept out of the
+      // ledger (the ledger write is the only cost worth protecting), but a valid proof of the real
+      // holder always signs in. A lockout here can never cause a Check-in wipe: wipes come from a
+      // missed deadline in keyshare, or a duress sign-in, never from a refused sign-in.
       const v = await internalJson("identity", "POST", "/internal/verify", {
         json: { account: r.id, device: r.device, sig: r.sig, live: r.live, policy: devicePolicy, message: b64u(loginMessage(s.th, `${r.id}/${r.device}`, c.nonce)) },
       });
+      const failed = v.status >= 400 && v.status < 500;
+      const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(s.clientIp), loginFailAll.take("*")].every(Boolean);
+      if (throttled) {
+        if (loginNote.take(r.id)) await recordQuietly(r.id, "access.denied", { reason: "sign_in_throttled", device: r.device });
+        throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
+      }
       if (v.status === 401) {
         const live = v.data?.error === "bad_live_proof";
         await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
@@ -873,7 +905,17 @@ export function createGateway({
 
   const safeJson = (b) => { try { return JSON.parse(Buffer.from(b).toString()); } catch { return null; } };
 
-  async function call({ body }) {
+  function callLimitFor(prefix) {
+    // Anything that isn't a well-formed request header is left to htp.open (bad_frame) under the small cap.
+    let h;
+    try { h = parseHeader(concat(prefix, new Uint8Array(16))); } catch { h = null; }
+    if (prefix.length < HEADER_LEN || !h || h.dir !== DIR.request) return maxAnonCallBytes;
+    const s = htp.sessions.get(b64u(h.sid));
+    if (!s) throw new HttpError(401, "session_unknown", "Unknown session; handshake again.");
+    return s.subject ? maxCallBytes : Math.min(maxCallBytes, maxAnonCallBytes);
+  }
+
+  async function call({ req, body }) {
     let opened;
     try { opened = await htp.open(body); }
     catch (e) {
@@ -881,6 +923,7 @@ export function createGateway({
       throw e;
     }
     const { session: s, seq, meta, body: inner } = opened;
+    s.clientIp = clientIp(req);
     if (!callLimit.take(s.sidText)) return json(429, { error: "rate_limited", message: "Slow down" });
     let out;
     try {
@@ -912,7 +955,10 @@ export function createGateway({
       try { return json(200, htp.hello(parseJson(body))); }
       catch (e) { if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message }); throw e; }
     }, { public: true, bodyLimit: 16 * 1024 }],
-    ["POST", "/htp/v1/call", call, { public: true, bodyLimit: maxCallBytes }],
+    // The frame header names the session, so the cap is chosen from its first bytes: an unknown
+    // session is refused at once, a session that has not signed in gets a small cap, and only a
+    // signed-in session may send a large frame (vault uploads).
+    ["POST", "/htp/v1/call", call, { public: true, admit: admitBody(), readLimit: { max: maxCallBytes, peek: HEADER_LEN, decide: callLimitFor } }],
     // The public transparency log: anyone can fetch checkpoints and consistency proofs, and
     // configured cosigners can vouch for them. No account data: only tree sizes and hashes.
     ["GET", "/tlog/v1/checkpoint", () => internal("ledger", "GET", "/tlog/checkpoint"), { public: true }],
@@ -924,7 +970,7 @@ export function createGateway({
     ["POST", "/tlog/v1/cosign", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Slow down" });
       return internal("ledger", "POST", "/tlog/cosign", { body, headers: { "content-type": "application/json" } });
-    }, { public: true, bodyLimit: 16 * 1024 }],
+    }, { public: true, bodyLimit: 16 * 1024, admit: admitBody() }],
     ["OPTIONS", "/htp/v1/keys", () => ({ status: 204, headers: {}, body: "" }), { public: true }],
     ["OPTIONS", "/htp/v1/hello", () => ({ status: 204, headers: {}, body: "" }), { public: true }],
     ["OPTIONS", "/htp/v1/call", () => ({ status: 204, headers: {}, body: "" }), { public: true }],

@@ -22,7 +22,7 @@
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { sha3_256, toHex, identityId, STEP_UP_MAX_AGE_MS } from "@humid/htp";
@@ -236,7 +236,7 @@ export function createRecovery({
 
   const links = [
     ["POST", "/links", ({ body }) => {
-      const r = parseJson(body);
+      const r = parseObject(body);
       const kemPk = key(r.kemPk, "kemPk"), xPk = key(r.xPk, "xPk");
       const code = keyCode(LINK_LABEL, kemPk, xPk);
       sweep();
@@ -276,7 +276,7 @@ export function createRecovery({
   const card = [
     ["PUT", "/card", ({ claims, body }) => {
       needStepUp(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const tag = String(r.tag || "");
       if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(tag)) throw new HttpError(400, "bad_tag", "Card tag is malformed");
       const blob = unb64u(String(r.blob || ""));
@@ -312,7 +312,7 @@ export function createRecovery({
     // and is stored only encrypted under the identity fields, which aren't stored.
     ["PUT", "/anchor", ({ claims, body }) => {
       needStepUp(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const part = decodeQuorumPart(unb64u(String(r.part || "")));
       if (part.x !== QUORUM.anchor) throw new HttpError(400, "bad_part", "That isn't the anchor part.");
       const ok = checkChip(chipOf(r.chip));
@@ -345,7 +345,7 @@ export function createRecovery({
     // "Be a recovery contact": publish your account's public keys under a short code.
     ["POST", "/offers", ({ claims, body }) => {
       const sub = needUser(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const kemPk = key(r.kemPk, "kemPk"), xPk = key(r.xPk, "xPk"), dsaPk = key(r.dsaPk, "dsaPk");
       if (identityId(dsaPk) !== sub) throw new HttpError(403, "not_your_keys", "Those keys are not this account's keys.");
       const code = keyCode(OFFER_LABEL, kemPk, xPk, dsaPk);
@@ -364,7 +364,7 @@ export function createRecovery({
     // scheme "quorum": the shares rebuild the witness part; "full" (v1): they rebuild the seed.
     ["PUT", "/contacts", ({ claims, body }) => {
       needStepUp(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const scheme = r.scheme === "quorum" ? "quorum" : "full";
       const list = Array.isArray(r.guardians) ? r.guardians : [];
       const n = list.length, t = Number(r.threshold);
@@ -463,7 +463,7 @@ export function createRecovery({
   const requests = [
     // A new device starts a recovery. No sign-in: it has nothing to sign in with yet.
     ["POST", "/requests", ({ body }) => {
-      const r = parseJson(body);
+      const r = parseObject(body);
       const id = randomBytes(16).toString("base64url"), ref = randomBytes(8).toString("hex");
       const t = now();
       sweep();
@@ -525,7 +525,7 @@ export function createRecovery({
     // Two proofs: add the seal card after starting.
     ["POST", "/requests/:id/card", ({ params, body }) => {
       const q = openQuorum(params.id);
-      const first = attachCard(q, parseJson(body).tag);
+      const first = attachCard(q, parseObject(body).tag);
       const e = evaluate(q.id);
       return json(200, { ...requestView(e), account: e.account, first });
     }],
@@ -540,7 +540,7 @@ export function createRecovery({
     // the chip's answer to this request's challenge says the chip itself is here, not a copy.
     ["POST", "/requests/:id/anchor", ({ params, body }) => {
       const q = openQuorum(params.id);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const chip = chipOf(r.chip);
       const ok = checkChip(chip);
       if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", ok.aaRequired ? "Send the chip's authentication key (DG15) too." : "This ID's chip can't prove it's present. Verify at a HumID station instead.");
@@ -563,7 +563,7 @@ export function createRecovery({
     ["POST", "/requests/:id/complete", ({ params, claims, body }) => {
       gatewayOnly(claims);
       const q = getRequest.get(params.id);
-      const r = parseJson(body);
+      const r = parseObject(body);
       if (!q || q.account !== r.account || q.status !== "waiting" || !q.release_at || now() < q.release_at) {
         throw new HttpError(409, "not_released", "That recovery is not released.");
       }
@@ -583,7 +583,7 @@ export function createRecovery({
     // A contact releases their share to the requesting device, re-sealed to its recovery key.
     ["POST", "/help/:code", ({ params, claims, body }) => {
       needStepUp(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const q = db.prepare("SELECT * FROM requests WHERE code = ?").get(codeParam(params.code));
       if (!q || !["collecting", "waiting"].includes(q.status) || q.expires_at < now()) throw new HttpError(404, "unknown_code", "No recovery is waiting with that code.");
       const owner = String(r.owner || "");
@@ -666,7 +666,7 @@ export function createRecovery({
       needStation(claims);
       needStepUp(claims);
       const q = stationRequest(params.code);
-      const r = parseJson(body);
+      const r = parseObject(body);
       const c = r.checks || {};
       if (!(c.document === true && c.face === true && c.present === true)) {
         throw new HttpError(400, "checks_incomplete", "Confirm the document is genuine, the face matches its photo, and the person is here.");
@@ -699,7 +699,7 @@ export function createRecovery({
     // Gateway only: the owner unlocked with their duress gesture.
     ["POST", "/internal/duress", ({ claims, body }) => {
       gatewayOnly(claims);
-      const { account } = parseJson(body);
+      const { account } = parseObject(body);
       if (!/^hid_[0-9a-f]{40}$/.test(String(account))) throw new HttpError(400, "bad_subject", "Unknown subject");
       db.prepare(`INSERT INTO duress (account, last_at, count) VALUES (?, ?, 1)
                   ON CONFLICT(account) DO UPDATE SET last_at = excluded.last_at, count = count + 1`).run(account, now());
@@ -720,7 +720,7 @@ export function createRecovery({
     }],
     ["PUT", "/settings", ({ claims, body }) => {
       needStepUp(claims);
-      const r = parseJson(body);
+      const r = parseObject(body);
       db.prepare(`INSERT INTO settings (account, duress_alert, updated_at) VALUES (?, ?, ?)
                   ON CONFLICT(account) DO UPDATE SET duress_alert = excluded.duress_alert, updated_at = excluded.updated_at`)
         .run(claims.sub, r.duressAlert ? 1 : 0, new Date().toISOString());
