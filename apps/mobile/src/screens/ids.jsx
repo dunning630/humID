@@ -8,6 +8,7 @@ import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import { ChipAccess } from "../ui.jsx";
 import { Review, Push } from "./review.jsx";
+import { ScanState } from "./scanui.jsx";
 import * as S from "../core/state.js";
 import { addIdRecord, chipReader, readChipInto, markPicking, toast, saveCopy, buzz as buzzPref } from "../core/controller.js";
 import {
@@ -16,9 +17,11 @@ import {
 } from "@humid/idscan";
 import {
   barcodeReader, mrzReader, releaseReaders, frameInVideo, grab, imageData, jpeg, imageUrl, fileToCanvas, mrzBand, portraitImage, looksBlank,
-  grayOf, cornersIn, develop as developPhoto, straighten, rotateCanvas, canvas as newCanvas,
+  grayOf, grayRegion, cornersIn, develop as developPhoto, straighten, rotateCanvas, canvas as newCanvas,
+  createAnalyzer, liveMrzBand, scanOptions, warmScan, modesForKind,
 } from "../core/scan.js";
-import { lookAt, tracker, scaleQuad } from "../core/docfind.js";
+import { begin as flowBegin, step as flowStep, describe, gaveUp, pace } from "../core/scanflow.js";
+import { tracker, scaleQuad } from "../core/docfind.js";
 import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../core/barcodefind.js";
 import { DEMO_BUILD } from "@humid/gate";
 
@@ -91,9 +94,9 @@ function enlarge(c, k) {
  * Part of a video frame or picture around a found barcode, turned so its bars stand
  * exactly upright (even a slight tilt stops the reader) and big enough to read.
  */
-function barcodeCrop(src, spot, W, H) {
+function barcodeCrop(src, spot, W, H, cap = 2400) {
   const area = readBox(spot, W, H);
-  const c = grab(src, area, 2400), s = c.width / area.w;
+  const c = grab(src, area, cap), s = c.width / area.w;
   const g = grayOf(c, 800), k = g.w / c.width;
   const b = spot.box;
   const deg = barAngle(g, { x: (b.x - area.x) * s * k, y: (b.y - area.y) * s * k, w: b.w * s * k, h: b.h * s * k });
@@ -176,8 +179,24 @@ const BAR_QUIET_MS = 4000;
 /** Document photos (nothing to read): how long it must hold steady and sharp before the photo is taken. */
 const HOLD_MS = 900;
 
-/** A short buzz when a photo is taken (Android; iPhones have no web vibration). */
+/** With something to read, the readers need the CPU more than the outline does: look this far apart (ms) at the least, and further while a read is under way on a card already outlined. */
+const CODES_LOOK_GAP = 150, READING_LOOK_GAP = 350;
+
+/** Haptics (Android; iPhones have no web vibration), each its own shape: locked on, kept, and couldn't. */
 const buzz = () => buzzPref(14);
+const cheer = () => buzzPref([16, 45, 26]);
+const oops = () => buzzPref([40, 70, 40]);
+const nudge = () => buzzPref(8);
+
+/** The next moment worth looking at the camera: a new video frame, or the next paint, never later than 300 ms (a paused or hidden video must not hang the loop). */
+function nextFrame(v) {
+  return new Promise((res) => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; res(); } };
+    setTimeout(fin, 300);
+    try { if (typeof v?.requestVideoFrameCallback === "function") v.requestVideoFrameCallback(fin); else requestAnimationFrame(fin); } catch { fin(); }
+  });
+}
 
 /**
  * Full-screen camera that finds the document by itself: wherever it is in view and
@@ -185,6 +204,19 @@ const buzz = () => buzzPref(14);
  * and once it holds still, lit and in focus, the photo is taken. Nobody has to line
  * anything up. The photo is then straightened (the outline becomes a flat rectangle)
  * and turned the way the text reads.
+ *
+ * What it is doing is always on screen (core/scanflow.js, screens/scanui.jsx):
+ * Looking → Hold steady → Reading → Verifying → Done, or what to fix (Too dark, Too
+ * far, Glare, Couldn't read it), with Try again and Take photo one tap away.
+ *
+ * The analysis is off the main thread where the phone allows it (core/analyzer.js), at
+ * most one look at a time, paced by the video's own frames, and it stops the moment a
+ * photo is taken. If nothing is read within the scan's time budget it stops and offers
+ * Try again / Take photo instead of spinning on.
+ *
+ *   mode    "license" | "passport" | "card" (+ side): the shape and the readers for that
+ *           document, from core/scan.js scanOptions(); shape, read, title and hint below
+ *           override it when given
  *   shape   "id1" (cards), "td3" (passport photo page) or "full" (any document)
  *   read    { barcode, mrz } — what to look for while the camera runs; it captures
  *           by itself the moment it reads one, or when the shutter is pressed
@@ -198,29 +230,49 @@ const buzz = () => buzzPref(14);
  *           reason if it throws, so a photo is never silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
  */
-export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, title, hint, saved, onDone, onCancel, onSkip, onLook, label, tools }) {
+export function DocCamera(props) {
+  const preset = props.mode ? scanOptions(props.mode, { side: props.side }) : {};
+  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, label, tools } = props;
+  const shape = props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
-  const [status, setStatus] = useState(hint || "");
+  const [notice, setNotice] = useState("");
   const [torch, setTorch] = useState(null);
   const [toldSaved, setToldSaved] = useState(!!saved);
   const [look, setLook] = useState(null);      // the last look: { ok, found, hint, progress, points (on screen) }
   const [bar, setBar] = useState(null);        // a barcode in view: { points (on screen), note }
-  const L = useRef({ stop: false, done: false, paused: false, stream: null, track: null, looping: false, holdUntil: 0, quad: null }).current;
   const codes = !!(read.barcode || read.mrz);
   const card = shape !== "full";
+  const [flow, setFlow] = useState(() => flowBegin({ codes }));
+  const L = useRef({ stop: false, done: false, paused: false, gave: false, stream: null, track: null, running: new Set(), holdUntil: 0, quad: null, an: null, spots: null, readingAt: 0, flow: null, acq: 0 }).current;
+  L.flow ||= flow;
+  /** Feed the state machine one event; what it says is what the card shows. */
+  // development builds only: when things happened (ms since the camera opened), for finding what a scan waits on. Timings, never pictures or text.
+  const trace = (name, extra) => { if (DEMO_BUILD) { const t = (globalThis.__humidTrace ||= { ev: [] }); t.ev.push([name, Math.round(performance.now()), extra]); } };
+  const send = (ev) => {
+    const next = flowStep(L.flow, ev, Date.now());
+    if (next === L.flow) return;
+    const was = L.flow;
+    L.flow = next;
+    if (next.id !== was.id || next.fail !== was.fail || next.manual !== was.manual || next.note !== was.note || next.loading !== was.loading || Math.abs(next.progress - was.progress) >= 0.05) setFlow(next);
+  };
+  const flash = (msg, ms = 4000) => { setNotice(msg); setTimeout(() => setNotice((n) => (n === msg ? "" : n)), ms); };
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
   const stopStream = () => { L.stream?.getTracks().forEach((t) => t.stop()); };
+  const inactive = () => L.stop || L.paused || L.gave || !video.current || video.current.readyState < 2 || !video.current.videoWidth;
   async function finish(result) {
     if (L.done) return;
     L.done = true; L.stop = true; L.paused = true;
     setPhase("reading");
+    send({ t: "reading", note: codes ? "Checking what was read…" : "Saving…" });
     let then;
     try {
       then = await onDone(result);
-      buzz();
+      trace("kept");
+      cheer();
+      send({ t: "saved" });
       setPhase("saved");
       await sleep(450);
       stopStream();
@@ -228,8 +280,9 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
       // Keep the camera open and say why: never drop back to the list as if nothing happened.
       L.done = false; L.paused = false;
       L.holdUntil = Date.now() + 2500; // let the reason be read before trying again by itself
-      setStatus(e?.message || "Couldn't keep that photo. Try again.");
-      setTimeout(() => setStatus(hint || ""), 2600);
+      oops();
+      flash(e?.message || "Couldn't keep that photo. Try again.");
+      send({ t: "retry" });
       setPhase(L.stream ? "live" : "error");
       if (L.stream) { L.stop = false; loop(); }
       return;
@@ -237,122 +290,191 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
     if (typeof then === "function") then();
   }
 
-  async function loop() {
-    if (L.looping) return;
-    L.looping = true;
-    try { await watch(); } finally { L.looping = false; }
+  /** Start whichever of the loops aren't running (after a failed save or a Try again, only the ones that stopped). */
+  function loop() {
+    L.consensus ||= new MrzConsensus();
+    L.tracker ||= tracker({ need: codes ? 3 : 4, hold: codes ? 0 : HOLD_MS });
+    L.retry = () => { L.consensus.reset(); L.tracker.reset(); L.quad = null; L.spots = null; };
+    const all = { look: lookLoop, ...(read.barcode ? { barcode: barcodeLoop } : {}), ...(read.mrz ? { mrz: mrzLoop } : {}) };
+    for (const [name, run] of Object.entries(all)) {
+      if (L.running.has(name)) continue;
+      L.running.add(name);
+      run().catch(() => {}).finally(() => L.running.delete(name));
+    }
   }
 
-  /** The card, straightened from the live video and turned `turn`, for the MRZ reader. */
-  function liveCard(v, quad, turn) {
-    const box = around(quad, v.videoWidth, v.videoHeight, 0.04);
-    const s = Math.min(1, 1600 / Math.max(box.w, box.h));
-    const c = grab(v, box, box.w * s);
-    const q = quad.map((p) => ({ x: (p.x - box.x) * (c.width / box.w), y: (p.y - box.y) * (c.height / box.h) }));
-    let flat = straighten(c, q, { prefer: shape, max: 1400 });
-    if (flat.height > flat.width) flat = rotateCanvas(flat, 90);
-    return turn ? rotateCanvas(flat, turn) : flat;
+  /** Read PDF417 from a crop: in the barcode worker when there is one, else on this thread. */
+  async function readBarcodes(img, harder) {
+    const viaWorker = await L.an.read(img, { harder });
+    if (viaWorker) return viaWorker;
+    const main = await (L.bcMain ||= barcodeReader().catch(() => null));
+    if (!main) throw new Error("no reader");
+    return main.read(img, { harder });
   }
 
-  async function watch() {
-    const consensus = new MrzConsensus();
-    const bc = read.barcode ? barcodeReader().catch(() => null) : null;
-    const ocr = read.mrz ? mrzReader().catch(() => null) : null;
-    if (read.mrz) setStatus("Getting the reader ready…");
-    const track = tracker({ need: codes ? 3 : 4, hold: codes ? 0 : HOLD_MS });
-    const bars = barTracker();
-    let turn = 0, sawMrz = false, prev = null, steadySince = 0, mrzTurn = 0;
-    let barSeen = 0, barSince = 0, barTries = 0, barUpright = true, barFails = 0, lastSpot = null;
-    const skips = []; // barcodes passed over for a while: { box, until }
+  /** Where's the document? Once per video frame at most, one look at a time, spaced by how long the last took. */
+  async function lookLoop() {
+    const track = L.tracker;
+    let lastMs = 0, steadySince = 0, wasFound = false;
+    let prevOk = false;
     while (!L.stop) {
-      await sleep(read.mrz ? 60 : codes ? 120 : 90);
+      await sleep(pace(lastMs, { min: L.reading && L.quad ? READING_LOOK_GAP : codes ? CODES_LOOK_GAP : 70 }));
       const v = video.current;
-      if (L.paused || !v || v.readyState < 2 || !v.videoWidth) continue;
-      turn++;
-      // Where's the document? Every look when there's nothing to read; every other one otherwise.
-      if (auto && (!codes || turn % 2 === 0) && Date.now() >= L.holdUntil) {
-        try {
-          const im = grayOf(v, 320), k = v.videoWidth / im.w;
-          const r = lookAt(im, { shape, prev, prior: track.quad });
-          prev = im;
-          const t = track.feed(r, im.w, im.h);
-          L.quad = t.quad ? scaleQuad(t.quad, k) : null;
-          if (DEMO_BUILD) globalThis.__humidLook = { ...r, quad: L.quad }; // development builds: tests can see why it waits
-          setLook({ ok: r.ok, found: !!t.quad, hint: r.hint, progress: track.progress, points: onScreen(v, L.quad) });
-          if (onLook) { try { onLook({ look: r, quad: L.quad, video: v }); } catch { /* a guess, never in the way */ } }
-          if (!codes) {
-            if (t.fire && !L.stop) { L.stop = true; shoot("auto"); return; }
-          } else {
-            steadySince = r.ok ? steadySince || Date.now() : 0;
-            const barQuiet = !read.barcode || Date.now() - barSeen > BAR_QUIET_MS;
-            if (steadySince && barQuiet && Date.now() - steadySince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
-          }
-        } catch { /* a bad frame: keep looking */ }
-        if (!codes) continue;
-      }
-      const barcodeTurn = read.barcode && (!read.mrz || turn % 2 === 0);
+      await nextFrame(v);
+      if (document.hidden) { await sleep(400); continue; }
+      if (inactive() || !auto || Date.now() < L.holdUntil) continue;
+      const t0 = performance.now();
+      let r;
+      try { r = await L.an.look(v, { prior: track.quad }); } catch { await sleep(150); continue; }
+      lastMs = performance.now() - t0;
+      if (inactive()) continue; // taken, or given up, while it was thinking: drop this one
       try {
-        if (barcodeTurn) {
-          const r = await bc;
-          if (!r) { setStatus(NO_READER); continue; }
-          // Like a store's scan-and-go: find the barcode anywhere in view first (a few
-          // milliseconds on a small grey copy), highlight it, and point the reader at just
-          // that spot, at full resolution, laid flat: it reads from further away and at
-          // any angle, and nobody has to line anything up.
-          const now = Date.now(), W = v.videoWidth, H = v.videoHeight;
-          const spot = findBarcode(v, W, H, skips.filter((x) => x.until > now).map((x) => x.box));
-          if (spot) barUpright = spot.upright;
-          const full = bars.feed(spot, now);
-          let src, harder;
-          if (full) {
-            if (!barSeen || now - barSeen > 1500) barSince = now;
-            barSeen = now;
-            src = barcodeCrop(v, { box: full, upright: barUpright }, W, H);
-            harder = ++barTries % 3 === 0; // now and then, rotations and a closer search too
-            const across = barUpright ? full.w : full.h;
-            const note = now - barSince < 2200 ? "Barcode found. Reading…"
-              : across < Math.min(W, H) * 0.3 ? "Move a little closer to the barcode"
-              : "Hold steady on the barcode…";
-            setBar({ points: onScreen(v, boxCorners(full)), note });
-          } else {
-            setBar(null);
-            // nothing stands out: around the card when it's been found, else the whole
-            // view; every sixth try, the reader tries harder (rotations, more scanning)
-            src = grab(v, L.quad ? around(L.quad, W, H, 0.12) : null, 2400);
-            harder = turn % 6 === 0;
-          }
-          if (DEMO_BUILD) globalThis.__humidBar = { spot, box: full, harder }; // development builds: tests can see what it found
-          const texts = await r.read(imageData(src), { harder });
-          // only a license's barcode is taken: anything else in view is ignored
-          const text = texts.find((t) => parseAamva(t));
-          if (text && !L.stop) { L.stop = true; setBar(null); shoot("live", { barcode: text }); return; }
-          if (spot) {
-            // a barcode that isn't a license's (a store card beside it): look past it. One
-            // that won't read after a while: give the next one in view a turn, then come back.
-            barFails = lastSpot && overlap(spot.box, lastSpot) > 0.5 ? barFails + 1 : 1;
-            lastSpot = spot.box;
-            if (texts.length) { skips.push({ box: spot.box, until: now + 8000 }); barFails = 0; }
-            else if (barFails >= 8) { skips.push({ box: spot.box, until: now + 2500 }); barFails = 0; }
-            while (skips.length > 8) skips.shift();
-          }
-          if (texts.length && !text) setBar((b) => ({ points: b?.points || null, note: "That isn't a license barcode. Show the back of the license." }));
-        } else if (read.mrz) {
-          const r = await ocr;
-          if (!r) { setStatus(NO_READER); continue; }
-          // the card wherever it is, straightened; which way up isn't known yet, so every
-          // third try reads it turned round (the check digits only agree one way)
-          const flip = L.quad && ++mrzTurn % 3 === 0 ? 180 : 0;
-          const src = L.quad ? liveCard(v, L.quad, flip) : grab(v, frameRect(v, frame.current, 0.05));
-          const res = consensus.add(await r.read(mrzBand(src, shape)));
-          if (res.best && !sawMrz) { sawMrz = true; setStatus("Reading… hold still"); }
-          if (!res.best && !sawMrz) setStatus(hint || "");
-          if (res.stable && !L.stop) { L.stop = true; shoot("live", { mrz: res.result, consensus: true, turn: flip }); return; }
+        const t = track.feed(r.look, r.w, r.h);
+        L.quad = t.quad ? scaleQuad(t.quad, r.k) : null;
+        if (read.barcode && r.spots) L.spots = { list: r.spots, k: v.videoWidth / r.bw, at: Date.now(), used: false };
+        if (DEMO_BUILD) globalThis.__humidLook = { ...r.look, quad: L.quad, ms: Math.round(lastMs), where: L.an.where }; // development builds: tests can see why it waits
+        const found = !!t.quad;
+        if (found && !wasFound) { L.acq++; trace("found", Math.round(lastMs)); }
+        wasFound = found;
+        send({ t: "look", look: r.look, progress: track.progress, holdReading: Date.now() - L.readingAt < 1500 });
+        setLook({ ok: r.look.ok, found, hint: r.look.hint, progress: track.progress, points: onScreen(v, L.quad), acq: L.acq });
+        if (onLook) { try { onLook({ look: r.look, quad: L.quad, video: v }); } catch { /* a guess, never in the way */ } }
+        if (found && r.look.ok && !prevOk) nudge();
+        prevOk = found && r.look.ok;
+        if (!codes) {
+          if (t.fire && !L.stop) { L.stop = true; shoot("auto"); return; }
+        } else {
+          steadySince = r.look.ok ? steadySince || Date.now() : 0;
+          const barQuiet = !read.barcode || Date.now() - (L.barSeen || 0) > BAR_QUIET_MS;
+          if (steadySince && barQuiet && Date.now() - steadySince > FALLBACK_MS && !L.stop) { L.stop = true; shoot("auto"); return; }
         }
       } catch { /* a bad frame: keep looking */ }
     }
   }
 
+  /** The barcode: found anywhere in view, highlighted, and read from just that spot, laid flat. */
+  async function barcodeLoop() {
+    const bars = barTracker();
+    let barSince = 0, barTries = 0, barUpright = true, barFails = 0, lastSpot = null, idle = 0;
+    const skips = []; // barcodes passed over for a while: { box, until }
+    while (!L.stop) {
+      await sleep(40);
+      if (inactive()) continue;
+      const fresh = L.spots && !L.spots.used && Date.now() - L.spots.at < 800 ? L.spots : null;
+      if (!fresh) continue;
+      fresh.used = true;
+      const v = video.current;
+      try {
+        // Like a store's scan-and-go: find the barcode anywhere in view first (in the worker,
+        // on a small grey copy), highlight it, and point the reader at just that spot, at
+        // full resolution, laid flat: it reads from further away and at any angle.
+        const now = Date.now(), W = v.videoWidth, H = v.videoHeight;
+        const free = skips.filter((x) => x.until > now).map((x) => x.box);
+        let spot = fresh.list.map((c) => ({ box: fromArea(c.box, { x: 0, y: 0 }, fresh.k), upright: c.upright })).find((c) => !free.some((x) => overlap(c.box, x) > 0.5)) || null;
+        if (spot) spot = await closerLook(v, spot, W, H, free);
+        if (spot) barUpright = spot.upright;
+        const full = bars.feed(spot, now);
+        let src, harder;
+        if (full) {
+          idle = 0;
+          if (!L.barSeen || now - L.barSeen > 1500) barSince = now;
+          L.barSeen = now; L.readingAt = now;
+          src = barcodeCrop(v, { box: full, upright: barUpright }, W, H, 1600);
+          harder = ++barTries % 3 === 0; // now and then, rotations and a closer search too
+          const across = barUpright ? full.w : full.h;
+          const note = now - barSince < 2200 ? "Barcode found. Reading…"
+            : across < Math.min(W, H) * 0.3 ? "Move a little closer to the barcode"
+            : "Hold steady on the barcode…";
+          setBar({ points: onScreen(v, boxCorners(full)), note });
+          send({ t: "reading", note });
+        } else {
+          setBar(null);
+          // nothing stands out: every fourth look, the card's area (or the whole view) at a modest size
+          if (++idle % 4 !== 0) continue;
+          src = grab(v, L.quad ? around(L.quad, W, H, 0.12) : null, 1280);
+          harder = idle % 12 === 0;
+        }
+        if (DEMO_BUILD) globalThis.__humidBar = { spot, box: full, harder, where: L.an.where }; // development builds: tests can see what it found
+        const texts = await readBarcodes(imageData(src), harder);
+        // only a license's barcode is taken: anything else in view is ignored
+        const text = texts.find((t) => parseAamva(t));
+        if (L.stop || L.paused) continue; // a photo was taken while it was reading: that one stands
+        if (text) { L.stop = true; setBar(null); shoot("live", { barcode: text }); return; }
+        if (spot) {
+          // a barcode that isn't a license's (a store card beside it): look past it. One
+          // that won't read after a while: give the next one in view a turn, then come back.
+          barFails = lastSpot && overlap(spot.box, lastSpot) > 0.5 ? barFails + 1 : 1;
+          lastSpot = spot.box;
+          if (texts.length) { skips.push({ box: spot.box, until: now + 8000 }); barFails = 0; }
+          else if (barFails >= 8) { skips.push({ box: spot.box, until: now + 2500 }); barFails = 0; }
+          while (skips.length > 8) skips.shift();
+        }
+        if (texts.length && !text) { setBar((b) => ({ points: b?.points || null, note: "That isn't a license barcode. Show the back of the license." })); send({ t: "other" }); }
+      } catch (e) {
+        if (e?.message === "no reader") { L.gave = true; send({ t: "unreadable" }); flash(NO_READER, 8000); }
+        /* otherwise a bad frame: keep looking */
+      }
+    }
+  }
+
+  /** A second, closer look around what stood out (from far away only a barcode's bold end bars show at first). */
+  async function closerLook(v, spot, W, H, free) {
+    const win = searchBox(spot, W, H);
+    if (win.w < 16 || win.h < 16) return spot;
+    const near = grayRegion(v, win, 560), kn = win.w / near.w;
+    const spots = await L.an.locate(near);
+    const closer = spots.map((c) => ({ box: fromArea(c.box, win, kn), upright: c.upright })).find((c) => overlap(c.box, spot.box) > 0.3 && !free.some((x) => overlap(c.box, x) > 0.5));
+    return closer || spot;
+  }
+
+  /** The MRZ: the card's lines, straightened as a strip only, read in the OCR worker; two matching valid reads are needed. */
+  async function mrzLoop() {
+    const consensus = L.consensus;
+    let mrzTurn = 0, verifyUntil = 0;
+    const ocr = await mrzReader().catch(() => null);
+    if (!ocr) { L.gave = true; send({ t: "unreadable" }); flash(NO_READER, 8000); return; }
+    trace("mrz-ready");
+    send({ t: "engine", loading: false });
+    const ready = Date.now();
+    while (!L.stop) {
+      await sleep(30);
+      if (inactive()) continue;
+      // no card outlined yet: give the outline a moment before reading blind (a read of the wrong part of the picture is a wasted second)
+      if (!L.quad && Date.now() - ready < 2000) continue;
+      const v = video.current;
+      try {
+        // the card wherever it is; which way up isn't known yet, so every third try reads
+        // it turned round (the check digits only agree one way)
+        const flip = L.quad && ++mrzTurn % 3 === 0 ? 180 : 0;
+        const strip = L.quad ? liveMrzBand(v, L.quad, shape, { turn: flip }) : mrzBand(grab(v, frameRect(v, frame.current, 0.05)), shape);
+        if (L.quad) { L.readingAt = Date.now(); send({ t: "reading" }); }
+        const t0 = performance.now();
+        L.reading = true;
+        let text;
+        try { text = await ocr.read(strip); } finally { L.reading = false; }
+        const res = consensus.add(text);
+        trace("ocr", [Math.round(performance.now() - t0), !!res.best, res.stable]);
+        if (L.stop) return;
+        if (L.paused) continue;
+        if (res.best) { verifyUntil = Date.now() + 2500; send({ t: "verifying" }); }
+        else if (Date.now() > verifyUntil && L.quad) send({ t: "reading" });
+        if (res.stable) { L.stop = true; shoot("live", { mrz: res.result, consensus: true, turn: flip }); return; }
+      } catch { /* a bad frame: keep looking */ }
+    }
+  }
+
   useEffect(() => {
+    // Engines first, in parallel with the camera: the camera's permission prompt and
+    // start-up are the slow part of getting going, and the readers load during them.
+    trace("mount");
+    L.an = createAnalyzer({ shape, bar: !!read.barcode });
+    L.an.warm();
+    if (read.mrz) { send({ t: "engine", loading: true }); mrzReader().catch(() => null); }
+    if (read.barcode && L.an.where === "main") barcodeReader().then(() => {}, () => {}); // no worker on this phone: the reader runs here
+    const tick = setInterval(() => {
+      send({ t: "tick" });
+      if (gaveUp(L.flow) && !L.gave) { L.gave = true; oops(); setLook((l) => l && { ...l, points: null }); }
+    }, 500);
     (async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("no camera"), { name: "NotFoundError" });
@@ -367,10 +489,12 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
         setPhase("live");
+        trace("camera");
+        send({ t: "ready" });
         if (auto || codes) loop();
       } catch (e) { setPhase("error"); setError(cameraError(e)); }
     })();
-    return () => { L.stop = true; L.stream?.getTracks().forEach((t) => t.stop()); };
+    return () => { L.stop = true; clearInterval(tick); L.an?.close(); L.stream?.getTracks().forEach((t) => t.stop()); };
   }, []);
 
   /**
@@ -380,6 +504,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
    */
   async function develop(original, hintQuad, how, known = {}) {
     await sleep(0); // let "Saving…" paint first: straightening a 4K photo takes a moment
+    trace("develop");
     const quad = cornersIn(original, { hint: hintQuad, shape });
     let dev;
     if (known.mrz && quad) {
@@ -396,11 +521,14 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
     let readOut = {};
     if (known.barcode || known.mrz) readOut = known;
     else if (codes) {
+      send({ t: "verifying" }); // the photo is straight; now it is read closely and the details checked
+      await sleep(0);
       readOut = await readStill(dev.canvas, read, shape, how === "file" ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
     }
     const { turn, flipped, ...codesFound } = readOut;
     if (DEMO_BUILD) globalThis.__humidDevelop = { how, straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined }; // development builds: tests can see the proposal
+    trace("developed");
     return { ...dev, ...codesFound, how };
   }
 
@@ -408,8 +536,10 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
   async function shoot(how = "shutter", known = {}) {
     const v = video.current;
     if (!v || L.done) return;
-    L.paused = true;
+    trace("shoot-" + how);
+    L.paused = true; L.stop = how === "shutter" ? L.stop : true;
     setPhase("reading");
+    send({ t: "captured" });
     if (how === "auto") buzz();
     try {
       // Android can report a frame before it has one to give, or give a black one: wait briefly, try again.
@@ -421,10 +551,12 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
       await finish(await develop(c, L.quad, how, known));
     } catch (e) {
-      L.paused = false;
+      L.paused = false; L.gave = false;
       L.holdUntil = Date.now() + 2500;
-      setStatus(e?.message || "Couldn't take the photo. Try again.");
-      setTimeout(() => setStatus(hint || ""), 2600);
+      oops();
+      flash(e?.message || "Couldn't take the photo. Try again.");
+      send({ t: "retry" });
+      L.retry?.();
       setPhase(L.stream ? "live" : "error");
       if (L.stream) { L.stop = false; loop(); }
     }
@@ -436,11 +568,13 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
     if (!f) return;
     L.paused = true;
     setPhase("reading");
+    send({ t: "captured" });
     try {
       const c = await fileToCanvas(f);
       await finish(await develop(c, null, "file"));
     } catch {
       L.paused = false;
+      send({ t: "retry" });
       setPhase(L.stream ? "live" : "error");
       toast("That file isn't a photo HumID can open.", "warn");
     }
@@ -450,17 +584,29 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
     try { await L.track.applyConstraints({ advanced: [{ torch: !torch }] }); setTorch(!torch); } catch { setTorch(null); }
   }
 
+  /** Try again: a fresh budget, fresh reads, the camera as it was. */
+  function retry() {
+    L.gave = false; L.holdUntil = 0; L.barSeen = 0; L.bcMain = null;
+    L.retry?.();
+    setNotice("");
+    send({ t: "retry" });
+    if (L.stream) { L.stop = false; loop(); }
+  }
+
   const cancel = () => { L.stop = true; stopStream(); onCancel(); };
   const skip = () => { L.stop = true; stopStream(); onSkip(); };
   const live = phase === "live" && look;
   const lookState = !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
+  const view = describe(flow, { shape, hint });
+  const busy = phase === "reading" || phase === "saved";
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
       <video ref={video} playsInline muted autoplay />
-      {phase === "live" && (look?.points || bar?.points) && (
+      {phase === "live" && !L.gave && (look?.points || bar?.points) && (
         <svg class="dc-outline" aria-hidden="true" style={{ "--p": look?.progress || 0 }}>
-          {look?.points && <polygon points={look.points} />}
+          {look?.points && <polygon key={`o${look.acq}`} class="dc-snap" points={look.points} />}
+          {look?.points && <polyline class="dc-prog" points={`${look.points} ${look.points.split(" ")[0]}`} pathLength="100" style={{ strokeDashoffset: 100 - 100 * (look.progress || 0) }} />}
           {look?.points && look.points.split(" ").map((pt) => { const [x, y] = pt.split(","); return <circle cx={x} cy={y} r="6" />; })}
           {bar?.points && <polygon class="dc-bar" points={bar.points} />}
         </svg>
@@ -469,8 +615,9 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
         <div class="dc-frame" data-shape={shape} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {read.mrz && <span class="dc-mrz" data-shape={shape} />}
+          {phase === "live" && (view.id === "reading" || view.id === "verifying") && <span class="dc-sweep" aria-hidden="true"><i /></span>}
           {phase === "reading" && <span class="dc-busy"><i /></span>}
-          {phase === "saved" && <span class="dc-busy dc-saved" role="status" aria-label="Photo saved"><Icon name="check" /></span>}
+          {phase === "saved" && <span class="dc-busy dc-saved" aria-hidden="true"><Icon name="check" /></span>}
         </div>
       </div>
       {toldSaved && saved && (
@@ -484,11 +631,7 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
         <div class="grow">{eyebrow && <div class="eyebrow">{eyebrow}</div>}<strong>{title}</strong></div>
         {torch != null && <button class="icon-btn" aria-label={torch ? "Turn the light off" : "Turn the light on"} aria-pressed={torch} onClick={toggleTorch}><Icon name="torch" /></button>}
       </header>
-      <div class="dc-status" aria-live="polite">
-        {phase === "error" ? error : phase === "reading" ? (codes ? "Reading the photo…" : "Straightening the photo…") : phase === "saved" ? "Saved"
-          : bar?.note && status === (hint || "") ? bar.note
-          : auto && look && status === (hint || "") && (!codes || look.found) ? look.hint : status}
-      </div>
+      <ScanState view={view} notice={notice} error={phase === "error" ? error : null} torch={torch} onTorch={torch != null ? toggleTorch : null} onRetry={retry} onShoot={() => shoot()} />
       {label && phase !== "reading" && phase !== "saved" && (
         <div class="dc-label" role="status">
           <span><Icon name={label.icon || "scan"} />{label.text}</span>
@@ -497,8 +640,8 @@ export function DocCamera({ shape = "id1", read = {}, auto = true, eyebrow, titl
       )}
       <footer class="dc-bottom" data-tools={tools ? "1" : undefined}>
         {tools && <div class="dc-tools">{tools}</div>}
-        <button class="dc-side" disabled={phase === "reading" || phase === "saved"} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
-        <button class="dc-shutter" aria-label="Take the photo" disabled={phase !== "live"} onClick={() => shoot()}><i /></button>
+        <button class="dc-side" disabled={busy} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
+        <button class="dc-shutter" aria-label="Take the photo" data-offer={view.manual ? "1" : undefined} disabled={phase !== "live"} onClick={() => shoot()}><i /></button>
         {onSkip ? <button class="dc-side" onClick={skip}><Icon name="chevron" /><span>Skip</span></button> : <span class="dc-side" aria-hidden="true" />}
       </footer>
       <input ref={file} type="file" accept="image/*" hidden onChange={onFile} />
@@ -576,6 +719,9 @@ export function IdFlow({ start, onExit }) {
   const [, redraw] = useReducer((n) => n + 1, 0);
   const [step, setStep] = useState(start.step === "auto" ? "capture" : start.step || "capture"); // capture | chip | review
   const [cam, setCam] = useState(null);         // the plan entry the camera is open for
+  // One camera per capture: keeps its identity while the photo is kept (so "Done" can show), and is new each time one is opened.
+  const camRun = useRef({ cam: null, n: 0 });
+  if (cam !== camRun.current.cam) camRun.current = { cam, n: camRun.current.n + 1 };
   const [saved, setSaved] = useState(null);     // { text, img } the camera shows for the side just taken
   const [note, setNote] = useState(start.note || null); // { tone, text } about the last capture
   const [nfc, setNfc] = useState(null);
@@ -591,6 +737,7 @@ export function IdFlow({ start, onExit }) {
   const next = plan.find((p) => !r.images[p.side] && !r.skipped?.includes(p.side));
 
   useEffect(() => {
+    for (const m of modesForKind(r.kind)) warmScan(m); // the readers this kind will need load while the first screen is read
     if (KINDS[r.kind]?.chip || step === "chip") chipReader().then(setNfc).catch(() => setNfc({ available: false }));
     if (start.step === "auto") {
       // the Add camera already read one side: straight on to what's left, or past the capture
@@ -721,7 +868,7 @@ export function IdFlow({ start, onExit }) {
         )}
       </Push>
       {cam && (
-        <DocCamera key={cam.side + (r?.images[cam.side] ? "-again" : "")} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
+        <DocCamera key={`${cam.side}-${camRun.current.n}`} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
           saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
       )}
     </>
