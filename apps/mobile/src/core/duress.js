@@ -32,9 +32,11 @@ export async function sealDuress(Suite, key, record, setting) {
 }
 
 /**
- * The setting from a record, after a live check: { setting, record } where record
- * is non-null when the stored record should be replaced (a plaintext setting from an
- * earlier release, sealed now). Anything unreadable counts as "off".
+ * The setting from a record, after a live check: { setting, record, unreadable } where
+ * record is non-null when the stored record should be replaced (a plaintext setting from
+ * an earlier release, sealed now). A sealed setting that won't open reads as "off" with
+ * `unreadable: true`: isDuress then treats a duress gesture as duress (failing toward the
+ * decoy is the safe direction for a coercion feature, and with Check-in armed it erases).
  */
 export async function openDuress(Suite, key, record) {
   if (!key || !record) return { setting: { ...DEFAULT }, record: null };
@@ -46,15 +48,17 @@ export async function openDuress(Suite, key, record) {
   }
   if (!record.duressSealed) return { setting: { ...DEFAULT }, record: null };
   try { return { setting: normalize(await Suite.openSetting(key, fromB64(record.duressSealed))), record: null }; }
-  catch { return { setting: { ...DEFAULT }, record: null }; }
+  catch { return { setting: { ...DEFAULT }, record: null, unreadable: true }; }
 }
 
 /**
  * Is this unlock a duress unlock? `used` is what the Lock screen saw: false (plain
  * unlock), "hold" or "taps" (that gesture was made), or true (an earlier screen, or
  * reconnecting from a decoy session: "the duress gesture, whichever it is").
+ * unreadable: the sealed setting didn't open (openDuress); then any gesture counts.
  */
-export function isDuress(setting, used) {
+export function isDuress(setting, used, { unreadable = false } = {}) {
+  if (unreadable) return !!used;
   const s = normalize(setting);
   if (!s.enabled || !used) return false;
   return used === true || used === s.gesture;

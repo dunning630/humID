@@ -35,6 +35,11 @@ const EVENT_TYPES = new Set([
   // two-proof recovery, stations, duress (ledger 1.2)
   "recovery.anchor_set", "recovery.anchor_removed", "recovery.evidence", "recovery.station_verified", "station.verified",
   "duress.signaled", "duress.cleared", "settings.changed",
+  // server administration from an administrator's phone (ledger 1.3, docs/ADMIN.md)
+  "admin.approved",
+  // Check-in (docs/CHECKIN.md). Never one per check-in: an hourly heartbeat in the public log
+  // would tell anyone watching that an account is armed.
+  "checkin.armed", "checkin.disarmed", "checkin.erased",
 ]);
 
 /**

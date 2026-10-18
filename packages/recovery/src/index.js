@@ -82,6 +82,13 @@ export function parseCode(input) {
 export const LINK_LABEL = "HUMID-LINK-v1";       // a new device asking to join
 export const OFFER_LABEL = "HUMID-CONTACT-v1";   // someone offering to be a recovery contact
 export const REQUEST_LABEL = "HUMID-RECOVER-v1"; // a device asking contacts for help
+/**
+ * Becoming a server administrator (docs/ADMIN.md): the phone shows this code for its own
+ * device key, the admin console shows it for the key the approval arrived with, and the
+ * person compares the two before the console trusts that phone.
+ */
+export const ADMIN_CHECK_LABEL = "HUMID-ADMIN-v1";
+export const adminCheck = (deviceDsaPk) => formatCode(keyCode(ADMIN_CHECK_LABEL, deviceDsaPk));
 
 /* ---------------- recovery card ---------------- */
 
@@ -352,7 +359,7 @@ export function evidenceLabel(kinds, anchorMode) {
  */
 export const QR_VERSION = 2;
 export const QR_MAX = 48;
-export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT" });
+export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT", admin: "ADMIN" });
 // One spelling per payload: no leading zeros in the version or the expiry.
 const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}):([1-9A-Z][0-9A-Z]{0,7})$/;
 

@@ -1,5 +1,22 @@
 # HumID Server for Windows
 
+## 2.0.0
+
+Paired with **HumID 2.0.0**, the apps' new layout (Vault · Activity · You). 1.6.0 and 1.7.0 were never released on their own; both are in this release.
+
+- **HumID Admin, the admin console** (docs/ADMIN.md). A second background task, run as SYSTEM, at `http://127.0.0.1:8490` on this computer only. Open it with `humid console` in Terminal (Admin): a sign-in link that works once.
+  - **Watches** the server (every service, response times, errors, sessions), the public address and its certificate, CPU, memory, drives, Microsoft Defender, Windows Firewall, BitLocker, pending restarts, backups, and new HumID and Windows updates.
+  - **Changes** (update HumID with automatic rollback, roll back, install Windows updates, update Defender, back up, restart the server or the computer) **each wait for an administrator's phone**: a code on the console, then **You ▸ Manage this server** in HumID 2.0 and a face or fingerprint check. The console checks the phone's signatures itself against keys it pinned when the phone was added, so even a taken-over server process can't approve anything.
+  - HumID updates come from the repository's releases, checked against GitHub's SHA-256 digest; for a private repository run `humid admin token <read-only token>`.
+  - Break-glass: while the server is down, the console can restart it without a phone (logged); `humid admin reset` forgets lost administrator phones.
+  - The server writes how it's doing to `C:\ProgramData\HumID\server-status.json` every 15 seconds (health and counts only). Backups the console makes go to `C:\ProgramData\HumID\backups` (administrators only; the newest 10 are kept).
+- **Check-in** (docs/CHECKIN.md), **off by default**: `humid set HUMID_CHECKIN=on` lets holders arm a timer (You ▸ Check-in) that erases their vault for good unless they check in every hour or two. The keys of an armed vault live in the server's memory only, so anything that stops the server (a restart, an update, a backup, restarting Windows) erases every armed vault.
+  - The admin console says how many vaults are armed on every change that stops the server, before you approve it; `server-status.json` carries the count (a number, nothing more).
+  - So do the `humid` commands that stop the server (`stop`, `restart`, `set`, `backup`, `restore`, `expose`, `uninstall`, and `install` over an existing install): with vaults armed they go on only once you type ERASE (`-Quiet` goes on after the warning). `humid status` shows the count while Check-in is on.
+- The web app it serves is **HumID 2.0.0**.
+- **Compatibility.** Apps 1.8.0 and later keep working with this server. Manage this server and Check-in need HumID 2.0.0.
+- **Installing over 1.5.0** keeps all data and settings, adds the two admin tasks and `HUMID_ADMIN_PORT=8490`. Nothing can be changed from the console until you add your phone.
+
 ## 1.5.0
 
 - **Security hardening.** The web app it serves is HumID 1.8.0, and the server checks more:

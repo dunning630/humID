@@ -3,7 +3,7 @@ import { useState } from "preact/hooks";
 import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Mark } from "../brand.jsx";
 import { Icon, kindIcon } from "../icons.jsx";
-import { Sheet, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner } from "../ui.jsx";
+import { Sheet, fmtSize, fmtDate, fmtAgo, AssurancePill, OfflineBanner, CheckinBar, ErasedBanner } from "../ui.jsx";
 import { openExternal } from "../core/external.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
@@ -32,6 +32,8 @@ export function Vault() {
       </div>
 
       <OfflineBanner />
+      <CheckinBar />
+      <ErasedBanner />
 
       {S.alerts.value.length > 0 && (
         <button class="banner bad alert-banner" onClick={() => { S.tab.value = "you"; window.scrollTo({ top: 0 }); }}>

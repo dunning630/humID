@@ -1,11 +1,12 @@
 // You: everything about this HumID in one place, in the order it matters —
-// what's left to protect it, devices, recovery (witnesses, ID chip, recovery card),
-// duress protection, helping others, how HumID looks and locks on this device,
-// a collapsed "About" with the diagnostics, and the exits (lock, close).
+// what's left to protect it, devices, managing the vault server (for its
+// administrators), recovery (witnesses, ID chip, recovery card), duress protection
+// and Check-in, helping others, how HumID looks and locks on this device, a
+// collapsed "About" with the diagnostics, and the exits (lock, close).
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../icons.jsx";
 import {
-  AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, CodeBox, CardBox, useNow, fmtLeft,
+  AssurancePill, proofLabel, Sheet, groupKey, fmtDate, fmtAgo, fmtTime, CodeBox, CardBox, useNow, fmtLeft, CheckinBar,
   QrCode, CodeInput, Scanner, Toggle, ProofMeter, PROOFS, ChipAccess, CardConfirm, PrintableCard, CAN_PRINT, OfflineBanner, HowProtected,
 } from "../ui.jsx";
 import * as S from "../core/state.js";
@@ -15,6 +16,8 @@ import {
   offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, cancelRecovery,
   readChipFiles, demoPassport, setAnchor, removeAnchor, saveDuress, loadDuress, setWitnessAlert, clearLockdown,
   stationLookup, stationVerify, stationReadChip, markPicking, DURESS_HOLD_MS, readChip, setPref, setDecoy,
+  loadAdminSummary, findAdminRequest, approveAdminRequest,
+  loadCheckin, armCheckin, checkIn, disarmCheckin, checkinOffered,
 } from "../core/controller.js";
 import { CHOICES, IDLE_CHOICES, idleLabel } from "../core/prefs.js";
 import { serverHost, VERSION, PLATFORM, DEMO_BUILD, SIM } from "../core/config.js";
@@ -56,7 +59,7 @@ export function You() {
   const [how, setHow] = useState(false);
   const [removing, setRemoving] = useState(null); // a device whose row is open on "Remove this device?"
   const sheet = S.sheet.value;
-  useEffect(() => { loadDevices(); loadRecovery(); loadAlerts(); loadDuress(); }, []);
+  useEffect(() => { loadDevices(); loadRecovery(); loadAlerts(); loadDuress(); loadAdminSummary(); loadCheckin(); }, []);
   const devices = S.devices.value;
   const rec = S.recovery.value;
   const decoy = S.decoy.value;
@@ -71,6 +74,7 @@ export function You() {
       <div class="topbar"><div class="grow"><h1>You</h1><div class="sub"><Icon name="shield" />Your HumID, and how it's protected</div></div></div>
 
       <OfflineBanner />
+      <CheckinBar />
 
       {S.alerts.value.map((a) => (
         <div class="banner bad" style={{ marginBottom: 12 }}>
@@ -143,7 +147,16 @@ export function You() {
           ))}
         </div>
         <p class="small muted" style={{ marginTop: 8 }}>Lost a phone? Remove it here. It can't reach your vault after that, and nothing on it opens without your face or fingerprint.</p>
+        {!decoy && !SIM && !S.adminSummary.value && (
+          <button class="option" style={{ marginTop: 10 }} onClick={() => open("admin")}>
+            <span class="o-ico"><Icon name="station" /></span>
+            <span><strong>Manage this server</strong><span>Approve a change from your vault server's admin console, or become its administrator.</span></span>
+            <Icon name="chevron" />
+          </button>
+        )}
       </div>
+
+      {!decoy && S.adminSummary.value && <ServerCard sum={S.adminSummary.value} onApprove={() => open("admin")} />}
 
       <div class="card" id="recovery">
         <div class="c-head"><h3>Recovery</h3>{rec && (rec.ready ? <span class="pill mint"><Icon name="check" />Ready</span> : <span class="pill amber">Needs {2 - Object.values(rec.proofs).filter(Boolean).length} more</span>)}</div>
@@ -174,6 +187,8 @@ export function You() {
         <p class="small muted" style={{ marginTop: 4 }}>If someone forces you to unlock, a gesture opens HumID showing only documents you chose, while your vault quietly locks itself and recoveries slow down.</p>
         <div class="actions" style={{ marginTop: 10 }}><button class="btn quiet sm" onClick={() => open("duress")}><Icon name="siren" />{!decoy && duress?.enabled ? "Change" : "Set up"}</button></div>
       </div>
+
+      {checkinOffered() && <CheckinCard onOpen={() => open("checkin")} />}
 
       <div class="card">
         <h3>Help others</h3>
@@ -272,6 +287,8 @@ export function You() {
         action="Reset" onConfirm={resetSimulation} />}
       {sheet?.type === "duress" && <DuressSheet />}
       {sheet?.type === "station" && <StationSheet />}
+      {sheet?.type === "checkin" && <CheckinSheet />}
+      {sheet?.type === "admin" && <AdminSheet />}
     </main>
   );
 }
@@ -742,6 +759,200 @@ function StationSheet() {
           <p class="lede" style={{ marginTop: 10 }}>{done.releaseAt ? `Their vault opens on their new phone in about ${fmtLeft(done.releaseAt - Date.now())}, unless one of their devices vetoes it.` : "Their ID counts now. They still need one more proof: their witnesses or their recovery card."}</p>
           <p class="small muted" style={{ marginTop: 6 }}>Recorded in your ledger and theirs.</p>
           <div class="actions"><button class="btn secure block" onClick={close}>Done</button></div>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+/* ---------------- Check-in (docs/CHECKIN.md) ---------------- */
+
+const H = 3_600_000, MIN = 60_000;
+const hours = (ms) => `${ms / H} h`;
+const graceLabel = (ms) => (ms ? `${ms / MIN} min` : "None");
+
+function CheckinCard({ onOpen }) {
+  const st = S.checkin.value;
+  useNow(30_000);
+  if (!st) return null;
+  const on = st.state === "armed" || st.state === "locked";
+  return (
+    <div class="card" id="checkin">
+      <div class="c-head">
+        <h3>Check-in</h3>
+        {st.state === "locked" ? <span class="pill danger"><Icon name="alert" />Missed</span> : on ? <span class="pill mint"><Icon name="check" />On</span> : <span class="pill">Off</span>}
+      </div>
+      <p class="small muted" style={{ marginTop: 4 }}>
+        {on
+          ? `Check in by ${fmtTime(st.deadline)}, then every ${hours(st.windowMs)}. Miss one and your vault locks; ${st.graceMs ? `${st.graceMs / MIN} minutes later` : "at once"} it's erased for good.`
+          : "Going somewhere you could be detained or lose your phone? Turn this on and check in every hour or two, or your vault is erased for good."}
+      </p>
+      {st.state === "erased" && (
+        <div class="banner bad" style={{ marginTop: 10 }}>
+          <span class="b-ico"><Icon name="trash" /></span>
+          <div><strong>Your vault was erased by Check-in</strong><span>{fmtAgo(st.erasedAt)}. Its documents can't be opened again. Your HumID still works, and anything sealed since is here.</span></div>
+        </div>
+      )}
+      <div class="actions" style={{ marginTop: 10 }}>
+        {on && <button class="btn primary sm" onClick={() => checkIn()}><Icon name="fingerprint" />Check in</button>}
+        <button class="btn quiet sm" onClick={onOpen}><Icon name="clock" />{on ? "Settings" : "Set up"}</button>
+      </div>
+    </div>
+  );
+}
+
+function CheckinSheet() {
+  const st = S.checkin.value || { state: "off" };
+  const pol = S.server.value?.policy?.checkin || { windowsH: [1, 2, 4, 8, 24], graceMin: [0, 15, 30, 60] };
+  const on = st.state === "armed" || st.state === "locked";
+  const windows = pol.windowsH.map((h) => h * H);
+  const graces = pol.graceMin.map((m) => m * MIN);
+  const now = useNow(1000);
+  const [win, setWin] = useState(on ? st.windowMs : 2 * H);
+  const [max, setMax] = useState(on ? st.maxWindowMs : 8 * H);
+  const [grace, setGrace] = useState(on ? st.graceMs : 15 * MIN);
+  const [next, setNext] = useState(on ? st.windowMs : 2 * H);
+  const [understood, setUnderstood] = useState(on);
+  const [unsplit, setUnsplit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const decoy = S.decoy.value;
+  const decoys = decoy ? 0 : S.items.value.filter((i) => i.decoy).length;
+  // sealed before split keys: their second key isn't on the server, so an erase couldn't be final
+  const older = unsplit || (decoy ? [] : S.items.value.filter((i) => !i.split).map((i) => ({ id: i.id, name: i.name })));
+  const changed = !on || win !== st.windowMs || Math.max(max, win) !== st.maxWindowMs || grace !== st.graceMs;
+  const run = async (fn) => { setBusy(true); try { return await fn(); } finally { setBusy(false); } };
+  const arm = () => run(async () => {
+    const r = await armCheckin({ windowMs: win, maxWindowMs: Math.max(max, win), graceMs: grace });
+    if (r.unsplit) setUnsplit(r.unsplit);
+    else if (r.ok) close();
+  });
+  return (
+    <Sheet onClose={close} label="Check-in">
+      <div class="eyebrow">Check-in</div>
+      <h2 style={{ marginTop: 6 }}>{on ? (st.state === "locked" ? "You missed a check-in" : `Check in by ${fmtTime(st.deadline)}`) : "If you can't check in, erase your vault"}</h2>
+      <p class="lede" style={{ marginTop: 10 }}>
+        {on
+          ? st.state === "locked"
+            ? `Your vault opens nothing until you check in. If you don't, it's erased for good in ${fmtLeft(st.erasesAt - now)}.`
+            : `${fmtLeft(st.deadline - now)} left. Miss it and your vault locks; ${st.graceMs ? `${st.graceMs / MIN} minutes later` : "at once"} it's erased for good.`
+          : "Turn this on before you go somewhere you could be detained or lose your phone. Check in with your face or fingerprint before each deadline. Miss one and your vault locks; when the grace time runs out, your vault server destroys the keys to your documents, and they're gone for good."}
+      </p>
+
+      {on && (
+        <div class="card" style={{ marginTop: 14 }}>
+          <Choice id="ck-next" label="Next window" hint="Need longer, like overnight? Pick it as you check in." value={next}
+            options={windows.filter((v) => v <= st.maxWindowMs).map((v) => [v, hours(v)])} onPick={setNext} />
+          <div class="actions" style={{ marginTop: 10 }}>
+            <button class="btn primary block" disabled={busy} onClick={() => run(async () => { if (await checkIn(next === st.windowMs ? undefined : next)) close(); })}><Icon name="fingerprint" />Check in now</button>
+          </div>
+        </div>
+      )}
+
+      <div class="card" style={{ marginTop: 14 }}>
+        <Choice id="ck-win" label="Check in every" value={win} options={windows.map((v) => [v, hours(v)])} onPick={(v) => { setWin(v); if (max < v) setMax(v); }} />
+        <Choice id="ck-max" label="Longest single window" hint="For the night: when you check in, you can choose a longer window up to this." value={Math.max(max, win)}
+          options={windows.filter((v) => v >= win).map((v) => [v, hours(v)])} onPick={setMax} />
+        <Choice id="ck-grace" label="Grace after a missed check-in" hint="Your vault is locked meanwhile; checking in opens it again." value={grace}
+          options={graces.map((v) => [v, graceLabel(v)])} onPick={setGrace} />
+      </div>
+
+      <div class="banner warn" style={{ marginTop: 12 }}>
+        <span class="b-ico"><Icon name="alert" /></span>
+        <div>
+          <strong>Nobody can undo an erase</strong>
+          <span>Not you, not your witnesses, not HumID. HumID can't remind you while it's closed yet, so set an alarm for each check-in.</span>
+        </div>
+      </div>
+      <p class="small muted" style={{ marginTop: 10 }}>
+        {decoys ? `The ${decoys} document${decoys === 1 ? "" : "s"} you marked for the decoy view stay${decoys === 1 ? "s" : ""}, so a forced unlock still looks normal. ` : "Documents you mark for the decoy view stay, so a forced unlock still looks normal. "}
+        While Check-in is on, unlocking with your duress gesture erases your vault at once, and nothing is kept on this phone, so HumID won't open offline.
+      </p>
+
+      {older.length > 0 && (
+        <div class="banner bad" style={{ marginTop: 12 }}>
+          <span class="b-ico"><Icon name="info" /></span>
+          <div>
+            <strong>{older.length === 1 ? "One document needs sealing again first" : `${older.length} documents need sealing again first`}</strong>
+            <span>{older.slice(0, 4).map((o) => o.name).join(", ")}{older.length > 4 ? ` and ${older.length - 4} more` : ""}: sealed before split keys, so Check-in couldn't erase {older.length === 1 ? "it" : "them"} for good. Save a copy, add it again, then delete the old one, or just delete it.</span>
+          </div>
+        </div>
+      )}
+
+      {!on && <Toggle label="I understand my documents can be erased for good" checked={understood} onChange={setUnderstood} />}
+      <div class="actions">
+        {(!on || changed) && (
+          <button class={`btn ${on ? "quiet" : "primary"} block`} disabled={!understood || busy || older.length > 0} onClick={arm}>
+            <Icon name="fingerprint" />{on ? "Save settings and check in" : "Turn on Check-in"}
+          </button>
+        )}
+        {on && <button class="btn ghost block" disabled={busy} onClick={() => run(disarmCheckin)}>Turn off Check-in</button>}
+      </div>
+    </Sheet>
+  );
+}
+
+/* ---------------- managing the server (docs/ADMIN.md) ---------------- */
+
+const HEALTH = { ok: ["mint", "Running normally"], warn: ["amber", "Needs a look"], bad: ["danger", "Needs attention"] };
+
+function ServerCard({ sum, onApprove }) {
+  const [tone, label] = HEALTH[sum.health] || HEALTH.warn;
+  const updates = [sum.updates?.humid && `HumID Server ${sum.updates.humid}`, sum.updates?.security ? `${sum.updates.security} Windows security update${sum.updates.security === 1 ? "" : "s"}` : sum.updates?.os ? `${sum.updates.os} Windows update${sum.updates.os === 1 ? "" : "s"}` : null].filter(Boolean);
+  return (
+    <div class="card">
+      <div class="c-head"><h3>This server</h3><span class={`pill ${tone}`}>{label}</span></div>
+      <p class="small muted" style={{ marginTop: 4 }}>You're an administrator of {serverHost(S.identity.value?.server?.url)}{sum.version ? ` (version ${sum.version})` : ""}. Changes from its admin console wait for your approval here.</p>
+      {sum.alerts?.length > 0 && <ul class="small" style={{ margin: "8px 0 0", paddingLeft: 18 }}>{sum.alerts.map((a) => <li>{a}</li>)}</ul>}
+      {updates.length > 0 && <p class="small" style={{ marginTop: 8 }}>Waiting to install: {updates.join(" and ")}. Start it from the console on the server.</p>}
+      <div class="actions" style={{ marginTop: 10 }}><button class="btn primary sm" onClick={onApprove}><Icon name="scan" />Approve a change</button></div>
+    </div>
+  );
+}
+
+function AdminSheet() {
+  const [code, setCode] = useState("");
+  const [req, setReq] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const now = useNow();
+  const find = async () => { setBusy(true); setReq(await findAdminRequest(code)); setBusy(false); };
+  const approve = async () => { setBusy(true); const r = await approveAdminRequest(req); if (r) setDone(r); setBusy(false); };
+  const enrol = req?.kind === "enrol";
+  return (
+    <Sheet onClose={close} label="Manage this server">
+      <div class="eyebrow">Manage this server</div>
+      {done ? (
+        enrol ? (
+          <>
+            <h2 style={{ marginTop: 6 }}>Compare this with the console</h2>
+            <p class="lede" style={{ marginTop: 10 }}>The admin console now shows an admin check. It must be exactly this. If it is, choose <b>They match</b> there; if not, choose <b>They don't match</b>.</p>
+            <CodeBox code={done.check} label="Admin check" />
+            <div class="actions"><button class="btn primary block" onClick={close}>Done</button></div>
+          </>
+        ) : (
+          <>
+            <h2 style={{ marginTop: 6 }}>Approved</h2>
+            <p class="lede" style={{ marginTop: 10 }}>The console checks your approval itself, then starts: {req.title}. You'll see its progress there.</p>
+            <div class="actions"><button class="btn secure block" onClick={close}>Done</button></div>
+          </>
+        )
+      ) : !req ? (
+        <>
+          <h2 style={{ marginTop: 6 }}>Enter the code from the admin console</h2>
+          <p class="lede" style={{ marginTop: 10 }}>On the server, the console shows a QR code and a 12-character code for each change. Scan it or type it.</p>
+          <CodeInput id="admin-code" label="Console code" value={code} onInput={setCode} expect="admin" />
+          <div class="actions"><button class="btn primary block" disabled={busy || code.replace(/[^0-9a-z]/gi, "").length !== 12} onClick={find}>Look it up</button></div>
+        </>
+      ) : (
+        <>
+          <h2 style={{ marginTop: 6 }}>{enrol ? "Become an administrator of this server?" : req.title}</h2>
+          {req.lines?.length > 0 && <ul class="small muted" style={{ margin: "8px 0 0", paddingLeft: 18 }}>{req.lines.map((l) => <li>{l}</li>)}</ul>}
+          <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="shield" /></span><div><strong>Check {req.check}</strong><span>The console shows the same code. Your face or fingerprint approves exactly this, for {fmtLeft(req.expiresAt - now)} more.</span></div></div>
+          <p class="small muted" style={{ marginTop: 12 }}>{enrol ? "You'll then be able to approve updates, restarts and backups on this server. Only do this for a server you run." : "Only approve a change you started on the console yourself."}</p>
+          <div class="actions">
+            <button class="btn primary block" disabled={busy || req.expiresAt <= now} onClick={approve}><Icon name="fingerprint" />{enrol ? "Become an administrator" : "Approve this change"}</button>
+            <button class="btn ghost block" onClick={close}>Not mine</button>
+          </div>
         </>
       )}
     </Sheet>

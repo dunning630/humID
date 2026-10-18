@@ -6,9 +6,10 @@ name: CI
 #   3. build only the service images the change touches, then boot the whole
 #      stack with docker compose and run the smoke test against it over TLS
 #   4. build HumID Server for Windows, install it on a Windows runner from the
-#      zip (as a person would), smoke-test, back up, restore, update, uninstall
+#      zip (as a person would), smoke-test, back up, restore, update, test the
+#      admin console and its jobs (tests/windows/admin-console.ps1), uninstall
 #   5. the app in Chromium: "Scan an ID" and "Take a photo" with a fake camera, getting
-#      set up, and offline mode (tests/browser/idscan.mjs, photo.mjs, setup.mjs, offline.mjs)
+#      set up, offline mode, managing the server, Check-in (tests/browser/idscan.mjs, photo.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -50,6 +51,37 @@ jobs:
           echo "services=$(echo "$OUT" | jq -c .serviceMatrix)" >> "$GITHUB_OUTPUT"
           echo "anyApps=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
           echo "anyServices=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
+
+  # The release workflow runs the unit tests on Windows before building the Windows app, so a
+  # test that only fails there (a path with \ instead of /) blocks a release. Catch it here.
+  # Each failing test becomes an annotation on the check, readable without the log.
+  test-windows:
+    needs: test
+    if: needs.test.outputs.anyApps == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Unit tests on Windows (as the release runs them)
+        shell: pwsh
+        env: { NODE_NO_WARNINGS: "1" }
+        run: |
+          node --test --test-reporter=tap tests/*.test.js 2>&1 | Tee-Object -FilePath tap.txt | Out-Null
+          $code = $LASTEXITCODE
+          Get-Content tap.txt | Select-String '^# (tests|pass|fail)' | ForEach-Object { $_.Line }
+          if ($code) {
+            $lines = Get-Content tap.txt
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^\s*not ok \d+ - (.*)') {
+                $name = $Matches[1]
+                $detail = ($lines[($i + 1)..([Math]::Min($i + 40, $lines.Count - 1))] | Where-Object { $_ -match "error:|expected|actual|location:|\.test\.js:" } | Select-Object -First 6) -join ' | '
+                Write-Output "::error title=Windows unit test failed::$name | $detail"
+              }
+            }
+            exit $code
+          }
 
   app:
     needs: test
@@ -135,7 +167,7 @@ jobs:
     name: id-scan (browser)
     needs: test
     runs-on: ubuntu-22.04
-    timeout-minutes: 25 # the five checks take ~7 min; a stuck browser fails fast instead of holding the run
+    timeout-minutes: 25 # the checks take ~8 min; a stuck browser fails fast instead of holding the run
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -173,6 +205,18 @@ jobs:
           grep -v '^{"t"' cards.log | tail -60
           echo "::error::$(grep -v '^{"t"' cards.log | grep -E 'Error|expected|actual|assert|waiting for|cards.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/cards" }
+      - name: Managing the server (admin console + app; enrol a phone, approve a change)
+        run: |
+          node tests/browser/admin.mjs > admin.log 2>&1 && { grep -v '^{"t"' admin.log; exit 0; }
+          grep -v '^{"t"' admin.log | tail -60
+          echo "::error::$(grep -v '^{"t"' admin.log | grep -E 'Error|expected|actual|assert|waiting for|admin.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/admin" }
+      - name: Check-in (turn on, check in, a longer night window, duress erases, decoy stays)
+        run: |
+          node tests/browser/checkin.mjs > checkin.log 2>&1 && { grep -v '^{"t"' checkin.log; exit 0; }
+          grep -v '^{"t"' checkin.log | tail -60
+          echo "::error::$(grep -v '^{"t"' checkin.log | grep -E 'Error|expected|actual|assert|waiting for|checkin.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/checkin" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
@@ -311,12 +355,54 @@ jobs:
           if ($after -ne $kid) { throw "server identity changed" }
           node tests/smoke.mjs http://127.0.0.1:8480
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Uninstall removes the task and, with -RemoveData, the data
+      - name: Check-in guard (with vaults armed, humid commands that stop the server wait for a typed ERASE)
+        shell: pwsh
+        run: |
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $status = 'C:\ProgramData\HumID\server-status.json'
+          $empty = (New-TemporaryFile).FullName
+          function Humid([string[]]$Arguments) {
+            $o = "$env:RUNNER_TEMP\guard-out.txt"; $e = "$env:RUNNER_TEMP\guard-err.txt"
+            $p = Start-Process -FilePath $ps -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$env:HUMID`"") + $Arguments) `
+              -RedirectStandardInput $empty -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
+            $null = $p.Handle   # so ExitCode is kept
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "humid $($Arguments -join ' ') hung (waiting for input?)" }
+            $out = @((Get-Content -LiteralPath $o -Raw), (Get-Content -LiteralPath $e -Raw)) -join "`n"
+            Write-Host $out
+            return [pscustomobject]@{ Code = $p.ExitCode; Out = $out }
+          }
+          $r = Humid @('stop')
+          if ($r.Code) { throw "stop failed with nothing armed (exit $($r.Code))" }
+          # The server is stopped, so nothing rewrites its status file: pretend two vaults are armed.
+          @{ at = (Get-Date).ToUniversalTime().ToString('o'); checkin = @{ armed = 2 } } | ConvertTo-Json | Set-Content -LiteralPath $status
+          $r = Humid @('restart')
+          if ($r.Code -eq 0) { throw 'restart went ahead with vaults armed and no ERASE typed' }
+          if ($r.Out -notmatch '2 vaults are armed') { throw 'no armed-vault warning' }
+          if ((Get-ScheduledTask -TaskName 'HumID Server').State -eq 'Running') { throw 'the server was started anyway' }
+          $r = Humid @('set', 'HUMID_CHECKIN=on')
+          if ($r.Code -eq 0) { throw 'set went ahead with vaults armed' }
+          if (Select-String -LiteralPath 'C:\ProgramData\HumID\humid.env' -Pattern '^\s*HUMID_CHECKIN\s*=\s*on' -Quiet) { throw 'set changed the setting anyway' }
+          $r = Humid @('restart', '-Quiet')
+          if ($r.Code) { throw "restart -Quiet failed (exit $($r.Code))" }
+          if ($r.Out -notmatch 'Going ahead') { throw 'no armed-vault warning with -Quiet' }
+          # The running server writes its own count again (none armed).
+          $deadline = (Get-Date).AddSeconds(60); $armed = 2
+          while ((Get-Date) -lt $deadline -and $armed -ne 0) {
+            try { $armed = (Get-Content -LiteralPath $status -Raw | ConvertFrom-Json).checkin.armed } catch {}
+            if ($armed -ne 0) { Start-Sleep -Seconds 2 }
+          }
+          if ($armed -ne 0) { throw "the server didn't rewrite server-status.json (armed: $armed)" }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Admin console (SYSTEM, 127.0.0.1 only), sign-in link, jobs, update with automatic rollback, rollback
+        shell: pwsh
+        run: ./tests/windows/admin-console.ps1 -Repo $env:GITHUB_WORKSPACE
+      - name: Uninstall removes the tasks and, with -RemoveData, the data
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID uninstall -RemoveData -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if (Get-ScheduledTask -TaskName 'HumID Server' -ErrorAction SilentlyContinue) { throw 'task still registered' }
+          foreach ($n in 'HumID Server', 'HumID Admin', 'HumID Admin Job') { if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) { throw "task $n still registered" } }
           if (Test-Path 'C:\Program Files\HumID Server') { throw 'program folder still there' }
           if (Test-Path 'C:\ProgramData\HumID') { throw 'data still there' }
       - name: Log on failure
@@ -324,7 +410,11 @@ jobs:
         shell: pwsh
         run: |
           Get-ScheduledTaskInfo -TaskName 'HumID Server' -ErrorAction SilentlyContinue | Format-List
+          Get-ScheduledTaskInfo -TaskName 'HumID Admin' -ErrorAction SilentlyContinue | Format-List
+          Get-ScheduledTaskInfo -TaskName 'HumID Admin Job' -ErrorAction SilentlyContinue | Format-List
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\HumID\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
+          Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
       - uses: actions/upload-artifact@v4
         with:
           name: HumID-Server-Windows

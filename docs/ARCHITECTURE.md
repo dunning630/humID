@@ -152,7 +152,7 @@ capabilities dropped.
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
 | **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
-| **keyshare** | gateway | one encrypted 256-bit key per split document, under `share-key.bin` | which documents exist and when each was opened. Never an envelope, name or account key. See [SECURITY.md](SECURITY.md#a-compromised-phone). |
+| **keyshare** | gateway | one encrypted 256-bit key per split document, under `share-key.bin`; while Check-in is armed, under a per-account fuse key held in memory only | which documents exist and when each was opened; who has Check-in armed and until when. Never an envelope, name or account key. See [SECURITY.md](SECURITY.md#a-compromised-phone) and [CHECKIN.md](CHECKIN.md). |
 | **access** | gateway | access-code hashes, pass keys, spent-pass hashes, all dated by day | which codes were used, and how many passes were spent. Never an account. See [ANONYMITY.md](ANONYMITY.md). |
 
 **Internal trust.** The gateway signs a short-lived Ed25519 assertion (30 s,
