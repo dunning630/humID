@@ -15,6 +15,7 @@
 
 ### Patch Changes
 
+- 944f96f: A document's **Sealed** time is now the vault server's clock (when it received the live-sealed document), shown to the minute, instead of the time the phone wrote into the envelope. The holder can set a phone's clock; they can't set the server's. The genuine app can't talk to the server with a clock more than two minutes off, so the two normally agree; if they ever don't, the phone's time is shown beside it as "Phone's clock said …", never as the seal time.
 - a70c5d3: Fail closed on passport and ID chips. Chip data is used (and the chip photo decoded) only when its files match the chip's own signed list of hashes; a malformed SOD, an unchecked result or a hash mismatch now shows "Chip couldn't be verified", uses none of the chip's data, and offers to continue with the printed details, marked "Not verified". A chip that does match is now described as "Chip data integrity-checked" rather than verified, because the issuing country's signature isn't checked on the phone.
 - Updated dependencies [a70c5d3]
 - Updated dependencies [f216b9a]

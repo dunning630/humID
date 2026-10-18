@@ -54,6 +54,11 @@ pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
   by `deploy/setup.sh`) so the apps pin your server.
 - **One or a few platforms:** Actions → *Release apps* → platforms: `android`
   (or `ios,android`, or `all`).
+- **Desktop apps are paused** (2026-10-17, see [docs/SECURITY.md](docs/SECURITY.md)):
+  a publishing run leaves macOS, Windows and Linux out with a warning (they can
+  still be built, unpublished, to test). Set the repository variable
+  `HUMID_DESKTOP_RELEASES=on` to publish them again. HumID Server for Windows
+  is a server, not a desktop app, and isn't affected.
 - **Everything:** bump `apps/mobile/package.json`, tag `app-vX.Y.Z`; a draft
   GitHub release collects every platform's installers.
 - Each app embeds `modules.json` listing the package versions inside it, so a

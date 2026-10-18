@@ -36,6 +36,26 @@ it until that review and the items under *Before real data* are done.
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
   Keys are destroyed if enrolment changes, and the owner confirms at setup
   that only their own biometrics are enrolled (recorded in the ledger).
+- **A live check is not consent.** It proves an enrolled face or finger was
+  matched live, not that its owner meant it: a finger pressed while asleep, or
+  under force (the duress gesture covers force), passes.
+- **The seal proves who and when, not that the document is genuine.** A forged
+  page or card seals like a real one. Only an ID chip read carries the
+  issuer's signature.
+- **Seal time is the server's.** The phone writes its own clock into the
+  envelope (`manifest.created`); the chip's live signature covers the
+  ciphertext, not the time. The app therefore shows the vault server's receive
+  time as **Sealed** (`apps/mobile/src/core/sealtime.js`). The genuine app
+  can't reach the server with its clock more than two minutes off (HTP frame
+  window), so the two agree; a larger gap is shown as "Phone's clock said …".
+  An exported sealed file still carries only the phone's time.
+- **Desktop apps are paused** (2026-10-17). A desktop gate has no hardware
+  proof: on Windows (DPAPI) and Linux (Secret Service) the secret is protected
+  by the operating system for the signed-in user, so malware running as that
+  user can reach it without a finger. Servers refuse desktops by default
+  (`HUMID_DEVICE_POLICY=attested`), and *Release apps* no longer publishes
+  macOS, Windows or Linux apps unless the repository variable
+  `HUMID_DESKTOP_RELEASES=on` is set.
 - **Recovery proves a chain of evidence, not biology.** See the limits in
   [CONTINUITY.md](CONTINUITY.md#what-it-doesnt-prove).
 - **ID chips: what's not checked yet.** The app reads chips with BAC or PACE
