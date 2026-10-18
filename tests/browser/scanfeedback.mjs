@@ -62,12 +62,20 @@ async function hold(page) {
   await page.waitForTimeout(1500);
   await page.keyboard.up(" ");
 }
+/** Add opens the list of what to add (no camera yet); Photo, then Start camera, opens the camera. */
+async function openPhotoCamera(page) {
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
+  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
+  await page.locator(".pushed [data-start-camera]").click();
+  await page.locator(".doccam").waitFor({ timeout: 10_000 });
+}
 async function pickKind(page, name) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".doccam").waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: "It's something else" }).click();
-  await page.locator(".pushed").getByText("What is it?").waitFor();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
   await page.locator(".pushed button.kind", { hasText: name }).click();
+  await page.locator(".pushed [data-start-camera]").click();
 }
 const state = (page) => page.locator(".doccam .dc-state");
 
@@ -90,8 +98,7 @@ try {
   step("enrolled (demo)");
 
   /* ---------------- 1. nothing in view: what it says, the offer at 10 s, the stop at 30 s ---------------- */
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".doccam").waitFor({ timeout: 10_000 });
+  await openPhotoCamera(page);
   await state(page).getByText("Looking for the document").waitFor({ timeout: 10_000 });
   await shot(page, "1-looking");
   const live = state(page).locator('[role="status"]');
