@@ -9,8 +9,11 @@
 //   MRZ       Tesseract (WebAssembly, in a worker) with an OCR-B model trained
 //             for MRZs (DoubangoTelecom/tesseractMRZ, BSD-3-Clause)
 
-import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad } from "./docfind.js";
+import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad, bandPlan } from "./docfind.js";
 import { cleanScan } from "./scanclean.js";
+
+export { createAnalyzer } from "./analyzer.js";
+export * as flow from "./scanflow.js";
 
 const asset = (p) => new URL(`./${p}`, import.meta.url).href;
 const MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
@@ -125,6 +128,8 @@ export function grab(src, rect, maxW = Infinity) {
   return c;
 }
 export const imageData = (c) => ctx2d(c).getImageData(0, 0, c.width, c.height);
+/** A small grey copy of part of a video frame or picture, at most `max` wide. */
+export const grayRegion = (src, rect, max = 560) => toGray(imageData(grab(src, rect, max)));
 
 // Small chunks: spreading tens of thousands of arguments can overflow the stack on phones.
 const b64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x1000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x1000)); return btoa(s); };
@@ -258,7 +263,13 @@ export async function fileToCanvas(file, maxSide = 3200) {
 
 /** Grayscale and stretch the contrast (2nd to 98th percentile): faint print and glare both help OCR less. */
 export function enhance(c, { threshold = false } = {}) {
-  const img = imageData(c);
+  const out = canvas(c.width, c.height);
+  ctx2d(out).putImageData(enhanceData(imageData(c), { threshold }), 0, 0);
+  return out;
+}
+
+/** enhance() on pixels (ImageData or { width, height, data }): changed in place, returned as ImageData. */
+export function enhanceData(img, { threshold = false } = {}) {
   const d = img.data;
   const hist = new Uint32Array(256);
   for (let i = 0; i < d.length; i += 4) { const y = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8; d[i] = y; hist[y]++; }
@@ -274,9 +285,7 @@ export function enhance(c, { threshold = false } = {}) {
     y = threshold ? (y < cut ? 0 : 255) : Math.max(0, Math.min(255, ((y - lo) * 255) / span));
     d[i] = d[i + 1] = d[i + 2] = y;
   }
-  const out = canvas(c.width, c.height);
-  ctx2d(out).putImageData(img, 0, 0);
-  return out;
+  return img instanceof ImageData ? img : new ImageData(d, img.width, img.height);
 }
 
 /**
@@ -295,6 +304,90 @@ export function mrzBand(c, shape = "td3", { threshold = false, scale = 1 } = {})
   g.imageSmoothingQuality = "high";
   g.drawImage(c, 0, y, c.width, c.height - y, 0, 0, out.width, out.height);
   return enhance(out, { threshold });
+}
+
+/**
+ * The MRZ strip of a card seen live, ready for the reader: only the strip is
+ * straightened (a third of the card, at the size the reader likes), straight from the
+ * pixels of the video that hold it. Same picture as mrzBand(straighten(card)) at a
+ * fraction of the work (no whole-card copy, warp or readback).
+ *   quad   the card's corners in the video's pixels, [tl, tr, br, bl]
+ *   turn   0, or 180 for a card seen upside down
+ */
+export function liveMrzBand(video, quad, shape = "td3", { turn = 0, scale = 1, threshold = false } = {}) {
+  const plan = bandPlan(quad, shape, { turn, scale });
+  const vw = video.videoWidth || video.width, vh = video.videoHeight || video.height;
+  const pad = 3;
+  const x0 = Math.max(0, Math.floor(plan.box.x - pad)), y0 = Math.max(0, Math.floor(plan.box.y - pad));
+  const x1 = Math.min(vw, Math.ceil(plan.box.x + plan.box.w + pad)), y1 = Math.min(vh, Math.ceil(plan.box.y + plan.box.h + pad));
+  const rect = { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+  // the strip is read at `flatW` across; no need for more pixels than that going in
+  const across = Math.hypot(plan.quad[1].x - plan.quad[0].x, plan.quad[1].y - plan.quad[0].y);
+  const s = Math.min(1, plan.flatW / Math.max(1, across));
+  const c = grab(video, rect, rect.w * s);
+  const k = c.width / rect.w;
+  const q = plan.quad.map((p) => ({ x: (p.x - rect.x) * k, y: (p.y - rect.y) * (c.height / rect.h) }));
+  const out = warp(imageData(c), q, plan.flatW, plan.flatH, plan.crop);
+  const strip = canvas(out.width, out.height);
+  ctx2d(strip).putImageData(enhanceData(new ImageData(out.data, out.width, out.height), { threshold }), 0, 0);
+  return strip;
+}
+
+/* ---------------- scan modes: what the camera is asked to do ---------------- */
+
+/**
+ * The three things the camera scans, by the kind of document the person chose. This is the
+ * one place that says what each asks of the camera and the readers:
+ *
+ *   license   side "front" (photo, taken by itself) or "back" (the PDF417 barcode, read by itself)
+ *   passport  the photo page and its machine-readable lines (MRZ)
+ *   card      a payment card, front or back (photographed; the card screen reads the text)
+ *
+ * scanOptions(mode, { side }) are props for <DocCamera/> (screens/ids.jsx):
+ *   <DocCamera {...scanOptions("passport")} onDone={…} onCancel={…} />
+ * warmScan(mode) starts loading what that mode will need (WebAssembly, the MRZ model, the
+ * worker). Call it the moment the document type is chosen, before the camera opens, so
+ * the engines are ready when the first frame is.
+ */
+export const SCAN_MODES = {
+  license: {
+    front: { shape: "id1", read: {}, title: "Front of the license", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
+    back: { shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Show the back, anywhere in view. It finds the barcode and reads it by itself." },
+    warm: ["barcode"],
+  },
+  passport: {
+    front: { shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Show the photo page, with the two lines of <<<. It finds the page by itself." },
+    warm: ["mrz"],
+  },
+  card: {
+    front: { shape: "id1", read: {}, title: "The front of the card", hint: "Fit the card in the frame, number side up." },
+    back: { shape: "id1", read: {}, title: "The back of the card", hint: "The side with the signature strip. The photo isn't kept." },
+    warm: ["text"],
+  },
+};
+
+export const scanModes = () => Object.keys(SCAN_MODES);
+
+/** The scan modes an ID record kind will use (for warming the engines as soon as the kind is known). */
+export const modesForKind = (kind) => ({ driver_license: ["license"], passport: ["passport"], id_card: ["license", "passport"], residence_permit: ["passport"], card: ["card"] }[kind] || []);
+
+/** DocCamera props for a scan mode (and side: "front" by default). Throws for a mode that doesn't exist. */
+export function scanOptions(mode, { side = "front" } = {}) {
+  const m = SCAN_MODES[mode];
+  if (!m) throw new Error(`Unknown scan mode: ${mode}`);
+  const o = m[side] || m.front;
+  return { mode, side: m[side] ? side : "front", shape: o.shape, read: { ...o.read }, title: o.title, hint: o.hint };
+}
+
+/**
+ * Start getting a mode's engines ready. Safe to call any number of times, from anywhere, and
+ * never throws or waits: engines that can't start are reported when the camera needs them.
+ */
+export function warmScan(mode) {
+  const m = SCAN_MODES[mode];
+  if (!m) return Promise.resolve([]);
+  const loaders = { barcode: barcodeReader, mrz: mrzReader, text: textReader };
+  return Promise.allSettled(m.warm.map((w) => loaders[w]()));
 }
 
 /** The most pixels a chip photo may declare: an ID portrait is a few hundred thousand; a huge header is a hostile chip or file, not a photo. */
