@@ -122,7 +122,7 @@ export function parseTrack2(bytes) {
   return m ? { pan: m[1], yymm: m[2] } : null;
 }
 
-const pan5A = (b) => hex(b).toUpperCase().replace(/F+$/, "");
+const pan5A = (b) => { const h = hex(b).toUpperCase(); let e = h.length; while (e > 0 && h[e - 1] === "F") e--; return h.slice(0, e); };
 const yymmdd = (b) => hex(b);
 function holderName(b) {
   if (!b) return null;
