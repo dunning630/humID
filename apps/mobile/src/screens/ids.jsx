@@ -20,6 +20,7 @@ import {
   grayOf, grayRegion, cornersIn, develop as developPhoto, straighten, rotateCanvas, canvas as newCanvas,
   createAnalyzer, liveMrzBand, scanOptions, warmScan, modesForKind,
 } from "../core/scan.js";
+import { LIGHT_TIP } from "../core/addroute.js";
 import { begin as flowBegin, step as flowStep, describe, gaveUp, pace } from "../core/scanflow.js";
 import { tracker, scaleQuad } from "../core/docfind.js";
 import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../core/barcodefind.js";
@@ -260,7 +261,11 @@ export function DocCamera(props) {
   const flash = (msg, ms = 4000) => { setNotice(msg); setTimeout(() => setNotice((n) => (n === msg ? "" : n)), ms); };
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
-  const stopStream = () => { L.stream?.getTracks().forEach((t) => t.stop()); };
+  const stopStream = () => {
+    L.stream?.getTracks().forEach((t) => t.stop());
+    L.stream = null;
+    if (video.current) video.current.srcObject = null; // the preview lets go too, so the camera light goes out
+  };
   const inactive = () => L.stop || L.paused || L.gave || !video.current || video.current.readyState < 2 || !video.current.videoWidth;
   async function finish(result) {
     if (L.done) return;
@@ -463,6 +468,21 @@ export function DocCamera(props) {
     }
   }
 
+  // Leaving the screen (the app goes to the background, the page is hidden or put away)
+  // frees the camera at once; coming back lands on the screen before, where "Start camera" asks again.
+  useEffect(() => {
+    const away = () => {
+      if (!document.hidden) return;
+      L.stop = true; L.paused = true; stopStream();
+      if (L.picking) { setPhase((p) => (p === "reading" || p === "saved" ? p : "error")); setError("The camera stopped while you chose a photo. Close this and start the camera again."); } // the photo picker is up: keep the screen so its file still arrives
+      else onCancel?.();
+    };
+    const gone = () => { L.stop = true; stopStream(); };
+    document.addEventListener("visibilitychange", away);
+    addEventListener("pagehide", gone);
+    return () => { document.removeEventListener("visibilitychange", away); removeEventListener("pagehide", gone); };
+  }, []);
+
   useEffect(() => {
     // Engines first, in parallel with the camera: the camera's permission prompt and
     // start-up are the slow part of getting going, and the readers load during them.
@@ -494,7 +514,7 @@ export function DocCamera(props) {
         if (auto || codes) loop();
       } catch (e) { setPhase("error"); setError(cameraError(e)); }
     })();
-    return () => { L.stop = true; clearInterval(tick); L.an?.close(); L.stream?.getTracks().forEach((t) => t.stop()); };
+    return () => { L.stop = true; clearInterval(tick); L.an?.close(); stopStream(); };
   }, []);
 
   /**
@@ -563,6 +583,7 @@ export function DocCamera(props) {
   }
 
   async function onFile(e) {
+    L.picking = false;
     const f = e.currentTarget.files?.[0];
     e.currentTarget.value = "";
     if (!f) return;
@@ -640,7 +661,7 @@ export function DocCamera(props) {
       )}
       <footer class="dc-bottom" data-tools={tools ? "1" : undefined}>
         {tools && <div class="dc-tools">{tools}</div>}
-        <button class="dc-side" disabled={busy} onClick={() => { markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
+        <button class="dc-side" disabled={busy} onClick={() => { L.picking = true; markPicking(); file.current.click(); }}><Icon name="image" /><span>Photo</span></button>
         <button class="dc-shutter" aria-label="Take the photo" data-offer={view.manual ? "1" : undefined} disabled={phase !== "live"} onClick={() => shoot()}><i /></button>
         {onSkip ? <button class="dc-side" onClick={skip}><Icon name="chevron" /><span>Skip</span></button> : <span class="dc-side" aria-hidden="true" />}
       </footer>
@@ -743,7 +764,7 @@ export function IdFlow({ start, onExit }) {
       // the Add camera already read one side: straight on to what's left, or past the capture
       if (next) { setStep("capture"); setSaved({ text: done.length ? `${done[0].side === "back" ? "Back" : "Front"} saved. Now the ${next.side}.` : null, img: done[0] ? r.images[done[0].side] : null }); setCam(next); }
       else afterCapture();
-    } else if (step === "capture" && next && !done.length && !start.note) setCam(next); // straight into the camera for the first side
+    } // otherwise the capture step says what to show and waits for "Start camera": nothing opens the camera until the person taps
     return () => { releaseReaders(); };
   }, []);
   useEffect(() => { if (step === "review") setName((n) => n || recordTitle(rec.current)); }, [step]);
@@ -836,8 +857,12 @@ export function IdFlow({ start, onExit }) {
             {note && <Note {...note} />}
             <Thumbs rec={r} plan={plan} onRetake={(p) => setCam(p)} />
             {next && (
+              <div class="banner" data-guide={r.kind} style={{ marginTop: note ? 12 : 0 }}><span class="b-ico"><Icon name="camera" /></span><div><strong>{next.title}</strong><span>{next.hint}</span></div></div>
+            )}
+            {next && <p class="small muted" style={{ marginTop: 12 }}>{LIGHT_TIP}</p>}
+            {next && (
               <div class="actions">
-                <button class="btn primary block" onClick={() => setCam(next)}><Icon name="camera" />{done.length ? `Now the ${next.side}` : `Scan the ${next.side}`}</button>
+                <button class="btn primary block" data-start-camera onClick={() => setCam(next)}><Icon name="camera" />{done.length ? `Start camera: the ${next.side}` : "Start camera"}</button>
                 {next.optional && <button class="btn ghost block" onClick={() => skipSide(next)}>No {next.side} to scan</button>}
               </div>
             )}

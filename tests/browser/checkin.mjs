@@ -39,8 +39,8 @@ async function hold(page) {
 }
 async function addDoc(page, name) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".doccam").waitFor();
-  await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  await page.locator(".pushed button.kind", { hasText: /^File/ }).click();
   await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: keep this safe.\n`) });
   await page.locator(".pushed .review").waitFor();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
@@ -93,10 +93,11 @@ try {
   await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
   await page.getByRole("button", { name: "I've saved it" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
-  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the camera)
-  await page.locator(".doccam").waitFor();
-  await page.getByRole("button", { name: "Close the camera" }).click();
-  await page.locator(".doccam").waitFor({ state: "detached", timeout: 5000 });
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the list of what to add; no camera yet)
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "no camera until a kind is chosen");
+  await page.locator(".pushed > .topbar").getByRole("button", { name: "Back" }).click();
+  await page.locator(".pushed").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Passport scan.txt");
   await addDoc(page, "Library card.txt");
 
@@ -111,7 +112,7 @@ try {
   await page.locator(".pushed").getByRole("button", { name: "More" }).click();
   await page.locator(".sheet [role=menuitem]", { hasText: "Show in decoy view" }).click();
   await toast(page, /will show in the decoy view/);
-  await page.locator(".pushed").getByRole("button", { name: "Back" }).click();
+  await page.locator(".pushed > .topbar").getByRole("button", { name: "Back" }).click();
   await page.locator(".pushed").waitFor({ state: "detached" });
   step("enrolled; two documents, the library card marked as the decoy; duress = three taps");
 

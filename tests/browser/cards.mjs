@@ -66,9 +66,13 @@ async function hold(page) {
   await page.waitForTimeout(1500);
   await page.keyboard.up(" ");
 }
-/** One way in: the + button (or the empty vault's one primary) opens the camera at once. */
+/** One way in: the + button (or the empty vault's one primary) opens the list of what to add; Photo, then Start camera, opens the camera. */
 async function openAdd(page) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
+  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
+  await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam").waitFor({ timeout: 10_000 });
 }
 
@@ -176,11 +180,14 @@ try {
   assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a forged pass can't be sealed as a pass");
   await shot(page, "5-pass-forged");
   await page.getByRole("button", { name: "Choose another file" }).waitFor();
-  // Back leaves the pass review for the camera; Back again closes Add
+  // Back leaves the pass review for the "what to show" screen (the camera is not restarted), then the picker, then closes Add
   assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
-  await page.locator(".doccam").waitFor();
-  assert.equal(await page.evaluate(() => globalThis.__humidBack()), ".doccam");
-  await page.locator(".doccam").waitFor({ state: "detached" });
+  await page.locator("[data-start-camera]").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "Back does not reopen the camera");
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
+  await page.locator(".pushed").waitFor({ state: "detached" });
   await addPassFile(good);
   await page.getByText(/verified through Apple/).waitFor({ timeout: 20_000 });
   assert.match(await page.locator(".pass-face").innerText(), /The Specimen Tour/);
