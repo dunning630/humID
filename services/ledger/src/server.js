@@ -15,7 +15,7 @@
 // different histories to different people, without a provable fork.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { createService, openDb, env, json, parseJson, verifyAssertion, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
+import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
 import { ml_dsa87, sha3_256, toHex } from "@humid/htp";
 import {
   GENESIS, entryHash, headMessage, leafHash, nodeHash, EMPTY_ROOT,
@@ -181,7 +181,7 @@ export function createLedger({
   const routes = [
     ["POST", "/internal/events", ({ body, claims }) => {
       if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
-      const e = parseJson(body);
+      const e = parseObject(body);
       if (!/^hid_[0-9a-f]{40}$/.test(String(e.sub))) throw new HttpError(400, "bad_subject", "Unknown subject");
       return json(201, append(e.sub, String(e.type), e.detail));
     }],
@@ -231,7 +231,7 @@ export function createLedger({
 
     // An independent cosigner vouches for a checkpoint it has checked against the one before. Public.
     ["POST", "/tlog/cosign", ({ body }) => {
-      const r = parseJson(body);
+      const r = parseObject(body);
       const pk = cosigners.get(String(r.name));
       if (!pk) throw new HttpError(403, "unknown_cosigner", "That cosigner isn't configured on this server.");
       const cp = db.prepare("SELECT * FROM tlog_checkpoints WHERE size = ?").get(Number(r.size));

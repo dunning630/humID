@@ -232,7 +232,7 @@ The client surfaces these codes:
 | `session_expired` / `session_unknown` | Server no longer knows the session. The client drops its keys and the app asks for a new biometric sign-in. |
 | `replay` / `stale_frame` | Sequence number reused, or frame time outside the window. |
 | `step_up_required` / `step_up_stale` / `bad_proof` | Sensitive request without a valid, fresh proof. Rejected proofs are logged as `access.denied`. |
-| `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, 10 sign-ins per 5 minutes per identity. |
+| `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, failed sign-in proofs: 10 per 5 minutes per identity, 20 per address, 200 in all (past the budget a failure is `rate_limited`; a valid proof is never refused). Frames: 512 KiB before sign-in, an unknown session `session_unknown` from the header alone. |
 | `audit_unavailable` | The ledger could not record an access, so the access was refused (fail closed). |
 | `device_removed` | This device was removed from the account. |
 | `device_not_proven` | The device can't prove a live check the way the server's device policy requires. |
