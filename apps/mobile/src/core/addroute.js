@@ -79,3 +79,23 @@ export function idKindFrom({ barcode = null, mrz = null } = {}) {
   if (mrz?.kind) return mrz.kind;
   return null;
 }
+
+/* ---------------- choose first, then the camera ---------------- */
+
+/** The lighting tip every pre-scan screen carries. */
+export const LIGHT_TIP = "Good light helps most: face a window or a lamp, and keep your shadow and glare off it.";
+
+/**
+ * What the Add flow tells a person before the camera starts, for the kinds that open
+ * the camera from Add itself (IDs have their own steps in the ID flow, from PLAN).
+ * `mode` is the scan mode the camera is started with: "card" reads a payment card's
+ * number, "photo" takes any document as it is. null for anything with no camera.
+ */
+export const GUIDE = {
+  card: { mode: "card", shape: "id1", eyebrow: "Payment card", title: "Scan the card", hold: "Hold the card flat with the number side up, anywhere in view. It takes the photo by itself and reads the number, expiry and name." },
+  photo: { mode: "photo", shape: "full", eyebrow: "Photo", title: "Photograph a document", hold: "Lay the page or card on a dark, flat surface and hold the phone above it. It finds the edges, straightens it and takes the photo by itself." },
+};
+export const guideFor = (kind) => GUIDE[kind] || null;
+
+/** The scan mode for each kind picked in Add: license=barcode, passport=MRZ, card=card scan. */
+export const SCAN_MODE = { driver_license: "barcode", passport: "mrz", id_card: "barcode+mrz", residence_permit: "mrz", card: "card", photo: "photo" };
