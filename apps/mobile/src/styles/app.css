@@ -231,6 +231,7 @@ p { margin: 0; }
 .row:first-of-type { border-top: 0; }
 .row .k { color: var(--sage); font-size: var(--t-sm); white-space: nowrap; }
 .row .v { text-align: right; font-size: var(--t-sm); min-width: 0; overflow-wrap: anywhere; }
+.row.clock-gap .v { color: var(--amber-hi); }
 .banner { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: center; padding: 14px; border-radius: var(--r-md); border: 1px solid rgba(138,201,136,.3); background: var(--mint-wash); }
 .banner .b-ico { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: rgba(138,201,136,.18); color: var(--mint); }
 .banner .b-ico svg { width: 22px; height: 22px; }
