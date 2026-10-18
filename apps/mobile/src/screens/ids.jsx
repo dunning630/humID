@@ -664,8 +664,12 @@ export function IdFlow({ start, onExit }) {
 
   async function readChipNow() {
     const ok = await readChipInto(rec.current, access, { portrait: portraitImage });
+    if (ok === "unverified") {
+      setNote({ tone: "warn", text: "Chip couldn't be verified. Its data was not used. You can try again, or continue with the printed details, which will be marked as not verified." });
+      return;
+    }
     if (ok) {
-      setNote({ tone: "ok", text: rec.current.verified.chip?.integrity ? "Chip read. Its files match the chip's own list of hashes." : "Chip read." });
+      setNote({ tone: "ok", text: "Chip data integrity-checked. Its files match the chip's own list of hashes; the issuing country's signature isn't checked on this phone." });
       setName(recordTitle(rec.current));
       setStep("review");
       redraw();
@@ -697,20 +701,20 @@ export function IdFlow({ start, onExit }) {
           <>
             {note && <Note {...note} />}
             <div class="banner" style={{ marginTop: 12 }}><span class="b-ico"><Icon name="nfc" /></span>
-              <div><strong>The ID chip has the verified details and photo</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
+              <div><strong>The ID chip holds the details and photo (integrity-checked on this phone)</strong><span>{nfc?.kind === "reader" ? "Place the document on the card reader when asked." : "Hold the top of your phone flat against the document when asked."} It takes about 10 seconds.</span></div></div>
             {nfc && !nfc.available && <div class="banner warn" style={{ marginTop: 10 }}><span class="b-ico"><Icon name="info" /></span><div><strong>Can't read chips right now</strong><span>{nfc.reason}</span></div></div>}
             <ChipAccess onChange={setAccess} initial={chipAccessFrom(r)} title="Details that open the chip" note="They only open the chip. What it holds is sealed with this record." />
             <div class="actions">
               <button class="btn primary block" disabled={!access || !nfc?.available} onClick={readChipNow}><Icon name="nfc" />Read the ID chip</button>
               {nfc && !nfc.available && <button class="btn quiet block" onClick={async () => setNfc(await chipReader({ fresh: true }))}>Check again</button>}
-              <button class="btn ghost block" onClick={() => setStep("review")}>Skip, use the photo</button>
+              <button class="btn ghost block" onClick={() => setStep("review")}>Continue with the printed details (not verified)</button>
             </div>
           </>
         )}
 
         {step === "review" && (
           <Review kind="id" name={name} setName={setName} tags={tags} setTags={setTags}
-            preview={<><IdProof rec={r} /><Thumbs rec={r} plan={plan} onRetake={retake} />{chipOffered() && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Read the ID chip for verified details</button>}</>}
+            preview={<><IdProof rec={r} /><Thumbs rec={r} plan={plan} onRetake={retake} />{chipOffered() && <button class="btn quiet block" style={{ marginTop: 12 }} onClick={toChip}><Icon name="nfc" />Also read the ID chip</button>}</>}
             note={note && <Note {...note} />}
             fields={<IdFields rec={r} api={fields} onChange={redraw} />}
             disabled={missing.length > 0}
@@ -867,7 +871,7 @@ export function IdView({ record: rec, item }) {
         <span class={`pill ${st.state === "expired" ? "danger" : st.state === "expiring" ? "amber" : st.state === "valid" ? "mint" : ""}`}>
           <Icon name="clock" />{st.state === "expired" ? `Expired ${fmtDay(rec.fields.expiry)}` : st.state === "expiring" ? `Expires in ${st.days} days` : st.state === "valid" ? `Valid to ${fmtDay(rec.fields.expiry)}` : "No expiry date"}
         </span>
-        <span class={`pill ${p.level === "chip" || p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level.startsWith("chip") ? "From the chip" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
+        <span class={`pill ${p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level === "chip" ? "Chip data integrity-checked" : p.level.startsWith("chip") ? "Not verified" : p.level === "mrz-unverified" ? "Not verified" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
       </div>
       <div class="card" style={{ marginTop: 14 }}>
         {rows.map((f) => (

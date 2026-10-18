@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   parseMrz, findMrz, MrzConsensus, mrzDate, accessFromMrz, parseAamva, isAamva, aamvaDate,
-  readDg1, readDg2, checkIntegrity, sodHashes, newRecord, applyMrz, applyAamva, applyChip, applyTyped,
+  readDg1, readDg2, checkIntegrity, safeCheckIntegrity, chipIntegrityOk, sodHashes, newRecord, applyMrz, applyAamva, applyChip, applyTyped,
   title, status, summary, provenance, encodeRecord, decodeRecord, fullName, fieldsFor, MEDIA_TYPE,
 } from "@humid/idscan";
 import { readDocument } from "@humid/emrtd";
@@ -209,6 +209,65 @@ test("chip: an altered photo or MRZ fails the integrity check", () => {
   assert.equal(bad.ok, false);
   assert.equal(bad.groups[1], true);
   assert.equal(bad.groups[2], false);
+});
+
+/* ---------------- fail closed: only integrity.ok === true counts ---------------- */
+
+test("chip integrity decision: null, thrown, ok:false are rejected; only ok:true passes", () => {
+  const passport = testPassport({ csca, mrz: MRZ, photo: JPEG });
+  const good = safeCheckIntegrity(passport.sod, { 1: passport.dg1, 2: passport.dg2 });
+  const tampered = safeCheckIntegrity(testPassport({ csca, mrz: MRZ, photo: JPEG, tamper: "dg2" }).sod, { 1: passport.dg1, 2: passport.dg2 });
+  const thrown = safeCheckIntegrity(Uint8Array.of(1, 2, 3), { 1: passport.dg1 });
+  assert.throws(() => checkIntegrity(Uint8Array.of(1, 2, 3), { 1: passport.dg1 }), "the raw check does throw on a malformed SOD");
+  assert.equal(chipIntegrityOk(good), true);
+  assert.equal(good.ok, true);
+  assert.equal(chipIntegrityOk(tampered), false, "hash mismatch");
+  assert.equal(chipIntegrityOk(thrown), false, "malformed SOD");
+  assert.equal(thrown.reason, "malformed");
+  assert.equal(chipIntegrityOk(null), false, "null (the old code treated this as fine)");
+  assert.equal(chipIntegrityOk(undefined), false);
+  assert.equal(chipIntegrityOk({}), false);
+  assert.equal(chipIntegrityOk({ ok: false }), false);
+  assert.equal(chipIntegrityOk({ ok: "yes" }), false, "truthy but not true");
+  assert.equal(chipIntegrityOk({ ok: true }), true);
+});
+
+test("record: chip data from an unchecked chip is not applied and is labelled not verified", () => {
+  const passport = testPassport({ csca, mrz: MRZ, photo: JPEG });
+  const { mrz } = readDg1(passport.dg1);
+  const chip = { dg1: passport.dg1, dg2: passport.dg2, sod: passport.sod, access: "BAC" };
+  const b64 = (b) => Buffer.from(b).toString("base64");
+  const printed = parseMrz(td3(MRZ), { now: NOW });
+  const bad = [
+    null,
+    undefined,
+    { ok: false, groups: { 1: true, 2: false } },
+    safeCheckIntegrity(Uint8Array.of(1, 2, 3), { 1: passport.dg1 }),
+  ];
+  for (const integrity of bad) {
+    const rec = applyMrz(newRecord("passport"), { ...printed, given: "PRINTED" }, { consensus: true });
+    applyChip(rec, chip, { mrz, integrity, b64 });
+    assert.equal(rec.fields.given, "PRINTED", "the chip's name is not applied");
+    assert.equal(rec.source.given, "mrz", "nothing is ranked as chip");
+    assert.equal(rec.raw.chip, undefined, "the chip's files are not kept");
+    assert.equal(rec.verified.chip, undefined);
+    assert.ok(rec.verified.chipFailed, "the failure is recorded");
+    assert.equal(provenance(rec).level, "mrz-unverified");
+    assert.match(provenance(rec).text, /^Not verified/);
+    assert.doesNotMatch(provenance(rec).text, /verified by|genuine/i);
+  }
+  // With nothing else read, the record says the chip failed rather than "from the chip".
+  const empty = applyChip(newRecord("passport"), chip, { mrz, integrity: null, b64 });
+  assert.deepEqual(empty.fields, {});
+  assert.equal(provenance(empty).level, "chip-failed");
+  // A hash-consistent chip is applied, and described as integrity-checked, never as verified.
+  const ok = applyChip(newRecord("passport"), chip, { mrz, integrity: checkIntegrity(passport.sod, { 1: passport.dg1, 2: passport.dg2 }), b64 });
+  assert.equal(ok.source.given, "chip");
+  assert.equal(ok.verified.chip.integrity, true);
+  assert.equal(provenance(ok).level, "chip");
+  assert.match(provenance(ok).text, /^Chip data integrity-checked/);
+  assert.match(provenance(ok).text, /signature isn't checked on this phone/);
+  assert.doesNotMatch(provenance(ok).text, /\bverified\b/i);
 });
 
 /* ---------------- the record ---------------- */
