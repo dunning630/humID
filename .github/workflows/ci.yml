@@ -52,6 +52,37 @@ jobs:
           echo "anyApps=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
           echo "anyServices=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
 
+  # The release workflow runs the unit tests on Windows before building the Windows app, so a
+  # test that only fails there (a path with \ instead of /) blocks a release. Catch it here.
+  # Each failing test becomes an annotation on the check, readable without the log.
+  test-windows:
+    needs: test
+    if: needs.test.outputs.anyApps == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Unit tests on Windows (as the release runs them)
+        shell: pwsh
+        env: { NODE_NO_WARNINGS: "1" }
+        run: |
+          node --test --test-reporter=tap tests/*.test.js 2>&1 | Tee-Object -FilePath tap.txt | Out-Null
+          $code = $LASTEXITCODE
+          Get-Content tap.txt | Select-String '^# (tests|pass|fail)' | ForEach-Object { $_.Line }
+          if ($code) {
+            $lines = Get-Content tap.txt
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^\s*not ok \d+ - (.*)') {
+                $name = $Matches[1]
+                $detail = ($lines[($i + 1)..([Math]::Min($i + 40, $lines.Count - 1))] | Where-Object { $_ -match "error:|expected|actual|location:|\.test\.js:" } | Select-Object -First 6) -join ' | '
+                Write-Output "::error title=Windows unit test failed::$name | $detail"
+              }
+            }
+            exit $code
+          }
+
   app:
     needs: test
     if: needs.test.outputs.anyApps == 'true'
