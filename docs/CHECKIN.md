@@ -19,7 +19,7 @@ it's open, so set an alarm for each check-in.
 
 ## Using it
 
-Security ▸ **Check-in** ▸ Set up:
+You ▸ **Check-in** ▸ Set up:
 
 | Setting | Choices | Default |
 |---|---|---|

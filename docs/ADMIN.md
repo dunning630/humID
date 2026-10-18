@@ -1,6 +1,6 @@
 # Server administration: HumID Admin
 
-HumID Server for Windows (1.6.0 and later) installs an admin console beside the
+HumID Server for Windows (2.0.0 and later) installs an admin console beside the
 server. It shows how the server and the computer are doing, and it installs
 HumID updates, Windows updates and Defender definitions, makes backups, and
 restarts things. **Nothing changes until an administrator approves it on their
@@ -10,8 +10,8 @@ approval itself.
 ```
                  this computer only                               your phone (HumID app)
 ┌───────────────────────────────────────────────┐               ┌──────────────────────────┐
-│ browser ──► HumID Admin (SYSTEM, 127.0.0.1:8490)              │ Security ▸ Manage this   │
-│               │  writes a request (code + digest)             │ server ▸ scan the code   │
+│ browser ──► HumID Admin (SYSTEM, 127.0.0.1:8490)              │ You ▸ Manage this server │
+│               │  writes a request (code + digest)             │ ▸ scan the code          │
 │               ▼                                               │ ▸ live check             │
 │   data\admin\requests ──► gateway ◄────── HTP/1 over the tunnel ──────────┘              │
 │   data\admin\approvals ◄── (LOCAL SERVICE)  step-up proof, written as signed             │
@@ -30,14 +30,14 @@ approval itself.
    is at `http://127.0.0.1:8490` and nowhere else.
 2. **Add your phone** (once). On the console, **Administrators ▸ Add a phone**
    shows a QR code and a 12-character code. In HumID on your phone (signed in to
-   this server): **Security ▸ Manage this server**, scan or type the code, check
+   this server): **You ▸ Manage this server**, scan or type the code, check
    the short check matches, approve with your biometric. Your phone then shows an
    **admin check**; the console shows one too. If they're the same, choose
    **They match**. If not, someone is in the middle: choose **They don't match**.
 3. **Make a change.** Click what you want (Update, Install selected Windows
    updates, Back up now, Restart…). The console shows a code; approve it the same
    way. The console verifies the approval, then runs the job and shows each step.
-   Administrators also see **This server** on their Security tab, with the
+   Administrators also see **This server** on their You tab, with the
    server's health and what's waiting to install.
 
 For HumID updates from a private repository, give the console a read-only token:
@@ -66,7 +66,7 @@ sample a minute for 24 hours.
 | Change | How |
 |---|---|
 | **Update HumID Server** | Downloads the release zip; it must match the SHA-256 that GitHub publishes for it, and the phone approves that exact SHA-256. The job checks it again, checks the zip's version and contents, takes a backup (`backups\pre-update-…zip`), keeps the current version in `C:\Program Files\HumID Server.previous`, installs, and checks the server comes up healthy **with the same server key id** (phones refuse a changed one). Otherwise it reinstalls the previous version by itself, and if that doesn't come up either, restores the data from the backup it just took. |
-| **Roll back** | The same, the other way; the version you left is kept, so you can roll forward again. Only to 1.6.0 or later (older versions have no console). |
+| **Roll back** | The same, the other way; the version you left is kept, so you can roll forward again. Only to 2.0.0 or later (older versions have no console). |
 | **Install Windows updates** | The ones you tick from the last scan; their titles are in what the phone approves. Windows Update downloads and installs them (accepting their licence terms); a restart is a separate approval. |
 | **Restart this computer** | `shutdown /r` 60 seconds after approval. HumID starts again by itself. |
 | **Update Defender** | `Update-MpSignature`. |
@@ -145,7 +145,7 @@ sample a minute for 24 hours.
 
 `HUMID_DEV_ADMIN=1 npm run dev` starts the console beside the dev server on a
 simulated Windows, at `http://127.0.0.1:5174` (the sign-in link is printed). Make
-a HumID in the browser at `http://localhost:5173`, then **Security ▸ Manage this
+a HumID in the browser at `http://localhost:5173`, then **You ▸ Manage this
 server**. `node tests/browser/admin.mjs` walks the whole thing in Chromium.
 
 ## Not yet

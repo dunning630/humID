@@ -30,19 +30,22 @@ export function dayLabel(t) {
 }
 export const groupKey = (s) => (s || "").match(/.{1,4}/g) || [];
 
-/* ---------------- biological interrupt ---------------- */
+/* ---------------- the check (the biological interrupt, in the docs) ---------------- */
 
 export function InterruptOverlay() {
   const it = S.interrupt.value;
   const [holding, setHolding] = useState(false);
   const timer = useRef(null);
+  const root = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);
+  // The check takes the screen: focus moves to it, so a screen reader says what's happening and keys go nowhere else.
+  useEffect(() => { const el = root.current; if (it && el && !el.contains(document.activeElement)) el.focus(); }, [!!it]);
   if (!it) return null;
   const start = () => { setHolding(true); timer.current = setTimeout(() => { setHolding(false); holdComplete(); }, 1200); };
   const stop = () => { clearTimeout(timer.current); setHolding(false); };
-  const title = it.state === "verified" ? "Verified" : it.state === "failed" ? "Not verified" : "Biological interrupt";
+  const title = it.state === "verified" ? "Verified" : it.state === "failed" ? "Not verified" : "Checking it's you";
   return (
-    <div class="interrupt" data-state={it.state} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite">
+    <div class="interrupt" data-state={it.state} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite" tabIndex={-1} ref={root}>
       <div class="eyebrow">{title}</div>
       <Mark state={it.state} progress={it.progress} />
       <h2 id="int-title">{it.label}</h2>
@@ -96,16 +99,15 @@ export function Sheet({ children, onClose, label }) {
 
 /* ---------------- tab bar ---------------- */
 
-const TABS = [
+export const TABS = [
   { id: "vault", label: "Vault", icon: "vault" },
   { id: "activity", label: "Activity", icon: "activity" },
-  { id: "security", label: "Security", icon: "shield" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "you", label: "You", icon: "person" },
 ];
 
 /**
  * Shown at the top of each tab while the app is showing the copy kept on this device.
- * "Reconnect" appears once the device is back online (one live check signs in).
+ * "Reconnect" appears once the device is back online (one check signs in).
  */
 export function OfflineBanner() {
   const o = S.offline.value;
@@ -185,12 +187,49 @@ export function ConnectionBar() {
   );
 }
 
+/* ---------------- how HumID protects you ---------------- */
+
+/** The plain facts, one line each. Opened from the You tab and from the fine print on seal screens. */
+export const PROTECTION = [
+  { icon: "lock", title: "Sealed on this phone first", text: "Every document is encrypted here before it's sent anywhere." },
+  { icon: "server", title: "Your vault server can't read it", text: "Not your documents, and not even their names. It only stores sealed copies." },
+  { icon: "fingerprint", title: "Only your face or fingerprint opens it", text: "Every open, save and delete needs a fresh check. A PIN or password is never accepted." },
+  { icon: "shield", title: "Post-quantum encryption", text: "Built to stay sealed even against the computers of the future." },
+  { icon: "chain", title: "Every access on the record", text: "Activity is a tamper-evident log your phone checks for itself." },
+];
+
+export function HowProtected({ onClose }) {
+  return (
+    <Sheet onClose={onClose} label="How HumID protects you">
+      <div class="s-head"><div class="grow"><div class="eyebrow">Safe. Secure. Simple.</div><h2 style={{ marginTop: 4 }}>How HumID protects you</h2></div>
+        <button class="icon-btn" aria-label="Close" data-back onClick={onClose}><Icon name="x" /></button></div>
+      <div class="points" style={{ marginTop: 6 }}>
+        {PROTECTION.map((p) => (
+          <div class="point"><span class="p-ico"><Icon name={p.icon} /></span><div><strong>{p.title}</strong><span>{p.text}</span></div></div>
+        ))}
+      </div>
+      <div class="actions"><button class="btn secure block" onClick={onClose}>Got it</button></div>
+    </Sheet>
+  );
+}
+
+/** The link that opens it: "How HumID protects you", with the sheet when tapped. */
+export function HowProtectedLink({ class: cls = "linklike" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button class={cls} type="button" onClick={() => setOpen(true)}>How HumID protects you</button>
+      {open && <HowProtected onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 export function TabBar() {
   return (
     <div class="tabbar">
-      <nav aria-label="Sections">
+      <nav aria-label="Sections" role="tablist">
         {TABS.map((t) => (
-          <button aria-current={S.tab.value === t.id ? "page" : undefined} onClick={() => { S.sheet.value = null; S.tab.value = t.id; window.scrollTo({ top: 0 }); }}>
+          <button role="tab" aria-selected={S.tab.value === t.id} aria-current={S.tab.value === t.id ? "page" : undefined} onClick={() => { S.sheet.value = null; S.tab.value = t.id; window.scrollTo({ top: 0 }); }}>
             <Icon name={t.icon} />
             {t.label}
           </button>
@@ -199,6 +238,9 @@ export function TabBar() {
     </div>
   );
 }
+
+/** The three stages every seal goes through, in plain words. */
+export const SEAL_STEPS = ["Sealing on this phone", "Sending", "Stored"];
 
 export function Steps({ steps, current }) {
   return (
@@ -214,19 +256,19 @@ export function Steps({ steps, current }) {
 }
 
 export function AssurancePill({ assurance }) {
-  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Live check · chip-proven</span>;
-  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />Live biometric · OS</span>;
+  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Checked by this phone's secure chip</span>;
+  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />Software-protected on this computer</span>;
   return <span class="pill amber"><Icon name="info" />Demo · no sensor</span>;
 }
 
 const PROOF = {
-  "android-strongbox": "Android StrongBox chip attested the key",
-  "android-tee": "Android secure chip attested the key",
-  "apple-secure-enclave": "Apple Secure Enclave attested the key",
+  "android-strongbox": "Each check is proven by the phone's StrongBox chip",
+  "android-tee": "Each check is proven by the phone's secure chip",
+  "apple-secure-enclave": "Each check is proven by the Secure Enclave",
 };
-/** What the server verified about a device's live check. */
+/** What the server verified about a device's checks. */
 export const proofLabel = (proof, assurance) =>
-  PROOF[proof] || (assurance === "os" ? "Biometric only, not hardware-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
+  PROOF[proof] || (assurance === "os" ? "Checks are software-protected, not chip-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
 
 /* ---------------- codes, cards, countdowns ---------------- */
 
@@ -268,7 +310,7 @@ export function CardBox({ code }) {
 }
 
 /**
- * Checks the person really has a copy of their seal card: type back one random group.
+ * Checks the person really has a copy of their recovery card: type back one random group.
  * The usual pattern for recovery codes, and it catches a slip before it matters.
  */
 export function CardConfirm({ code, onChange }) {
@@ -286,7 +328,7 @@ export function CardConfirm({ code, onChange }) {
         value={v} onInput={(e) => setV(e.currentTarget.value)} />
       {ok ? <span class="hint ok"><Icon name="check" />That matches</span>
         : norm(v).length >= 5 ? <span class="hint warn">That isn't group {n}. Check what you wrote.</span>
-        : <span class="hint">Write it down or print it. A saved file or a copy can sync to your cloud.</span>}
+        : <span class="hint">Write it down or print it. A saved file can sync to your cloud.</span>}
     </div>
   );
 }
@@ -300,7 +342,7 @@ export const CAN_PRINT = typeof window !== "undefined" && typeof window.print ==
 export function PrintableCard({ code }) {
   return (
     <div class="print-sheet" aria-hidden="true">
-      <h1>HumID seal card</h1>
+      <h1>HumID recovery card</h1>
       <p class="pc-code">{code}</p>
       <p>One of the proofs that bring your vault back if you lose every device. On its own it opens nothing:
         recovery also needs your witnesses or your ID chip, then waits while your devices can veto.</p>
@@ -429,7 +471,7 @@ export function Toggle({ checked, onChange, label, hint, disabled }) {
 }
 
 /**
- * "Stamp where it's sealed" on a seal screen: a switch (on unless turned off for this
+ * The location stamp on a seal screen: a switch (on unless turned off for this
  * document), and while it's on, the phone's location is watched so a fix is ready when
  * Seal is pressed (core/place.js). Returns { take: () => the watch to pass to sealing, or
  * null when off, element }.
@@ -450,7 +492,7 @@ export function usePlaceStamp() {
     : REASONS[st.reason] || REASONS.waiting;
   const element = (
     <div class="place-stamp" data-on={on ? "1" : "0"} data-fix={on && st.stamp ? "1" : "0"}>
-      <Toggle checked={on} onChange={setOn} label={<><Icon name="pin" />Stamp where it's sealed</>} hint={hint} />
+      <Toggle checked={on} onChange={setOn} label={<><Icon name="pin" />Location stamp</>} hint={hint} />
     </div>
   );
   return { take: () => (on ? watch.current : null), element };
@@ -460,7 +502,7 @@ export function usePlaceStamp() {
 export const PROOFS = [
   { id: "witness", icon: "users", title: "Witnesses", short: "witnesses" },
   { id: "anchor", icon: "passport", title: "ID chip", short: "ID chip" },
-  { id: "card", icon: "idcard", title: "Seal card", short: "seal card" },
+  { id: "card", icon: "idcard", title: "Recovery card", short: "recovery card" },
 ];
 export function ProofMeter({ have }) {
   const n = PROOFS.filter((p) => have.includes(p.id)).length;
@@ -585,7 +627,7 @@ export function ChecksSheet() {
       <div class="eyebrow">Simulated vault server · {fmtTime(r.at || Date.now())}</div>
       <h2 style={{ marginTop: 6 }}>{r.title}</h2>
       {r.empty ? (
-        <p class="lede" style={{ marginTop: 10 }}>This build runs HumID's vault server inside the app. Your phone connects to it over the real post-quantum channel (HTP/1: ML-KEM-1024 + X25519), and it checks every sign-in and sensitive action the way a real server does. Create your HumID or unlock to see the checks.</p>
+        <p class="lede" style={{ marginTop: 10 }}>This build runs HumID's vault server inside the app. Your phone connects to it the real, post-quantum way, and it checks every sign-in and sensitive action the way a real server does. Create your HumID or unlock to see the checks.</p>
       ) : (
         <>
           <p class="small muted" style={{ marginTop: 6 }}>{okCount} of {r.checks.length} checks passed{r.checks.some((c) => c.ok === null) ? " · notes marked ⓘ" : ""}</p>

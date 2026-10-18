@@ -454,7 +454,7 @@ export function createConsole({
       case "rollback-humid": {
         const prev = S.probe.data?.previous?.version;
         if (!prev) throw httpError(409, "no_previous", "There's no previous version kept on this computer.");
-        if (compareVersions(prev, "1.6.0") < 0) throw httpError(409, "too_old", `${prev} has no admin console, so rolling back to it can't be done from here. In Terminal (Admin), run its installer from the release zip.`);
+        if (compareVersions(prev, "2.0.0") < 0) throw httpError(409, "too_old", `${prev} has no admin console, so rolling back to it can't be done from here. In Terminal (Admin), run its installer from the release zip.`);
         args = { from: installedVersion(), to: prev };
         break;
       }

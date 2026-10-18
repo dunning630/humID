@@ -6,6 +6,14 @@
 //   HUMID_SERVER_URL=https://vault.humidsecure.ai HUMID_SERVER_KID=<hex> node build.mjs
 //     → native apps: which server to talk to, and its pinned key id.
 //       Leave HUMID_SERVER_URL empty for the web app (same origin).
+//   HUMID_ALLOW_DEMO=1   development build: demo gate (no sensor), demo passports, /dev endpoints
+//   HUMID_SIMULATE=1     simulation build: the vault server runs inside the app (src/sim)
+//   HUMID_OUT_DIR=<dir>  build somewhere other than ./dist (tests/bundle.test.js)
+//
+// A release build (neither flag) contains none of the demo or simulation code: the
+// flags are esbuild `define`s, always a literal true/false, and the app tests them
+// inline, so esbuild drops those branches at parse time and never emits the sim
+// server chunk. tests/bundle.test.js builds a release and checks.
 import * as esbuild from "esbuild";
 import { copyFile, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
@@ -13,7 +21,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
-const out = here("./dist/");
+const out = process.env.HUMID_OUT_DIR ? `${process.env.HUMID_OUT_DIR.replace(/\/$/, "")}/` : here("./dist/");
 const watch = process.argv.includes("--watch");
 const root = here("../../");
 
@@ -55,6 +63,8 @@ await mkdir(`${out}icons`, { recursive: true });
 
 // Release builds don't contain the demo gate at all: its module is swapped for an empty stub.
 const allowDemo = process.env.HUMID_ALLOW_DEMO === "1";
+const simulate = process.env.HUMID_SIMULATE === "1";
+if (simulate || allowDemo) console.log(`NOT a release build: ${[simulate && "simulation (server inside the app)", allowDemo && "demo mode (no sensor)"].filter(Boolean).join(", ")}`);
 const noDemoGate = {
   name: "no-demo-gate",
   setup(b) {
@@ -89,7 +99,7 @@ const ctx = await esbuild.context({
     // Demo mode (no sensor) exists only in local development builds: HUMID_ALLOW_DEMO=1.
     __HUMID_ALLOW_DEMO__: JSON.stringify(allowDemo),
     // Simulation build: the vault server runs inside the app (src/sim). HUMID_SIMULATE=1.
-    __HUMID_SIM__: JSON.stringify(process.env.HUMID_SIMULATE === "1"),
+    __HUMID_SIM__: JSON.stringify(simulate),
   },
   legalComments: "eof",
   logLevel: "info",
@@ -106,7 +116,7 @@ await writeFile(`${out}manifest.webmanifest`, JSON.stringify({
   icons: [
     { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
     { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
   ],
 }, null, 2));
 // Document scanning engines, loaded by the app only when someone scans an ID
@@ -139,9 +149,12 @@ await writeFile(`${out}assets/THIRD-PARTY-scan.txt`, [
   notice("jpeg2000 (JPEG 2000 decoder from Mozilla PDF.js)", "jpeg2000/LICENCE"),
 ].join("\n\n"));
 
-const icons = here("./src-tauri/icons/");
-const iconMap = { "icon-192.png": "128x128@2x.png", "icon-512.png": "icon.png", "apple-touch-icon.png": "128x128@2x.png" };
-for (const [to, from] of Object.entries(iconMap)) if (existsSync(icons + from)) await copyFile(icons + from, `${out}icons/${to}`);
+// Web icons: the peace-sign HumID logo (src/favicon/). favicon.svg and the small
+// PNG/ICO sizes are the hand without the wordmark, which turns to mush at tab size;
+// 180 px and up use the full logo. The native app icons in src-tauri/icons are separate.
+const fav = here("./src/favicon/");
+for (const f of ["favicon.svg", "favicon-32.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"]) await copyFile(fav + f, `${out}icons/${f}`);
+await copyFile(fav + "favicon.ico", `${out}favicon.ico`);
 
 if (watch) await ctx.watch();
 else { await ctx.rebuild(); await ctx.dispose(); }

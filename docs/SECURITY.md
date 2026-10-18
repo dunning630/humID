@@ -189,7 +189,9 @@ How it's kept ([`packages/crypto/src/suites/pq1.js`](../packages/crypto/src/suit
   account keys can't use it to open a document.
 - **Duress.** A duress session never writes the copy. Offline, the duress gesture shows
   only the decoy documents, as online; reconnecting from that session reports duress,
-  so the server locks down then.
+  so the server locks down then. Which gesture means duress is itself sealed on the
+  device (`settingsKey`, same derivation family) and read only inside the live check, so
+  the copy, the identity record and the setting all read as random bytes at rest.
 - **Removal.** Erasing the device's vault erases the copy. When the server says the
   device was removed (or isn't the server it trusted), the copy is deleted at that
   moment. Until a removed device reconnects, its owner's live check still shows its
@@ -206,9 +208,9 @@ erased for good. While it's armed, every split key of the account is sealed
 under a fuse key that keyshare keeps in memory only; destroying it is the
 erase, so every copy of those keys, live or in a backup made since arming,
 becomes unreadable. A duress unlock while armed erases at once and leaves the
-duress session looking ordinary. The duress gesture itself is sealed on the
-phone (2.0 review F1), so a copy of the phone doesn't tell a coercer which
-gesture to avoid.
+duress session looking ordinary. The duress setting itself is sealed on the
+phone (see the 2.0 security pass below), so a copy of the phone doesn't tell a
+coercer which gesture to avoid.
 
 What it doesn't cover: an operator who changes keyshare to keep fuse keys;
 backups made before arming (they hold the keys of documents sealed before it);
@@ -216,6 +218,26 @@ item names in vault backups, readable with a recovered account seed; anything
 already saved or exported; a server seized while running. A keyshare restart
 erases every armed vault, by design. Off by default (`HUMID_CHECKIN`) until
 push reminders exist.
+
+## 2.0 security pass
+
+A review of the app shell and what it keeps on the device (October 2026); the item-by-item
+table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short:
+
+- **Nothing about duress is on the device in the clear.** The setting is sealed under a
+  seed-derived key; the decoy-or-real decision is made after the live check, from the
+  opened setting (`apps/mobile/src/core/duress.js`).
+- **Leaving the screen locks**, even with a file picker open: the exemption is bounded
+  (60 s, `pagehide`, a 20 s hidden span).
+- **Names are forgotten on lock**; a decoy session never decrypts the other names.
+- **Release builds carry no demo or simulation code** (`tests/bundle.test.js`); the
+  simulation app has its own bundle identifier.
+- **The WebView never leaves HumID.** Links go out through `openExternal` (https, tel,
+  mailto only) and the shell refuses any other navigation.
+- **Every request times out** (45 s), so a silent server can't hold a live check open.
+- **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
+  a chip that fails its own hash list.
+- **iOS backups exclude the WebView's data store.**
 
 ## Before real data
 
@@ -232,6 +254,44 @@ push reminders exist.
 6. Account-key rotation after a device is removed.
 7. Penetration test of the deployed stack, including the admin console (docs/ADMIN.md).
 8. Privacy policy, terms and data-handling review with counsel.
+9. The access pass is now sealed at rest (see *The access pass at rest* below). Still
+   to do: hold the install key in the platform's secret store (a non-biometric Keychain,
+   Keystore, DPAPI or Secret Service slot via a new gate-plugin command) rather than in
+   the WebView's key store, and seal the `pending` join record while a join waits.
+
+## The access pass at rest
+
+Between buying an access pass and spending it (`docs/ANONYMITY.md`) there is no account,
+so no seed-derived key. Until 2.0 the wallet record (the draft: access code and blinded
+request; then the finished pass) sat in IndexedDB as it was. Now (`@humid/pass/atrest`,
+apps 1.13):
+
+- **Install key.** On first use the app generates a 256-bit AES-GCM key with WebCrypto as a
+  *non-extractable* `CryptoKey` and stores it in its own IndexedDB database (`humid-keys`),
+  apart from the wallet. JavaScript never sees the key's bytes: it can only ask the WebView's
+  crypto engine to encrypt or decrypt with it. The same mechanism works in all five native
+  builds and the web app; a private window with no IndexedDB keeps the key in memory, like
+  the pass itself there.
+- **Sealing.** The whole wallet record is JSON, sealed with AES-GCM, a fresh 96-bit IV per
+  write and the AAD `HUMID-PASS-v1`. Only the code, the draft and the pass live in it, so
+  none of them is readable as stored (`tests/pass-atrest.test.js`).
+- **Migration.** A clear record written by an older build is re-sealed on the first read and
+  the plaintext overwritten. A record that doesn't open (another install's key, damage) is
+  dropped rather than shown.
+
+Why not the gate plugin: `humid-gate@2` holds one secret per identity and releases it only
+after a live biometric check, which is the wrong shape for a value the app needs silently at
+boot and before any identity exists; a non-biometric slot would be a new native command on
+every platform. Why not a file in the app data directory: the shell's only file command is
+the save dialog, and a file next to the database is no stronger than the key record.
+
+Limits: the key is held by the WebView's crypto engine, not by the secure chip. Chromium and
+WebKit serialise non-extractable keys to the profile's storage in the clear, so a copy of the
+**whole** profile (root, a full-filesystem backup on a platform where the data store isn't
+excluded) carries both the key and the pass. What it defeats: reading the code or pass out of
+the wallet database alone, backups that include the database but not the key store, and
+casual inspection of the storage. Moving the key into a platform secret-store slot is the
+remaining item under *Before real data* #9.
 
 ## Live biometric checks
 

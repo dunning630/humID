@@ -47,12 +47,48 @@ JavaScript before compression):
 Servers accept proven phones by default (`HUMID_DEVICE_POLICY=attested`);
 `biometric` also admits the desktops. See [SECURITY.md](SECURITY.md#live-biometric-checks).
 
-**Screens.** Welcome → *Create my HumID* (connect · access pass · bind · recovery card) or
-*I already have HumID* (connect · choose: another device, recovery card,
-recovery contacts · bind · wait) → Lock → Vault (search, categories, add,
-open, rename, sealed copy, delete) → Activity (verified ledger) → Security
-(recovery alerts, devices, recovery card and contacts, being someone's
-contact, helping someone recover, connection, lock, close & erase).
+**Screens.** Welcome → *Create my HumID* (connect · access pass · the first
+check · your recovery card · you're in) or *I already have HumID* (connect ·
+choose: another device, or prove it's you with two proofs · the first check ·
+wait) → Lock → three tabs. **Vault** (search; a chip row of the *kinds* that
+exist: All · IDs · Cards · Passes · Photos · Files, with a secondary tag row
+once any item carries a tag; one **Add** flow, camera first: the photo routes
+itself to the ID flow, the card review or the photo review, with File, Type a
+card and Tap a card on the camera's own bar and "It's something else" for the
+picker; every kind then goes through one shared *Review* (name, kind, the kind's
+fields, tags, location stamp, Seal). Tapping a row pushes the **Item** screen:
+the preview first (one Open = one check), the facts, and a ··· menu with Rename
+· Pin · Show in decoy · Export sealed · Delete; Save a copy lives in the opened
+Viewer). **Activity** (the access record, checked on the phone). **You**
+(`screens/you.jsx`: the protection checklist, devices, recovery — witnesses · ID
+chip · recovery card — duress with its decoy picker, helping others and the
+station, preferences, a collapsed "About this HumID" with the identity, device
+and connection diagnostics, then lock and close & erase).
+
+`main.jsx` routes `S.view` → the tab in `S.tab` → one global `S.sheet`
+(`{ type, … }`; each type is rendered by exactly one file, see
+tests/ia.test.js). Two of those types render full-screen *pushed* screens
+rather than bottom sheets: `add` (`screens/add.jsx`, whose steps are the camera,
+the picker, the ID flow in `ids.jsx`, the card flow in `cards.jsx` and the
+photo / file / pass reviews) and `item` (`screens/vault.jsx`). `core/back.js`
+sends Android Back to the top `[data-back]` control: the camera, then an open
+document, then the top sheet (or the step inside it), then the step inside a
+pushed screen, so Add and the item step back one level before they close.
+
+**Kinds and tags** (`core/categories.js`). Every item's encrypted index entry
+carries `kind` ∈ id · card · pass · photo · file. Entries sealed before 2.0 have
+none and are classified on read (ID summary → id, card summary → card, pass
+summary → pass, image type → photo, else file); the inferred kind is written back
+only when the entry is next re-sealed for a rename or a pin, never in bulk. The
+1.x category survives as an optional `tags` list with the same ids (identity ·
+health · money · home · personal), suggested from the name on add. The identity
+record itself is unchanged (schema 4): item meta is per entry, not part of it.
+
+The words people read follow one vocabulary: *check* for the biometric prompt
+(the "biological interrupt" of this document), *seal* for encrypt-and-store,
+*recovery card*, *witnesses*, *ID chip* (the identity anchor), *your vault
+server*; the security facts are in one shared `HowProtected` sheet
+(`ui.jsx`).
 
 **Keys on a device.** Each device holds two seeds behind one biometric
 secret: the **account seed**, shared by all of the holder's devices, and its
