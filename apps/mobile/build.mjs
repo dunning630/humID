@@ -9,6 +9,7 @@
 //   HUMID_ALLOW_DEMO=1   development build: demo gate (no sensor), demo passports, /dev endpoints
 //   HUMID_SIMULATE=1     simulation build: the vault server runs inside the app (src/sim)
 //   HUMID_OUT_DIR=<dir>  build somewhere other than ./dist (tests/bundle.test.js)
+//   HUMID_NO_MINIFY=1    don't minify (profiling in the browser shows real function names)
 //
 // A release build (neither flag) contains none of the demo or simulation code: the
 // flags are esbuild `define`s, always a literal true/false, and the app tests them
@@ -76,13 +77,15 @@ const noDemoGate = {
 
 const ctx = await esbuild.context({
   plugins: [noDemoGate],
-  entryPoints: { app: here("./src/main.jsx") },
+  // The scan worker (document and barcode analysis off the main thread) is its own file,
+  // next to app.js: src/core/analyzer.js starts it by that name.
+  entryPoints: { app: here("./src/main.jsx"), scanworker: here("./src/core/scanworker.js") },
   bundle: true,
   format: "esm",
   target: ["safari16", "chrome110"],
   jsx: "automatic",
   jsxImportSource: "preact",
-  minify: !watch,
+  minify: !watch && process.env.HUMID_NO_MINIFY !== "1", // HUMID_NO_MINIFY=1: readable function names, for profiling
   sourcemap: watch ? "inline" : false,
   outdir: `${out}assets`,
   // The scanning engines (Tesseract, zxing, JPEG 2000) load only when someone scans

@@ -31,6 +31,28 @@ held still, lit and in focus, for about a second, and the camera's focus has set
 read is photographed anyway after the card has sat steady in view for twelve seconds,
 but never while a barcode is in view.
 
+**What it says while it works** (`core/scanflow.js`, `screens/scanui.jsx`). A card above
+the shutter shows one state at a time: *Looking for the document → Hold steady →
+Reading → Verifying → Done*, with the steps as a row and a progress bar. Anything the
+person can fix is said in a few words and held back until it has lasted 0.7 s, so it
+doesn't flicker: *Too dark* (with a light button), *Too bright*, *Glare*, *Too far*,
+*Not the right document*, *Not a license barcode*. After 10 s without a read the round
+button is called out; after 30 s the camera stops analysing and offers *Try again* and
+*Take photo*. The card is the screen reader's live region (each change once), a short buzz
+marks a kept photo, and every button is at least 44 px. Nothing about a frame or what
+was read from it is logged or stored.
+
+**How little the phone is asked to do per look.** The document is looked for in a 224 px
+copy of the view (as exact as 320 px) made by the browser off the main thread
+(`createImageBitmap`), analysed in a worker (`core/scanworker.js`, started by
+`core/analyzer.js`; a second worker reads barcodes), at most one look at a time, paced by
+the video's own frames and by how long the last look took. Without worker or
+OffscreenCanvas support the same code (`core/scancore.js`) runs on the main thread. The
+MRZ reader straightens only the strip the two or three lines sit in
+(`bandPlan` / `liveMrzBand`), not the whole card. The readers load when the document type
+is chosen (`warmScan(mode)`), in parallel with the camera. `scanOptions(mode)` in
+`core/scan.js` gives the camera its shape and readers for `license`, `passport` or `card`.
+
 **Barcodes are found the way a store's scan-and-go app finds them**
 (`apps/mobile/src/core/barcodefind.js`), not by lining anything up. Every look, a
 small grey copy of the whole view is searched for patches that change sharply in one
@@ -97,6 +119,8 @@ with its photos.
 | `apps/mobile/src/core/docfind.js` | Finding a document in view, the calm capture (`tracker`: steady, held, focus settled), straightening and turning upright |
 | `apps/mobile/src/core/barcodefind.js` | Finding barcodes anywhere in view, their tilt, and the spot to hand the reader |
 | `apps/mobile/src/core/scanclean.js` | The clean scan: even light, white paper, crisp ink |
+| `apps/mobile/src/core/scanflow.js`, `scancore.js`, `analyzer.js`, `scanworker.js` | The visible scan state machine; the per-frame analysis; running it in a worker (or here); the worker |
+| `apps/mobile/src/screens/scanui.jsx` | The state card on the camera |
 | `apps/mobile/src/screens/ids.jsx` | The camera (`DocCamera`), the flow (`IdSheet`) and the card view (`IdView`) |
 
 The engines ship in the app (about 5.5 MB in `assets/ocr` and `assets/scan`)
@@ -109,6 +133,9 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 - `node --test tests/idscan.test.js`: ICAO MRZ specimens, OCR noise and
   voting, AAMVA versions (US and Canada), chip reads with the photo (BAC and
   PACE, over 32 KB, JPEG 2000), tampering, and the record.
+- `node --test tests/scanflow.test.js`: the scan state machine and its words, the failures, the
+  time budget, the strip of a card against the whole-card route (lying, standing, upside down),
+  the camera screen's live region, targets and worker, and that nothing is logged.
 - `node --test tests/barcodefind.test.js tests/scanclean.test.js tests/docfind.test.js`:
   the barcode found centred, sideways, upside down, small and far, tilted, on a desk of
   printed text, beside another barcode; no barcode found in text or on an ID's front;
