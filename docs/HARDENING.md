@@ -96,6 +96,7 @@ then confirms which account the new device is joining.
 | Passive auth: SOD to CSCA, every DG hash | `anchor/src/index.js:229-283` | ✅ contentType required; the SOD's signer identifier must name the certificate used; that certificate must have document-signing key usage and not be a CA; CSCA, document signer and MRZ issuer must be one country (`countries.js` maps MRZ codes to ISO 3166, with ICAO's own: D, GBD…, UTO); every data group sent is checked; malformed input is a refusal, never a 500. ⬜ CRL / revocation of document signers |
 | Client "matches the issuing country's signed hashes" without checking any signature | `record.js` `provenance`, `ids.jsx` | ✅ reworded: the phone checks the files against the chip's own hash list, and says the country's signature isn't checked there |
 | Active authentication challenge from the server, single use, short-lived | Remote anchor | ➖ |
+| A chip that fails its hash check, throws, or returns no result was still applied and labelled verified; its photo was still decoded | `idscan/src/chip.js` `safeCheckIntegrity`, `record.js` `applyChip`, `controller.js` `readChipInto` | ✅ fails closed (Oct 2026 audit): chip data is used only when integrity is explicitly `ok:true`; otherwise the record stays printed-only, marked "Not verified". A passing chip is labelled "Chip data integrity-checked". The phone still does not verify the SOD signature, the CSCA chain or Active Authentication in the vault-copy path (needs a bundled CSCA masterlist): ⬜ open |
 | Stations accept chip data from a file, no AA | `services/recovery/src/server.js:658-692`, `security.jsx` `StationSheet` | ✅ a chip whose SOD lists an AA key must answer a fresh single-use station challenge, and leaving DG15 out doesn't dodge it; stations no longer load files. Chips with no AA key are still accepted at a station, on the operator's in-person check (that is what stations are for). The station wait is unchanged (out of scope) |
 | TLV/ASN.1 bounds, APDU loops | `emrtd/src/util.js:61-120`, `index.js:42-58`, `sm.js:45-66` | ✅ tags ≤ 3 bytes, lengths ≤ 3 bytes and inside the data, duplicate tags refused, GET RESPONSE chaining capped (32 rounds, 64 KB), a read longer than asked refused, DO87 padding indicator / whole blocks / DO99 and DO8E sizes checked |
 | `humid-nfc` is a byte pipe | Yes | ➖ |
@@ -151,3 +152,21 @@ seal card's PDF viewer sandbox, CSS, and the screens calling `openExternal`).
 
 Recovery waits, duress behaviour and the public log design are as they were. None of
 the changes above conflicts with them.
+
+## Oct 2026 audit: open findings (not yet fixed)
+
+A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chain, plus fuzzing (reports kept with the Build Log). Fixed on `integration/demo-hardening`: `GET //` crash, pre-auth body caps, sign-in lockout that could force a Check-in wipe, null-body 500s, MRZ name ReDoS, chip fail-closed. Still open, most important first:
+
+| ID | Finding | Status |
+|---|---|---|
+| H-1 | Envelope signer is not pinned to the account: a malicious vault can serve forged content signed with its own key (`pq1.js` `verify/open`, `controller.js` `fetchPlain`) | ⬜ |
+| H-2 | Transparency-log cosigner and ledger keys come from the server's own response (`audit/index.js` `verifyCheckpoint`) | ⬜ |
+| SRV-01 | Device enrolment needs only the account key, no approval from an existing device (`gateway` `enrollDevice`) | ⬜ |
+| SRV-05 | `POST /auth/presence` with `d:1` destroys an armed vault with no step-up | ⬜ |
+| SRV-04 | Windows SYSTEM console works in a directory LOCAL SERVICE controls (junction primitive) | ⬜ |
+| M-1 | `/htp/v1/keys` policy hints are unauthenticated (a proxy can turn off split keys) | ⬜ |
+| F-07 | Windows/Linux desktop gates are not OS-enforced (desktop paused) | ⬜ |
+| F-08/F-09 | Android wrapping key is valid 3 s after any biometric, not per use; no runtime root detection | ⬜ |
+| SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
+| SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
+| Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ⬜ independent review |
