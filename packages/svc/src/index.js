@@ -88,21 +88,57 @@ export class HttpError extends Error {
   }
 }
 
-export async function readBody(req, limit) {
-  const chunks = [];
-  let size = 0;
-  for await (const c of req) {
-    size += c.length;
-    if (size > limit) throw new HttpError(413, "too_large", `Body exceeds ${limit} bytes`);
-    chunks.push(c);
-  }
-  return new Uint8Array(Buffer.concat(chunks));
+/**
+ * Read a request body with a hard cap. `limit` is a number, or { max, peek, decide }: once the
+ * first `peek` bytes have arrived `decide(prefix)` returns the limit that applies from then on
+ * (or throws an HttpError), so a route can pick its cap from a frame header before the rest is
+ * buffered. A declared Content-Length over the cap is refused without reading anything, and a
+ * streamed body is abandoned the moment it passes the cap (nothing past the cap is buffered).
+ * The request is not destroyed here, so the 413 can still be sent; the caller closes the socket.
+ */
+export function readBody(req, limit) {
+  const opts = typeof limit === "number" ? { max: limit } : limit;
+  let max = opts.max;
+  const tooLarge = () => new HttpError(413, "too_large", `Body exceeds ${max} bytes`);
+  const declared = req.headers["content-length"];
+  if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > opts.max)) return Promise.reject(/^\d+$/.test(declared) ? tooLarge() : new HttpError(400, "bad_request", "Bad Content-Length"));
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0, decided = !opts.decide;
+    const done = (fn, v) => { req.off("data", onData); req.off("end", onEnd); req.off("error", onErr); req.off("aborted", onErr); req.pause(); fn(v); };
+    const onData = (c) => {
+      size += c.length;
+      if (size > max) return done(reject, tooLarge());
+      chunks.push(c);
+      if (!decided && size >= opts.peek) {
+        decided = true;
+        try {
+          max = Math.min(opts.max, opts.decide(Buffer.concat(chunks)));
+          if (declared !== undefined && Number(declared) > max) throw tooLarge();
+          if (size > max) throw tooLarge();
+        } catch (e) { done(reject, e); }
+      }
+    };
+    const onEnd = () => {
+      if (!decided) { try { max = Math.min(opts.max, opts.decide(Buffer.concat(chunks))); if (size > max) throw tooLarge(); } catch (e) { return done(reject, e); } }
+      done(resolve, new Uint8Array(Buffer.concat(chunks)));
+    };
+    const onErr = () => done(reject, new HttpError(400, "bad_request", "Request aborted"));
+    req.on("data", onData); req.on("end", onEnd); req.on("error", onErr); req.on("aborted", onErr);
+  });
 }
 
 export const json = (status, obj, headers = {}) => ({ status, headers: { "content-type": "application/json", ...headers }, body: Buffer.from(JSON.stringify(obj)) });
 export const bytes = (status, buf, type = "application/octet-stream", headers = {}) => ({ status, headers: { "content-type": type, ...headers }, body: buf });
 export const parseJson = (buf) => {
   try { return JSON.parse(Buffer.from(buf).toString() || "null"); } catch { throw new HttpError(400, "bad_json", "Body is not valid JSON"); }
+};
+
+/** Like parseJson, but the body must be a JSON object: null, arrays and scalars are a 400, never a TypeError later. */
+export const parseObject = (buf) => {
+  const v = parseJson(buf);
+  if (v === null || typeof v !== "object" || Array.isArray(v)) throw new HttpError(400, "bad_json", "Body must be a JSON object");
+  return v;
 };
 
 /**
@@ -119,32 +155,65 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
     return { method, pattern, re, keys, handler, opts };
   });
 
-  const server = http.createServer(async (req, res) => {
+  // One request must never be able to take the process down: this process may hold keys that
+  // exist only in memory (keyshare). Every step, including parsing the request target and
+  // writing the reply, is inside a try; the outer catch is the last resort.
+  async function handle(req, res) {
     const started = Date.now();
-    const url = new URL(req.url, "http://internal");
-    let out, route = null;
+    let out, route = null, pathname = "/";
+    let closeAfter = false;
     try {
-      if (req.method === "GET" && url.pathname === "/healthz") {
+      // Origin-form only. "//x", "http://[" and absolute-form targets are not routes; "//host/p"
+      // must not be read as a host + path by the URL parser either.
+      if (typeof req.url !== "string" || req.url[0] !== "/" || req.url[1] === "/") throw new HttpError(400, "bad_request", "Bad request target");
+      let url;
+      try { url = new URL(req.url, "http://internal"); } catch { throw new HttpError(400, "bad_request", "Bad request target"); }
+      pathname = url.pathname;
+      if (req.method === "GET" && pathname === "/healthz") {
         out = json(200, { ok: true, service: name });
       } else {
-        route = compiled.find((r) => r.method === req.method && r.re.test(url.pathname)) || null;
+        route = compiled.find((r) => r.method === req.method && r.re.test(pathname)) || null;
         if (!route) throw new HttpError(404, "not_found", "No such route");
-        const m = url.pathname.match(route.re);
-        const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+        const m = pathname.match(route.re);
+        let params;
+        try { params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); }
+        catch { throw new HttpError(400, "bad_request", "Bad path encoding"); }
         const claims = route.opts.public ? null : verify?.(req.headers[ASSERTION_HEADER]);
-        const body = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readBody(req, route.opts.bodyLimit || bodyLimit) : new Uint8Array(0);
+        let body = new Uint8Array(0);
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+          // admit() may refuse (429) before a byte is read; its release runs when the body is in or abandoned.
+          let release;
+          try { release = route.opts.admit?.(req); body = await readBody(req, route.opts.readLimit || route.opts.bodyLimit || bodyLimit); }
+          catch (e) { closeAfter = true; throw e; }
+          finally { release?.(); }
+        }
         out = await route.handler({ req, params, query: url.searchParams, body, claims, headers: req.headers });
       }
     } catch (e) {
-      if (!(e instanceof HttpError)) log.error("unhandled", { err: e.stack });
-      out = onError?.(e) || json(e.status || 500, { error: e.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
+      try {
+        if (!(e instanceof HttpError)) log.error("unhandled", { err: e?.stack });
+        out = onError?.(e) || json(e?.status || 500, { error: e?.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
+      } catch (e2) {
+        log.error("unhandled", { err: e2?.stack });
+        out = json(500, { error: "internal", message: "Internal error" });
+      }
     }
-    res.writeHead(out.status, { "cache-control": "no-store", "x-content-type-options": "nosniff", ...(extraHeaders?.(req) || {}), ...out.headers });
+    // A refused or broken upload may still be streaming in: answer, then drop the connection.
+    if (closeAfter) { res.once("finish", () => setTimeout(() => req.socket?.destroy(), 200).unref()); }
+    res.writeHead(out.status, { "cache-control": "no-store", "x-content-type-options": "nosniff", ...(closeAfter ? { connection: "close" } : {}), ...(extraHeaders?.(req) || {}), ...out.headers });
     res.end(out.body);
     // The route's pattern ("/links/:code"), never the path: paths carry recovery codes,
     // request and object ids. An unmatched path logs only its first segment.
-    if (url.pathname !== "/healthz") log.info("req", { m: req.method, p: logPath(route, url.pathname), s: out.status, ms: Date.now() - started });
+    if (pathname !== "/healthz") log.info("req", { m: req.method, p: logPath(route, pathname), s: out.status, ms: Date.now() - started });
+  }
+
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch((e) => {
+      try { log.error("unhandled", { err: e?.stack }); } catch {}
+      try { if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" }); res.end(res.headersSent ? undefined : '{"error":"internal","message":"Internal error"}'); } catch { try { res.destroy(); } catch {} }
+    });
   });
+  server.on("clientError", (err, socket) => { try { if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"); else socket.destroy(); } catch {} });
   server.requestTimeout = 120_000;
   server.headersTimeout = 15_000;
 

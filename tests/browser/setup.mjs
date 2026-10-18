@@ -187,36 +187,47 @@ try {
   assert.equal(await back(), "tab", "back from You goes to the Vault tab");
   assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault");
   assert.equal(await back(), "stay", "back at the Vault stays in HumID");
-  // Add opens the camera at once (no camera on this headless browser: it says so and waits); back closes it
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".doccam").waitFor();
-  assert.equal(await back(), ".doccam");
-  await page.locator(".doccam").waitFor({ state: "detached" });
-  assert.equal(await page.locator(".pushed").count(), 0, "Add closed with its camera");
+  // Add opens the list of what to add, with no camera; back closes it
+  const addBtn = () => page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await addBtn();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "Add starts no camera");
+  assert.equal(await back(), "pushed");
+  await page.locator(".pushed").waitFor({ state: "detached" });
   await page.locator(".tabbar button", { hasText: "You" }).click();
   await page.locator("section.protect button.proof-row", { hasText: "A second device" }).click();
   await page.locator(".sheet").waitFor();
   assert.equal(await back(), "sheet", "back closes a sheet opened from another tab");
   await page.locator(".sheet").waitFor({ state: "detached" });
   assert.equal(await back(), "tab");
-  // inside Add: "It's something else" opens the picker; a kind opens its own camera; back
-  // closes that camera first, then steps back through the flow one level at a time
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".doccam").waitFor();
-  await page.getByRole("button", { name: "It's something else" }).click();
-  await page.locator(".pushed").getByText("What is it?").waitFor();
-  await targets(page, "What is it?"); await shot(page, "small-add-picker");
+  // inside Add: pick a kind, see what to show, Start camera; back closes the camera first,
+  // then steps back through the flow one level at a time
+  await addBtn();
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  await targets(page, "What are you adding?"); await shot(page, "small-add-picker");
   await page.locator(".pushed button.kind", { hasText: "Driver's license" }).click();
+  await page.locator(".pushed").getByText("Scan it").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
+  await targets(page, "Scan it"); await shot(page, "small-add-ready");
+  await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam").waitFor();
   assert.equal(await back(), ".doccam");
   await page.locator(".doccam").waitFor({ state: "detached" });
   await page.locator(".pushed").getByText("Scan it").waitFor();
   assert.equal(await back(), "pushed", "back inside the ID flow steps back to the picker");
-  await page.locator(".pushed").getByText("What is it?").waitFor();
-  assert.equal(await back(), "pushed", "back from the picker returns to the camera");
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  // Photo and Payment card: a "what to show" screen of their own, then the camera
+  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
+  await page.locator("[data-start-camera]").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0);
+  await page.locator("[data-start-camera]").click();
   await page.locator(".doccam").waitFor();
-  assert.equal(await back(), ".doccam", "back from the camera closes Add");
-  await page.locator(".doccam").waitFor({ state: "detached" });
+  assert.equal(await back(), ".doccam");
+  await page.locator("[data-start-camera]").waitFor();
+  assert.equal(await back(), "pushed");
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await back(), "pushed", "back from the picker closes Add");
+  await page.locator(".pushed").waitFor({ state: "detached" });
   assert.equal(await page.locator(".pushed").count(), 0);
   assert.equal(await page.locator(".tabbar").count(), 1, "still in the app");
   step("back gesture: camera, then each step of Add, then tab; at the Vault it stays put");
@@ -225,8 +236,8 @@ try {
   await page.locator(".tabbar button", { hasText: "Vault" }).click();
   const addFile = async (file) => {
     await page.getByRole("button", { name: "Add to your vault" }).first().click();
-    await page.locator(".doccam").waitFor();
-    await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+    await page.locator(".pushed").getByText("What are you adding?").waitFor();
+    await page.locator(".pushed button.kind", { hasText: /^File/ }).click();
     await page.locator("#add-file").setInputFiles(file);
     await page.locator(".pushed .review").waitFor();
   };

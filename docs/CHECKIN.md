@@ -103,6 +103,13 @@ this cryptographic erase.
   catch up on the next sweep. The ledger gets exactly one `checkin.erased` per
   erase, with the number of keys destroyed, however many sweeps it takes; the
   sweep never removes a document uploaded after the erase.
+- **A sign-in lockout can't cause an erase, and can't keep you from checking
+  in.** Only three things destroy a fuse key: a missed deadline plus grace
+  inside keyshare, a duress sign-in, and a restart of keyshare. A refused
+  sign-in is none of them. Sign-in throttling counts failed proofs only and
+  never refuses a request before its proof is checked, so someone who knows
+  your account id (it isn't secret) cannot use up your allowance: your valid
+  sign-in always works, and a check-in needs nothing but that sign-in.
 - **No heartbeat in the public log.** The ledger records `checkin.armed`,
   `checkin.disarmed` and `checkin.erased`, never a check-in: an hourly entry in
   the public transparency log would tell anyone watching that an account is

@@ -122,3 +122,21 @@ export function checkIntegrity(sod, groups) {
   const ok = Object.keys(result).length > 0 && Object.values(result).every(Boolean);
   return { ok, algorithm, groups: result };
 }
+
+/**
+ * checkIntegrity that never throws: a malformed SOD gives { ok: false, reason: "malformed" }.
+ * Callers must treat anything but ok === true as "not checked".
+ */
+export function safeCheckIntegrity(sod, groups) {
+  try { return checkIntegrity(sod, groups); }
+  catch { return { ok: false, algorithm: null, groups: {}, reason: "malformed" }; }
+}
+
+/**
+ * The one fail-closed decision for chip data: true only when the integrity result is
+ * exactly { ok: true }. null, undefined, thrown (null), ok:false or a truthy non-boolean
+ * all mean "do not apply the chip's data, do not decode its photo".
+ * Note this is a hash check against the chip's own SOD, not authenticity: the issuing
+ * country's signature (CSCA chain) is not verified on the phone.
+ */
+export const chipIntegrityOk = (integrity) => integrity?.ok === true;

@@ -7,7 +7,7 @@ import { Icon } from "../icons.jsx";
 import { openExternal } from "../core/external.js";
 import * as S from "../core/state.js";
 import { addCardRecord, readCardTap, readCardPhoto, chipReader } from "../core/controller.js";
-import { jpeg, imageUrl, releaseReaders, rotateCanvas } from "../core/scan.js";
+import { jpeg, imageUrl, releaseReaders, rotateCanvas, warmScan } from "../core/scan.js";
 import { PLATFORM } from "../core/config.js";
 import { DocCamera } from "./ids.jsx";
 import { Review, Push } from "./review.jsx";
@@ -48,6 +48,7 @@ export function CardFlow({ start, onExit }) {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+    warmScan("card"); // the text reader loads while the details screen is read, not when the camera opens
     if (start.front) applyFront(start.front.read, start.front.canvas);
     else if (start.tap) tap();
     return () => { releaseReaders(); };
