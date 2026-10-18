@@ -402,7 +402,16 @@ export function lookAt(im, { shape = "full", prev = null, prior = null } = {}) {
   }
   const steady = !prev || motion < 10;
   if (!doc) {
-    return { found: false, quad: null, steady, motion, ok: false, hint: shape === "full" ? "Point the camera at the document" : "Point the camera at the card" };
+    // Nothing found: is it because there's no light? (a dark view has no edges to find)
+    // Only a really dark view counts (a dark table in good light is not "too dark"): dark on average AND no bright part.
+    const hist = new Uint32Array(256);
+    let sum = 0, n = 0;
+    for (let i = 0; i < im.g.length; i += 11) { sum += im.g[i]; hist[im.g[i]]++; n++; }
+    const mean = n ? sum / n : 0;
+    let acc = 0, p95 = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.95) { p95 = v; break; } }
+    const dim = mean < 28 && p95 < 50;
+    return { found: false, quad: null, steady, motion, ok: false, mean, dim, hint: dim ? "Find a little more light" : shape === "full" ? "Point the camera at the document" : "Point the camera at the card" };
   }
   const want = PAPER[shape];
   const fits = !want || Math.abs(doc.ratio / want - 1) < 0.14;
@@ -418,7 +427,7 @@ export function lookAt(im, { shape = "full", prev = null, prior = null } = {}) {
     : !steady ? "Hold still…"
     : !sharp ? "Hold still while it focuses…"
     : "Hold still…";
-  return { found: true, quad: doc.quad, ratio: doc.ratio, area: doc.area, cover: doc.cover, crisp: doc.crisp, fits, big, light, glare, sharp, steady, motion, ok, hint };
+  return { found: true, quad: doc.quad, ratio: doc.ratio, area: doc.area, cover: doc.cover, crisp: doc.crisp, fits, big, light, glare, sharp, steady, motion, mean, ok, hint };
 }
 
 /**
@@ -508,15 +517,21 @@ export function outputSize(quad, { prefer = null, max = 3000 } = {}) {
   return { width: Math.max(1, Math.round(W)), height: Math.max(1, Math.round(H)) };
 }
 
-/** The straightened document: RGBA { width, height, data } sampled bilinearly from src. */
-export function warp(src, quad, width, height) {
+/**
+ * The straightened document: RGBA { width, height, data } sampled bilinearly from src.
+ * crop { x, y, w, h } (in the straightened picture's own pixels) makes only that part of it,
+ * so a strip such as the MRZ costs a third of the whole page.
+ */
+export function warp(src, quad, width, height, crop = null) {
   const [a, b, c, d, e, f, g, h] = homography(width, height, quad);
-  const out = new Uint8ClampedArray(width * height * 4);
+  const cx = crop ? Math.round(crop.x) : 0, cy = crop ? Math.round(crop.y) : 0;
+  const ow = crop ? Math.round(crop.w) : width, oh = crop ? Math.round(crop.h) : height;
+  const out = new Uint8ClampedArray(ow * oh * 4);
   const sw = src.width, sh = src.height, sd = src.data;
-  for (let y = 0; y < height; y++) {
-    const yy = y + 0.5;
-    let nx = b * yy + c + a * 0.5, ny = e * yy + f + d * 0.5, dn = h * yy + 1 + g * 0.5;
-    for (let x = 0, o = y * width * 4; x < width; x++, o += 4) {
+  for (let y = 0; y < oh; y++) {
+    const yy = y + cy + 0.5;
+    let nx = b * yy + c + a * (cx + 0.5), ny = e * yy + f + d * (cx + 0.5), dn = h * yy + 1 + g * (cx + 0.5);
+    for (let x = 0, o = y * ow * 4; x < ow; x++, o += 4) {
       const u = nx / dn - 0.5, v = ny / dn - 0.5;
       nx += a; ny += d; dn += g;
       const x0 = Math.floor(u), y0 = Math.floor(v);
@@ -531,7 +546,50 @@ export function warp(src, quad, width, height) {
       out[o + 3] = 255;
     }
   }
-  return { width, height, data: out };
+  return { width: ow, height: oh, data: out };
+}
+
+/** Where the straightened rectangle's point (x, y) falls in the picture, for the map `homography(W, H, quad)` gave. */
+export function applyHomography(m, x, y) {
+  const [a, b, c, d, e, f, g, h] = m;
+  const z = g * x + h * y + 1;
+  return { x: (a * x + b * y + c) / z, y: (d * x + e * y + f) / z };
+}
+
+/**
+ * The same four corners, labelled for a card read lying flat and the right way round:
+ * a card held on end (its short sides across) is turned a quarter, then `turn` (0 or 180)
+ * more. Matches straightening the card, rotating it a quarter if it stands, then turning
+ * it, without ever making the whole card.
+ */
+export function relabel(quad, turn = 0) {
+  const across = (dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2;
+  const down = (dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2;
+  let q = down > across ? [quad[3], quad[0], quad[1], quad[2]] : quad;
+  for (let t = ((turn % 360) + 360) % 360; t >= 90; t -= 90) q = [q[3], q[0], q[1], q[2]];
+  return q;
+}
+
+/**
+ * What the MRZ reader needs from a live card, without straightening the whole card:
+ * the strip of the card the lines sit in, at the size the reader likes (a character about
+ * 30 px wide). Returns { width, height (the strip), flatW, flatH (the whole card at that
+ * scale), crop, quad (the relabelled corners), box (where the strip lies in the
+ * picture: x, y, w, h) }.
+ *   shape  "td3" | "id1"     turn  0 or 180     scale  1 normally
+ */
+export function bandPlan(quad, shape = "td3", { turn = 0, scale = 1, chars } = {}) {
+  const q = relabel(quad, turn);
+  const share = shape === "td3" ? 0.34 : 0.48;
+  const n = chars || (shape === "td3" ? 44 : 30);
+  const flatW = Math.round(n * 30 * scale), flatH = Math.round(flatW / (PAPER[shape] || PAPER.id1));
+  const y0 = Math.round(flatH * (1 - share));
+  const crop = { x: 0, y: y0, w: flatW, h: flatH - y0 };
+  const m = homography(flatW, flatH, q);
+  const pts = [[0, y0], [flatW, y0], [flatW, flatH], [0, flatH]].map(([x, y]) => applyHomography(m, x, y));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { width: crop.w, height: crop.h, flatW, flatH, crop, quad: q, box: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y } };
 }
 
 /** Corners from one picture's pixels to another's (a small analysis copy → the full photo). */
