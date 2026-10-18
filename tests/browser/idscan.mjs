@@ -201,7 +201,7 @@ try {
   await shot(page, "7-passport-view");
   const pview = await page.locator(".id-view").innerText();
   assert.match(pview, /Demo Person/);
-  assert.match(pview, /From the chip/);
+  assert.match(pview, /Chip data integrity-checked/);
   assert.doesNotMatch(pview, /P<UTOPERSON<<DEMO/, "the raw lines from the document are folded away");
   await page.locator(".id-view details summary", { hasText: "Details" }).click();
   assert.match(await page.locator(".id-view").innerText(), /P<UTOPERSON<<DEMO/);
