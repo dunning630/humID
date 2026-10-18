@@ -41,7 +41,7 @@ test("a release build has no simulated server, demo gate or /dev endpoints", { t
     for (const [file, text] of Object.entries(b.text)) {
       for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} is in ${file}`);
     }
-    assert.ok(!b.files.some((f) => /chunks\/server-/.test(f)), "no sim server chunk was emitted");
+    assert.ok(!b.files.some((f) => /chunks[\\/]server-/.test(f)), "no sim server chunk was emitted");
     // and the real code is still there
     const all = Object.values(b.text).join("");
     assert.ok(all.includes("HUMID-LOCAL-v1"), "the controller is in the bundle");
@@ -51,7 +51,7 @@ test("a release build has no simulated server, demo gate or /dev endpoints", { t
 test("a simulation build, by contrast, carries the server inside the app", { timeout: 300_000 }, () => {
   const b = build({ HUMID_SIMULATE: "1" });
   try {
-    assert.ok(b.files.some((f) => /chunks\/server-/.test(f)), "the sim server chunk exists");
+    assert.ok(b.files.some((f) => /chunks[\\/]server-/.test(f)), "the sim server chunk exists");
     assert.ok(Object.values(b.text).some((t) => t.includes("createSimServer")));
   } finally { rmSync(b.out, { recursive: true, force: true }); }
 });
