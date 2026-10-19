@@ -25,6 +25,7 @@ import { begin as flowBegin, step as flowStep, describe, gaveUp, pace } from "..
 import { tracker, scaleQuad } from "../core/docfind.js";
 import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../core/barcodefind.js";
 import { DEMO_BUILD } from "@humid/gate";
+import { docScanner } from "../core/docscan.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -230,16 +231,21 @@ function nextFrame(v) {
  *           settles, shows a tick when it succeeds, and goes back to live with the
  *           reason if it throws, so a photo is never silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
+ *   native  on Android, use the phone's own document scanner (core/docscan.js) for the
+ *           photo, and read it here like any photo (on by default). The scanner finds the
+ *           edges, waits for a steady, focused shot at full resolution and flattens it;
+ *           where it isn't available this camera is used instead.
  */
 export function DocCamera(props) {
   const preset = props.mode ? scanOptions(props.mode, { side: props.side }) : {};
-  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, label, tools } = props;
+  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, label, tools, native = true } = props;
   const shape = props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState("");
   const [torch, setTorch] = useState(null);
+  const [scanner, setScanner] = useState(() => native && docScanner.available()); // the phone's document scanner takes the photo
   const [toldSaved, setToldSaved] = useState(!!saved);
   const [look, setLook] = useState(null);      // the last look: { ok, found, hint, progress, points (on screen) }
   const [bar, setBar] = useState(null);        // a barcode in view: { points (on screen), note }
@@ -286,6 +292,7 @@ export function DocCamera(props) {
       L.done = false; L.paused = false;
       L.holdUntil = Date.now() + 2500; // let the reason be read before trying again by itself
       oops();
+      if (L.native) { setError(e?.message || "Couldn't keep that photo. Scan it again."); setPhase("error"); return; }
       flash(e?.message || "Couldn't keep that photo. Try again.");
       send({ t: "retry" });
       setPhase(L.stream ? "live" : "error");
@@ -472,7 +479,7 @@ export function DocCamera(props) {
   // frees the camera at once; coming back lands on the screen before, where "Start camera" asks again.
   useEffect(() => {
     const away = () => {
-      if (!document.hidden) return;
+      if (!document.hidden || L.scanning) return; // the phone's scanner is on screen: HumID hasn't left
       L.stop = true; L.paused = true; stopStream();
       if (L.picking) { setPhase((p) => (p === "reading" || p === "saved" ? p : "error")); setError("The camera stopped while you chose a photo. Close this and start the camera again."); } // the photo picker is up: keep the screen so its file still arrives
       else onCancel?.();
@@ -487,14 +494,27 @@ export function DocCamera(props) {
     // Engines first, in parallel with the camera: the camera's permission prompt and
     // start-up are the slow part of getting going, and the readers load during them.
     trace("mount");
-    L.an = createAnalyzer({ shape, bar: !!read.barcode });
-    L.an.warm();
+    if (L.native === undefined) L.native = scanner;
     if (read.mrz) { send({ t: "engine", loading: true }); mrzReader().catch(() => null); }
-    if (read.barcode && L.an.where === "main") barcodeReader().then(() => {}, () => {}); // no worker on this phone: the reader runs here
+    if (read.barcode && L.native) barcodeReader().then(() => {}, () => {}); // the scanner's page is read here, on this thread
     const tick = setInterval(() => {
+      if (L.native) return; // the scanner has its own pace: no time budget, no live steps
       send({ t: "tick" });
       if (gaveUp(L.flow) && !L.gave) { L.gave = true; oops(); setLook((l) => l && { ...l, points: null }); }
     }, 500);
+    if (L.native) scanNative();
+    else startCamera();
+    return () => { L.stop = true; clearInterval(tick); L.an?.close(); stopStream(); };
+  }, []);
+
+  /** This screen's own camera: the live view, the outline and the live reads. */
+  function startCamera() {
+    L.native = false;
+    if (!L.an) {
+      L.an = createAnalyzer({ shape, bar: !!read.barcode });
+      L.an.warm();
+      if (read.barcode && L.an.where === "main") barcodeReader().then(() => {}, () => {}); // no worker on this phone: the reader runs here
+    }
     (async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("no camera"), { name: "NotFoundError" });
@@ -514,8 +534,45 @@ export function DocCamera(props) {
         if (auto || codes) loop();
       } catch (e) { setPhase("error"); setError(cameraError(e)); }
     })();
-    return () => { L.stop = true; clearInterval(tick); L.an?.close(); stopStream(); };
-  }, []);
+  }
+
+  /**
+   * The phone's document scanner takes the photo (Android): edges found, a steady, focused
+   * full-resolution shot, flattened. Then it is read here and saved like any photo. Backing
+   * out of the scanner closes this screen; no scanner on this phone falls back to the camera.
+   */
+  async function scanNative() {
+    L.native = true; L.stop = true; L.paused = true; L.done = false;
+    setError(null); setPhase("starting");
+    trace("scanner");
+    markPicking({ forMs: 180_000, hiddenMs: 150_000 }); // the scanner is HumID's own step, not leaving it
+    L.scanning = true;
+    let page;
+    try { page = await docScanner.scan({ maxSide: 3200 }); }
+    catch (e) {
+      L.scanning = false;
+      if (e?.kind === "unavailable") { setScanner(false); flash(e.message, 5000); L.stop = false; L.paused = false; startCamera(); return; }
+      oops(); setError(e?.message || "The scanner stopped. Scan again."); setPhase("error");
+      return;
+    }
+    L.scanning = false;
+    if (!page) { onCancel(); return; } // backed out of the scanner
+    setPhase("reading");
+    send({ t: "captured" });
+    try {
+      const c = await fileToCanvas(page.blob);
+      await finish(await develop(c, null, "scan"));
+    } catch (e) {
+      oops(); setError(e?.message || "Couldn't read that page. Scan it again."); setPhase("error");
+    }
+  }
+
+  /** From the scanner to this screen's own camera, for this document (the person asked). */
+  function toCamera() {
+    setScanner(false); setError(null); setPhase("starting");
+    L.stop = false; L.paused = false; L.done = false;
+    startCamera();
+  }
 
   /**
    * Develop a photo: find the document's corners in it (helped by the live outline),
@@ -525,9 +582,13 @@ export function DocCamera(props) {
   async function develop(original, hintQuad, how, known = {}) {
     await sleep(0); // let "Saving…" paint first: straightening a 4K photo takes a moment
     trace("develop");
-    const quad = cornersIn(original, { hint: hintQuad, shape });
+    // the scanner hands back the page already found and flattened: only turned upright here
+    const scanned = how === "scan";
+    const quad = scanned ? null : cornersIn(original, { hint: hintQuad, shape });
     let dev;
-    if (known.mrz && quad) {
+    if (scanned) {
+      dev = { ...developPhoto(original, null, { shape }), straightened: true, changed: true };
+    } else if (known.mrz && quad) {
       // read live from the straightened card turned known.turn: develop it the same way
       let flat = straighten(original, quad, { prefer: shape, max: 2000 });
       if (flat.height > flat.width) flat = rotateCanvas(flat, 90);
@@ -535,7 +596,7 @@ export function DocCamera(props) {
     } else dev = developPhoto(original, quad, { shape });
     // a card that wasn't found: what was inside the on-screen frame, as before
     if (card && !dev.straightened) {
-      const v = video.current, r = v && how !== "file" ? frameRect(v, frame.current, 0.02) : null;
+      const v = video.current, r = v && how !== "file" && !scanned ? frameRect(v, frame.current, 0.02) : null;
       if (r) { const c = grab(original, r); dev = { canvas: c, original, straightened: false, rotate: 0, confidence: 0, changed: true }; }
     }
     let readOut = {};
@@ -543,7 +604,7 @@ export function DocCamera(props) {
     else if (codes) {
       send({ t: "verifying" }); // the photo is straight; now it is read closely and the details checked
       await sleep(0);
-      readOut = await readStill(dev.canvas, read, shape, how === "file" ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
+      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
     }
     const { turn, flipped, ...codesFound } = readOut;
@@ -607,6 +668,7 @@ export function DocCamera(props) {
 
   /** Try again: a fresh budget, fresh reads, the camera as it was. */
   function retry() {
+    if (L.native) { scanNative(); return; }
     L.gave = false; L.holdUntil = 0; L.barSeen = 0; L.bcMain = null;
     L.retry?.();
     setNotice("");
@@ -622,7 +684,7 @@ export function DocCamera(props) {
   const busy = phase === "reading" || phase === "saved";
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-scanner={scanner ? "1" : undefined} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
       <video ref={video} playsInline muted autoplay />
       {phase === "live" && !L.gave && (look?.points || bar?.points) && (
         <svg class="dc-outline" aria-hidden="true" style={{ "--p": look?.progress || 0 }}>
@@ -652,7 +714,25 @@ export function DocCamera(props) {
         <div class="grow">{eyebrow && <div class="eyebrow">{eyebrow}</div>}<strong>{title}</strong></div>
         {torch != null && <button class="icon-btn" aria-label={torch ? "Turn the light off" : "Turn the light on"} aria-pressed={torch} onClick={toggleTorch}><Icon name="torch" /></button>}
       </header>
-      <ScanState view={view} notice={notice} error={phase === "error" ? error : null} torch={torch} onTorch={torch != null ? toggleTorch : null} onRetry={retry} onShoot={() => shoot()} />
+      {scanner && phase !== "reading" && phase !== "saved" ? (
+        <div class="dc-status dc-state dc-scanner" data-tone={phase === "error" ? "warn" : undefined} data-state={phase === "error" ? "error" : "scanner"}>
+          <div class="dc-msg">
+            <span class="dc-ico" data-spin={phase === "error" ? undefined : "1"}><Icon name={phase === "error" ? "alert" : "scan"} /></span>
+            <div class="dc-words" role="status" aria-atomic="true" aria-live={phase === "error" ? "assertive" : "polite"}>
+              <strong>{phase === "error" ? "Couldn't keep that page" : "Opening the scanner…"}</strong>
+              <span>{phase === "error" ? error : "Hold the document flat in good light. It takes the photo by itself."}</span>
+            </div>
+          </div>
+          {phase === "error" && (
+            <div class="dc-actions">
+              <button type="button" class="dc-act primary" onClick={() => scanNative()}><Icon name="rotate" />Scan again</button>
+              <button type="button" class="dc-act" onClick={toCamera}><Icon name="camera" />Use HumID's camera</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <ScanState view={view} notice={notice} error={phase === "error" ? error : null} torch={torch} onTorch={torch != null ? toggleTorch : null} onRetry={retry} onShoot={() => shoot()} />
+      )}
       {label && phase !== "reading" && phase !== "saved" && (
         <div class="dc-label" role="status">
           <span><Icon name={label.icon || "scan"} />{label.text}</span>

@@ -518,6 +518,9 @@ button.row.linkrow { width: 100%; background: none; border: 0; border-top: 1px s
 /* ---------------- identity documents: camera, review, card view ---------------- */
 .doccam { position: fixed; inset: 0; z-index: 55; background: #000; color: #fff; overflow: hidden; animation: fade .2s var(--ease) both; }
 .doccam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* the phone's document scanner takes the photo: no live view or frame here, only what it's doing */
+.doccam[data-scanner] video, .doccam[data-scanner] .dc-frame .c, .doccam[data-scanner] .dc-bottom .dc-shutter { visibility: hidden; }
+.doccam[data-scanner] .dc-frame { border: 0; box-shadow: none; }
 .dc-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: calc(var(--safe-t) + 76px) 16px calc(var(--safe-b) + 150px); pointer-events: none; }
 .dc-frame { position: relative; width: min(100%, 560px); aspect-ratio: 1.586; max-height: 100%; border-radius: 16px; transition: opacity .25s var(--ease); }
 .dc-frame[data-shape="td3"] { aspect-ratio: 1.42; }

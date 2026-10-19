@@ -1612,6 +1612,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
+ "tauri-plugin-humid-docscan",
  "tauri-plugin-humid-gate",
  "tauri-plugin-humid-nfc",
  "tauri-plugin-opener",
@@ -3864,6 +3865,16 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-humid-docscan"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

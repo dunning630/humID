@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Lets the HumID UI open the phone's document scanner for one page and receive the photo."
+permissions = ["allow-probe", "allow-scan"]
