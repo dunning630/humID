@@ -248,7 +248,8 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
   seed-derived key; the decoy-or-real decision is made after the live check, from the
   opened setting (`apps/mobile/src/core/duress.js`).
 - **Leaving the screen locks**, even with a file picker open: the exemption is bounded
-  (60 s, `pagehide`, a 20 s hidden span).
+  (60 s, `pagehide`, a 20 s hidden span; the Android document scanner, below, 90 s and a
+  60 s hidden span).
 - **Names are forgotten on lock**; a decoy session never decrypts the other names.
 - **Release builds carry no demo or simulation code** (`tests/bundle.test.js`); the
   simulation app has its own bundle identifier.
@@ -258,6 +259,38 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
 - **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
   a chip that fails its own hash list.
 - **iOS backups exclude the WebView's data store.**
+
+## The Android document scanner (apps 2.1.1, narrowed in 2.1.2)
+
+On Android, **Add ▸ Photo** and **Another card** photograph with the phone's document
+scanner (ML Kit, run by Google Play services; `plugins/humid-docscan`). It runs on the phone
+in base mode (crop and turn, no filters or ML clean-up), one page, no gallery import, and
+the page comes back to HumID as JPEG bytes; the scanner's file is deleted once read, and a
+start-up sweep clears any page left by a HumID that was stopped in between. Other apps
+can't receive the result (it returns to HumID's activity; the file is in HumID's private
+storage). What it costs, and why IDs are kept off it:
+
+- **HumID's screen protection doesn't reach it.** HumID's window blocks screenshots,
+  screen recording, casting and the recents thumbnail (`FLAG_SECURE`, no recents
+  snapshot on API 33+). The scanner's screen belongs to Play services, which HumID can't
+  set flags on, so what it shows can most likely be screenshotted, recorded by a screen
+  recorder the person allowed, or appear in recents. **So driver's licenses, passports,
+  ID cards, permits and payment cards use HumID's own camera** (`DocCamera`, `native`
+  off by default); only Photo and Another card use the scanner.
+- **Google learns usage, not content.** Per Google's ML Kit data disclosure, ML Kit sends
+  device model and OS, the app's package name, a per-installation identifier, timings,
+  image format and size, and error codes, for diagnostics and analytics; no opt-out.
+  Google says the scanner flow runs entirely on the device, so pictures aren't sent. For
+  HumID this means Google can learn that a phone runs HumID and when it scanned. The
+  privacy policy and Play's Data safety form must say so.
+- **Code HumID doesn't control.** Play services updates the scanner on its own schedule;
+  base mode is said to get only minor refinements. The Maven dependency
+  (`play-services-mlkit-document-scanner:16.0.0`) is pinned but not checksum-verified
+  (Gradle dependency verification is off; with the SC-01..05 supply-chain items in
+  HARDENING.md).
+- **The vault stays unlocked while the scanner is up**, because HumID can't tell the
+  scanner from the person pressing Home from it: at most 60 s off the screen (90 s in all),
+  then it locks as usual.
 
 ## Before real data
 

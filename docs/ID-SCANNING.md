@@ -177,10 +177,13 @@ The seal screen offers three versions:
 The first two can be turned by hand in case the guess is wrong. Only the version
 chosen is sealed; the others are discarded.
 
-## Android: the phone's document scanner (apps 2.1.1)
+## Android: the phone's document scanner (apps 2.1.1; IDs off it since 2.1.2)
 
-On Android the camera step opens the phone's own document scanner instead of HumID's
-live view: ML Kit's document scanner, run by Google Play services
+On Android, **Add ▸ Photo** and **Another card** open the phone's own document scanner
+instead of HumID's live view. Driver's licenses, passports, ID cards, permits and payment
+cards stay on HumID's camera, whose screen blocks screenshots and the recents thumbnail
+(the scanner's screen is Google's and isn't covered; see
+[SECURITY.md](SECURITY.md#the-android-document-scanner-apps-211-narrowed-in-212)). The scanner is ML Kit's document scanner, run by Google Play services
 (`plugins/humid-docscan`, `humid-docscan@1`). It finds the edges, takes a
 full-resolution, focused photo once the document is steady and flattens it. HumID
 then does what it does with any photo: turns it upright, reads the license barcode or
@@ -192,10 +195,10 @@ a frame of that video.
   change what a document says. One page; no gallery import.
 - **On the phone.** The scanning runs on the device and the picture never leaves it.
   The page is handed back as JPEG bytes (at most 3,200 px on its long side) and the
-  scanner's file is deleted at once. ML Kit reports anonymous usage figures to Google
+  scanner's file is deleted at once; a start-up sweep clears any page left behind. ML Kit reports anonymous usage figures to Google
   (never pictures); the scanner runs under Play services' camera permission.
 - **HumID stays unlocked** while the scanner is on screen, as for the file picker, for
-  up to 2½ minutes (`markPicking({ hiddenMs })`, never more than 3 minutes).
+  at most 60 s off the screen and 90 s in all (`markPicking({ hiddenMs })`).
 - **Fallbacks.** Backing out of the scanner goes back a step. A page that can't be handed
   back offers *Scan again* or *Use HumID's camera*. A phone without the scanner (no Play
   services, too little memory) gets HumID's own camera, as before, for the rest of the

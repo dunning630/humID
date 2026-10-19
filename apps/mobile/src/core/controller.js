@@ -358,14 +358,15 @@ function wireGlobalEvents() {
  * scanner): leaving the screen for it isn't leaving HumID. Bounded: it clears itself after
  * forMs (a minute), and HumID locks if it stays off the screen longer than hiddenMs (20 s).
  * The document scanner asks for a little more (the person lines up and checks the page),
- * never more than SCANNER_MAX_MS, well inside the 5-minute idle floor.
+ * never more than PICK_MAX_MS (90 s) in all, or PICK_HIDDEN_MAX_MS (60 s) off the screen.
  */
-const SCANNER_MAX_MS = 180_000;
+const PICK_MAX_MS = 90_000;
+const PICK_HIDDEN_MAX_MS = 60_000;
 export const markPicking = ({ forMs = PICK_MS, hiddenMs = PICK_HIDDEN_MS } = {}) => {
   picking = true;
-  pickHiddenMs = Math.min(hiddenMs, SCANNER_MAX_MS);
+  pickHiddenMs = Math.min(hiddenMs, PICK_HIDDEN_MAX_MS);
   clearTimeout(pickingTimer);
-  pickingTimer = setTimeout(stopPicking, Math.min(forMs, SCANNER_MAX_MS));
+  pickingTimer = setTimeout(stopPicking, Math.min(forMs, PICK_MAX_MS));
 };
 function stopPicking() { picking = false; hiddenAt = 0; pickHiddenMs = 0; clearTimeout(pickingTimer); pickingTimer = null; }
 

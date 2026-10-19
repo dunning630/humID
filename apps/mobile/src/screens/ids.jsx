@@ -178,6 +178,14 @@ const NO_READER = "The reader couldn't start on this phone. Take the photo with 
 const FALLBACK_MS = 12000;
 const BAR_QUIET_MS = 4000;
 
+/**
+ * While the phone's document scanner is on screen HumID isn't left, but it can't tell the
+ * scanner from the person pressing Home from it: so it may stay off the screen this long
+ * (a scan takes seconds) before it locks, and the allowance ends this long after it began.
+ */
+export const SCANNER_HIDDEN_MS = 60_000;
+export const SCANNER_PICK_MS = 90_000;
+
 /** Document photos (nothing to read): how long it must hold steady and sharp before the photo is taken. */
 const HOLD_MS = 900;
 
@@ -232,13 +240,15 @@ function nextFrame(v) {
  *           reason if it throws, so a photo is never silently lost
  *   saved   { text, img } — what the previous step saved, shown briefly at the top
  *   native  on Android, use the phone's own document scanner (core/docscan.js) for the
- *           photo, and read it here like any photo (on by default). The scanner finds the
- *           edges, waits for a steady, focused shot at full resolution and flattens it;
- *           where it isn't available this camera is used instead.
+ *           photo, and read it here like any photo. The scanner finds the edges, waits for a
+ *           steady, focused shot at full resolution and flattens it; where it isn't available
+ *           this camera is used instead. Off by default: the scanner's screen is Google Play
+ *           services', which HumID's screenshot and recents protection doesn't cover, so IDs,
+ *           passports and payment cards stay on this camera (docs/SECURITY.md).
  */
 export function DocCamera(props) {
   const preset = props.mode ? scanOptions(props.mode, { side: props.side }) : {};
-  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, label, tools, native = true } = props;
+  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, label, tools, native = false } = props;
   const shape = props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
@@ -545,7 +555,7 @@ export function DocCamera(props) {
     L.native = true; L.stop = true; L.paused = true; L.done = false;
     setError(null); setPhase("starting");
     trace("scanner");
-    markPicking({ forMs: 180_000, hiddenMs: 150_000 }); // the scanner is HumID's own step, not leaving it
+    markPicking({ forMs: SCANNER_PICK_MS, hiddenMs: SCANNER_HIDDEN_MS }); // the scanner is HumID's own step, not leaving it
     L.scanning = true;
     let page;
     try { page = await docScanner.scan({ maxSide: 3200 }); }
@@ -977,7 +987,7 @@ export function IdFlow({ start, onExit }) {
         )}
       </Push>
       {cam && (
-        <DocCamera key={`${cam.side}-${camRun.current.n}`} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
+        <DocCamera key={`${cam.side}-${camRun.current.n}`} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint} native={r.kind === "other"}
           saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
       )}
     </>

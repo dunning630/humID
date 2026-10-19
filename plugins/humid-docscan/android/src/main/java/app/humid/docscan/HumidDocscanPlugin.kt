@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.IntentSenderRequest
 import app.tauri.annotation.ActivityCallback
@@ -37,6 +38,35 @@ class ScanArgs {
 class HumidDocscanPlugin(private val activity: Activity) : Plugin(activity) {
     private val io = Executors.newSingleThreadExecutor()
     private var maxSide = 3200
+    private val prefs by lazy { activity.getSharedPreferences("humid-docscan", Activity.MODE_PRIVATE) }
+
+    /** At start-up, and before each scan: remove any page a scan left behind (HumID stopped before it could delete it). */
+    override fun load(webView: WebView) {
+        super.load(webView)
+        io.execute { sweep() }
+    }
+
+    /**
+     * The scanner writes its page into this app's own storage. Pages are deleted once read;
+     * one can only be left if HumID was stopped in between. Clears the folder the last page
+     * came from, and any scanner folder in the app's cache (by its name).
+     */
+    private fun sweep() {
+        try {
+            prefs.getString("dir", null)?.let { File(it).listFiles()?.forEach { f -> if (f.isFile) f.delete() } }
+            val named = Regex("(?i)mlkit|docscan|document_?scan")
+            fun walk(dir: File?, depth: Int) {
+                if (dir == null || depth > 3) return
+                dir.listFiles()?.forEach { f ->
+                    if (f.isDirectory) {
+                        if (named.containsMatchIn(f.name)) f.walkBottomUp().forEach { x -> if (x.isFile) x.delete() }
+                        else walk(f, depth + 1)
+                    }
+                }
+            }
+            walk(activity.cacheDir, 0) // the scanner's working copies live in the cache; nothing else of HumID's is named like it
+        } catch (_: Exception) { /* best effort: nothing else depends on it */ }
+    }
 
     @Command
     fun probe(invoke: Invoke) {
@@ -51,6 +81,7 @@ class HumidDocscanPlugin(private val activity: Activity) : Plugin(activity) {
     fun scan(invoke: Invoke) {
         val args = invoke.parseArgs(ScanArgs::class.java)
         maxSide = (args.maxSide ?: 3200).coerceIn(800, 6000)
+        io.execute { sweep() }
         val options = GmsDocumentScannerOptions.Builder()
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_BASE)
             .setGalleryImportAllowed(false)
@@ -78,6 +109,7 @@ class HumidDocscanPlugin(private val activity: Activity) : Plugin(activity) {
         val scanned = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
         val uri = scanned?.pages?.firstOrNull()?.imageUri
         if (uri == null) { invoke.reject("cancelled"); return }
+        if (uri.scheme == "file") uri.path?.let { File(it).parent }?.let { prefs.edit().putString("dir", it).apply() }
         io.execute {
             try {
                 val out = page(uri)
