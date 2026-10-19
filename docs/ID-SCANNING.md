@@ -122,6 +122,7 @@ with its photos.
 | `apps/mobile/src/core/scanflow.js`, `scancore.js`, `analyzer.js`, `scanworker.js` | The visible scan state machine; the per-frame analysis; running it in a worker (or here); the worker |
 | `apps/mobile/src/screens/scanui.jsx` | The state card on the camera |
 | `apps/mobile/src/screens/ids.jsx` | The camera (`DocCamera`), the flow (`IdSheet`) and the card view (`IdView`) |
+| `apps/mobile/src/core/docscan.js`, `plugins/humid-docscan` | Android: the phone's document scanner takes the photo (below) |
 
 The engines ship in the app (about 5.5 MB in `assets/ocr` and `assets/scan`)
 and load only when someone scans. Running WebAssembly needs
@@ -175,6 +176,33 @@ The seal screen offers three versions:
 
 The first two can be turned by hand in case the guess is wrong. Only the version
 chosen is sealed; the others are discarded.
+
+## Android: the phone's document scanner (apps 2.1.1)
+
+On Android the camera step opens the phone's own document scanner instead of HumID's
+live view: ML Kit's document scanner, run by Google Play services
+(`plugins/humid-docscan`, `humid-docscan@1`). It finds the edges, takes a
+full-resolution, focused photo once the document is steady and flattens it. HumID
+then does what it does with any photo: turns it upright, reads the license barcode or
+the MRZ from the still page (`readStill`), and seals it. The live view inside the app's
+web view was the weak point: a 4K stream, an outline that jumped, and a photo that was
+a frame of that video.
+
+- **Base mode only** (crop and turn): no filters and no ML clean-up, so nothing can
+  change what a document says. One page; no gallery import.
+- **On the phone.** The scanning runs on the device and the picture never leaves it.
+  The page is handed back as JPEG bytes (at most 3,200 px on its long side) and the
+  scanner's file is deleted at once. ML Kit reports anonymous usage figures to Google
+  (never pictures); the scanner runs under Play services' camera permission.
+- **HumID stays unlocked** while the scanner is on screen, as for the file picker, for
+  up to 2½ minutes (`markPicking({ hiddenMs })`, never more than 3 minutes).
+- **Fallbacks.** Backing out of the scanner goes back a step. A page that can't be handed
+  back offers *Scan again* or *Use HumID's camera*. A phone without the scanner (no Play
+  services, too little memory) gets HumID's own camera, as before, for the rest of the
+  session. iPhone, the web build and the desktop keep HumID's camera.
+- **Tested** in Chromium with a stand-in scanner (`tests/browser/docscan.mjs`: license
+  front and back, passport, back out, scan again, no scanner) and `tests/docscan.test.js`.
+  The scanner itself can only be tried on a phone.
 
 ## Where it was sealed
 
