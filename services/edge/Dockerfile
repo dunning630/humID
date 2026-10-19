@@ -8,6 +8,7 @@ COPY services ./services
 # the app build checks the native plugins' contract versions
 COPY plugins/humid-gate/Cargo.toml ./plugins/humid-gate/Cargo.toml
 COPY plugins/humid-nfc/Cargo.toml ./plugins/humid-nfc/Cargo.toml
+COPY plugins/humid-docscan/Cargo.toml ./plugins/humid-docscan/Cargo.toml
 RUN npm ci --ignore-scripts --no-audit --no-fund --workspaces --include-workspace-root \
  && npm run build -w @humid/mobile
 
