@@ -10,7 +10,7 @@ COPY plugins/humid-gate/Cargo.toml ./plugins/humid-gate/Cargo.toml
 COPY plugins/humid-nfc/Cargo.toml ./plugins/humid-nfc/Cargo.toml
 COPY plugins/humid-docscan/Cargo.toml ./plugins/humid-docscan/Cargo.toml
 RUN npm ci --ignore-scripts --no-audit --no-fund --workspaces --include-workspace-root \
- && npm run build -w @humid/mobile
+ && HUMID_PRECOMPRESS=1 npm run build -w @humid/mobile
 
 FROM caddy:2-alpine
 COPY services/edge/Caddyfile /etc/caddy/Caddyfile

@@ -25,7 +25,8 @@ const asset = (p) => `/assets/${p}`;
 // WebAssembly SIMD makes Tesseract's LSTM pass about twice as fast (less time, less
 // battery per read). A 10-byte module with one SIMD instruction tells us if it's there.
 const SIMD = (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch { return false; } })();
-const CORE = SIMD ? "tesseract-core-simd-lstm.js" : "tesseract-core-lstm.js";
+const CORE = "tesseract-core-simd-lstm.js";
+const NO_SIMD = "This phone's browser can't run the document reader. Type the details instead; a newer system version fixes this.";
 const MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
 
 /* ---------------- engines ---------------- */
@@ -74,6 +75,7 @@ let ocrP = null;
 /** { read(canvas) → Promise<string> } — the MRZ reader. One worker, reused until released. */
 export function mrzReader() {
   ocrP ||= (async () => {
+    if (!SIMD) throw Object.assign(new Error(NO_SIMD), { code: "no_simd" });
     const { default: Tesseract } = await import("tesseract.js/dist/tesseract.esm.min.js");
     const base = asset(`${OCR_DIR}/`);
     const worker = await Tesseract.createWorker("mrz", 1 /* LSTM only */, {
@@ -95,6 +97,7 @@ let textP = null;
  */
 export function textReader() {
   textP ||= (async () => {
+    if (!SIMD) throw Object.assign(new Error(NO_SIMD), { code: "no_simd" });
     const { default: Tesseract } = await import("tesseract.js/dist/tesseract.esm.min.js");
     const base = asset(`${OCR_DIR}/`);
     const worker = await Tesseract.createWorker("eng", 1 /* LSTM only */, {

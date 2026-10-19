@@ -10,13 +10,15 @@
 //   HUMID_SIMULATE=1     simulation build: the vault server runs inside the app (src/sim)
 //   HUMID_OUT_DIR=<dir>  build somewhere other than ./dist (tests/bundle.test.js)
 //   HUMID_NO_MINIFY=1    don't minify (profiling in the browser shows real function names)
-//   HUMID_NO_COMPRESS=1  skip the .br/.gz siblings (faster local builds)
+//   HUMID_PRECOMPRESS=1  also write .br/.gz siblings for the edge (the web app only: the
+//                        native shells bundle dist/ whole, and must not carry them)
+//   HUMID_META=1         write meta.json (the esbuild metafile) next to the build, for tools/sizes.mjs
 //
 // 3.0: every file under assets/ carries a content hash in its name (app-<hash>.js, the
 // scan worker, the OCR and barcode engines under ocr-<hash>/ and scan-<hash>/), so the edge
 // can serve them immutable for a year and a new release is picked up at once; index.html,
-// sw.js and manifest.webmanifest are the only unhashed files and are served no-cache. Each
-// text/wasm asset also gets .br and .gz siblings, so the edge serves them precompressed.
+// sw.js and manifest.webmanifest are the only unhashed files and are served no-cache. With
+// HUMID_PRECOMPRESS=1 each text/wasm asset also gets .br and .gz siblings for the edge.
 //
 // A release build (neither flag) contains none of the demo or simulation code: the flags
 // are esbuild `define`s, always a literal true/false, and the app tests them inline, so
@@ -85,8 +87,7 @@ const noDemoGate = {
 
 /* ---------- the scanning engines, in content-hashed directories ---------- */
 // Loaded by the app only when someone scans an ID or a card (src/core/scan.js): Tesseract's
-// worker and WebAssembly core (SIMD and plain; the app picks at run time) with the MRZ and
-// English models, and zxing-cpp's barcode reader. Copied as files so nothing is fetched at
+// worker and WebAssembly core with the MRZ and English models, and zxing-cpp's barcode reader. Copied as files so nothing is fetched at
 // run time from anywhere but the app's own origin.
 const MRZ_MODEL_SHA256 = "ece2a54f125a73792f9cec74e6f8e62f6e5e00c7f19153ba865af689be5b5f01";
 const ENG_MODEL_SHA256 = "5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747";
@@ -99,8 +100,9 @@ const ocrFiles = {
   "mrz.traineddata": model,
   "eng.traineddata": eng,
   "worker.min.js": await readFile(mod("tesseract.js/dist/worker.min.js")),
-  "tesseract-core-lstm.js": await readFile(mod("tesseract.js-core/tesseract-core-lstm.js")),
-  "tesseract-core-lstm.wasm": await readFile(mod("tesseract.js-core/tesseract-core-lstm.wasm")),
+  // One core, with WebAssembly SIMD (iOS 16.4+, Chrome 91+): about twice as fast per read
+  // as the plain core, and 2.7 MB lighter than shipping both. A WebView without SIMD is
+  // told so by the app and offered the typed path (src/core/scan.js).
   "tesseract-core-simd-lstm.js": await readFile(mod("tesseract.js-core/tesseract-core-simd-lstm.js")),
   "tesseract-core-simd-lstm.wasm": await readFile(mod("tesseract.js-core/tesseract-core-simd-lstm.wasm")),
 };
@@ -157,7 +159,7 @@ async function buildApp() {
   });
   const js = outputsOf(r.metafile, ".js").find((f) => /^assets\/app-/.test(f));
   const css = outputsOf(r.metafile, ".css").find((f) => /^assets\/app-/.test(f));
-  await writeFile(`${out}meta.json`, JSON.stringify(r.metafile));
+  if (process.env.HUMID_META === "1") await writeFile(`${out}meta.json`, JSON.stringify(r.metafile));
   await stampShell({ js, css });
   await compressAll();
 }
@@ -201,7 +203,7 @@ async function stampShell({ js, css }) {
 /* ---------- precompressed siblings for the edge (file_server precompressed br gzip) ---------- */
 const COMPRESS = new Set([".js", ".css", ".wasm", ".traineddata", ".svg", ".json", ".txt", ".html", ".webmanifest"]);
 async function compressAll() {
-  if (watch || process.env.HUMID_NO_COMPRESS === "1") return;
+  if (watch || process.env.HUMID_PRECOMPRESS !== "1") return;
   const walk = async (dir) => (await Promise.all((await readdir(dir)).map(async (n) => { const p = join(dir, n); return (await stat(p)).isDirectory() ? walk(p) : [p]; }))).flat();
   for (const f of await walk(out)) {
     if (!COMPRESS.has(extname(f)) || /\.(br|gz)$/.test(f)) continue;
