@@ -80,6 +80,7 @@ let busy = false;
 let picking = false;        // a system file picker is open: HumID leaves the screen without locking
 let pickingTimer = null;
 let hiddenAt = 0;           // when HumID last left the screen, while picking
+let pickHiddenMs = 0;       // how long this picker may keep HumID off the screen (PICK_HIDDEN_MS unless it said otherwise)
 const PICK_MS = 60_000;     // a picker that hasn't come back by then no longer excuses leaving the screen
 const PICK_HIDDEN_MS = 20_000; // behind the picker for longer than this (another app, the home screen) locks anyway
 let idleTimer = null;
@@ -332,7 +333,7 @@ function wireGlobalEvents() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       // back from the picker (or another app) while picking: if it was away long, lock anyway
-      if (picking && hiddenAt && Date.now() - hiddenAt > PICK_HIDDEN_MS && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
+      if (picking && hiddenAt && Date.now() - hiddenAt > (pickHiddenMs || PICK_HIDDEN_MS) && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
       hiddenAt = 0;
       return;
     }
@@ -340,7 +341,7 @@ function wireGlobalEvents() {
     if (!picking) return lock("Locked when HumID left the screen.");
     // the file picker is up (it normally comes back within seconds): lock if that's not what this is
     hiddenAt = Date.now();
-    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, PICK_HIDDEN_MS);
+    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, pickHiddenMs || PICK_HIDDEN_MS);
   });
   // leaving the page entirely (closed, navigated, suspended) is never a file picker
   addEventListener("pagehide", () => { stopPicking(); if (S.view.value === "app" && !busy) lock(); });
@@ -352,13 +353,21 @@ function wireGlobalEvents() {
   if (!S.online.value) link?.online(false);
 }
 
-/** A system file picker is about to open: leaving the screen for it isn't leaving HumID. Bounded: it clears itself after a minute. */
-export const markPicking = () => {
+/**
+ * A system screen HumID opened is about to cover it (a file picker, the phone's document
+ * scanner): leaving the screen for it isn't leaving HumID. Bounded: it clears itself after
+ * forMs (a minute), and HumID locks if it stays off the screen longer than hiddenMs (20 s).
+ * The document scanner asks for a little more (the person lines up and checks the page),
+ * never more than SCANNER_MAX_MS, well inside the 5-minute idle floor.
+ */
+const SCANNER_MAX_MS = 180_000;
+export const markPicking = ({ forMs = PICK_MS, hiddenMs = PICK_HIDDEN_MS } = {}) => {
   picking = true;
+  pickHiddenMs = Math.min(hiddenMs, SCANNER_MAX_MS);
   clearTimeout(pickingTimer);
-  pickingTimer = setTimeout(stopPicking, PICK_MS);
+  pickingTimer = setTimeout(stopPicking, Math.min(forMs, SCANNER_MAX_MS));
 };
-function stopPicking() { picking = false; hiddenAt = 0; clearTimeout(pickingTimer); pickingTimer = null; }
+function stopPicking() { picking = false; hiddenAt = 0; pickHiddenMs = 0; clearTimeout(pickingTimer); pickingTimer = null; }
 
 let resetIdle = () => {};
 /** Change preferences: saved on this device, applied now. */

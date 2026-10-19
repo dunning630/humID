@@ -82,6 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_humid_gate::init())
         .plugin(tauri_plugin_humid_nfc::init())
+        .plugin(tauri_plugin_humid_docscan::init())
         .plugin(stay_home())
         .invoke_handler(tauri::generate_handler![save_bytes])
         .run(tauri::generate_context!())

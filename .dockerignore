@@ -6,5 +6,6 @@ apps/mobile/src-tauri
 plugins
 !plugins/humid-gate/Cargo.toml
 !plugins/humid-nfc/Cargo.toml
+!plugins/humid-docscan/Cargo.toml
 .git
 tests/fixtures

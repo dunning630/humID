@@ -44,7 +44,9 @@ const pluginToml = await readFile(`${root}plugins/humid-gate/Cargo.toml`, "utf8"
 const pluginMajor = /^version\s*=\s*"(\d+)\./m.exec(pluginToml)?.[1];
 const nfcToml = await readFile(`${root}plugins/humid-nfc/Cargo.toml`, "utf8");
 const nfcMajor = /^version\s*=\s*"(\d+)\./m.exec(nfcToml)?.[1];
-const provided = { "shell-command": "save_bytes@1", "native-plugin": `humid-gate@${pluginMajor}`, "nfc-plugin": `humid-nfc@${nfcMajor}` };
+const scanToml = await readFile(`${root}plugins/humid-docscan/Cargo.toml`, "utf8");
+const scanMajor = /^version\s*=\s*"(\d+)\./m.exec(scanToml)?.[1];
+const provided = { "shell-command": "save_bytes@1", "native-plugin": `humid-gate@${pluginMajor}`, "nfc-plugin": `humid-nfc@${nfcMajor}`, "docscan-plugin": `humid-docscan@${scanMajor}` };
 for (const p of manifests) Object.assign(provided, p.humid?.provides || {});
 const problems = [];
 for (const p of manifests) {

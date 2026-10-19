@@ -1,5 +1,18 @@
 # @humid/mobile
 
+## 2.1.1
+
+### Patch Changes
+
+- **Android: the phone's own document scanner takes the photo.** Photographing an ID, a passport page, a card or a document was unsteady: the live view ran at 4K inside the app's web view, the outline jumped, and the photo was a frame of that video. On Android, the camera step now opens the phone's document scanner (ML Kit, run by Google Play services, on the phone): it finds the edges, takes a full-resolution, focused photo when it's steady and flattens it. HumID then reads the barcode or the MRZ from that still page and seals it as before; nothing else about adding a document changes.
+  
+  - Base mode only: crop and turn. No filters and no ML clean-up, so nothing can change what a document says. One page, no gallery import (HumID's own Photo button is still there).
+  - The scanned page comes back to HumID and the scanner's file is deleted at once. Nothing is sent anywhere to be scanned; ML Kit reports anonymous usage figures to Google (never pictures).
+  - Backing out of the scanner goes back a step. A page that can't be handed back offers **Scan again** or **Use HumID's camera**.
+  - A phone without the scanner (no Play services, too little memory) uses HumID's own camera, as before, for the rest of the session. iPhone is unchanged.
+  - HumID doesn't lock while the scanner is on screen (it's HumID's own step, like the file picker), for up to 2½ minutes.
+  - New native plugin `tauri-plugin-humid-docscan` 1.0.0 (`humid-docscan@1`).
+
 ## 2.1.0
 
 ### Minor Changes

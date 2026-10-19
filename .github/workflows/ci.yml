@@ -9,7 +9,7 @@ name: CI
 #      zip (as a person would), smoke-test, back up, restore, update, test the
 #      admin console and its jobs (tests/windows/admin-console.ps1), uninstall
 #   5. the app in Chromium: "Scan an ID" and "Take a photo" with a fake camera, getting
-#      set up, offline mode, managing the server, Check-in (tests/browser/idscan.mjs, photo.mjs, scanfeedback.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs)
+#      set up, offline mode, managing the server, Check-in, the phone's document scanner (tests/browser/idscan.mjs, photo.mjs, scanfeedback.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs, docscan.mjs)
 # tools/affected.mjs decides what "touches" means.
 
 on:
@@ -205,6 +205,12 @@ jobs:
           grep -v '^{"t"' scanfeedback.log | tail -60
           echo "::error::$(grep -v '^{"t"' scanfeedback.log | grep -E 'Error|expected|actual|assert|waiting for|scanfeedback.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/scanfeedback" }
+      - name: The phone's document scanner (Android; license and passport read from the scanned page, back out, scan again, no scanner falls back to the camera)
+        run: |
+          node tests/browser/docscan.mjs > docscan.log 2>&1 && { grep -v '^{"t"' docscan.log; exit 0; }
+          grep -v '^{"t"' docscan.log | tail -60
+          echo "::error::$(grep -v '^{"t"' docscan.log | grep -E 'Error|expected|actual|assert|waiting for|docscan.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/docscan" }
       - name: Payment cards and Wallet passes (front and back read by the camera, masked, no copying; pass signatures)
         run: |
           node tests/browser/cards.mjs > cards.log 2>&1 && { grep -v '^{"t"' cards.log; exit 0; }
