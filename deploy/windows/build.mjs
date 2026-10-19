@@ -29,7 +29,7 @@ mkdirSync(pkg, { recursive: true });
 // 1. The web app (a release build: no demo mode).
 const env = { ...process.env };
 delete env.HUMID_ALLOW_DEMO;
-execFileSync(process.execPath, [join(repo, "apps", "mobile", "build.mjs")], { stdio: "inherit", env });
+execFileSync(process.execPath, [join(repo, "apps", "mobile", "build.mjs")], { stdio: "inherit", env: { ...env, HUMID_PRECOMPRESS: "1" } }); // the Windows edge serves the .br/.gz siblings
 cpSync(join(repo, "apps", "mobile", "dist"), join(pkg, "app"), { recursive: true });
 
 // 2. The server: the seven services + the local edge, one file.

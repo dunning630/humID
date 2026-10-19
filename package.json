@@ -17,7 +17,7 @@
     "changeset": "changeset",
     "version-modules": "changeset version",
     "affected": "node tools/affected.mjs",
-    "sizes": "node tools/sizes.mjs apps/mobile/dist"
+    "sizes": "HUMID_META=1 npm run build -w @humid/mobile >/dev/null && node tools/sizes.mjs apps/mobile/dist"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
