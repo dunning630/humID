@@ -15,7 +15,17 @@ import { cleanScan } from "./scanclean.js";
 export { createAnalyzer } from "./analyzer.js";
 export * as flow from "./scanflow.js";
 
-const asset = (p) => new URL(`./${p}`, import.meta.url).href;
+/* global __HUMID_OCR_DIR__, __HUMID_SCAN_DIR__ */
+// The engines live in content-hashed directories next to the app bundle (build.mjs), so
+// the edge serves them immutable and a new engine is never confused with an old one.
+const OCR_DIR = typeof __HUMID_OCR_DIR__ !== "undefined" ? __HUMID_OCR_DIR__ : "ocr";
+const SCAN_DIR = typeof __HUMID_SCAN_DIR__ !== "undefined" ? __HUMID_SCAN_DIR__ : "scan";
+// Absolute: this module may land in any chunk, and the engines sit beside the app bundle.
+const asset = (p) => `/assets/${p}`;
+// WebAssembly SIMD makes Tesseract's LSTM pass about twice as fast (less time, less
+// battery per read). A 10-byte module with one SIMD instruction tells us if it's there.
+const SIMD = (() => { try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch { return false; } })();
+const CORE = SIMD ? "tesseract-core-simd-lstm.js" : "tesseract-core-lstm.js";
 const MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
 
 /* ---------------- engines ---------------- */
@@ -26,7 +36,7 @@ export function barcodeReader() {
   barcodeP ||= (async () => {
     const zx = await import("zxing-wasm/reader");
     await zx.prepareZXingModule({
-      overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? asset(`scan/${path}`) : prefix + path) },
+      overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? asset(`${SCAN_DIR}/${path}`) : prefix + path) },
       fireImmediately: true,
     });
     return {
@@ -40,14 +50,34 @@ export function barcodeReader() {
   return barcodeP;
 }
 
+let qrP = null;
+/** { read(ImageData) → Promise<string[]> } — QR codes, for devices without a native BarcodeDetector. */
+export function qrReader() {
+  qrP ||= (async () => {
+    const zx = await import("zxing-wasm/reader");
+    await zx.prepareZXingModule({
+      overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? asset(`${SCAN_DIR}/${path}`) : prefix + path) },
+      fireImmediately: true,
+    });
+    return {
+      async read(img) {
+        const r = await zx.readBarcodes(img, { formats: ["QRCode"], tryHarder: false, tryRotate: false, tryInvert: false, textMode: "Plain", maxNumberOfSymbols: 1 });
+        return r.filter((x) => x.isValid && x.text).map((x) => x.text);
+      },
+    };
+  })();
+  qrP.catch(() => { qrP = null; });
+  return qrP;
+}
+
 let ocrP = null;
 /** { read(canvas) → Promise<string> } — the MRZ reader. One worker, reused until released. */
 export function mrzReader() {
   ocrP ||= (async () => {
     const { default: Tesseract } = await import("tesseract.js/dist/tesseract.esm.min.js");
-    const base = asset("ocr/");
+    const base = asset(`${OCR_DIR}/`);
     const worker = await Tesseract.createWorker("mrz", 1 /* LSTM only */, {
-      workerPath: `${base}worker.min.js`, corePath: `${base}tesseract-core-lstm.js`, langPath: base.replace(/\/$/, ""),
+      workerPath: `${base}worker.min.js`, corePath: `${base}${CORE}`, langPath: base.replace(/\/$/, ""),
       gzip: false, cacheMethod: "none", workerBlobURL: false, logger: () => {}, errorHandler: () => {},
     });
     await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS, tessedit_pageseg_mode: "6", preserve_interword_spaces: "0" });
@@ -66,9 +96,9 @@ let textP = null;
 export function textReader() {
   textP ||= (async () => {
     const { default: Tesseract } = await import("tesseract.js/dist/tesseract.esm.min.js");
-    const base = asset("ocr/");
+    const base = asset(`${OCR_DIR}/`);
     const worker = await Tesseract.createWorker("eng", 1 /* LSTM only */, {
-      workerPath: `${base}worker.min.js`, corePath: `${base}tesseract-core-lstm.js`, langPath: base.replace(/\/$/, ""),
+      workerPath: `${base}worker.min.js`, corePath: `${base}${CORE}`, langPath: base.replace(/\/$/, ""),
       gzip: false, cacheMethod: "none", workerBlobURL: false, logger: () => {}, errorHandler: () => {},
     });
     let mode = null;

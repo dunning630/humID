@@ -18,6 +18,9 @@ export class HtpError extends Error {
 /** How long one request may take before it's given up (a proxy that holds the connection open, a server that never answers). */
 export const REQUEST_TIMEOUT_MS = 45_000;
 
+/** Plaintext error codes a client believes: each says something about the frame or the session, never about a device or an account. */
+const TRANSPORT_CODES = new Set(["bad_frame", "replay", "stale_frame", "rate_limited", "busy", "too_large", "bad_request"]);
+
 export class HtpClient {
   /**
    * @param baseUrl   e.g. "https://vault.humidsecure.ai" or "" for same origin
@@ -159,12 +162,18 @@ export class HtpClient {
     });
     if (res.headers.get("content-type")?.startsWith("application/json")) {
       // Unencrypted error: the gateway could not open the frame (expired session etc.).
+      // Nothing authenticates it, so anyone on the path could have written it: only the
+      // codes that merely end a session are believed. Any other code is reported as a
+      // transport failure, never as a verdict about this device or account.
       const e = await res.json().catch(() => ({}));
       if (e.error === "session_unknown" || e.error === "session_expired") {
         this.close();
         this.onSessionLost?.(e.error);
+        throw new HtpError(e.error, e.message || `Call failed (${res.status})`, res.status);
       }
-      throw new HtpError(e.error || "transport_error", e.message || `Call failed (${res.status})`, res.status);
+      // Codes about the frame itself (not about any account or device) pass through.
+      if (TRANSPORT_CODES.has(e.error)) throw new HtpError(e.error, e.message || `Call failed (${res.status})`, res.status);
+      throw Object.assign(new HtpError("transport_error", `The vault's answer couldn't be verified (${res.status}).`, res.status), { unverified: e.error || null });
     }
     const parsed = parseHeader(new Uint8Array(await res.arrayBuffer()));
     if (parsed.dir !== DIR.response || parsed.seq !== seq || !equal(parsed.sid, s.sid)) {

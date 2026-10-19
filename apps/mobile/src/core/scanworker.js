@@ -7,7 +7,10 @@ import { createCore } from "./scancore.js";
 import { toGray } from "./docfind.js";
 
 const core = createCore();
-const asset = (p) => new URL(`./${p}`, import.meta.url).href;
+/* global __HUMID_SCAN_DIR__ */
+// The barcode engine sits in a content-hashed directory beside the app bundle (build.mjs).
+const SCAN_DIR = typeof __HUMID_SCAN_DIR__ !== "undefined" ? __HUMID_SCAN_DIR__ : "scan";
+const asset = (p) => `/assets/${p}`;
 let zx = null;
 let canvas = null;
 
@@ -15,7 +18,7 @@ async function barcodes() {
   zx ||= (async () => {
     const m = await import("zxing-wasm/reader");
     await m.prepareZXingModule({
-      overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? asset(`scan/${path}`) : prefix + path) },
+      overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? asset(`${SCAN_DIR}/${path}`) : prefix + path) },
       fireImmediately: true,
     });
     return m;

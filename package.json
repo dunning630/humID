@@ -16,7 +16,8 @@
     "tauri": "npm run tauri -w @humid/mobile --",
     "changeset": "changeset",
     "version-modules": "changeset version",
-    "affected": "node tools/affected.mjs"
+    "affected": "node tools/affected.mjs",
+    "sizes": "node tools/sizes.mjs apps/mobile/dist"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",

@@ -1,0 +1,40 @@
+/* HumID 3.0 — the shell around the screens: the connection strip, the simulation strip
+   and its checks sheet, the boot screen. In-flow (never fixed over a title), no filters. */
+
+/* The vault can't be reached: a strip at the top of the column that pushes content down. */
+.linkbar {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: calc(var(--safe-t) + var(--s-2)) var(--s-4) var(--s-2);
+  background: var(--amber-wash); border-bottom: 1px solid var(--amber);
+  font-size: var(--t-sm); color: var(--text);
+}
+.linkbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); flex: none; }
+.linkbar strong { display: block; }
+.linkbar span.grow span { display: block; color: var(--text-2); }
+.linkbar + .screen { padding-top: var(--s-3); }
+.linkbar + .screen > header.top { margin-top: 0; }
+.linkbar + .pushed .screen { padding-top: var(--s-3); }
+
+/* Boot: the mark, nothing else, no motion until a check runs. */
+.boot { display: flex; align-items: center; justify-content: center; min-height: 100dvh; }
+
+/* Simulation build (development only): the vault server runs inside the app. */
+.sim-strip {
+  display: flex; align-items: center; gap: var(--s-2); width: 100%;
+  padding: calc(var(--safe-t) + 6px) var(--s-4) 6px;
+  background: var(--surface-2); border-bottom: 1px solid var(--line-strong);
+  font-size: var(--t-xs); color: var(--text-2);
+}
+.sim-strip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); flex: none; }
+.sim-strip b { color: var(--text); font-weight: 600; }
+.sim-strip .sim-last { margin-left: auto; color: var(--mint); font-weight: 600; }
+.sim-strip + .screen, .sim-strip + .linkbar { padding-top: var(--s-2); }
+.checks { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-3); }
+.check-row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: var(--s-3); align-items: start; padding: var(--s-2) 0; border-bottom: 1px solid var(--line); font-size: var(--t-sm); }
+.check-row:last-child { border-bottom: 0; }
+.check-row strong { display: block; font-weight: 600; }
+.check-row span { color: var(--text-2); }
+.check-row .c-ico { color: var(--muted); }
+.check-row[data-ok="true"] .c-ico { color: var(--mint); }
+.check-row[data-ok="false"] .c-ico { color: var(--danger); }
+.check-row .c-ico svg { width: 18px; height: 18px; }
