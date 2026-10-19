@@ -32,7 +32,7 @@ function build(env) {
 
 // What a release build must not contain: each is a name or path that only the
 // development or simulation code uses.
-const FORBIDDEN = ["createSimServer", "/dev/access-code", "/dev/passport", "/dev/chip", "demoAdapter", "../sim/server", "demoAccessCode()"];
+const FORBIDDEN = ["createSimServer", "/dev/access-code", "/dev/passport", "/dev/chip", "demoAdapter", "../sim/server", "demoAccessCode()", "__humidFakeScanner"];
 
 test("a release build has no simulated server, demo gate or /dev endpoints", { timeout: 300_000 }, () => {
   const b = build({});

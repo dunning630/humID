@@ -5,12 +5,13 @@
 // no scanner (iPhone, a computer, a browser, a phone without Play services or with too
 // little memory), HumID's own camera is used instead, and for the rest of the session.
 
-import { DEMO_BUILD } from "@humid/gate";
-
+/* global __HUMID_ALLOW_DEMO__ */
 const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
 const onAndroid = () => /\bAndroid\b/i.test(globalThis.navigator?.userAgent || "");
-// development builds only: a browser test can stand in for the phone's scanner
-const fake = () => (DEMO_BUILD ? globalThis.__humidFakeScanner || null : null);
+// Development builds only: a browser test can stand in for the phone's scanner. The flag is
+// tested inline so release builds fold it to false and drop the stand-in entirely
+// (tests/bundle.test.js checks), as in core/nfc.js.
+const fake = () => ((typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) ? globalThis.__humidFakeScanner || null : null);
 const tauriInvoke = (cmd, args) => (fake() ? fake().invoke(cmd, args) : globalThis.__TAURI_INTERNALS__.invoke(`plugin:humid-docscan|${cmd}`, args));
 const msg = (e) => (typeof e === "string" ? e : e?.message || String(e));
 

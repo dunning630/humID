@@ -1,14 +1,14 @@
-// Scanning with the phone's document scanner (apps 2.1.1, Android): the development build
-// in Chromium with a stand-in for the scanner (globalThis.__humidFakeScanner, development
-// builds only) that hands back flat pages the way ML Kit does. Checks that:
-//   - a driver's license: the scanner is opened for the front, then the back, and the
-//     barcode is read from the still page (no live view at all); details filled in
-//   - a passport: the MRZ is read from the still page and the chip step is filled in
+// The phone's document scanner (Android; apps 2.1.1, narrowed in 2.1.2): the development
+// build in Chromium with a stand-in for the scanner (globalThis.__humidFakeScanner,
+// development builds only) that hands back flat pages the way ML Kit does. Checks that:
+//   - driver's licenses and passports use HumID's own camera, never the scanner (its
+//     screen isn't covered by HumID's screenshot protection)
+//   - Add ▸ Photo uses the scanner: a passport page scanned there is read (MRZ) and
+//     routed to the passport flow; Another card scans front and back
 //   - backing out of the scanner closes the camera screen
 //   - a page that can't be handed back offers Scan again and Use HumID's camera
-//   - no scanner on the phone: HumID's own camera opens instead, and stays the camera
-//     for the rest of the session
-//   - the vault doesn't lock while the scanner is on screen
+//   - no scanner on the phone: HumID's own camera opens instead, for the rest of the session
+//   - HumID doesn't lock during a scan, but does once it has been off the screen 60 s
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
 //   node tests/browser/docscan.mjs            (SHOTS=dir to keep screenshots)
@@ -28,7 +28,7 @@ const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 const profile = mkdtempSync(join(tmpdir(), "humid-docscan-"));
 const step = (s) => console.log(`· ${s}`);
-setTimeout(() => { console.error("Error: docscan timed out after 6 minutes"); process.exit(1); }, 6 * 60_000).unref();
+setTimeout(() => { console.error("Error: docscan timed out after 8 minutes"); process.exit(1); }, 8 * 60_000).unref();
 const contexts = [];
 const b64 = (n) => readFileSync(fixture(n)).toString("base64");
 
@@ -60,8 +60,9 @@ const STANDIN = () => {
       hide(true);
       await new Promise((r) => setTimeout(r, 400));
       for (let i = 0; i < 100 && !globalThis.__scanQueue.length; i++) await new Promise((r) => setTimeout(r, 100));
-      hide(false);
       const next = globalThis.__scanQueue.shift();
+      if (next?.holdMs) await new Promise((r) => setTimeout(r, next.holdMs)); // the person left HumID from the scanner
+      hide(false);
       if (!next) throw "cancelled";
       if (next.reject) throw next.reject;
       return { data: next.data, mime: "image/jpeg", width: next.width || 0, height: next.height || 0 };
@@ -127,76 +128,92 @@ try {
   await page.getByRole("button", { name: "Open my vault" }).click();
   step("enrolled (demo)");
 
-  /* ---------------- 1. a driver's license: front and back from the scanner ---------------- */
-  await queue(page, { data: b64("card-front.jpg") }, { data: b64("card-back.jpg") });
-  await pickKind(page, "Driver's license");
-  await page.getByText("Check the details").waitFor({ timeout: 90_000 });
-  await shot(page, "1-license-review");
-  assert.equal(await page.evaluate(() => globalThis.__scans), 2, "the scanner took the front, then the back");
-  assert.equal(await page.evaluate(() => globalThis.__streams), 0, "HumID's live camera never opened");
-  assert.equal(await page.evaluate(() => globalThis.__lastArgs?.maxSide), 3200);
-  const val = (id) => page.locator(`#idf-${id}`).inputValue();
-  assert.equal(await val("surname"), "SPECIMEN");
-  assert.equal(await val("given"), "JORDAN ALEX");
-  assert.equal(await val("number"), "S12345678901");
-  assert.match(await page.locator(".id-proof").innerText(), /barcode/i);
-  assert.equal(await page.locator(".interrupt .hold").count(), 0, "the vault didn't lock while the scanner was on screen");
-  step("license: front and back came from the scanner; the barcode was read from the still page");
-  await page.getByRole("button", { name: "Seal", exact: true }).click();
-  await hold(page);
-  await page.locator(".item", { hasText: "Driver's license · Illinois" }).waitFor({ timeout: 30_000 });
-  step("sealed");
+  const unlock = async () => {
+    await page.goto(BASE);
+    await page.getByRole("button", { name: /^Unlock$/ }).click();
+    await hold(page);
+    await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 20_000 });
+  };
+  const scans = () => page.evaluate(() => globalThis.__scans);
+  const streams = () => page.evaluate(() => globalThis.__streams);
+  const closeCamera = async () => { await page.getByRole("button", { name: "Close the camera" }).click(); await page.locator(".doccam").waitFor({ state: "detached" }); };
 
-  /* ---------------- 2. a passport: the MRZ read from the scanned page ---------------- */
+  /* ---------------- 1. IDs stay on HumID's own camera ---------------- */
+  for (const kind of ["Driver's license", /^Passport/]) {
+    await pickKind(page, kind);
+    await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+    await closeCamera();
+    assert.equal(await streams(), 1, "HumID's own camera opened");
+    assert.equal(await scans(), 0, "the scanner wasn't opened");
+    await unlock(); // a fresh page: the counters start again
+  }
+  step("driver's license and passport: HumID's own camera, never the scanner");
+
+  /* ---------------- 2. Add ▸ Photo: the scanner; a passport page scanned there is read ---------------- */
   await queue(page, { data: b64("passport-page.jpg") });
-  await pickKind(page, /^Passport/);
+  await pickKind(page, /^Photo/);
   await page.getByText("Read the ID chip").first().waitFor({ timeout: 90_000 });
-  await shot(page, "2-passport-chip-step");
+  await shot(page, "2-photo-scanned-passport");
   assert.equal(await page.locator("#doc-num").inputValue(), "D00000001");
   assert.equal(await page.locator("#doc-birth").inputValue(), "1974-08-12");
-  assert.equal(await page.locator("#doc-exp").inputValue(), "2034-12-31");
-  assert.equal(await page.evaluate(() => globalThis.__streams), 0, "still no live camera");
-  step("passport: the MRZ was read from the scanned page");
-  await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
-  await page.locator(".item").first().waitFor({ timeout: 20_000 });
+  assert.equal(await scans(), 1);
+  assert.equal(await page.locator(".interrupt .hold").count(), 0, "the vault didn't lock while the scanner was on screen");
+  step("Add ▸ Photo: the scanner took the page; the MRZ was read from it and routed to the passport flow");
+  await unlock();
 
-  /* ---------------- 3. backing out of the scanner ---------------- */
-  await pickKind(page, "Driver's license");
+  /* ---------------- 3. Another card: front and back from the scanner ---------------- */
+  const before3 = await scans();
+  await queue(page, { data: b64("card-front.jpg") }, { data: b64("card-back.jpg") });
+  await pickKind(page, "Another card");
+  await page.getByText("Check the details").waitFor({ timeout: 90_000 });
+  await shot(page, "3-another-card");
+  assert.equal(await scans() - before3, 2, "front, then back");
+  step("Another card: front and back came from the scanner");
+  await unlock();
+
+  /* ---------------- 4. backing out ---------------- */
+  const s0 = await streams();
+  await pickKind(page, /^Photo/);
   await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {});
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 20_000 }); // the empty queue answers "cancelled"
-  assert.equal(await page.evaluate(() => globalThis.__streams), 0);
+  assert.equal(await streams(), s0, "no live camera");
   step("backing out of the scanner closes the camera screen");
 
-  /* ---------------- 4. a page that couldn't be handed back ---------------- */
+  /* ---------------- 5. a page that couldn't be handed back ---------------- */
   await queue(page, { reject: "The scanned page couldn't be read: no data" });
   await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".dc-scanner[data-state='error']").waitFor({ timeout: 20_000 });
-  await shot(page, "4-scan-failed");
+  await shot(page, "5-scan-failed");
   assert.match(await page.locator(".dc-scanner").innerText(), /Scan again/);
   assert.match(await page.locator(".dc-scanner").innerText(), /Use HumID's camera/);
-  await queue(page, { data: b64("card-front.jpg") }, { data: b64("card-back.jpg") });
+  await queue(page, { data: b64("passport-page.jpg") });
   await page.getByRole("button", { name: "Scan again" }).click();
-  await page.getByText("Check the details").waitFor({ timeout: 90_000 });
+  await page.getByText("Read the ID chip").first().waitFor({ timeout: 90_000 });
   step("a failed hand-back offers Scan again, which worked");
-  await page.goto(BASE);
+  await unlock();
+
+  /* ---------------- 6. off the screen too long from the scanner: locks ---------------- */
+  await queue(page, { data: b64("passport-page.jpg"), holdMs: 63_000 });
+  await pickKind(page, /^Photo/);
+  await page.getByRole("button", { name: /^Unlock$/ }).waitFor({ timeout: 90_000 });
+  await shot(page, "6-locked-after-60s");
+  step("off the screen 60 s from the scanner: HumID locked");
   await page.getByRole("button", { name: /^Unlock$/ }).click();
   await hold(page);
-  await page.locator(".item").first().waitFor({ timeout: 20_000 });
+  await page.locator(".item").first().waitFor({ timeout: 20_000 }).catch(() => {});
 
-  /* ---------------- 5. no scanner on this phone ---------------- */
+  /* ---------------- 7. no scanner on this phone ---------------- */
   await queue(page, { reject: "unavailable: Google Play services isn't available" });
-  await pickKind(page, "Driver's license");
+  const s7 = await streams();
+  await pickKind(page, /^Photo/);
   await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await shot(page, "5-fallback-camera");
-  assert.equal(await page.evaluate(() => globalThis.__streams), 1, "HumID's own camera opened instead");
-  await page.getByRole("button", { name: "Close the camera" }).click();
-  await page.locator(".doccam").waitFor({ state: "detached" });
-  const scansBefore = await page.evaluate(() => globalThis.__scans);
+  await shot(page, "7-fallback-camera");
+  assert.equal(await streams(), s7 + 1, "HumID's own camera opened instead");
+  await closeCamera();
+  const scansBefore = await scans();
   await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  assert.equal(await page.evaluate(() => globalThis.__scans), scansBefore, "the scanner isn't tried again this session");
+  assert.equal(await scans(), scansBefore, "the scanner isn't tried again this session");
   step("no scanner: HumID's camera opened, and stays the camera for the session");
 
   console.log("ok — the phone's document scanner works end to end in the browser");

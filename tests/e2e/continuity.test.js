@@ -28,7 +28,7 @@ const station = makeHolder("station-operator");
 let stationApi;
 
 before(async () => {
-  stack = await startStack({ recoveryDelayMs: DELAY, cscas: [csca.pem], stations: [station.id], cosigners: new Map([["test-cosigner", cosigner.publicKey]]), duressCoolOffMs: 800 });
+  stack = await startStack({ recoveryDelayMs: DELAY, cscas: [csca.pem], stations: [station.id], cosigners: new Map([["test-cosigner", cosigner.publicKey]]), duressCoolOffMs: 5000 }); // long enough that a slow machine still checks "too soon" inside it
   alice = makeHolder("alice-quorum");
   phone = await register(alice, stack.baseUrl);
   const { envelope, index } = await sealFor(alice, "will.txt", "Alice's will");
@@ -301,7 +301,8 @@ test("duress: a decoy session works for reading, sensitive changes fail like a b
   // Lifting lockdown: only from a calm session, only after a quiet period.
   await assert.rejects(forcedApi.clearDuress(coerced.stepUp), (e) => e.code === "busy");
   await assert.rejects(phone.clearDuress(alice.stepUp), (e) => e.code === "too_soon");
-  await sleep(900);
+  const { clearableAt } = await phone.duressStatus();
+  await sleep(Math.max(0, Number(clearableAt) - Date.now()) + 100); // until it has been calm long enough
   assert.equal((await phone.clearDuress(alice.stepUp)).cleared, true);
   await phone.removeDevice(coerced.deviceId, alice.stepUp);
   await cancelAll();

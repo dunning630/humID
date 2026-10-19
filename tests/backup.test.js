@@ -189,7 +189,8 @@ test("tampering is caught: a changed chunk, a swapped snapshot, a wrong key", as
   const blob = await store.get(first);
   blob[20] ^= 1;
   await store.put(first, blob);
-  await assert.rejects(restore(store, key, snap.id, memTarget()), /damaged or was changed/);
+  // restore everything: chunk names are keyed, so the first may belong to a sensitive file a default restore leaves alone
+  await assert.rejects(restore(store, key, snap.id, memTarget(), { includeSensitive: true }), /damaged or was changed/);
 
   const other = await newRepo();
   const os = await backup(other.store, other.key, memSource({ "a.txt": "a" }));
