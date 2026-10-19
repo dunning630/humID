@@ -14,3 +14,5 @@ plugins/humid-nfc/target/
 plugins/humid-nfc/ios/.build/
 plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
+plugins/humid-docscan/target/
+plugins/humid-docscan/android/.tauri/

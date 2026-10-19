@@ -47,6 +47,8 @@ const RULES = [
   [/^plugins\/humid-nfc\/android\//, ["android"], []],
   [/^plugins\/humid-nfc\/examples\//, [], []],
   [/^plugins\/humid-nfc\//, APPS, []],
+  [/^plugins\/humid-docscan\/android\//, ["android"], []],
+  [/^plugins\/humid-docscan\//, APPS, []],
   [/^apps\/mobile\/src-tauri\/Entitlements\.plist$/, ["macos"], []],
   [/^apps\/mobile\/src-tauri\/Info\.ios\.plist$/, ["ios"], []],
   [/^apps\/mobile\/src-tauri\/Info\.plist$/, ["macos"], []],
@@ -90,6 +92,7 @@ for (const f of files || []) {
   }
   if (f.startsWith("plugins/humid-gate/")) modules.add("tauri-plugin-humid-gate");
   if (f.startsWith("plugins/humid-nfc/")) modules.add("tauri-plugin-humid-nfc");
+  if (f.startsWith("plugins/humid-docscan/")) modules.add("tauri-plugin-humid-docscan");
   if (f.startsWith("apps/mobile/")) modules.add("@humid/mobile");
   const svc = f.match(/^services\/([a-z]+)\//);
   if (svc && SERVICES.includes(svc[1])) modules.add(`@humid/${svc[1]}-service`);
