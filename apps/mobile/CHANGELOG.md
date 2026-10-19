@@ -1,5 +1,16 @@
 # @humid/mobile
 
+## 2.1.2
+
+### Patch Changes
+
+- **IDs and payment cards go back to HumID's own camera; the phone's document scanner is kept for other documents.** The Android document scanner's screen belongs to Google Play services, so HumID's protection against screenshots, screen recording and the recents thumbnail doesn't reach it. Driver's licenses, passports, ID cards, permits and payment cards now always use HumID's camera; **Add ▸ Photo** and **Another card** still use the scanner on Android.
+  
+  - While the scanner is on screen HumID stays unlocked for at most 60 seconds off the screen (90 seconds in all), down from 2½ minutes; then it locks as usual.
+  - A page the scanner left behind (HumID stopped before it could delete it) is cleared when HumID starts and before each scan (`tauri-plugin-humid-docscan` 1.0.1).
+  - The browser-test stand-in for the scanner is left out of release builds entirely (checked by `tests/bundle.test.js`).
+  - `docs/SECURITY.md` records what the scanner costs: the screen protection gap, the usage figures ML Kit sends Google (never pictures), and that its code updates with Play services.
+
 ## 2.1.1
 
 ### Patch Changes

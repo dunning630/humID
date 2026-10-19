@@ -170,7 +170,7 @@ export function Add() {
         onType={() => go({ at: "card", start: {} }, "readycard")} onTap={() => go({ at: "card", start: { tap: true } }, "readycard")}
         onFile={() => choose("")} />}
       {step.at === "camera" && (
-        <DocCamera shape="full" title="Photograph a document" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
+        <DocCamera shape="full" native title="Photograph a document" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
           onCancel={() => toReady("photo")} onDone={photographed} onLook={looked} label={liveLabelEl} tools={tools} />
       )}
       {step.at === "cardcam" && (

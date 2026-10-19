@@ -168,5 +168,6 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | F-07 | Windows/Linux desktop gates are not OS-enforced (desktop paused) | ⬜ |
 | F-08/F-09 | Android wrapping key is valid 3 s after any biometric, not per use; no runtime root detection | ⬜ |
 | SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
+| SC-06 | Android Maven dependencies (incl. `play-services-mlkit-document-scanner`) pinned but not checksum-verified: no Gradle dependency verification | ⬜ |
 | SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
 | Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ⬜ independent review |
