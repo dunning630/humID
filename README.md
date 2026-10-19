@@ -1,4 +1,4 @@
-# HumID — safe, secure, simple personal-data vault (POC v2)
+# HumID — safe, secure, simple personal-data vault (3.0)
 
 Your documents are sealed on your phone with post-quantum encryption, stored
 on a vault server that can't read them, and opened again only after a live
@@ -10,7 +10,7 @@ face or fingerprint check. Three parts:
 | **Transit** | `packages/htp` | HTP/1: hybrid ML-KEM-1024 + X25519 handshake, AES-256-GCM frames, biometric step-up proofs, inside TLS 1.3. |
 | **Server** | `services/` | Eight small services: edge, gateway, identity, vault, ledger, recovery, access, keyshare. Docker compose. |
 
-Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
+Start with [docs/V3.md](docs/V3.md) (the 3.0 app: its shape, the brand as meaning, what changed for the person, the security and weight changes, the communication boundary), then [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),

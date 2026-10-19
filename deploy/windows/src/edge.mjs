@@ -111,8 +111,18 @@ export function createEdge({ port, host = "127.0.0.1", appDir, gatewayUrl, maxBo
 
     const name = url.pathname;
     const cache = name.startsWith("/assets/") ? "public, max-age=31536000, immutable"
-      : name === "/sw.js" || name === "/manifest.webmanifest" || path.endsWith("index.html") ? "no-cache" : "public, max-age=3600";
-    const headers = { "content-type": TYPES[extname(path).toLowerCase()] || "application/octet-stream", "content-length": st.size, "cache-control": cache, "content-security-policy": CSP };
+      : name === "/sw.js" || name === "/manifest.webmanifest" || name === "/boot-guard.js" || path.endsWith("index.html") ? "no-cache" : "public, max-age=3600";
+    const headers = { "content-type": TYPES[extname(path).toLowerCase()] || "application/octet-stream", "content-length": st.size, "cache-control": cache, "content-security-policy": CSP, vary: "accept-encoding" };
+    // The app build writes .br and .gz siblings next to every text and wasm asset (3.0):
+    // serve one when the client accepts it, so nothing is compressed on the fly here.
+    const accepts = String(req.headers["accept-encoding"] || "");
+    for (const [enc, ext] of [["br", ".br"], ["gzip", ".gz"]]) {
+      if (!new RegExp(`(^|,)\\s*${enc}\\s*(;|,|$)`).test(accepts)) continue;
+      let cs; try { cs = statSync(path + ext); } catch { continue; }
+      res.writeHead(200, { ...SECURITY, ...headers, "content-encoding": enc, "content-length": cs.size });
+      if (req.method === "HEAD") return res.end();
+      return createReadStream(path + ext).on("error", () => res.destroy()).pipe(res);
+    }
     res.writeHead(200, { ...SECURITY, ...headers });
     if (req.method === "HEAD") return res.end();
     createReadStream(path).on("error", () => res.destroy()).pipe(res);

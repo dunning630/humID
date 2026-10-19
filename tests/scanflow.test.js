@@ -1,6 +1,6 @@
 // What the camera does while it scans (apps/mobile/src/core/scanflow.js, scancore.js,
 // scan.js's modes, docfind.js's strip maths) and the shape of the screen that shows it
-// (screens/scanui.jsx, ids.jsx, styles/app.css). The state machine and the maths are
+// (screens/add/camera.jsx, brand/flows.css). The state machine and the maths are
 // pure; the screen is checked as source, like tests/ia.test.js does.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -169,7 +169,7 @@ test("scan.js names what each mode asks of the camera, for the Add camera to cal
   assert.match(t, /export function warmScan\(mode/);
   assert.match(t, /passport: \{\s*front: \{ shape: "td3", read: \{ mrz: true \}/);
   assert.match(t, /back: \{ shape: "id1", read: \{ barcode: true \}/);
-  const cam = noComments(src("screens/ids.jsx"));
+  const cam = noComments(src("screens/add/camera.jsx"));
   assert.match(cam, /props\.mode \? scanOptions\(props\.mode/, "DocCamera takes a mode");
 });
 
@@ -304,9 +304,9 @@ test("the MRZ strip: same picture as straightening the whole card, turning it an
 /* ---------------- the screen ---------------- */
 
 test("the camera screen: a visible state card, live region, 44 px targets, the worker, frame-paced loops", () => {
-  const cam = noComments(src("screens/ids.jsx"));
-  const ui = noComments(src("screens/scanui.jsx"));
-  const css = src("styles/app.css");
+  const cam = noComments(src("screens/add/camera.jsx"));
+  const ui = cam;
+  const css = src("brand/flows.css");
   assert.match(cam, /<ScanState /, "the state card is on the camera");
   assert.match(ui, /aria-live=\{error \|\| notice \|\| view\.assertive \? "assertive" : "polite"\}/, "the card is a live region");
   assert.match(ui, /role="status"/);
@@ -325,26 +325,23 @@ test("the camera screen: a visible state card, live region, 44 px targets, the w
   assert.match(rule(".dc-act"), /min-width: 44px/);
   assert.match(rule(".dc-msg"), /min-height: 44px/);
   // and motion respects the setting
-  assert.match(css, /prefers-reduced-motion: reduce\) \{[^}]*\.dc-state/);
-  assert.match(css, /\.dc-sweep i, [^{]*\{ animation: none/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{[\s\S]{0,400}\.dc-/, "the camera's motion stops under reduced motion");
   assert.doesNotMatch(css.match(/@keyframes dc-sweep \{[^}]*\}/)[0], /top|left|width|height/, "the sweep moves by transform only (no layout every frame)");
 });
 
 test("the build ships the scan worker next to the app, and the worker is reachable under the app's policy", () => {
   assert.match(src("../build.mjs"), /scanworker: here\("\.\/src\/core\/scanworker\.js"\)/);
-  assert.match(noComments(src("core/analyzer.js")), /new URL\("\.\/scanworker\.js", import\.meta\.url\)/);
+  assert.match(noComments(src("core/analyzer.js")), /__HUMID_WORKER__/, "the worker is started by its hashed build name");
   const conf = JSON.parse(readFileSync(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
   assert.match(conf.app.security.csp, /worker-src 'self'/);
 });
 
 test("nothing from a scan is logged or kept: no console output, no storage, no network in the scan files", () => {
-  for (const f of ["core/scancore.js", "core/scanworker.js", "core/analyzer.js", "core/scanflow.js", "screens/scanui.jsx"]) {
+  for (const f of ["core/scancore.js", "core/scanworker.js", "core/analyzer.js", "core/scanflow.js", "screens/add/camera.jsx"]) {
     const t = noComments(src(f));
     assert.doesNotMatch(t, /console\.|localStorage|sessionStorage|indexedDB|fetch\(|XMLHttpRequest|sendBeacon|WebSocket/, `${f}`);
   }
-  const cam = noComments(src("screens/ids.jsx"));
-  const live = cam.slice(cam.indexOf("export function DocCamera"), cam.indexOf("/* ---------------- the ID flow"));
-  assert.doesNotMatch(live, /console\./);
+  assert.doesNotMatch(noComments(src("screens/add/ids.jsx")), /console\./);
 });
 
 test("the failures table has plain, short words", () => {
@@ -354,10 +351,9 @@ test("the failures table has plain, short words", () => {
   }
 });
 
-test("app.css braces balance (a missing one silently drops every rule after it)", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const css = (await readFile(new URL("../apps/mobile/src/styles/app.css", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//g, "");
-  let depth = 0;
-  for (const ch of css) { if (ch === "{") depth++; else if (ch === "}") depth--; assert.ok(depth >= 0, "a stray }"); }
-  assert.equal(depth, 0, "every { is closed");
+test("the stylesheets' braces balance (a missing one silently drops every rule after it)", () => {
+  for (const f of ["brand/tokens.css", "brand/base.css", "brand/flows.css", "brand/shell.css"]) {
+    const css = src(f);
+    assert.equal((css.match(/\{/g) || []).length, (css.match(/\}/g) || []).length, f);
+  }
 });

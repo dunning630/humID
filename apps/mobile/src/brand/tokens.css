@@ -1,0 +1,117 @@
+/* HumID 3.0 — brand tokens. The ONE place the brand lives in the app.
+   Source of truth: the official HumID mark (apps/mobile/src/brand/logo: the peace-sign
+   hand with fingerprint tips, amber "Hum" / mint "ID.", on ink), October 2026.
+
+   Meaning carried by colour, everywhere in the app — never decoration:
+     amber  = a human, and a human action in progress (the live check)
+     mint   = verified · sealed · proven
+     danger = something is wrong, or an action that can't be undone
+   Everything else is neutral. No fourth accent, so the meaning stays legible.
+
+   Themes: dark is the brand default. Light exists for "Match device"; it keeps the
+   same meaning per colour with ink-on-paper values that meet WCAG AA (≥ 4.5:1 for
+   text, measured). Only the values below change between themes: no component
+   knows which theme it is in. */
+
+:root {
+  color-scheme: dark;
+
+  /* --- brand constants (never themed) --- */
+  --brand-amber: #F5A623;
+  --brand-mint:  #6FE3B4;
+  --brand-ink:   #0B1410;
+
+  /* --- ground & surfaces --- */
+  --abyss:     #060D0A;   /* behind everything; the viewer and camera */
+  --ground:    #0B1410;   /* the app background (= brand ink) */
+  --surface:   #11201A;   /* cards, rows */
+  --surface-2: #172B23;   /* a row that is pressed, a sheet */
+  --surface-3: #1E382E;   /* chips, inputs on a surface */
+  --line:        #1C3328;
+  --line-strong: #2A4A3C;
+  --scrim: rgba(4, 10, 7, 0.66);
+
+  /* --- text (contrast on --ground: 16.9 · 10.8 · 7.2) --- */
+  --text:   #EEF5F0;
+  --text-2: #B7C9BF;
+  --muted:  #8DA798;
+
+  /* --- meaning --- */
+  --amber:      var(--brand-amber);
+  --amber-hi:   #FFB94A;
+  --amber-ink:  #231400;    /* text on an amber fill (8.8:1) */
+  --amber-wash: rgba(245, 166, 35, 0.14);
+  --mint:       var(--brand-mint);
+  --mint-deep:  #3FB98A;
+  --mint-ink:   #04170F;    /* text on a mint fill (11.7:1) */
+  --mint-wash:  rgba(111, 227, 180, 0.12);
+  --danger:      #FF6B5E;
+  --danger-ink:  #2A0804;
+  --danger-wash: rgba(255, 107, 94, 0.14);
+  --focus: var(--mint);
+
+  /* --- type: the system face. Zero bytes, native rendering, Dynamic Type and
+         font-size accessibility settings work without any code. --- */
+  --f-ui: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
+  /* scale in rem so the user's text-size setting scales everything */
+  --t-xs: 0.75rem; --t-sm: 0.8125rem; --t-md: 0.9375rem; --t-lg: 1.0625rem;
+  --t-xl: 1.25rem; --t-2xl: 1.5rem; --t-3xl: 1.875rem; --t-hero: 2.25rem;
+  --lh: 1.45;
+
+  /* --- space, shape --- */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --r-sm: 10px; --r-md: 14px; --r-lg: 20px; --r-xl: 28px; --r-pill: 999px;
+  --tap: 44px;            /* the smallest control */
+  --col: 520px;           /* the phone column on wide screens */
+
+  /* --- motion: short, and only ever in response to the person --- */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --d-fast: 120ms; --d-base: 200ms; --d-slow: 320ms;
+
+  /* --- platform --- */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --tabbar-h: 60px;
+}
+
+/* Light: ink on paper. Same meanings, AA-measured values. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --abyss:     #E9EFEB;
+  --ground:    #F6F8F6;
+  --surface:   #FFFFFF;
+  --surface-2: #EEF3F0;
+  --surface-3: #E3EBE6;
+  --line:        #D6E0DA;
+  --line-strong: #B9C8BF;
+  --scrim: rgba(11, 20, 16, 0.42);
+  --text:   #0B1410;
+  --text-2: #33473D;
+  --muted:  #5B6F64;
+  --amber:      #9A5E00;   /* 4.9:1 on paper: amber as text */
+  --amber-hi:   #F5A623;   /* amber as a fill, with --amber-ink on it */
+  --amber-wash: rgba(245, 166, 35, 0.18);
+  --mint:       #117A52;
+  --mint-deep:  #0E6343;
+  --mint-wash:  rgba(17, 122, 82, 0.12);
+  --danger:      #B3261E;
+  --danger-wash: rgba(179, 38, 30, 0.10);
+  --focus: #117A52;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --d-fast: 0ms; --d-base: 0ms; --d-slow: 0ms; }
+}
+
+/* Text size: four steps on top of whatever the OS already applies (everything is in
+   rem, so the OS setting and these multiply). */
+:root[data-text="large"]   { font-size: 120%; }
+:root[data-text="larger"]  { font-size: 145%; }
+:root[data-text="largest"] { font-size: 175%; }
+/* Animations off (the person's choice, beyond the OS setting). */
+:root[data-motion="reduced"] { --d-fast: 0ms; --d-base: 0ms; --d-slow: 0ms; }
+:root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }

@@ -13,7 +13,7 @@ export const IDLE_CHOICES = [60_000, 2 * 60_000, MAX_IDLE_MS];
 
 export const CHOICES = Object.freeze({
   theme: ["system", "dark", "light"],
-  text: ["standard", "large"],
+  text: ["standard", "large", "larger", "largest"], // 3.0: 100 · 120 · 145 · 175 %, on top of the OS text size
   sort: ["newest", "oldest", "name", "expiry"],
   expiryWarnDays: [30, 60, 90, 180],
 });
@@ -26,7 +26,12 @@ export const DEFAULTS = Object.freeze({
   idleMs: MAX_IDLE_MS,
   sort: "newest",
   expiryWarnDays: 90,
+  placeStamp: false,   // 3.0: the location stamp is opt-in, remembered per device
+  lastKind: null,      // 3.0: what was last added (the Add flow starts there)
+  readySeen: {},       // 3.0: kinds whose "Ready" explainer has been seen (shown once per kind)
 });
+
+const KIND_IDS = ["id", "card", "pass", "photo", "file"];
 
 /** Anything stored (or tampered with) comes back as valid preferences: unknown keys dropped, bad values defaulted. */
 export function sanitize(raw) {
@@ -40,6 +45,9 @@ export function sanitize(raw) {
     idleMs: IDLE_CHOICES.includes(r.idleMs) ? r.idleMs : DEFAULTS.idleMs,
     sort: pick("sort"),
     expiryWarnDays: pick("expiryWarnDays"),
+    placeStamp: typeof r.placeStamp === "boolean" ? r.placeStamp : DEFAULTS.placeStamp,
+    lastKind: KIND_IDS.includes(r.lastKind) ? r.lastKind : null,
+    readySeen: Object.fromEntries(KIND_IDS.filter((k) => r.readySeen && typeof r.readySeen === "object" && r.readySeen[k] === true).map((k) => [k, true])),
   };
 }
 

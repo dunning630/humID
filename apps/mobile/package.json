@@ -1,8 +1,8 @@
 {
   "name": "@humid/mobile",
-  "version": "2.1.2",
+  "version": "3.0.0",
   "private": true,
-  "description": "HumID mobile app (iOS, Android) and installable web app. One codebase; Tauri 2 for the native apps.",
+  "description": "HumID mobile app (iOS, Android) and installable web app. One codebase; Tauri 2 for the native apps. 3.0: rebuilt around a kernel of small modules, the official brand, and a first paint that carries nothing it doesn't need.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -10,9 +10,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@fontsource-variable/saira": "5.3.0",
-    "@fontsource/barlow": "5.3.0",
-    "@fontsource/jetbrains-mono": "5.3.0",
     "@humid/api": "^1.6.0",
     "@humid/cards": "^1.0.1",
     "@humid/codec": "^1.0.0",
@@ -30,7 +27,6 @@
     "@tauri-apps/api": "2.12.4",
     "@tauri-apps/plugin-opener": "2.7.1",
     "jpeg2000": "1.1.1",
-    "jsqr": "1.4.0",
     "preact": "10.29.8",
     "qrcode-generator": "2.0.4",
     "tesseract.js": "7.0.0",

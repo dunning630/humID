@@ -172,14 +172,26 @@ export { sha3_256, sha3_512 };
  */
 export const indexKey = (seed) => kdf(seed, undefined, "HUMID-PQ1 vault-index");
 
+// Entries are padded to 64-byte buckets before sealing (1.6.0), so the size of a sealed
+// entry, and the size change when one is re-sealed, says nothing about what it holds:
+// a pin or a decoy flag is 13-14 bytes of JSON, and the server sees PATCH sizes.
+const INDEX_BUCKET = 64;
+const padIndex = (entry) => {
+  const base = encodeJSON({ ...entry, p: "" }).length;
+  const want = Math.ceil(base / INDEX_BUCKET) * INDEX_BUCKET;
+  return { ...entry, p: " ".repeat(want - base) };
+};
+
 export async function sealIndex(key, entry) {
   const nonce = random(12);
-  const ct = await aesEncrypt(key, nonce, encodeJSON(entry), utf8("HUMID-INDEX-v1"));
+  const ct = await aesEncrypt(key, nonce, encodeJSON(padIndex(entry)), utf8("HUMID-INDEX-v1"));
   return concat(nonce, ct);
 }
 
 export async function openIndex(key, blob) {
-  return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+  const entry = decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+  if (typeof entry?.p === "string") delete entry.p; // the padding
+  return entry;
 }
 
 /* ---------- offline copy (added in @humid/crypto 1.4.0) ----------
