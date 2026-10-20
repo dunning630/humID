@@ -16,7 +16,7 @@ Start with [docs/V3.md](docs/V3.md) (the 3.0 app: its shape, the brand as meanin
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC),
+doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC), [docs/DEPLOY-VMS.md](docs/DEPLOY-VMS.md) (server 3.0 on VMs and shared storage: roles on separate machines over mutual TLS, sealed secrets, encrypted backups),
 [docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone),
 [docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in), and
 [docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups).
