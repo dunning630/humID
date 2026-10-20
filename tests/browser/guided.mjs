@@ -214,6 +214,8 @@ scene("outline", async (page) => {
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
   const f2 = await page.locator(".dc-frame").boundingBox();
   assert.ok(Math.abs(f2.width / f2.height - 85.6 / 54) < 0.01, `a card's outline: ${(f2.width / f2.height).toFixed(3)}`);
+  // the camera is asked again for this card; wait for that request (the last one on record is still the passport's until it is made)
+  await page.waitForFunction(() => globalThis.__constraints?.video?.height?.ideal === 1920, null, { timeout: 10_000 });
   const c2 = await page.evaluate(() => globalThis.__constraints.video);
   assert.equal(c2.width.ideal, 1080); assert.equal(c2.height.ideal, 1920);
   await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
