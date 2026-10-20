@@ -21,8 +21,8 @@
 // opens nothing. See docs/RECOVERY.md and docs/CONTINUITY.md.
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
+import { mkdirSync } from "node:fs";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { sha3_256, toHex, identityId, STEP_UP_MAX_AGE_MS } from "@humid/htp";
@@ -39,6 +39,10 @@ const CHIP_MAX = 48 * 1024;
 const list = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
 
 export function createRecovery({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
+  /** Secrets sealed at rest (packages/svc/src/seal.js). */
+  seal = sealerFromEnv(),
   port = Number(env("PORT", "8084")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -92,9 +96,8 @@ export function createRecovery({
   /* ---------- the anchor secret and trusted countries ---------- */
 
   mkdirSync(dataDir, { recursive: true });
-  const secretFile = `${dataDir}/anchor-secret.bin`;
-  if (!existsSync(secretFile)) writeFileSync(secretFile, randomBytes(32), { mode: 0o600 });
-  const anchorSecret = readFileSync(secretFile);
+  // Sealed at rest when the server has a seal key (a plain one is sealed in place: the same secret).
+  const anchorSecret = secretFile(`${dataDir}/anchor-secret.bin`, { seal, name: "recovery/anchor-secret", make: () => randomBytes(32), log });
   const hmacKey = Buffer.from(hkdfSync("sha3-256", anchorSecret, Buffer.alloc(0), "HUMID-ANCHOR-v1 hmac", 32));
   const cscas = [...loadCscas(cscaDir), ...extraCscas];
   const stationSet = new Set(stations);
@@ -729,7 +732,7 @@ export function createRecovery({
   ];
 
   log.info("recovery delay", { hours: +(delayMs / HOUR).toFixed(3) });
-  return createService({
+  return createService({ tls,
     name: "recovery", port, routes: [...links, ...card, ...anchor, ...contacts, ...requests, ...station, ...duress], bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "recovery"),
   });

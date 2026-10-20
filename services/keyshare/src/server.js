@@ -30,9 +30,9 @@
 // neither stopping the gateway nor changing the wall clock can stretch it; and since
 // the fuse keys live in memory only, a restart erases every armed vault (fail-deadly).
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { randomBytes, createCipheriv, createDecipheriv, hkdfSync } from "node:crypto";
-import { createService, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
 import { STEP_UP_MAX_AGE_MS } from "@humid/htp";
 
 const OBJ_RE = /^[0-9a-f-]{36}$/;
@@ -46,6 +46,10 @@ export const CHECKIN_WINDOWS_MS = [1, 2, 4, 8, 24].map((h) => h * HOUR);
 export const CHECKIN_GRACE_MS = [0, 15, 30, 60].map((m) => m * MINUTE);
 
 export function createKeyshare({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
+  /** Secrets sealed at rest (packages/svc/src/seal.js). */
+  secretSeal = sealerFromEnv(),
   port = Number(env("PORT", "8086")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -57,9 +61,9 @@ export function createKeyshare({
 } = {}) {
   const log = logger("keyshare");
   mkdirSync(dataDir, { recursive: true });
-  const keyFile = `${dataDir}/share-key.bin`;
-  if (!existsSync(keyFile)) writeFileSync(keyFile, randomBytes(32), { mode: 0o600 });
-  const master = Buffer.from(hkdfSync("sha3-256", readFileSync(keyFile), Buffer.alloc(0), "HUMID-KEYSHARE-v1 at-rest", 32));
+  // Sealed at rest when the server has a seal key (a plain one is sealed in place: the same master key).
+  const shareKey = secretFile(`${dataDir}/share-key.bin`, { seal: secretSeal, name: "keyshare/share-key", make: () => randomBytes(32), log });
+  const master = Buffer.from(hkdfSync("sha3-256", shareKey, Buffer.alloc(0), "HUMID-KEYSHARE-v1 at-rest", 32));
 
   const db = openDb(dataDir, "keyshare.db", [
     `CREATE TABLE shares (object TEXT PRIMARY KEY, owner TEXT NOT NULL, iv BLOB NOT NULL, ct BLOB NOT NULL,
@@ -389,7 +393,7 @@ export function createKeyshare({
     }],
   ];
 
-  const svc = createService({ name: "keyshare", port, routes, bodyLimit: 4 * 1024, verify: (t) => verifyAssertion(internalPk, t, "keyshare") });
+  const svc = createService({ tls, name: "keyshare", port, routes, bodyLimit: 4 * 1024, verify: (t) => verifyAssertion(internalPk, t, "keyshare") });
   return {
     ...svc,
     tick,

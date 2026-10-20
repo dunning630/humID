@@ -6,9 +6,8 @@
 // Invariant: no document ciphertext leaves the vault without a matching
 // ledger record. If the ledger cannot record the access, the gateway refuses.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
+import { mkdirSync, readFileSync } from "node:fs";
+import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, loginMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
@@ -192,6 +191,14 @@ export function createGateway({
   checkin = env("HUMID_CHECKIN", "off"),
   /** How often the gateway tidies up after a Check-in erase: the vault's envelopes, and the ledger entry. */
   checkinSweepMs = 10_000,
+  /** Server secrets sealed at rest (packages/svc/src/seal.js): HUMID_SEAL_KEY_FILE, or the host's sealer. */
+  seal = sealerFromEnv(),
+  /**
+   * Mutual TLS to roles on other machines (server 3.0, docs/DEPLOY-VMS.md): this gateway's
+   * humid-front certificate, its key and the server's CA (PEM). Used for every https:// upstream.
+   * Default: HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY files, if set.
+   */
+  internalTls = tlsFromEnv(),
 } = {}) {
   const log = logger("gateway");
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
@@ -202,10 +209,9 @@ export function createGateway({
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
+  // Sealed under the server's seal key when it has one; a plain file from before 3.0 is sealed in place (same keys, same kid).
   const keyFile = `${dataDir}/htp-keys.json`;
-  let statics;
-  if (existsSync(keyFile)) statics = importStatics(JSON.parse(readFileSync(keyFile, "utf8")));
-  else { statics = createStatics(); writeFileSync(keyFile, JSON.stringify(exportStatics(statics)), { mode: 0o600 }); }
+  const statics = importStatics(JSON.parse(secretFile(keyFile, { seal, name: "gateway/htp-keys", make: () => JSON.stringify(exportStatics(createStatics())), log }).toString("utf8")));
   const htp = new HtpServer(statics);
   log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
@@ -237,19 +243,29 @@ export function createGateway({
 
   /* ---------- internal calls ---------- */
 
+  // Which role each service belongs to, for the certificate the gateway expects when it's on another machine.
+  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys" };
+  const agents = {};
+  for (const [svcName, base] of Object.entries(upstreams)) {
+    if (!/^https:/.test(base)) continue;
+    if (!internalTls) throw new Error(`${svcName} is at ${base}, but this gateway has no internal TLS certificate (HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY)`);
+    const role = ROLE_OF[svcName];
+    agents[role] ||= roleAgent(clientTls({ ...internalTls, expect: role }));
+  }
+
   async function internal(service, method, path, { claims = {}, body, headers = {} } = {}) {
-    const assertion = signAssertion(internalSk, { iss: "gateway", aud: service, rid: randomUUID(), ...claims });
+    // SEC-S-01: the assertion names this exact request (service, method, path and query as sent, body), once.
+    const target = new URL(path, "http://internal");
+    const sent = target.pathname + target.search;
+    const payload = body && body.length ? body : undefined;
+    const assertion = signRequest(internalSk, { aud: service, method, path: sent, body: payload, claims });
     let res;
     try {
-      res = await fetch(`${upstreams[service]}${path}`, {
-        method,
-        headers: { "x-humid-assertion": assertion, ...headers },
-        body: body && body.length ? body : undefined,
-      });
+      res = await internalRequest(`${upstreams[service]}${sent}`, { method, headers: { "x-humid-assertion": assertion, ...headers }, body: payload, agent: agents[ROLE_OF[service]] });
     } catch {
       throw new HttpError(503, `${service}_unavailable`, `${service} service is unavailable`);
     }
-    const buf = new Uint8Array(await res.arrayBuffer());
+    const buf = res.body;
     const out = { status: res.status, headers: {}, body: buf };
     for (const h of FORWARD_RES_HEADERS) { const v = res.headers.get(h); if (v) out.headers[h] = v; }
     return out;
@@ -978,6 +994,14 @@ export function createGateway({
 
   const svc = createService({ name: "gateway", port, routes, extraHeaders: cors });
   return { ...svc, htp, sweepCheckin };
+}
+
+/** Internal TLS from files: HUMID_TLS_CA, HUMID_TLS_CERT, HUMID_TLS_KEY (a sealed key file opens with the seal key). */
+export function tlsFromEnv(env = process.env, seal = sealerFromEnv(env)) {
+  const { HUMID_TLS_CA: ca, HUMID_TLS_CERT: cert, HUMID_TLS_KEY: key } = env;
+  if (!ca && !cert && !key) return null;
+  if (!ca || !cert || !key) throw new Error("Internal TLS needs all of HUMID_TLS_CA, HUMID_TLS_CERT and HUMID_TLS_KEY");
+  return { ca: readFileSync(ca, "utf8"), cert: readFileSync(cert, "utf8"), key: seal.open("tls/key", readFileSync(key)).toString("utf8") };
 }
 
 if (isMain(import.meta.url)) {

@@ -44,9 +44,8 @@ test("the limit is per identity, not per server: another account signs in normal
 test("every failed sign-in up to the budget is in the victim's ledger as access.denied, then one throttle note", async () => {
   // the ledger is read through a signed-in session; the victim is locked out, so read the service directly
   const { verifyLedger } = await import("@humid/audit");
-  const { signAssertion } = await import("@humid/svc");
-  const { randomUUID } = await import("node:crypto");
-  const a = signAssertion(stack.internalSk, { iss: "gateway", aud: "ledger", rid: randomUUID(), sub: holder.id });
+  const { signRequest } = await import("@humid/svc");
+  const a = signRequest(stack.internalSk, { aud: "ledger", method: "GET", path: "/events?limit=200", claims: { sub: holder.id } });
   const res = await fetch(`${stack.upstreams.ledger}/events?limit=200`, { headers: { "x-humid-assertion": a } });
   assert.equal(res.status, 200);
   const page = await res.json();
