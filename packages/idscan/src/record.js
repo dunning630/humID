@@ -4,6 +4,7 @@
 // plain JSON with a schema tag, and every field says where it came from.
 import { countryName, regionName } from "./places.js";
 import { chipIntegrityOk } from "./chip.js";
+import { mdocFields, imageType } from "./mdoc.js";
 
 export const SCHEMA = "humid.id/1";
 export const MEDIA_TYPE = "application/vnd.humid.id+json";
@@ -56,8 +57,8 @@ export function newRecord(kind = "other") {
   return { schema: SCHEMA, kind, fields: {}, source: {}, address: null, verified: {}, images: {}, raw: {}, edited: [], createdAt: nowIso(), updatedAt: nowIso() };
 }
 
-/** Set fields, remembering where each came from. A chip outranks a barcode, which outranks OCR. */
-const RANK = { typed: 4, chip: 3, barcode: 2, mrz: 1, photo: 0 };
+/** Set fields, remembering where each came from. A chip or a mobile ID outranks a barcode, which outranks OCR. */
+const RANK = { typed: 4, chip: 3, mdoc: 3, barcode: 2, mrz: 1, photo: 0 };
 function put(rec, from, values) {
   for (const [k, v] of Object.entries(values)) {
     if (v == null || v === "") continue;
@@ -126,6 +127,27 @@ export function applyChip(rec, chip, { mrz, integrity, b64 }) {
   return rec;
 }
 
+/**
+ * From a mobile ID (ISO 18013-5), already verified by @humid/mdoc's
+ * verifyDeviceResponse. doc: one verified document. keep: the IssuerSigned
+ * bytes (encodeIssuerSigned), stored so the issuer check can be repeated.
+ */
+export function applyMdoc(rec, doc, { b64, keep } = {}) {
+  const m = mdocFields(doc.docType, doc.values);
+  // The mobile ID knows whether it is a license or an ID card; a passport or permit the holder picked stays as picked.
+  if (!rec.kind || ["other", "driver_license", "id_card"].includes(rec.kind)) rec.kind = m.kind;
+  put(rec, "mdoc", m.fields);
+  if (m.address && (!rec.address || rec.addressSource !== "typed")) { rec.address = m.address; rec.addressSource = "mdoc"; }
+  if (m.portrait && b64) rec.images.portrait = { type: imageType(m.portrait), data: b64(m.portrait), size: m.portrait.length, source: "mdoc" };
+  rec.verified.mdoc = {
+    docType: doc.docType, chain: doc.chain, root: doc.root?.subject || null, signer: doc.signer?.subject || null,
+    device: doc.device?.method || null, deviceOk: doc.device?.ok ?? null, digestAlgorithm: doc.digestAlgorithm,
+    signed: doc.validity?.signed || null, validUntil: doc.validity?.validUntil || null, readAt: nowIso(),
+  };
+  if (keep && b64) rec.raw.mdoc = { docType: doc.docType, issuerSigned: b64(keep) };
+  return rec;
+}
+
 /** A person typed or corrected a field. Typed values always win, and are marked as such. */
 export function applyTyped(rec, values) {
   const changed = Object.entries(values).filter(([k, v]) => (rec.fields[k] ?? "") !== (v ?? ""));
@@ -175,6 +197,10 @@ export function provenance(rec) {
   const typed = Object.values(rec.source || {}).includes("typed");
   if (v.chip && typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
   if (v.chip?.integrity) return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
+  if (v.mdoc && typed) return { level: "mdoc-edited", text: "Shared from a mobile ID, then changed by hand" };
+  if (v.mdoc?.chain === "trusted" && v.mdoc.deviceOk) return { level: "mdoc", text: "Shared from the mobile ID; signed by its issuer, checked against the issuer's root, and the wallet proved it holds the original" };
+  if (v.mdoc?.deviceOk) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches, but its root isn't in HumID's trusted list yet" };
+  if (v.mdoc) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches" };
   if (v.chip) return { level: "chip-unchecked", text: "Not verified: read from the chip, but its files weren't checked" };
   if (v.chipFailed && !v.barcode && !v.mrz) return { level: "chip-failed", text: "Not verified: the chip couldn't be verified, so its data was not used" };
   if (v.barcode) return { level: "barcode", text: `Read from the barcode (AAMVA v${v.barcode.version})` };

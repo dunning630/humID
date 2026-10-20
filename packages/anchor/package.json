@@ -1,12 +1,17 @@
 {
   "name": "@humid/anchor",
   "version": "1.1.0",
-  "description": "Identity anchor: checks a passport or ID card chip (ICAO 9303 passive and active authentication) and derives a stable anchor for two-proof recovery. Server side.",
+  "description": "Identity anchor: checks a passport or ID card chip (ICAO 9303 passive and active authentication) or a mobile ID (ISO 18013-5 issuer and device authentication) and derives a stable anchor for two-proof recovery. Server side.",
   "type": "module",
   "exports": "./src/index.js",
-  "humid": { "provides": { "anchor": 1 } },
+  "humid": {
+    "provides": {
+      "anchor": 1
+    }
+  },
   "dependencies": {
-    "@humid/attest": "^1.2.0"
+    "@humid/attest": "^1.2.0",
+    "@humid/mdoc": "^1.0.0"
   },
   "license": "UNLICENSED"
 }

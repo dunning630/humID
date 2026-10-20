@@ -28,6 +28,7 @@ import { alpha2Of } from "./countries.js";
 
 export { parseMrz, stableIdentity, checkDigit, expiryDate, MrzError } from "./mrz.js";
 export { alpha2Of } from "./countries.js";
+export { mdocAuth, mdocAnchorOf, mdocStableIdentity, mdocAnchorSummary, loadIacas, MdocAnchorError } from "./mdoc.js";
 
 export class AnchorError extends Error {
   constructor(code, message) { super(message); this.code = code; }
