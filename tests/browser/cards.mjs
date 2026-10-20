@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { hold, enroll, unlock, openAdd as openAddFlow, startCamera } from "./_v3.mjs";
 import { writeFileSync } from "node:fs";
 import { passChain, makePass, passJson } from "../support/pkpass.js";
 
@@ -58,47 +59,28 @@ async function launch(cameraFile) {
   return { ctx, page };
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus();
-  await page.keyboard.down(" ");
-  await page.waitForTimeout(1500);
-  await page.keyboard.up(" ");
-}
-/** One way in: the + button (or the empty vault's one primary) opens the list of what to add; Photo, then Start camera, opens the camera. */
+/** One way in (3.0, camera first): the + button opens the Add camera (the first time, "what to show" with Start camera comes before it). */
 async function openAdd(page) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
-  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
-  await page.locator(".pushed [data-start-camera]").click();
-  await page.locator(".doccam").waitFor({ timeout: 10_000 });
+  await openAddFlow(page);
+  await startCamera(page);
+}
+/** The camera bar's extras are folded into one "More" chip (3.0). */
+async function tool(page, name) {
+  await page.locator(".dc-tools").getByRole("button", { name: "More" }).click();
+  await page.locator(".dc-tools").getByRole("button", { name }).click();
 }
 
 try {
   /* ---------------- 1. the front ---------------- */
   let { ctx, page } = await launch(fixture("camera-paycard-front.mjpeg"));
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
+  await enroll(page);
   step("enrolled (demo)");
 
   await openAdd(page);
   // nobody presses the shutter, and nobody says what it is: the camera finds the card, takes
   // the photo by itself, reads the number on it and opens the card review
-  await page.locator(".dc-label").getByText(/Looks like a card/).waitFor({ timeout: 20_000 });
+  await page.locator(".dc-status").getByText(/Looks like a card/).waitFor({ timeout: 20_000 }); // the live label, in the step card's title (3.0)
   await page.locator("#cf-pan").waitFor({ timeout: 90_000 });
   assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "card", "routed by the card number");
   await page.waitForFunction(() => document.querySelector("#cf-pan")?.value.replace(/\s/g, "").length >= 16, null, { timeout: 30_000 });
@@ -121,11 +103,10 @@ try {
   /* ---------------- 2. the back ---------------- */
   ({ ctx, page } = await launch(fixture("camera-paycard-back.mjpeg")));
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Unlock", exact: true }).click();
-  await hold(page);
+  await unlock(page);
   await page.locator(".item", { hasText: "Travel card" }).waitFor({ timeout: 30_000 });
   await openAdd(page);
-  await page.locator(".dc-tools").getByRole("button", { name: /Type a card/ }).click();
+  await tool(page, /Type a card/);
   await page.locator(".doccam").waitFor({ state: "detached" });
   await page.fill("#cf-pan", "4111 1111 1111 1112");
   assert.ok(await page.getByText("That number has a typo").isVisible(), "a typo is caught");
@@ -137,7 +118,7 @@ try {
   await page.getByText(/Read the security code/).waitFor({ timeout: 90_000 });
   assert.equal(await page.inputValue("#cf-cvv"), "123", "the security code, read from the back");
   assert.equal(await page.inputValue("#cf-phone"), "1-800-555-0123", "the bank's phone number");
-  assert.ok(await page.locator('label.toggle:has-text("Keep the security code") input').isChecked(), "kept, because the back was scanned");
+  assert.equal(await page.getByRole("switch", { name: /Keep the security code/ }).getAttribute("aria-checked"), "true", "kept, because the back was scanned");
   assert.match(await page.locator(".pushed [role=status]").first().innerText(), /photo of the back wasn't kept/);
   assert.equal(await page.locator(".id-thumbs figure").count(), 0, "no photo of the back on screen");
   await shot(page, "3-back-read");
@@ -167,11 +148,14 @@ try {
   writeFileSync(good, makePass(chain));
   writeFileSync(forged, makePass(chain, { change: { "pass.json": Buffer.from(JSON.stringify(passJson({ description: "Free entry" }))) } }));
   await page.locator("button[aria-label*=Close]").first().click();
+  // 3.0: the viewer sits over the pushed item screen; leave that too, back to the vault
+  await page.locator(".pushed [data-back]").first().click();
+  await page.locator(".pushed").waitFor({ state: "detached", timeout: 10_000 });
   await page.evaluate((der) => { globalThis.__humidExtraPassRoots = [der]; }, Buffer.from(chain.root.der).toString("base64"));
   // File from the camera's bar: a .pkpass goes to the pass check
   const addPassFile = async (path) => {
     await openAdd(page);
-    await page.locator(".dc-tools").getByRole("button", { name: "File" }).click();
+    await tool(page, "File");
     await page.locator("#add-file").setInputFiles(path);
   };
   await addPassFile(forged);
@@ -180,13 +164,11 @@ try {
   assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a forged pass can't be sealed as a pass");
   await shot(page, "5-pass-forged");
   await page.getByRole("button", { name: "Choose another file" }).waitFor();
-  // Back leaves the pass review for the "what to show" screen (the camera is not restarted), then the picker, then closes Add
+  // Back leaves the pass review for where it came from (3.0, camera first: the Add camera, or the
+  // "what to show" screen before the first photo), and one more Back closes Add
   assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
-  await page.locator("[data-start-camera]").waitFor();
-  assert.equal(await page.locator(".doccam").count(), 0, "Back does not reopen the camera");
-  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
+  await page.locator(".doccam, [data-start-camera]").first().waitFor();
+  assert.match(await page.evaluate(() => globalThis.__humidBack()), /^(pushed|\.doccam)$/);
   await page.locator(".pushed").waitFor({ state: "detached" });
   await addPassFile(good);
   await page.getByText(/verified through Apple/).waitFor({ timeout: 20_000 });
@@ -201,7 +183,7 @@ try {
   assert.equal(await passRow.getAttribute("data-kind"), "pass");
   assert.deepEqual((await page.locator(".chips[aria-label='Filter by kind'] .chip").allInnerTexts()).map((t) => t.replace(/\s*\d+$/, "").trim()), ["All", "Cards", "Passes"], "the chip row shows the kinds that exist");
   await page.locator(".chips[aria-label='Filter by kind'] .chip", { hasText: "Cards" }).click();
-  assert.equal(await page.locator(".list .item").count(), 2, "Cards shows the two cards");
+  assert.equal(await page.locator(".rows .item").count(), 2, "Cards shows the two cards");
   await page.locator(".chips[aria-label='Filter by kind'] .chip", { hasText: "All" }).click();
   await passRow.click();
   await page.getByRole("button", { name: "Open", exact: true }).click();

@@ -188,7 +188,7 @@ export const itemIcon = (item) => item.idInfo ? (item.idInfo.kind === "passport"
 
 function ItemRow({ item }) {
   return (
-    <button class="item" data-kind={item.kind} onClick={() => (S.push.value = { type: "item", id: item.id })}>
+    <button class="item" data-kind={item.kind} data-pinned={item.pinned ? "1" : undefined} onClick={() => (S.push.value = { type: "item", id: item.id })}>
       <span class="kind" data-k={item.kind}><Icon name={itemIcon(item)} /></span>
       <span style={{ minWidth: 0 }}>
         <div class="name ellipsis">{item.pinned && <Icon name="pushpin" style={{ width: 14, height: 14, display: "inline", verticalAlign: "-2px", marginRight: 4 }} />}{item.name}</div>

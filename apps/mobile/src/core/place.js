@@ -80,7 +80,10 @@ export function watchPlace({ geo = globalThis.navigator?.geolocation, now = () =
 
 /** "41.91234° N, 88.31120° W" */
 export function formatCoords(p) {
-  const f = (v, pos, neg) => `${Math.abs(v).toFixed(5)}° ${v >= 0 ? pos : neg}`;
+  // Only the digits the stamp holds: a 3.0 stamp is kept to about 110 m (3 decimals), and
+  // printing it as 41.91500° would claim a precision it doesn't have.
+  const d = (p.accuracy || 0) >= 100 ? 3 : 5;
+  const f = (v, pos, neg) => `${Math.abs(v).toFixed(d)}° ${v >= 0 ? pos : neg}`;
   return `${f(p.lat, "N", "S")}, ${f(p.lon, "E", "W")}`;
 }
 

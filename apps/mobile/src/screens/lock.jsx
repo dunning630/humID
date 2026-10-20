@@ -93,7 +93,7 @@ export function Lock() {
             choice, spoken, never drawn. "Safe mode" means the duress gesture, whichever it is. */}
         <button class="sr" onClick={() => unlock(true)}>Unlock in safe mode</button>
         {down && S.offlineReady.value && <p class="fine center" role="status">No connection. You can still unlock to see your vault, read only.</p>}
-        <p class="fine center">{id?.mode === "demo" ? "Demo identity · no hardware sensor" : "No password exists. Only your live face or fingerprint opens it."}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
+        <p class="fine center">No password exists. Only your live face or fingerprint opens it.{id?.mode === "demo" ? " (Demo identity · no hardware sensor.)" : ""}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>
     </main>
   );

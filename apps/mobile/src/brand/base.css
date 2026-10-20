@@ -112,7 +112,7 @@ img, svg, canvas, video { display: block; max-width: 100%; }
 .btn.danger.solid { background: var(--danger); color: #fff; }
 .btn.block { width: 100%; }
 .btn.lg { min-height: 52px; font-size: var(--t-lg); border-radius: var(--r-lg); }
-.btn.sm { min-height: 36px; padding: 0 var(--s-4); font-size: var(--t-sm); border-radius: var(--r-sm); }
+.btn.sm { min-height: var(--tap); padding: 0 var(--s-4); font-size: var(--t-sm); border-radius: var(--r-sm); } /* smaller type and corners, never a smaller target */
 .btn .ico { width: 20px; height: 20px; flex: none; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
@@ -176,7 +176,7 @@ button.row:active, a.row:active { background: var(--surface-2); }
 /* ---------- chips ---------- */
 .chips { display: flex; gap: var(--s-2); overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--s-5)); padding: 2px var(--s-5); }
 .chips::-webkit-scrollbar { display: none; }
-.chip { flex: none; min-height: 36px; padding: 0 14px; border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); font-size: var(--t-sm); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.chip { flex: none; min-height: var(--tap); padding: 0 14px; /* a 44 px target: a chip looks lighter than it is, never smaller */ border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); font-size: var(--t-sm); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
 .chip[aria-pressed="true"], .chip[aria-selected="true"] { background: var(--mint-wash); border-color: var(--mint-deep); color: var(--mint); }
 .chip .n { font-weight: 500; opacity: 0.8; }
 

@@ -360,7 +360,7 @@ export function DocCamera(props) {
         const t = track.feed(r.look, r.w, r.h);
         L.quad = t.quad ? scaleQuad(t.quad, r.k) : null;
         if (read.barcode && r.spots) L.spots = { list: r.spots, k: v.videoWidth / r.bw, at: Date.now(), used: false };
-        if (DEMO_BUILD) globalThis.__humidLook = { ...r.look, quad: L.quad, ms: Math.round(lastMs), where: L.an.where };
+        if (DEMO_BUILD) globalThis.__humidLook = { ...r.look, quad: L.quad, ms: Math.round(lastMs), where: L.an.where, vw: v.videoWidth, vh: v.videoHeight };
         const found = !!t.quad;
         if (found && !wasFound) { L.acq++; trace("found", Math.round(lastMs)); }
         wasFound = found;
@@ -418,7 +418,9 @@ export function DocCamera(props) {
           harder = idle % 12 === 0;
         }
         if (DEMO_BUILD) globalThis.__humidBar = { spot, box: full, harder, where: L.an.where };
+        const t0 = performance.now();
         const texts = await readBarcodes(imageData(src), harder);
+        if (DEMO_BUILD) globalThis.__humidBarRead = { n: (globalThis.__humidBarRead?.n || 0) + 1, texts: texts.length, w: src.width, h: src.height, ms: Math.round(performance.now() - t0), full: !!full, where: L.an.where };
         const text = texts.find((t) => parseAamva(t));
         if (L.stop || L.paused) continue;
         if (text) { L.stop = true; setBar(null); shoot("live", { barcode: text }); return; }
@@ -457,6 +459,10 @@ export function DocCamera(props) {
       await sleep(30);
       if (inactive()) continue;
       if (!L.quad && Date.now() - ready < 2000) continue;
+      // A barcode is in view and being read: the OCR pass (the heavier of the two) stands
+      // aside so the barcode read finishes first. A camera that reads both (the ID camera)
+      // otherwise splits the phone between them and neither gets there.
+      if (read.barcode && L.barSeen && Date.now() - L.barSeen < 3000) { await sleep(200); continue; }
       const v = video.current;
       try {
         const flip = L.quad && ++mrzTurn % 3 === 0 ? 180 : 0;
@@ -512,11 +518,17 @@ export function DocCamera(props) {
     (async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("no camera"), { name: "NotFoundError" });
-        // 1080p at a modest frame rate: the analysis looks at small copies, and the still is
-        // taken from this stream. More pixels only cost battery (PERF-03).
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 24, max: 30 } },
-        });
+        // A photo: about 1080p at a modest frame rate. The analysis looks at small copies and
+        // the still is taken from this stream, so more pixels only cost battery (PERF-03).
+        // Reading codes live (a license barcode, the lines of a passport): the full sensor,
+        // because a barcode lying small in a corner is read from the stream itself, and at
+        // 1080p it's too few pixels across; the session is short, so it's worth the power.
+        // Only the long side is asked for, and never a crop: a width AND a height make the
+        // browser cut the frame to that shape (a portrait phone asked for 1920×1080 gets a
+        // 1080×1080 square, losing the top and bottom of the page). resizeMode "none" keeps
+        // the camera's own field of view at the nearest real resolution.
+        const size = codes ? { width: { ideal: 3840 }, resizeMode: "none" } : { width: { ideal: 1920 }, frameRate: { ideal: 24, max: 30 }, resizeMode: "none" };
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, ...size } });
         if (L.stop) { stream.getTracks().forEach((t) => t.stop()); return; }
         L.stream = stream;
         L.track = stream.getVideoTracks()[0];

@@ -103,7 +103,7 @@ export function Activity() {
     <main class="screen tabs">
       <header class="top">
         <div class="grow"><h1>Activity</h1><div class="small muted">Every access to your vault</div></div>
-        <button class="icon-btn" aria-label="Check again" disabled={S.ledgerLoading.value} onClick={loadLedger}><Icon name="rotate" /></button>
+        <button class="icon-btn" aria-label="Refresh" disabled={S.ledgerLoading.value} onClick={loadLedger}><Icon name="rotate" /></button>
         <button class="icon-btn" aria-label="Lock now" onClick={lockNow}><Icon name="lock" /></button>
       </header>
       <TabBanners />
