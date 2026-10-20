@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
+import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, chooseId } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -109,7 +109,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. a passport in view: the card follows the scan to Done ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pp-ok.mjpeg")));
   await page.goto(BASE);
   await unlock(page);
   await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 20_000 });
@@ -118,9 +118,9 @@ try {
     new MutationObserver(() => { const s = document.querySelector(".doccam .dc-state"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
       .observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await pickKind(page, /^ID/); // 3.0: one ID entry; the camera tells a passport from a card
+  await openPicker(page); await chooseId(page, "Passport"); // 3.0's one ID entry: which ID it is, then the guided outline (2.2.0)
   await state(page).locator(".dc-steps li").nth(4).waitFor({ timeout: 10_000 });
-  assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Find, Steady, Read, Verify, Done");
+  assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Line up, Steady, Read, Verify, Done");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 120_000 });
   const seen = await page.evaluate(() => globalThis.__seen);
   step(`the card said: ${seen.join(" → ")}`);

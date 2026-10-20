@@ -44,7 +44,7 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
 });
 
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
-  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "scanflow.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js"]);
+  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "scanflow.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js"]);
   const bad = [];
   for (const f of [...screens, ...ui]) {
     for (const m of noComments(read(f)).matchAll(/from "((?:\.\.\/)+core\/[^"]+)"/g)) {

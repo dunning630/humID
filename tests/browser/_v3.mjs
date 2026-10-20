@@ -68,6 +68,22 @@ export async function openPicker(page) {
 export async function pickKind(page, title) {
   await page.locator(".kinds .kind", { hasText: title }).first().click();
 }
+/**
+ * From the picker, the ID entry (3.0 with 2.2.0's guided scan): "Which ID is it?", then the ID
+ * flow's Start camera opens the outline made for that document. `which`: an ID_CHOICES title
+ * (Driver's license · Passport · ID card · Another card). Nothing opens the camera before the tap.
+ */
+export async function chooseId(page, which) {
+  await pickKind(page, /^ID/);
+  await page.locator(".pushed").getByText("Which ID is it?").waitFor({ timeout: 10_000 });
+  await page.locator(".kinds .kind", { hasText: which }).first().click();
+  const start = page.locator(".pushed [data-start-camera]").first();
+  await start.waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".doccam").count(), 0, "choosing an ID doesn't start the camera");
+  await start.click();
+  await page.locator(".doccam").waitFor({ timeout: 15_000 });
+}
+export async function pickId(page, which) { await openPicker(page); await chooseId(page, which); }
 /** Photo or Payment card: the "what to show" screen the first time, then the camera. */
 export async function startCamera(page) {
   const start = page.locator("[data-start-camera]").first();

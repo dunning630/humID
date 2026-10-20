@@ -101,7 +101,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. the back ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-paycard-back.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pay-back-ok.mjpeg")));
   await page.goto(BASE);
   await unlock(page);
   await page.locator(".item", { hasText: "Travel card" }).waitFor({ timeout: 30_000 });

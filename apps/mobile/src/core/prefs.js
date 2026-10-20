@@ -3,7 +3,7 @@
 // the 5-minute ceiling, and leaving the screen always locks. Kept on this device (each
 // device can differ: a phone and a desktop rarely want the same lock time).
 // What follows the person to every device — pins on vault items — lives inside each
-// item's encrypted index entry instead (controller.js setPinned), sealed like the item.
+// item's encrypted index entry instead (core/vault.js setPinned), sealed like the item.
 //
 // Pure functions are exported for tests (tests/prefs.test.js).
 

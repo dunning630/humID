@@ -6,9 +6,9 @@ import { Icon } from "../../brand/icons.jsx";
 import { Banner, Toggle, Row } from "../../ui/kit.jsx";
 import { ChipAccess } from "../../ui/codes.jsx";
 import { Review, Step, Note } from "./review.jsx";
-import { DocCamera } from "./camera.jsx";
+import { DocCamera, turnedImage } from "./camera.jsx";
 import * as S from "../../core/state.js";
-import { addIdRecord, chipReader, readChipInto, saveCopy, setPref } from "../../core/index.js";
+import { addIdRecord, chipReader, readChipInto, saveCopy, setPref, toast } from "../../core/index.js";
 import {
   KINDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyTyped, setImage, title as recordTitle, status as idStatus,
   provenance, fullName, niceName, countryName, regionName, parseAamva,
@@ -20,22 +20,22 @@ import { LIGHT_TIP } from "../../core/addroute.js";
 
 // What each kind of document asks the camera for, side by side.
 export const PLAN = {
-  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Show the photo page, with the two lines of <<<. It finds the page by itself." }],
+  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Line the photo page up inside the outline, with the two lines of <<< at the bottom. It takes the photo by itself." }],
   driver_license: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Show the back, anywhere in view. It finds the barcode and reads it by itself." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Line the card up inside the outline. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Line the back up inside the outline, barcode showing. It takes the photo and reads the barcode by itself." },
   ],
   id_card: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Show the back. A barcode or the lines of <<< read by themselves.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Line the card up inside the outline. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Line the back up inside the outline. A barcode or the lines of <<< read by themselves.", optional: true },
   ],
   residence_permit: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "The three lines of <<< read by themselves.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Line the card up inside the outline. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "Line the back up inside the outline, with the three lines of <<< showing. They read by themselves.", optional: true },
   ],
   other: [
-    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Point the camera at the card, anywhere in view. It takes the photo by itself.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Line the card up inside the outline. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Line the card up inside the outline. It takes the photo by itself.", optional: true },
   ],
 };
 
@@ -192,6 +192,13 @@ export function IdFlow({ start, onExit, onDraft }) {
   }
 
   const retake = (p) => { fields.current?.commit(); setCam(p); };
+  // the outline settles which way up a card is held; the print and the reads turn the rest, and this turns what is left
+  const rotate = async (p) => {
+    const img = rec.current.images[p.side];
+    if (!img) return;
+    try { setImage(rec.current, p.side, await turnedImage(img)); redraw(); }
+    catch { toast("Couldn't turn that photo. Retake it instead.", "warn"); }
+  };
   const toChip = () => { fields.current?.commit(); setStep("chip"); };
   const seal = async (place) => {
     fields.current?.commit();
@@ -206,7 +213,7 @@ export function IdFlow({ start, onExit, onDraft }) {
         {step === "capture" && (
           <div class="stack">
             {note && <Note {...note} />}
-            <Thumbs rec={r} plan={plan} onRetake={(p) => setCam(p)} />
+            <Thumbs rec={r} plan={plan} onRetake={(p) => setCam(p)} onRotate={rotate} />
             {next && <Banner icon="camera" title={next.title} text={next.hint} />}
             {next && <p class="small muted">{LIGHT_TIP}</p>}
             {next && (
@@ -234,7 +241,7 @@ export function IdFlow({ start, onExit, onDraft }) {
 
         {step === "review" && (
           <Review kind="id" name={name} setName={setName} tags={tags} setTags={setTags}
-            preview={<><IdProof rec={r} /><Thumbs rec={r} plan={plan} onRetake={retake} />{chipOffered() && <button class="btn quiet block" onClick={toChip}><Icon name="nfc" />Also read the ID chip</button>}</>}
+            preview={<><IdProof rec={r} /><Thumbs rec={r} plan={plan} onRetake={retake} onRotate={rotate} />{chipOffered() && <button class="btn quiet block" onClick={toChip}><Icon name="nfc" />Also read the ID chip</button>}</>}
             note={note && <Note {...note} />}
             fields={<IdFields rec={r} api={fields} onChange={redraw} />}
             disabled={missing.length > 0}
@@ -245,7 +252,7 @@ export function IdFlow({ start, onExit, onDraft }) {
         )}
       </Step>
       {cam && (
-        <DocCamera key={`${cam.side}-${camRun.current.n}`} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint} native={r.kind === "other"}
+        <DocCamera key={`${cam.side}-${camRun.current.n}`} kind={r.kind} side={cam.side} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint} native={r.kind === "other"}
           saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
       )}
     </>
@@ -254,7 +261,7 @@ export function IdFlow({ start, onExit, onDraft }) {
 
 const chipAccessFrom = (r) => ({ number: r.fields.number || "", birth: r.fields.birth || "", expiry: r.fields.expiry || "" });
 
-function Thumbs({ rec, plan, onRetake }) {
+function Thumbs({ rec, plan, onRetake, onRotate }) {
   const sides = [...plan.map((p) => p.side), ...(rec.images.portrait ? ["portrait"] : [])];
   return (
     <div class="id-thumbs">
@@ -264,7 +271,7 @@ function Thumbs({ rec, plan, onRetake }) {
         return (
           <figure data-shape={side === "portrait" ? "portrait" : p?.shape}>
             {img ? <img src={imageUrl(img)} alt={`${side} of the document`} /> : <span class="empty-thumb">{rec.skipped?.includes(side) ? "Skipped" : "Not yet"}</span>}
-            <figcaption>{side === "portrait" ? "Chip photo" : side === "front" ? "Front" : "Back"}{img && p && <button class="linklike" type="button" onClick={() => onRetake(p)}>Retake</button>}</figcaption>
+            <figcaption>{side === "portrait" ? "Chip photo" : side === "front" ? "Front" : "Back"}{img && p && <span class="id-thumb-acts">{onRotate && <button class="linklike" type="button" aria-label={`Rotate the ${side}`} onClick={() => onRotate(p)}>Rotate</button>}<button class="linklike" type="button" onClick={() => onRetake(p)}>Retake</button></span>}</figcaption>
           </figure>
         );
       })}

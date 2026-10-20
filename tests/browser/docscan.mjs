@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
+import { hold, enroll, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, chooseId } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -98,8 +98,8 @@ const queue = (page, ...items) => page.evaluate((xs) => { globalThis.__scanQueue
 
 /** The Add camera (3.0, camera first; the first time, "what to show" with Start camera comes before it). */
 async function openCamera(page) { await openAddFlow(page); await startCamera(page); }
-/** The picker ("It's something else"), then ID: its own camera at once. */
-async function pickId(page) { await openPicker(page); await pick(page, /^ID/); }
+/** The picker ("It's something else"), then ID → Driver's license → Start camera: HumID's own (guided) camera. */
+async function pickId(page) { await openPicker(page); await chooseId(page, "Driver's license"); }
 
 try {
   const { page } = await launch();
@@ -119,7 +119,7 @@ try {
 
   /* ---------------- 1. IDs stay on HumID's own camera ---------------- */
   await pickId(page);
-  await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam[data-guided]:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   await closeCamera();
   assert.equal(await streams(), 1, "HumID's own camera opened");
   assert.equal(await scans(), 0, "the scanner wasn't opened");

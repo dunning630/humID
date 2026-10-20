@@ -55,7 +55,7 @@ test("each failure says what it is and what to do", () => {
     [{ found: false, dim: true, mean: 12 }, "dark", "Too dark"],
     [{ ...GOOD, light: false, mean: 20 }, "dark", "Too dark"],
     [{ ...GOOD, light: false, mean: 250 }, "bright", "Too bright"],
-    [{ ...GOOD, glare: true }, "glare", "Glare"],
+    [{ ...GOOD, glare: true }, "glare", "Too much glare"],
     [{ ...GOOD, big: false }, "far", "Too far"],
     [{ ...GOOD, fits: false }, "shape", "Not the right document"],
   ];
