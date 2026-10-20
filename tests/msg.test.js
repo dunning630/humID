@@ -443,6 +443,219 @@ test("relay: a flood of new addresses can't reset a busy client's rate limit", (
   assert.throws(() => relay.put(box, w, { ip: "198.51.100.7" }), (e) => e.code === "rate_limited");
 });
 
+
+/* ---------------- delete ---------------- */
+
+const conv = async (opts) => { const m = await meet({ stamps: false, ...opts }); return { ...m, A: new M.Conversation(m.a), B: new M.Conversation(m.b) }; };
+const postTo = (relay, p) => relay.put(p.box, p.wire, { tag: p.retractTag });
+const fetchFor = (relay, c, now = T0) => c.session.inboxes(now).flatMap((box) => relay.take(box));
+const deliver = async (relay, to, now = T0) => { const out = []; for (const w of fetchFor(relay, to, now)) out.push(await to.receive(w, { now })); return out; };
+
+test("delete for me: gone from this phone only; the contact keeps their copy", async () => {
+  const { A, B, relay } = await conv();
+  const sent = await A.send("keep this between us", { now: T0 });
+  postTo(relay, sent);
+  await deliver(relay, B);
+  assert.deepEqual((await A.delete(sent.id, { now: T0 })), { deleted: true });
+  assert.equal(A.messages(T0).length, 0);
+  assert.equal(B.messages(T0)[0].text, "keep this between us");
+  assert.deepEqual(await A.delete(sent.id, { now: T0 }), { deleted: false });
+});
+
+test("a deleted message can't be recovered from any earlier save: every save uses a new key", async () => {
+  const { A, B, relay } = await conv();
+  const sent = await A.send("delete me", { now: T0 });
+  postTo(relay, sent);
+  await deliver(relay, B);
+  const before = await B.store.seal(T0);
+  await B.delete(sent.id, { now: T0 });
+  const after = await B.store.seal(T0);
+  assert.notDeepEqual(before.key, after.key);
+  const reopened = await M.MessageStore.open(after.key, after.blob, { convId: B.session.convId });
+  assert.equal(reopened.size, 0);
+  // The old save opens only with the old key; once the app overwrites that key, nothing opens it.
+  await code(M.MessageStore.open(after.key, before.blob, { convId: B.session.convId }), "decrypt_failed");
+  assert.equal((await M.MessageStore.open(before.key, before.blob, { convId: B.session.convId })).size, 1, "which is why the old key must be destroyed");
+  await code(M.MessageStore.open(after.key, after.blob, { convId: rnd(16) }), "wrong_conversation");
+});
+
+test("delete for both, after delivery: erased on the contact's phone too", async () => {
+  const { A, B, relay } = await conv();
+  const sent = await A.send("I shouldn't have said that", { now: T0 });
+  postTo(relay, sent);
+  await deliver(relay, B);
+  const r = await A.delete(sent.id, { forBoth: true, now: T0 });
+  assert.equal(relay.retract(r.unsend.box, r.unsend.retract), false, "already delivered: the relay no longer has it");
+  postTo(relay, r.send);
+  const [got] = await deliver(relay, B);
+  assert.equal(got.kind, "delete");
+  assert.equal(got.deleted, 1);
+  assert.equal(B.messages(T0).length, 0);
+  assert.equal(A.messages(T0).length, 0);
+});
+
+test("a contact can never delete what you sent", async () => {
+  const { A, B, relay } = await conv();
+  const mine = await A.send("my words", { now: T0 });
+  postTo(relay, mine);
+  await deliver(relay, B);
+  // B tries to erase A's copy of A's own message.
+  const evil = await B.session.encrypt("delete", M.deleteBody([{ id: mine.id, pos: { dh: "0".repeat(64), n: 0 } }]), { now: T0 });
+  postTo(relay, evil);
+  const [got] = await deliver(relay, A);
+  assert.equal(got.refused, 1);
+  assert.equal(got.deleted, 0);
+  assert.equal(A.messages(T0)[0].text, "my words");
+});
+
+test("delete for both, before delivery: unsent at the relay, and a kept copy can never be opened", async () => {
+  const { A, B, relay } = await conv();
+  const sent = await A.send("wrong person!", { now: T0 });
+  postTo(relay, sent);
+  const keptCopy = sent.wire.slice(); // someone (a relay, a network tap) kept the ciphertext
+  const r = await A.delete(sent.id, { forBoth: true, now: T0 });
+  assert.equal(relay.retract(r.unsend.box, r.unsend.retract), true, "unsent: it never reached the contact");
+  assert.equal(relay.retract(r.unsend.box, r.unsend.retract), false);
+  postTo(relay, r.send);
+  const got = await deliver(relay, B);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].kind, "delete");
+  assert.equal(got[0].destroyed, 1, "the contact's phone destroyed the key that would have opened it");
+  await code(B.receive(keptCopy, { now: T0 }), "replay_or_old");
+  assert.equal(B.messages(T0).length, 0);
+  assert.equal(B.session.gaps({ now: T0 + DAY }).missing, 0, "not reported as a missing message");
+});
+
+test("delete for both across a ratchet step: the old chain's key is still destroyed", async () => {
+  const { A, B, relay } = await conv();
+  const sent = await A.send("first", { now: T0 });       // A's chain 1
+  const reply = await B.send("hi", { now: T0 });         // B replies; A's next send starts a new chain
+  postTo(relay, reply);
+  await deliver(relay, A);
+  const r = await A.delete(sent.id, { forBoth: true, now: T0 });
+  const [got] = [await B.receive(r.send.wire, { now: T0 })]; // the delete arrives before the message
+  assert.equal(got.destroyed, 1);
+  await code(B.receive(sent.wire, { now: T0 }), "replay_or_old");
+});
+
+test("delete for both refuses what isn't yours, and anything after the conversation ended, without losing your copy", async () => {
+  const { A, B, relay } = await conv();
+  const theirs = await B.send("from B", { now: T0 });
+  postTo(relay, theirs);
+  await deliver(relay, A);
+  await code(A.delete(theirs.id, { forBoth: true, now: T0 }), "not_yours");
+  await code(A.delete("A".repeat(22), { forBoth: true, now: T0 }), "not_found");
+  const mine = await A.send("from A", { now: T0 });
+  const end = await B.session.encrypt("close", "", { now: T0 });
+  await A.receive(end.wire, { now: T0 });
+  await code(A.delete(mine.id, { forBoth: true, now: T0 }), "closed");
+  assert.ok(A.messages(T0).some((m) => m.id === mine.id), "still here: you can delete it for yourself");
+  assert.deepEqual(await A.delete(mine.id, { now: T0 }), { deleted: true });
+});
+
+test("unsend: only the sender's token works; the relay keeps no token", () => {
+  const relay = M.memoryRelay({ now: () => T0 });
+  const box = "e".repeat(32), w = new Uint8Array(4096); w[0] = 1;
+  const { retract, retractTag } = M.newRetract();
+  relay.put(box, w, { tag: retractTag });
+  assert.equal(relay.retract(box, rnd(16)), false);
+  assert.equal(relay.retract("f".repeat(32), retract), false, "a wrong box answers the same as a wrong token");
+  assert.throws(() => relay.put(box, w, { tag: "not-a-tag" }), (e) => e.code === "bad_tag");
+  assert.equal(relay.retract(box, retract), true);
+  assert.deepEqual(relay.take(box), []);
+  assert.equal(relay.totalBytes, 0);
+  assert.ok(!JSON.stringify(relay.observed).includes(Buffer.from(retract).toString("hex")));
+});
+
+test("disappearing messages: either side sets the timer; messages vanish on both phones and from saves", async () => {
+  const { A, B, relay } = await conv();
+  await code(A.setTimer(5_000, { now: T0 }), "bad_timer");
+  postTo(relay, await A.setTimer(60_000, { now: T0 }));
+  const [t] = await deliver(relay, B);
+  assert.equal(t.timer, 60_000);
+  assert.equal(A.timer, 60_000);
+  assert.equal(B.timer, 60_000);
+  const sent = await A.send("this will vanish", { now: T0 });
+  postTo(relay, sent);
+  const [got] = await deliver(relay, B, T0 + 1_000);
+  assert.equal(got.ttlMs, 60_000);
+  assert.equal(B.messages(T0 + 60_000).length, 1, "counts down from arrival");
+  assert.equal(B.messages(T0 + 61_001).length, 0);
+  assert.equal(A.messages(T0 + 60_001).length, 0);
+  const saved = await B.store.seal(T0 + 61_001);
+  assert.equal((await M.MessageStore.open(saved.key, saved.blob, { convId: B.session.convId })).size, 0);
+  const back = await B.send("mine vanish too", { now: T0 });
+  postTo(relay, back);
+  assert.equal((await deliver(relay, A))[0].ttlMs, 60_000);
+  postTo(relay, await B.setTimer(0, { now: T0 }));
+  await deliver(relay, A);
+  assert.equal(A.timer, 0);
+});
+
+test("forget: the conversation and every key gone from this phone; for both, your messages vanish from theirs too", async () => {
+  const { A, B, relay } = await conv();
+  for (const t of ["a1", "a2", "a3"]) postTo(relay, await A.send(t, { now: T0 }));
+  for (const t of ["b1", "b2"]) postTo(relay, await B.send(t, { now: T0 }));
+  await deliver(relay, B); await deliver(relay, A);
+  const secrets = [A.session.s.RK, A.session.s.sendWire, A.session.s.recvBox, A.session.s.CKs];
+  const out = await A.forget({ forBoth: true, now: T0 });
+  assert.equal(out.send.length, 2, "one delete for your messages, then the close");
+  for (const p of out.send) postTo(relay, p);
+  const got = await deliver(relay, B);
+  assert.deepEqual(got.map((g) => g.kind), ["delete", "close"]);
+  assert.deepEqual(B.messages(T0).map((m) => m.text), ["b1", "b2"], "only B's own messages remain on B's phone");
+  assert.equal(B.status, "closed");
+  assert.equal(A.status, "erased");
+  assert.equal(A.store.size, 0);
+  for (const k of secrets) assert.ok(k.every((x) => x === 0), "key material overwritten");
+  await code(A.send("hello?", { now: T0 }), "erased");
+  await code(A.session.seal(rnd(32)), "erased");
+  assert.deepEqual(A.session.inboxes(T0), []);
+});
+
+test("forget for me only: nothing is sent; the contact's phone is untouched", async () => {
+  const { A, B, relay } = await conv();
+  postTo(relay, await A.send("still on B's phone", { now: T0 }));
+  await deliver(relay, B);
+  const out = await A.forget({ now: T0 });
+  assert.deepEqual(out, { send: [], unsend: [] });
+  assert.equal(B.messages(T0).length, 1);
+  assert.equal(B.status, "connected");
+});
+
+test("cancel an invite: the bundle comes off the relay and requests to it can't be read", async () => {
+  const seedA = rnd(64);
+  const relay = M.memoryRelay({ now: () => T0 });
+  const inv = await M.createInvite(seedA, { now: T0 });
+  relay.put(inv.box, inv.wire, { tag: inv.retractTag });
+  const opened = await M.openInvite(inv.code, relay.take(inv.box, { keep: true })[0], { now: T0 });
+  const req = await M.requestContact(rnd(64), opened, { now: T0 });
+  const down = M.cancelInvite(inv.state);
+  assert.equal(relay.retract(down.box, down.retract), true);
+  assert.deepEqual(relay.take(inv.box, { keep: true }), [], "no one else can fetch it with the code");
+  await code(M.readRequest(inv.state, M.personaFromSalt(seedA, inv.state.personaSalt), req.wire, { now: T0 }), "invite_used");
+  assert.ok(inv.state.otkSk.every((x) => x === 0));
+});
+
+test("withdraw a contact request before it's read", async () => {
+  const relay = M.memoryRelay({ now: () => T0 });
+  const inv = await M.createInvite(rnd(64), { now: T0 });
+  const req = await M.requestContact(rnd(64), await M.openInvite(inv.code, inv.wire, { now: T0 }), { now: T0 });
+  relay.put(req.box, req.wire, { tag: req.retractTag });
+  assert.equal(relay.retract(req.box, req.retract), true);
+  assert.deepEqual(relay.take(inv.state.replyBox), []);
+});
+
+test("delete and timer messages are checked on the way out and on the way in", async () => {
+  const { a } = await meet({ stamps: false });
+  await code(a.encrypt("delete", new TextEncoder().encode(JSON.stringify({ d: [] })), { now: T0 }), "bad_delete");
+  await code(a.encrypt("delete", new TextEncoder().encode(JSON.stringify({ d: [{ id: "x", dh: "y", n: -1 }] })), { now: T0 }), "bad_delete");
+  await code(a.encrypt("timer", "5", { now: T0 }), "bad_timer");
+  await code(a.encrypt("text", "hi", { now: T0, ttlMs: 10 }), "bad_timer");
+  const many = Array.from({ length: M.MAX_DELETE + 1 }, () => ({ id: "A".repeat(22), pos: { dh: "0".repeat(64), n: 0 } }));
+  await code(a.encrypt("delete", M.deleteBody(many), { now: T0 }), "bad_delete");
+});
+
 /* ---------------- fuzzing ---------------- */
 // Audit: "one fixed random seed, 3,000 cases; any error type accepted". Here the
 // seed changes every run and is printed on failure (rerun with MSG_FUZZ_SEED),

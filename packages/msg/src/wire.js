@@ -4,7 +4,7 @@
 // still hints at the kind (invites 64 KiB, requests 128 KiB, messages usually
 // 8 KiB), and a request carries its ephemeral X25519 key in the clear.
 
-import { MsgError, u32, readU32, mac, label, toHex, dayOf } from "./util.js";
+import { MsgError, u32, readU32, mac, label, toHex, dayOf, H, random } from "./util.js";
 
 export const WIRE_VERSION = 1;
 
@@ -57,3 +57,17 @@ export const boxFor = (boxKey, day) => toHex(mac(boxKey, Uint8Array.of(...label(
 
 /** Days a receiver polls: yesterday, today, tomorrow (clock skew between phones). */
 export const pollDays = (now) => { const d = dayOf(now); return [d - 1, d, d + 1]; };
+
+/* ---------- unsend tokens ----------
+ * Every object a phone posts comes with a random 16-byte unsend token, kept on
+ * the phone. The relay stores only SHA3(token) beside the object. Showing the
+ * token later removes the object if it hasn't been fetched yet, and only the
+ * sender ever has the token. The tag is random per object, so it links nothing.
+ */
+export const RETRACT_BYTES = 16;
+export const TAG_RE = /^[0-9a-f]{64}$/;
+export const retractTag = (token) => toHex(H(label("retract"), token));
+export function newRetract() {
+  const retract = random(RETRACT_BYTES);
+  return { retract, retractTag: retractTag(retract) };
+}

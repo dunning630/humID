@@ -12,12 +12,17 @@ export {
   encodePub, decodePub, dualSign, dualVerify, PERSONA_ID_CHARS, SAFETY_CHARS,
 } from "./persona.js";
 export {
-  createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite,
+  createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite, cancelInvite,
   formatInviteCode, parseInviteCode, inviteBoxOf, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
-export { Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS } from "./session.js";
+export {
+  Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS,
+  MIN_TTL_MS, MAX_TTL_MS, MAX_DELETE, deleteBody, parseDelete, isTtl,
+} from "./session.js";
+export { MessageStore, TOMBSTONE_TTL_MS } from "./history.js";
+export { Conversation } from "./conversation.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,
 } from "./stamp.js";
-export { BUCKETS, isWireSize, isBox, boxFor, pollDays, WIRE_VERSION } from "./wire.js";
+export { BUCKETS, isWireSize, isBox, boxFor, pollDays, WIRE_VERSION, newRetract, retractTag } from "./wire.js";
 export { memoryRelay, rateKey, RELAY_DEFAULTS } from "./relay.js";
