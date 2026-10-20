@@ -279,6 +279,7 @@ export function declineRequest(state, request) {
 export function cancelInvite(state) {
   const takeDown = { box: state.box, retract: state.retract?.slice?.() ?? null };
   closeInvite(state);
+  if (state.retract) { wipe(state.retract); state.retract = null; }
   return takeDown;
 }
 

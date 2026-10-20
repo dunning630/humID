@@ -124,7 +124,7 @@ export function memoryRelay(opts = {}) {
       const list = boxes.get(box) || [];
       if (!keep && list.length) { boxes.delete(box); total -= list.reduce((n, e) => n + e.wire.length, 0); }
       observed.push({ op: keep ? "peek" : "take", box, at: now() });
-      return list.map((e) => e.wire);
+      return list.map((e) => e.wire.slice()); // copies: the relay's own bytes never leave it
     },
 
     /**
