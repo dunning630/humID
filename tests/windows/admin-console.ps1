@@ -78,6 +78,7 @@ function Run-Job([string]$Type, $JobArgs = @{}, [int]$Minutes = 10) {
 Say 'Job: backup'
 $j = Run-Job 'backup'
 if ($j.state -ne 'done' -or -not (Test-Path (Join-Path $data "backups\$($j.result.file)"))) { throw 'backup job failed' }
+if ($j.result.file -notmatch '\.humidbak$') { throw "the backup job wrote $($j.result.file), not an encrypted .humidbak" }
 
 Say 'Job: restart the server'
 $kid = (Info).kid
