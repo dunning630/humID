@@ -117,3 +117,17 @@ export function guard(fn) {
     return r;
   } catch (e) { throw e instanceof MsgError ? e : new MsgError("malformed", e?.message); }
 }
+
+/* Uint8Array-safe JSON for the state. */
+export function toPlain(v) {
+  if (v instanceof Uint8Array) return { $b: b64u(v) };
+  if (Array.isArray(v)) return v.map(toPlain);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toPlain(x)]));
+  return v;
+}
+export function fromPlain(v) {
+  if (v && typeof v === "object" && !Array.isArray(v) && typeof v.$b === "string" && Object.keys(v).length === 1) return unb64u(v.$b);
+  if (Array.isArray(v)) return v.map(fromPlain);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromPlain(x)]));
+  return v;
+}

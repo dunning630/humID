@@ -9,12 +9,16 @@
 //     time (audit: timing leaks; SEC-S-01: nothing it does is worth forging).
 //   - Fetching a box that is empty and a box that never existed give exactly the
 //     same answer (audit SEC-S-13: never reveal whether something exists).
+//   - Unsend: an object posted with an unsend tag (SHA3 of a token only the
+//     sender holds) is removed when the sender shows the token, if it hasn't
+//     been fetched yet. The answer tells the sender whether it was still there,
+//     and nobody else can ask.
 //   - Caps on every dimension (audit SEC-S-02, -03, -08): objects per box, bytes
 //     per box, total bytes, deposits per network per minute, with IPv6 keyed by
 //     its /64 so cycling addresses inside one allocation doesn't escape the limit.
 
 import { MsgError } from "./util.js";
-import { isBox, isWireSize, MAX_WIRE } from "./wire.js";
+import { isBox, isWireSize, MAX_WIRE, TAG_RE, retractTag, RETRACT_BYTES } from "./wire.js";
 
 export const RELAY_DEFAULTS = Object.freeze({
   ttlMs: 14 * 24 * 3600_000,
@@ -88,9 +92,13 @@ export function memoryRelay(opts = {}) {
     observed,
     get totalBytes() { return total; },
 
-    /** Deposit. Throws MsgError: bad_box, bad_size, rate_limited, box_full, relay_full. */
-    put(box, wire, { ip = "0.0.0.0" } = {}) {
+    /**
+     * Deposit. `tag` (optional): the object's unsend tag (retractTag from the sender).
+     * Throws MsgError: bad_box, bad_size, bad_tag, rate_limited, box_full, relay_full.
+     */
+    put(box, wire, { ip = "0.0.0.0", tag = null } = {}) {
       if (!isBox(box)) throw new MsgError("bad_box", "Bad mailbox id");
+      if (tag !== null && !TAG_RE.test(tag)) throw new MsgError("bad_tag", "Bad unsend tag");
       if (!(wire instanceof Uint8Array) || wire.length > MAX_WIRE || !isWireSize(wire.length)) throw new MsgError("bad_size", "Not a wire object");
       if (!canDeposit(rateKey(ip))) throw new MsgError("rate_limited", "Too many deposits");
       expire();
@@ -98,7 +106,7 @@ export function memoryRelay(opts = {}) {
       const boxBytes = list.reduce((n, e) => n + e.wire.length, 0);
       if (list.length >= o.maxPerBox || boxBytes + wire.length > o.maxBoxBytes) throw new MsgError("box_full", "Mailbox is full");
       if (total + wire.length > o.maxTotalBytes) throw new MsgError("relay_full", "Relay is full");
-      list.push({ at: now(), wire: wire.slice() });
+      list.push({ at: now(), wire: wire.slice(), tag });
       boxes.set(box, list);
       total += wire.length;
       observed.push({ op: "put", box, size: wire.length, at: now() });
@@ -117,6 +125,28 @@ export function memoryRelay(opts = {}) {
       if (!keep && list.length) { boxes.delete(box); total -= list.reduce((n, e) => n + e.wire.length, 0); }
       observed.push({ op: keep ? "peek" : "take", box, at: now() });
       return list.map((e) => e.wire);
+    },
+
+    /**
+     * Unsend: remove the object in `box` whose tag is SHA3(token).
+     * true: it was still there and is now gone (never delivered).
+     * false: already fetched, expired, or no such object (all answer the same).
+     */
+    retract(box, token, { ip = "0.0.0.0" } = {}) {
+      if (!isBox(box)) throw new MsgError("bad_box", "Bad mailbox id");
+      if (!(token instanceof Uint8Array) || token.length !== RETRACT_BYTES) throw new MsgError("bad_tag", "Bad unsend token");
+      if (!canDeposit(rateKey(ip))) throw new MsgError("rate_limited", "Too many requests");
+      expire();
+      const tag = retractTag(token);
+      const list = boxes.get(box) || [];
+      const i = list.findIndex((e) => e.tag === tag);
+      observed.push({ op: "retract", box, at: now() });
+      if (i < 0) return false;
+      const [gone] = list.splice(i, 1);
+      total -= gone.wire.length;
+      gone.wire.fill(0);
+      if (!list.length) boxes.delete(box);
+      return true;
     },
   };
 }
