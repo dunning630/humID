@@ -103,11 +103,14 @@ test("the template follows the kind: ID-1 for cards and licences, ID-3 for passp
   }
 });
 
-test("live constraints ask for 1080p (1440p for a passport), turned to the screen; a wrong-way preview is noticed", () => {
+test("live constraints ask for the long side only, never a crop (1080p; 1440p for a passport); a wrong-way preview is noticed and re-asked in the screen's orientation", () => {
   const c = liveConstraints(LIC, { portrait: true }), p = liveConstraints(PP, { portrait: true });
-  assert.equal(c.width.ideal, 1080); assert.equal(c.height.ideal, 1920);
-  assert.equal(p.width.ideal, 1440); assert.equal(p.height.ideal, 2560);
-  assert.equal(liveConstraints(LIC, { portrait: false }).width.ideal, 1920);
+  assert.equal(c.width.ideal, 1920); assert.equal(c.height, undefined); assert.equal(c.resizeMode, "none");
+  assert.equal(p.width.ideal, 2560); assert.equal(p.height, undefined);
+  const e = liveConstraints(LIC, { portrait: true, exact: true }), q = liveConstraints(PP, { portrait: true, exact: true });
+  assert.equal(e.width.ideal, 1080); assert.equal(e.height.ideal, 1920);
+  assert.equal(q.width.ideal, 1440); assert.equal(q.height.ideal, 2560);
+  assert.equal(liveConstraints(LIC, { portrait: false, exact: true }).width.ideal, 1920);
   assert.equal(previewTurned(1920, 1080, true), true); assert.equal(previewTurned(1080, 1920, true), false);
   assert.equal(previewTurned(1920, 1080, false), false); assert.equal(previewTurned(1080, 1080, true), true);
 });

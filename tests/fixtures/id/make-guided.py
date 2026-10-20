@@ -173,5 +173,5 @@ for name, s in specs.items():
     card, g = kw.pop("card"), kw.pop("g")
     cam = {k: kw.pop(k) for k in ("blur", "glare", "dark") if k in kw}
     save(name, [camera(place(card, g, bg=bg, **kw), **cam)])
-save("lic-back-shaky", shaky(back, G1))
+save("lic-back-shaky", shaky(back, G1, n=16))  # many different views: a few repeated ones let a sampler see two equal frames in a row, which a real shake never does
 print("wrote", len(specs) + 1, "fixtures to", out)
