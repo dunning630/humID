@@ -25,7 +25,7 @@ const code = async (p, c) => { try { await p; } catch (e) { assert.ok(e instance
 async function meet({ seedA = rnd(64), seedB = rnd(64), relay = M.memoryRelay({ now: () => T0 }), now = T0, stamps = true, uses = 1 } = {}) {
   const inv = await M.createInvite(seedA, { now, uses });
   relay.put(inv.box, inv.wire);
-  const [bundle] = relay.take(M.inviteBoxOf(M.parseInviteCode(inv.code)), { keep: true });
+  const [bundle] = relay.take(M.inviteBoxOf(M.parseInviteCode(inv.code).secret), { keep: true });
   const opened = await M.openInvite(inv.code, bundle, { now });
   const req = await M.requestContact(seedB, opened, { intro: "from the workshop", stamper: stamps ? stamper : null, now });
   relay.put(req.box, req.wire);
@@ -68,11 +68,11 @@ test("safety code: 100 bits, the same on both sides, changes if any key is swapp
 /* ---------------- invite codes ---------------- */
 
 test("invite code: round trip, forgiving input, typos caught on the phone", () => {
-  const secret = rnd(20);
-  const c = M.formatInviteCode(secret);
+  const secret = rnd(16), pin = rnd(10);
+  const c = M.formatInviteCode(secret, pin);
   assert.match(c, /^HI-/);
-  assert.deepEqual(M.parseInviteCode(c), secret);
-  assert.deepEqual(M.parseInviteCode(c.toLowerCase().replace(/-/g, " ")), secret);
+  assert.deepEqual(M.parseInviteCode(c), { secret, pin });
+  assert.deepEqual(M.parseInviteCode(c.toLowerCase().replace(/-/g, " ")), { secret, pin });
   const chars = c.split("");
   const i = 8; chars[i] = chars[i] === "Z" ? "Y" : "Z";
   assert.throws(() => M.parseInviteCode(chars.join("")), (e) => e.code === "bad_invite_code");
@@ -254,14 +254,16 @@ test("sealed state: round trip; older copy refused (rollback); another conversat
   const m = await a.encrypt("text", "one", { now: T0 });
   await b.decrypt(m.wire, { now: T0 });
   const v2 = await b.seal(key);
-  const restored = await M.openSession(key, v2, { minVersion: b.version });
+  const convId = b.convId;
+  const restored = await M.openSession(key, v2, { convId, minVersion: b.version });
   const m2 = await a.encrypt("text", "two", { now: T0 });
   assert.equal((await restored.decrypt(m2.wire, { now: T0 })).text, "two");
-  await code(M.openSession(key, v1, { minVersion: b.version }), "rolled_back");
-  await code(M.openSession(rnd(32), v2), "decrypt_failed");
+  await code(M.openSession(key, v1, { convId, minVersion: b.version }), "rolled_back");
+  await code(M.openSession(rnd(32), v2, { convId }), "decrypt_failed");
   await code(M.openSession(key, v2, { convId: rnd(16) }), "wrong_conversation");
+  await code(M.openSession(key, v2), "bad_request");
   const forgedHead = v1.slice(); forgedHead[23] += 9; // claim a newer version
-  await code(M.openSession(key, forgedHead, { minVersion: b.version }), "decrypt_failed");
+  await code(M.openSession(key, forgedHead, { convId, minVersion: b.version }), "decrypt_failed");
 });
 
 /* ---------------- what the relay and the issuer learn ---------------- */
@@ -280,7 +282,7 @@ test("unlinkability, by the protocol: the relay sees fixed sizes and daily-rotat
   for (const w of wires) {
     for (const p of personas) for (const k of ["kemPk", "dsaPk", "slhPk", "xPk"]) assert.ok(!contains(w, p[k].subarray(0, 24)));
     assert.ok(!contains(w, new TextEncoder().encode("HC-")));
-    assert.ok(!contains(w, inv.state.secret.length ? inv.state.secret : rnd(20)));
+    assert.ok(!contains(w, M.parseInviteCode(inv.code).pin), "the code's persona pin isn't on the wire either");
     assert.equal(w[0], M.WIRE_VERSION);
   }
 });
@@ -344,6 +346,103 @@ test("backend: the platform's crypto can replace the JS maths only if it agrees 
   assert.ok(calls > 0);
 });
 
+
+/* ---------------- fixes from the independent review ---------------- */
+
+test("someone else who learns the code can't pose as the inviter (the code pins the inviter's persona)", async () => {
+  // Mallory knows a code's secret and seals HER bundle under it. The bundle opens, but it carries
+  // Mallory's persona, not the one the code pins. Modelled with a real bundle under its own secret,
+  // opened with another persona's pin: exactly what Mallory's forgery looks like to the invitee.
+  const real = await M.createInvite(rnd(64), { now: T0 });
+  const mallory = await M.createInvite(rnd(64), { now: T0 });
+  const { secret } = M.parseInviteCode(mallory.code);
+  const { pin } = M.parseInviteCode(real.code);
+  await code(M.openInvite({ secret, pin }, mallory.wire, { now: T0 }), "invite_mismatch");
+  assert.ok((await M.openInvite(mallory.code, mallory.wire, { now: T0 })).id === mallory.persona.id, "with its own pin it opens");
+});
+
+test("a duress message and a stamped message are the same size on the wire as an ordinary one", async () => {
+  const { a, b } = await meet({ stamps: false });
+  const body = "x".repeat(600);
+  const plain = await b.encrypt("text", body, { now: T0 });
+  const duress = await b.encrypt("text", body, { now: T0, duress: true });
+  const stamped = await b.encrypt("text", body, { now: T0, stamper });
+  assert.equal(duress.wire.length, plain.wire.length);
+  assert.equal(stamped.wire.length, plain.wire.length);
+  for (const m of [plain, duress, stamped]) await a.decrypt(m.wire, { now: T0 });
+});
+
+test("persist hook: nothing goes out unless the new state was saved first", async () => {
+  const { a, b } = await meet({ stamps: false });
+  let fail = true, saved = 0;
+  const key = rnd(32);
+  const guarded = M.Session.fromJSON(b.toJSON(), { persist: async (s) => { if (fail) throw new Error("disk full"); saved = await s.seal(key); } });
+  const v = guarded.version;
+  await code(guarded.encrypt("text", "lost?", { now: T0 }), "persist_failed");
+  assert.equal(guarded.version, v, "the step was undone");
+  fail = false;
+  const m = await guarded.encrypt("text", "kept", { now: T0 });
+  assert.ok(saved instanceof Uint8Array);
+  assert.equal((await a.decrypt(m.wire, { now: T0 })).text, "kept");
+});
+
+test("a rolled-back sender never repeats a message key and nonce (per-message salt)", async () => {
+  const { a, b } = await meet({ stamps: false });
+  await b.encrypt("text", "warm up", { now: T0 });
+  const snapshot = b.toJSON();
+  const m1 = await b.encrypt("text", "first", { now: T0 });
+  const rolled = M.Session.fromJSON(snapshot);
+  const m2 = await rolled.encrypt("text", "first", { now: T0 });
+  assert.notDeepEqual(m1.wire, m2.wire, "same chain position, same text, different ciphertext");
+  assert.equal(m1.wire.length, m2.wire.length);
+});
+
+test("text that isn't valid UTF-8 is refused without moving the ratchet", async () => {
+  const { a, b } = await meet({ stamps: false });
+  const bad = await b.encrypt("text", Uint8Array.of(0xff, 0xfe, 0xfd), { now: T0 });
+  const v = a.version;
+  await code(a.decrypt(bad.wire, { now: T0 }), "malformed");
+  assert.equal(a.version, v);
+  await code(a.decrypt(bad.wire, { now: T0 }), "malformed"); // not "replay_or_old": nothing was consumed
+  assert.equal((await a.decrypt((await b.encrypt("text", "fine", { now: T0 })).wire, { now: T0 })).text, "fine");
+});
+
+test("malformed ML-KEM keys are refused when they arrive (FIPS 203 modulus check)", () => {
+  const p = M.newPersona(rnd(64));
+  assert.ok(M.isValidKemPk(p.pub.kemPk));
+  const bad = p.pub.kemPk.slice(); bad[0] = 0xff; bad[1] |= 0x0f; // coefficient 4095 ≥ 3329
+  assert.ok(!M.isValidKemPk(bad));
+  assert.throws(() => M.decodePub({ ...M.encodePub(p.pub), kem: Buffer.from(bad).toString("base64url") }), (e) => e.code === "bad_key");
+});
+
+test("skipped message keys are forgotten after the relay's retention time", async () => {
+  const { a, b } = await meet({ stamps: false });
+  const withheld = await b.encrypt("text", "withheld", { now: T0 });
+  await a.decrypt((await b.encrypt("text", "later", { now: T0 })).wire, { now: T0 });
+  assert.equal(a.gaps({ now: T0 + 3600_000 }).missing, 1);
+  await a.decrypt((await b.encrypt("text", "much later", { now: T0 })).wire, { now: T0 + M.SKIPPED_TTL_MS + 1 });
+  assert.equal(a.gaps({ now: T0 + M.SKIPPED_TTL_MS + 2 }).missing, 0, "its key is gone");
+  await code(a.decrypt(withheld.wire, { now: T0 + M.SKIPPED_TTL_MS + 3 }), "replay_or_old");
+});
+
+test("stamps: a retired key stops counting; a stamp key that is also a pass key is refused", async () => {
+  const keys = M.importStampKeys([{ ...issuer.publicView, issuing: true, acceptUntil: "2026-12-31" }]);
+  const c = rnd(32);
+  const st = await M.makeStamper(keys, async (bl) => blindSign(issuer, bl))(c);
+  assert.ok(M.verifyStamp(keys, st, c, { now: Date.UTC(2026, 11, 31, 23) }));
+  assert.ok(!M.verifyStamp(keys, st, c, { now: Date.UTC(2027, 0, 1, 1) }));
+  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, issuing: true }], { passKeys: [{ id: issuer.publicView.id }] }), (e) => e.code === "bad_stamp_key");
+});
+
+test("relay: a flood of new addresses can't reset a busy client's rate limit", () => {
+  let t = T0;
+  const relay = M.memoryRelay({ now: () => t, depositsPerMinute: 2, maxRateKeys: 50 });
+  const box = "d".repeat(32), w = new Uint8Array(4096); w[0] = 1;
+  relay.put(box, w, { ip: "198.51.100.7" }); relay.put(box, w, { ip: "198.51.100.7" });
+  for (let i = 0; i < 100; i++) { try { relay.put(box, w, { ip: `203.0.113.${i}` }); } catch {} }
+  assert.throws(() => relay.put(box, w, { ip: "198.51.100.7" }), (e) => e.code === "rate_limited");
+});
+
 /* ---------------- fuzzing ---------------- */
 // Audit: "one fixed random seed, 3,000 cases; any error type accepted". Here the
 // seed changes every run and is printed on failure (rerun with MSG_FUZZ_SEED),
@@ -371,13 +470,13 @@ test("fuzz: mutated wires, requests, invites and stored state fail only with Msg
     const z = new Uint8Array(y.length); z.set(y.subarray(0, Math.floor(r() * y.length))); return z;
   };
   const st = { ...inv.state, used: 0, uses: 99 }; // a fresh view of the (closed) invite, for reading only
-  st.otkSk = rnd(st.otkSk.length); st.otxSk = rnd(32); st.secret = rnd(20);
+  st.otkSk = rnd(st.otkSk.length); st.otxSk = rnd(32); st.secret = rnd(16);
   for (let i = 0; i < n; i++) {
     const tries = [
       () => a.decrypt(mutate(msg), { now: T0 }),
       () => M.readRequest(st, personaA, mutate(reqWire), { now: T0 }),
       () => M.openInvite(inv.code, mutate(inv.wire), { now: T0 }),
-      () => M.openSession(key, mutate(stored)),
+      () => M.openSession(key, mutate(stored), { convId: a.convId }),
       async () => M.parseInviteCode(String.fromCharCode(...mutate(new TextEncoder().encode(inv.code)).filter((c) => c > 31 && c < 127))),
     ];
     const which = Math.floor(r() * tries.length);

@@ -23,6 +23,7 @@ export const RELAY_DEFAULTS = Object.freeze({
   maxTotalBytes: 2 * 1024 * 1024 * 1024,
   depositsPerMinute: 120,
   fetchesPerMinute: 600,
+  maxRateKeys: 100_000,
 });
 
 /**
@@ -44,15 +45,25 @@ export function rateKey(ip) {
   return `v6:${full.slice(0, 4).join(":")}::/64`;
 }
 
-/** Fixed-window counter per key. */
-function limiter(perMinute, now) {
+/**
+ * Fixed-window counter per key, with a bounded table. When the table is full,
+ * entries from past windows are dropped; if it is still full, a NEW key is
+ * refused rather than evicting anyone's live counter (fail closed: cycling
+ * through many addresses can't reset a busy client's limit).
+ */
+function limiter(perMinute, now, maxKeys = 100_000) {
   const windows = new Map();
   return (key) => {
-    const t = now(), w = Math.floor(t / 60_000);
+    const w = Math.floor(now() / 60_000);
     const e = windows.get(key);
-    if (!e || e.w !== w) { windows.set(key, { w, n: 1 }); if (windows.size > 100_000) windows.clear(); return true; }
-    e.n += 1;
-    return e.n <= perMinute;
+    if (e && e.w === w) { e.n += 1; return e.n <= perMinute; }
+    if (e) { e.w = w; e.n = 1; return true; }
+    if (windows.size >= maxKeys) {
+      for (const [k, v] of windows) if (v.w !== w) windows.delete(k);
+      if (windows.size >= maxKeys) return false;
+    }
+    windows.set(key, { w, n: 1 });
+    return true;
   };
 }
 
@@ -61,8 +72,8 @@ export function memoryRelay(opts = {}) {
   const now = opts.now || (() => Date.now());
   const boxes = new Map(); // box -> [{ at, wire }]
   let total = 0;
-  const canDeposit = limiter(o.depositsPerMinute, now);
-  const canFetch = limiter(o.fetchesPerMinute, now);
+  const canDeposit = limiter(o.depositsPerMinute, now, o.maxRateKeys);
+  const canFetch = limiter(o.fetchesPerMinute, now, o.maxRateKeys);
   const observed = []; // everything the relay could log: for tests that check what it learns
 
   function expire() {

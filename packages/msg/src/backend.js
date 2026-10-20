@@ -56,6 +56,27 @@ const noble = Object.freeze({
   },
 });
 
+/**
+ * FIPS 203 §7.2 encapsulation-key check: every 12-bit coefficient of the
+ * encoded vector must be below q = 3329. A peer's ML-KEM key is checked when
+ * it arrives, so a malformed one is refused there instead of breaking a later step.
+ */
+export function isValidKemPk(pk) {
+  if (!(pk instanceof Uint8Array) || pk.length !== SIZES.kemPk) return false;
+  const end = SIZES.kemPk - 32; // 384·k bytes of coefficients, then the 32-byte seed ρ
+  for (let i = 0; i < end; i += 3) {
+    const a = pk[i] | ((pk[i + 1] & 0x0f) << 8);
+    const b = (pk[i + 1] >> 4) | (pk[i + 2] << 4);
+    if (a >= 3329 || b >= 3329) return false;
+  }
+  return true;
+}
+
+export function checkKemPk(pk) {
+  if (!isValidKemPk(pk)) throw new MsgError("bad_key", "Malformed ML-KEM public key");
+  return pk;
+}
+
 let current = noble;
 export const backend = () => current;
 export const REFERENCE = noble;

@@ -37,15 +37,18 @@ and can carry proof that a live human sent it, without saying which human.
  ◄──────────────────────────────── messages both ways, each optionally stamped ─────────────►
 ```
 
-- **The invite code is the only secret that moves outside HumID.** It is 160
-  random bits with two check characters (`HI-` plus nine groups), shown as text
-  or a QR code. It lasts 24 hours by default (7 days at most) and admits one
+- **The invite code is the only secret that moves outside HumID.** It carries
+  128 random bits (what opens the invite) and an 80-bit pin of the inviter's
+  persona (what the invite must contain), plus two check characters: `HI-` and
+  eleven groups, best shown as a QR code. It lasts 24 hours by default (7 days at most) and admits one
   person by default. Show it in person when you can: the audit's warning about
   cloned voices applies to anything read over the phone.
-- **The relay can neither read nor swap an invite.** The bundle is encrypted
-  under a key from the invite secret, which the relay never sees. A request is
-  bound to the same secret, so someone without the code can't even produce one
-  that opens.
+- **No one can read, swap or impersonate an invite.** The bundle is encrypted
+  under a key from the invite secret, which the relay never sees, and the phone
+  that opens it checks the persona inside against the code's pin. So even
+  someone who learns the code (another invitee, a shoulder-surfer) can't post a
+  bundle of their own under it and pose as the inviter. A request is bound to
+  the same secret, so someone without the code can't produce one that opens.
 - **Approval takes a live check** on A's side, and a live stamp shows A that a
   live human made the request. A sees the requester's persona ID, the short
   note they chose to write, and the safety code. Nothing else exists to see.
@@ -84,13 +87,15 @@ then the whole thing, header included, is sealed again under the direction's wir
 |---|---|
 | Confidentiality, now and against quantum computers | Each step needs ML-KEM-1024 **and** X25519 broken. |
 | Forward secrecy | Used keys are erased; a phone seized tomorrow can't read today's messages. `tests/msg.test.js` steals a copy of the state and shows it can't reopen a message it already read. |
-| Healing | After one exchange in each direction, a stolen copy of the state can't follow the conversation any more. Tested. |
+| Healing | After one exchange in each direction, a stolen copy of the state can't read the conversation any more. Tested. It can still recognise the conversation's mailboxes and outer layer, whose keys are fixed at the handshake: a thief keeps the metadata, not the content. (Rotating those keys with the root key is on the list below.) |
 | Deniability | Messages are authenticated by shared keys, not signatures. Your contact knows you sent it; they can't prove it to anyone else. (A stamp proves *a* live human, not you.) |
 | Order, loss, replay | Messages open out of order (up to 1,000 skipped); a replay or old message is refused; a tampered message changes nothing. A gap that stays open is reported as a missing message, so a relay that drops traffic is noticed. |
-| Duress | A message sent from a duress unlock carries an encrypted duress flag that only the contact's app sees. The bytes on the wire look the same. |
+| Duress | A message sent from a duress unlock carries an encrypted duress flag that only the contact's app sees. Every payload carries the flag at a fixed width and reserves room for a stamp, so duress, stamped and ordinary messages of the same length are the same size on the wire. Tested. |
+| Saved before sent | `persist` runs before a message is handed out; if saving fails, the step is undone. A per-message random salt in each header means even a device restored from an old backup never repeats an AES key and nonce. Tested. |
 
-Sizes: every message is at least 4 KiB on the wire, because each header
-carries a fresh ML-KEM-1024 public key and ciphertext (about 3.2 KB). An invite
+Sizes: every message is at least 8 KiB on the wire: each header carries a
+fresh ML-KEM-1024 public key and ciphertext (about 3.2 KB), and every payload
+reserves room for a stamp so stamped and unstamped messages look alike. An invite
 is 64 KiB and a request 128 KiB, mostly the SLH-DSA signature (49,856 bytes),
 made once per contact.
 
@@ -111,7 +116,8 @@ contact: verify(stamp, commitment recomputed from what arrived)
 - **Bound to one message.** A stamp copied onto another message fails.
 - **Separate key.** The stamp key must never be the access-pass key: a blind
   signer signs whatever it's handed, so a shared key would let a "stamp" request
-  carry a blinded access pass.
+  carry a blinded access pass. The app refuses a stamp key that appears among
+  the pass keys, and stops counting a key's stamps after its `acceptUntil` day.
 - **Forgery after quantum computers** rests on RSA, as for passes. A future
   quantum computer could forge stamps then; it couldn't unmask anyone, and a
   stamp only matters when it's received.
@@ -129,7 +135,7 @@ see the table below: how many stamps each account asked for.)
 | Party | Sees | Never sees |
 |---|---|---|
 | **Your contact** | your persona ID for them, your messages, the safety code, which messages were stamped live | your account, your other personas, your other contacts |
-| **The relay** | random box ids (rotating daily per direction), objects of fixed sizes, deposit and fetch times, the address that connected | who you are, who you talk to, what kind of object it is (invite, request or message), any key or ID |
+| **The relay** | random box ids (rotating daily per direction), objects of fixed sizes, deposit and fetch times, the address that connected; from the size class, roughly what kind of object it is (an invite is 64 KiB, a request 128 KiB, a message usually 8 KiB) | who you are, who you talk to, any persona key or ID, any message content |
 | **The stamp issuer (vault server)** | that an account passed a live check and asked for a stamp, and how many per day | the message, the conversation, the recipient, the finished stamp |
 | **Someone on the network** | that a phone talked to the relay, when, how much | anything inside |
 | **A thief with your unlocked phone** | your conversations, as they are on screen | anything already erased by the ratchet |
@@ -138,7 +144,9 @@ see the table below: how many stamps each account asked for.)
 
 The 2026 audit ("HumID Security Audit: Tests, Coverage and Beyond-Standard
 Threats") lists threats and open findings across HumID. Everything below is
-built into 4.0 and tested unless marked otherwise.
+built into 4.0 and tested unless marked otherwise. An independent review of the
+first cut found no critical or high issues; its ten medium and low findings are
+fixed or stated as limits here.
 
 | Audit item | What 4.0 does |
 |---|---|
@@ -155,8 +163,10 @@ built into 4.0 and tested unless marked otherwise.
 | SEC-S-02, -03, -08 (DoS) | Every relay dimension is capped (object size and count per box, bytes per box and in total, expiry), and rate limits key IPv6 by its /64. Tested. |
 | H-1 (signer not pinned) | A contact's persona keys are pinned at the handshake; every later message is authenticated by keys only that persona could hold. |
 | SEC-A-04 (swapped or replayed index) | Sealed conversation state binds its conversation id and a version number; an older copy is refused, because rolling back a ratchet would re-open used keys. Tested. |
-| A-10 (40-bit match code) | Safety codes are 100 bits. |
-| "Unlinkability checked by string search only" | Tested by the protocol: personas share no key material, box ids differ by direction and day, every relay object is a fixed size class with no keys or IDs inside, the issuer sees only blinded values, the same message blinds differently each time. |
+| A-10 (40-bit match code) | Safety codes are 100 bits; invite codes pin the inviter's persona with 80 bits. |
+| Malformed peer keys | Every ML-KEM key that arrives is checked (FIPS 203 modulus check) before use, so a bad one is refused at the door instead of breaking the conversation later. Tested. |
+| "Unlinkability checked by string search only" | Tested by the protocol: personas share no key material, box ids differ by direction and day, every relay object is a fixed size class with no persona keys or IDs inside, the issuer sees only blinded values, the same message blinds differently each time. |
+| Relay rate-limit table | Bounded; when full it drops past windows and then refuses new addresses, so a flood of addresses can't reset a busy client's limit. Tested. |
 | "Fuzzing: one fixed seed, any error type accepted" | `tests/msg.test.js` fuzzes messages, requests, invites, stored state and codes with a fresh seed each run (printed on failure, rerun with `MSG_FUZZ_SEED`), and accepts only `MsgError` with a code. |
 
 **Prerequisites before the relay and stamp route go live** (server-wide
@@ -172,7 +182,12 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 - **The issuer learns volume per account.** It knows account X asked for 14
   stamps today, never for what or for whom.
 - **Network metadata.** Timing and addresses are visible to the relay and the
-  network. Cover traffic is not built.
+  network, and size classes tell invites, requests and messages apart. A
+  request also carries its ephemeral X25519 key in the clear (it has to: it's
+  how the inviter derives the keys); Elligator encoding would make it look
+  random. Cover traffic is not built.
+- **Skipped message keys** (for messages a relay withholds) are kept until the
+  message arrives or for 14 days, the relay's retention, then erased.
 - **One messaging device per account, for now.** The ratchet state lives on one
   device; multi-device sessions come later.
 - **The endpoints.** Encryption ends on the two phones. A compromised phone, a
@@ -193,14 +208,16 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 5. **Attachments**: sealed with a random key, uploaded as padded objects, key
    sent in a `file-key` message.
 6. **HQC** as a third KEM, once standardised.
-7. **Multi-device**, cover traffic, delivery receipts.
+7. **Multi-device**, cover traffic, delivery receipts, rotating the mailbox
+   and wire keys with the root key, Elligator-encoded request keys, one size
+   class for invites and requests.
 8. **Independent review** of the handshake and ratchet, and a machine-checked
    model (Tamarin or ProVerif), as the audit recommends for the rest of HumID.
 
 ## Try it
 
 ```bash
-node --test tests/msg.test.js                    # 23 tests: meeting, ratchet, stamps, relay, rollback, fuzz
+node --test tests/msg.test.js                    # 32 tests: meeting, ratchet, stamps, relay, rollback, fuzz
 MSG_FUZZ_CASES=3000 node --test tests/msg.test.js
 npm run test:timing                              # timing check of the current backend
 ```
