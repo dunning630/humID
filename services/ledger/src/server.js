@@ -14,8 +14,8 @@
 // tree only ever grew, so the server can't rewrite anyone's history, or show
 // different histories to different people, without a provable fork.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
+import { mkdirSync } from "node:fs";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
 import { ml_dsa87, sha3_256, toHex } from "@humid/htp";
 import {
   GENESIS, entryHash, headMessage, leafHash, nodeHash, EMPTY_ROOT,
@@ -56,6 +56,10 @@ function parseCosigners(s) {
 }
 
 export function createLedger({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
+  /** Secrets sealed at rest (packages/svc/src/seal.js). */
+  seal = sealerFromEnv(),
   port = Number(env("PORT", "8083")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -63,16 +67,10 @@ export function createLedger({
 } = {}) {
   const log = logger("ledger");
   mkdirSync(dataDir, { recursive: true });
+  // The log's signing key, sealed at rest when the server has a seal key (a plain one is sealed in place: same key).
   const keyFile = `${dataDir}/ledger-key.json`;
-  let key;
-  if (existsSync(keyFile)) {
-    const j = JSON.parse(readFileSync(keyFile, "utf8"));
-    key = { pk: unb64u(j.pk), sk: unb64u(j.sk) };
-  } else {
-    const k = ml_dsa87.keygen();
-    key = { pk: k.publicKey, sk: k.secretKey };
-    writeFileSync(keyFile, JSON.stringify({ pk: b64u(key.pk), sk: b64u(key.sk) }), { mode: 0o600 });
-  }
+  const j = JSON.parse(secretFile(keyFile, { seal, name: "ledger/ledger-key", log, make: () => { const k = ml_dsa87.keygen(); return JSON.stringify({ pk: b64u(k.publicKey), sk: b64u(k.secretKey) }); } }).toString("utf8"));
+  const key = { pk: unb64u(j.pk), sk: unb64u(j.sk) };
   const keyFp = toHex(sha3_256(key.pk)).slice(0, 32);
   const ledgerKey = { dsa: b64u(key.pk), fp: keyFp };
 
@@ -244,7 +242,7 @@ export function createLedger({
     }],
   ];
 
-  return createService({ name: "ledger", port, routes, bodyLimit: 32 * 1024, verify: (t) => verifyAssertion(internalPk, t, "ledger") });
+  return createService({ tls, name: "ledger", port, routes, bodyLimit: 32 * 1024, verify: (t) => verifyAssertion(internalPk, t, "ledger") });
 }
 
 if (isMain(import.meta.url)) createLedger().start();

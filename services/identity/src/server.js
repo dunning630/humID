@@ -17,7 +17,7 @@
 // accepts desktop biometric-only gates without hardware proof, "demo" accepts
 // anything (local development only).
 
-import { createService, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
@@ -34,6 +34,8 @@ const attested = (proof) => /^(android|apple)-/.test(proof || "");
 const list = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
 
 export function createIdentity({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
   port = Number(env("PORT", "8081")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -297,7 +299,7 @@ export function createIdentity({
     }],
   ];
 
-  return createService({ name: "identity", port, routes, bodyLimit: 64 * 1024, verify: (t) => verifyAssertion(internalPk, t, "identity") });
+  return createService({ tls, name: "identity", port, routes, bodyLimit: 64 * 1024, verify: (t) => verifyAssertion(internalPk, t, "identity") });
 }
 
 if (isMain(import.meta.url)) createIdentity().start();

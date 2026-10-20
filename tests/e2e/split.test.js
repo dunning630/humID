@@ -93,8 +93,8 @@ test("a key is released only with a live step-up for that document", async () =>
   // no step-up: the vault refuses before keyshare is even asked
   await assert.rejects(api.downloadWithShare(splitId), (e) => e.code === "step_up_required");
   // keyshare itself refuses a request that carries no step-up
-  const { signAssertion } = await import("@humid/svc");
-  const claims = (extra = {}) => signAssertion(stack.internalSk, { iss: "gateway", aud: "keyshare", rid: crypto.randomUUID(), sub: alice.id, ...extra });
+  const { signRequest } = await import("@humid/svc");
+  const claims = (extra = {}) => signRequest(stack.internalSk, { aud: "keyshare", method: "GET", path: `/shares/${splitId}`, claims: { sub: alice.id, ...extra } });
   let r = await fetch(`${stack.upstreams.keyshare}/shares/${splitId}`, { headers: { "x-humid-assertion": claims() } });
   assert.equal(r.status, 403);
   // a stale step-up
