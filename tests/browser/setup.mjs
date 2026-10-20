@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, confirmCard, cardGroups, youScreen, backOut, tab } from "./_v3.mjs";
+import { hold, confirmCard, cardGroups, youScreen, backOut, tab, pickKind, addFile as addFileV3 } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const PORT = Number(process.env.PORT || 5198);
@@ -201,12 +201,12 @@ try {
   assert.equal(await back(), "tab", "back from You goes to the Vault tab");
   assert.equal(await page.locator(".tabbar [aria-current=page]").innerText(), "Vault");
   assert.equal(await back(), "stay", "back at the Vault stays in HumID");
-  // Add is camera first (3.0): the first time, what to show, then the camera; back closes it
+  // Add (3.0.1): what it is, first; no camera until a kind is picked; back closes it
   const addBtn = () => page.getByRole("button", { name: "Add to your vault" }).first().click();
   await addBtn();
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  assert.equal(await page.locator(".doccam").count(), 0, "Add starts no camera before Start camera");
-  await targets(page, "Photograph a document"); await shot(page, "small-add-ready");
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "Add starts no camera before a kind is picked");
+  await targets(page, "What are you adding?"); await shot(page, "small-add-picker");
   assert.equal(await back(), "pushed");
   await page.locator(".pushed").waitFor({ state: "detached" });
   await tab(page, "You");
@@ -218,18 +218,12 @@ try {
   assert.equal(await back(), "pushed", "then the pushed screen");
   await page.locator(".pushed").waitFor({ state: "detached" });
   assert.equal(await back(), "tab");
-  // inside Add: the picker from the "what to show" screen, a kind, the camera; back steps back one level at a time
+  // inside Add: the picker, a kind (its camera opens at once); back steps back one level at a time
   await addBtn();
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  await page.getByRole("button", { name: "It's something else" }).click();
   await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  await targets(page, "What are you adding?"); await shot(page, "small-add-picker");
-  await page.locator(".kinds .kind", { hasText: "Payment card" }).click();
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
-  await targets(page, "The front of the card"); await shot(page, "small-add-card-ready");
-  await page.locator(".pushed [data-start-camera]").click();
+  await pickKind(page, "Payment card");
   await page.locator(".doccam").waitFor();
+  await shot(page, "small-add-card-camera");
   assert.equal(await back(), ".doccam");
   await page.locator(".doccam").waitFor({ state: "detached" });
   await page.locator(".pushed").getByText("What are you adding?").waitFor();
@@ -242,9 +236,7 @@ try {
   // a document's tag is suggested from its name; the toast drops in at the top, over no control
   await tab(page, "Vault");
   const addFile = async (file) => {
-    await page.getByRole("button", { name: "Add to your vault" }).first().click();
-    await page.locator(".pushed [data-start-camera]").waitFor();
-    await page.locator("#add-file").setInputFiles(file);
+    await addFileV3(page, file);
     await page.locator(".pushed").getByText("Review, then seal").waitFor();
   };
   await addFile({ name: "Apartment lease.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%lease\n") });

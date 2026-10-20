@@ -1,7 +1,7 @@
 // Vault: the list, search, kinds and tags; the item screen; the viewer.
 import { useEffect, useState } from "preact/hooks";
 import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
-import { Hand } from "../brand/mark.jsx";
+import { Print } from "../brand/mark.jsx";
 import { Icon, kindIcon } from "../brand/icons.jsx";
 import { Pushed, Sheet, Menu, Confirm, Banner, Empty, Row, AssurancePill, useNow } from "../ui/kit.jsx";
 import { fmtSize, fmtDate, fmtTime, fmtAgo, fmtLeft } from "../ui/format.js";
@@ -103,7 +103,7 @@ export function Vault() {
       {S.loading.value && all.length === 0 && <p class="muted small" style={{ marginTop: 20 }}>Loading your vault…</p>}
       {!S.loading.value && all.length === 0 && (
         <Empty icon="vault" title="Nothing here yet" text="Your IDs, cards and documents, sealed on this phone before they go anywhere.">
-          <Hand size={56} />
+          <Print size={56} />
           {!off && <button class="btn primary" onClick={() => openAdd()}><Icon name="plus" />Add to your vault</button>}
           {off && <p class="fine">Adding needs a connection.</p>}
         </Empty>

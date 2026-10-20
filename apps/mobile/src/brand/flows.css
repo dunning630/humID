@@ -81,22 +81,11 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-frame { position: relative; width: min(100%, 560px); aspect-ratio: 1.586; max-height: 100%; border-radius: 16px; transition: opacity .25s var(--ease); }
 .dc-frame[data-shape="td3"] { aspect-ratio: 1.42; }
 .dc-frame[data-shape="full"] { width: 100%; height: 100%; aspect-ratio: auto; }
-/* The frame is only a hint of what to show; once the document is found anywhere in view,
-   its own outline takes over and the frame fades away. */
-.doccam[data-look="close"] .dc-frame .c, .doccam[data-look="ok"] .dc-frame .c,
-.doccam[data-look="close"] .dc-mrz, .doccam[data-look="ok"] .dc-mrz { opacity: 0; }
-.dc-outline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-.dc-outline polygon { fill: rgba(111,227,180, calc(.06 + .16 * var(--p, 0))); stroke: var(--amber-hi); stroke-width: 3; stroke-linejoin: round; transition: stroke .2s var(--ease); }
-.dc-outline circle { fill: var(--ground); stroke: var(--amber-hi); stroke-width: 3; }
-.doccam[data-look="ok"] .dc-outline polygon, .doccam[data-look="ok"] .dc-outline circle { stroke: var(--mint); }
-/* a barcode found in view (scan-and-go style): highlighted wherever it is */
-.dc-outline polygon.dc-bar { fill: rgba(111,227,180,.16); stroke: var(--mint); stroke-width: 3; stroke-dasharray: 10 6; animation: dc-bar-run 1s linear infinite; }
-@keyframes dc-bar-run { to { stroke-dashoffset: -16; } }
-/* the edge highlight snaps onto the document when it is found, and fills as it holds steady */
-.dc-outline polygon.dc-snap { animation: dc-snap .35s var(--ease-out) both; transform-box: fill-box; transform-origin: center; }
-@keyframes dc-snap { from { opacity: 0; transform: scale(1.08); stroke-width: 8; } to { opacity: 1; transform: scale(1); } }
-.dc-outline polyline.dc-prog { fill: none; stroke: var(--mint); stroke-width: 5; stroke-linecap: round; stroke-dasharray: 100; transition: stroke-dashoffset .2s linear; }
-.doccam[data-flow="problem"] .dc-outline polyline.dc-prog { stroke: var(--amber-hi); }
+.dc-frame[data-shape="page"] { width: min(100%, 440px, calc((100dvh - var(--safe-t) - var(--safe-b) - 226px) / 1.35)); aspect-ratio: 100 / 135; }
+/* 3.0.1: no outline is drawn around a document found in view (no four corner dots): the frame's own
+   corners say it, amber when close, green when it is found and steady. */
+.doccam:not([data-guided])[data-look="close"] .dc-frame .c { border-color: var(--amber-hi); opacity: 1; }
+.doccam:not([data-guided])[data-look="ok"] .dc-frame .c { border-color: var(--mint); opacity: 1; }
 .dc-sweep { position: absolute; left: 4%; right: 4%; top: 5%; bottom: 5%; overflow: hidden; pointer-events: none; }
 .dc-sweep i { position: absolute; inset: 0; border-bottom: 3px solid var(--mint); background: linear-gradient(180deg, transparent 70%, rgba(111,227,180,.22)); transform: translateY(-100%); will-change: transform; animation: dc-sweep 1.6s ease-in-out infinite alternate; }
 @keyframes dc-sweep { to { transform: translateY(0); } }
@@ -115,6 +104,7 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
    the document up in it. White while looking, amber when close, mint when lined up (the brand's meanings). */
 .doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,255,255,.5); aspect-ratio: 85.6 / 54; transition: box-shadow .25s var(--ease); }
 .doccam[data-guided] .dc-frame[data-shape="td3"] { aspect-ratio: 125 / 88; }
+.doccam[data-guided] .dc-frame[data-shape="page"] { aspect-ratio: 100 / 135; border-radius: 6px; }
 .doccam[data-guided] .dc-frame .c { opacity: 1; width: 30px; height: 30px; border-color: #fff; }
 .doccam[data-guided][data-look="close"] .dc-frame .c { border-color: var(--amber-hi); }
 .doccam[data-guided][data-look="ok"] .dc-frame .c { border-color: var(--mint); }
@@ -129,6 +119,9 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-zone[data-k="mrz"] { border-color: rgba(245,166,35,.85); background: rgba(245,166,35,.07); }
 .dc-zone[data-k="bar"] { border-color: rgba(255,255,255,.5); }
 .doccam[data-guided][data-phase="reading"] .dc-zone, .doccam[data-guided][data-phase="saved"] .dc-zone { opacity: 0; }
+/* being read: the template stays green and a green line sweeps it (no dark cover over the document) */
+.doccam[data-guided][data-phase="reading"] .dc-frame, .doccam[data-guided][data-phase="saved"] .dc-frame { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 3px var(--mint), 0 0 24px 2px rgba(111,227,180,.35); }
+.doccam[data-guided] .dc-sweep { left: 0; right: 0; top: 0; bottom: 0; border-radius: inherit; }
 @media (prefers-reduced-motion: reduce) { .doccam[data-guided] .dc-frame { transition: none; } }
 /* auto-capture: the corners say how close it is; a fill sweeps across as it's about to take the photo */
 .dc-frame .c { transition: border-color .2s var(--ease), opacity .25s var(--ease); }
@@ -195,8 +188,8 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-shutter[data-offer] { animation: dc-offer 1.6s var(--ease) infinite; }
 @keyframes dc-offer { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,185,74,.0); } 50% { box-shadow: 0 0 0 10px rgba(255,185,74,.35); } }
 @media (prefers-reduced-motion: reduce) {
-  .dc-frame, .dc-frame .c, .dc-outline polygon, .dc-state, .dc-bar-track i { transition: none; }
-  .dc-outline polygon.dc-bar, .dc-outline polygon.dc-snap, .dc-sweep i, .dc-ico[data-spin] svg, .dc-shutter[data-offer], .doccam[data-look="searching"] .dc-frame .c { animation: none; }
+  .dc-frame, .dc-frame .c, .dc-state, .dc-bar-track i { transition: none; }
+  .dc-sweep i, .dc-ico[data-spin] svg, .dc-shutter[data-offer], .doccam[data-look="searching"] .dc-frame .c { animation: none; }
   .doccam .dc-bar-track[data-indeterminate] i { animation: none; width: 100%; opacity: .6; }
 }
 .dc-bottom { position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 16px 24px calc(var(--safe-b) + 22px); background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0)); }
@@ -209,6 +202,11 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-bottom .dc-side:last-child { justify-self: center; }
 
 .kinds { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.kinds-group { margin-top: 18px; }
+.kinds-group:first-of-type { margin-top: 6px; }
+.kinds-group > h2.eyebrow { margin: 0; font-size: var(--t-xs, 12px); }
+.kinds-group .kinds { margin-top: 8px; gap: 8px; }
+.kinds-group .kind { padding: 12px 14px; }
 .kinds .kind { display: grid; grid-template-columns: 46px minmax(0, 1fr) 20px; gap: 14px; align-items: center; width: 100%; padding: 14px; border-radius: var(--r-md); border: 1px solid var(--line-strong); background: var(--surface); text-align: left; }
 .kinds .kind .ico { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; color: var(--amber-hi); background: var(--amber-wash); }
 .kinds .kind .ico svg { width: 24px; height: 24px; }

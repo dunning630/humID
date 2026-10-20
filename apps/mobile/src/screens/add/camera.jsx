@@ -11,11 +11,16 @@
 // look loop; the camera's tools fold into one "More" chip; and the track is stopped,
 // not only the loop, the moment the app leaves the screen.
 //
-// 2.2.0's guided scan, carried into 3.0: cards, licenses, ID cards and passport pages
-// (shape "id1" / "td3") get a fixed outline at the document's real proportions, like a
-// bank's check-deposit scan (core/guide.js), plain words saying what to change, and a
+// 2.2.0's guided scan, carried into 3.0: cards, licenses, ID cards, passport pages and paper
+// pages (shape "id1" / "td3" / "page") get a fixed outline at the document's real proportions,
+// like a bank's check-deposit scan (core/guide.js), plain words saying what to change, and a
 // still taken by itself once it is lined up, steady and sharp (core/guidecap.js), cut to
-// the outline. Shape "full" (the Add camera, Photo) keeps finding the document by itself.
+// the outline. Shape "full" (Photo) is the whole view.
+//
+// 3.0.1: no outline is ever drawn around a document the camera finds by itself (the four
+// corner dots): only the template. Its corners go amber when close, green when lined up,
+// and stay green while the photo is read. The guided photo is kept the way up it was lined
+// up in the preview: no guess from the print turns it (that turned license fronts over).
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { markPicking, toast, buzz as buzzPref } from "../../core/index.js";
@@ -26,7 +31,7 @@ import {
 } from "../../core/scan.js";
 import { mrzBandLikely } from "../../core/addroute.js";
 import { templateFor, liveConstraints, previewTurned, measure, judge, holdTracker, barcodeSignal, bottomBand } from "../../core/guide.js";
-import { grabWindow, takeStill, uprightOf, deskewOf } from "../../core/guidecap.js";
+import { grabWindow, takeStill, deskewOf } from "../../core/guidecap.js";
 import { confirmedByStill } from "../../core/mrzseed.js";
 import { begin as flowBegin, step as flowStep, describe, gaveUp, pace, calmer } from "../../core/scanflow.js";
 import { tracker, scaleQuad } from "../../core/docfind.js";
@@ -58,7 +63,7 @@ function useCalm(view) {
 /**
  * The scan card: steps, the current state in words, progress, and the ways forward.
  *   lead     what the live view thinks it sees ("Looks like a card"), merged into the title
- *   extra    one more action for the card's row (the Add camera's "It's something else")
+ *   extra    one or more actions for the card's row ({ text, icon, onClick }, or a list: the payment card's "Type it")
  */
 function ScanState({ view: latest, notice, noticeTitle, error, onRetry, onShoot, onTorch, torch, lead, extra }) {
   const view = useCalm(latest);
@@ -90,7 +95,7 @@ function ScanState({ view: latest, notice, noticeTitle, error, onRetry, onShoot,
           {view.action === "light" && onTorch && <button type="button" class="dc-act" onClick={onTorch} aria-pressed={!!torch}><Icon name="torch" />{torch ? "Light off" : "Light on"}</button>}
           {view.action === "retry" && <button type="button" class="dc-act primary" onClick={onRetry}><Icon name="rotate" />Try again</button>}
           {(view.action === "retry" || view.manual) && <button type="button" class="dc-act" onClick={onShoot}><Icon name="camera" />Take photo</button>}
-          {extra && <button type="button" class="dc-act" onClick={extra.onClick}><Icon name={extra.icon || "file"} />{extra.text}</button>}
+          {[].concat(extra || []).map((x) => <button type="button" class="dc-act" onClick={x.onClick}><Icon name={x.icon || "file"} />{x.text}</button>)}
         </div>
       )}
     </div>
@@ -151,10 +156,10 @@ export async function readStill(c, read, shape, wide = null, { tryFlip = false, 
   return out;
 }
 
-/** A photo of a record turned a quarter clockwise, re-encoded: the Rotate control, for the rare card the outline couldn't tell the way up of. */
-export async function turnedImage(img) {
+/** A photo of a record turned clockwise by `deg` (180 for a card: it stays landscape), re-encoded: the Rotate control. */
+export async function turnedImage(img, deg = 90) {
   const c = await fileToCanvas(new Blob([imageBytes(img)], { type: img.type }), 3200);
-  return jpeg(rotateCanvas(c, 90), { maxW: 1600 });
+  return jpeg(rotateCanvas(c, deg), { maxW: 1600 });
 }
 
 function enlarge(c, k) {
@@ -266,7 +271,7 @@ function nextFrame(v) {
  *            the camera open with the reason, so a photo is never silently lost
  *   onLook   ({ look, quad, video }) each look, for a live label
  *   lead     the live label's text, shown in the step card's title
- *   extra    one more action on the step card ({ text, icon, onClick })
+ *   extra    more actions on the step card ({ text, icon, onClick }, or a list of them; they don't move the outline, as tools do)
  *   tools    extra controls on the camera bar (the Add camera's More chip)
  *   saved    { text, img } — what the previous step saved, shown briefly at the top
  *   native   on Android, use the phone's own document scanner for the photo (off by default:
@@ -290,7 +295,7 @@ export function DocCamera(props) {
   const [look, setLook] = useState(null);
   const [bar, setBar] = useState(null);
   const codes = !!(read.barcode || read.mrz);
-  const card = shape !== "full";
+  const card = shape !== "full"; // a known shape: a card, a passport page or a paper page
   // a fixed outline for every document with a known shape, unless the phone's own scanner is taking the photo
   const guided = card && !scanner;
   const tpl = useMemo(() => (guided ? templateFor({ kind, side, shape, read }) : null), [guided, kind, side, shape]);
@@ -576,7 +581,8 @@ export function DocCamera(props) {
   useEffect(() => {
     trace("mount");
     if (L.native === undefined) L.native = scanner;
-    if (read.mrz) { send({ t: "engine", loading: true }); mrzReader().catch(() => null); }
+    // the reader for the lines of <<<: loading is said under "Looking" until it is ready (the guided scan reads only the still, so its loop never says so itself)
+    if (read.mrz) { send({ t: "engine", loading: true }); mrzReader().then(() => send({ t: "engine", loading: false }), () => send({ t: "engine", loading: false })); }
     if (read.barcode && (L.native || guided)) barcodeReader().then(() => {}, () => {}); // the scanner's page, or the guided still, is read here, on this thread
     if (L.native) scanNative();
     else startCamera();
@@ -673,8 +679,9 @@ export function DocCamera(props) {
     const quad = scanned || cropped ? null : cornersIn(original, { hint: hintQuad, shape });
     let dev;
     if (cropped) {
-      const up = uprightOf(original);
-      dev = { canvas: up.rotate ? rotateCanvas(original, up.rotate) : original, original, straightened: true, rotate: up.rotate, confidence: up.confidence, changed: true };
+      // the way up it was lined up in (guidecap.takeStill already turned back a photo the phone handed over upside down);
+      // a passport page whose lines read only turned is turned by readStill below
+      dev = { canvas: original, original, straightened: true, rotate: 0, confidence: 1, changed: true };
     } else if (scanned) {
       dev = { ...developPhoto(original, null, { shape }), straightened: true, changed: true };
     } else if (known.mrz && quad) {
@@ -699,7 +706,7 @@ export function DocCamera(props) {
       }
     }
     const { turn, flipped, ...codesFound } = readOut;
-    if (DEMO_BUILD) globalThis.__humidDevelop = { how, guided: cropped, source: source?.source, stillW: source?.width, why: source?.why, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
+    if (DEMO_BUILD) globalThis.__humidDevelop = { how, guided: cropped, source: source?.source, stillW: source?.width, why: source?.why, turned: source?.turned, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
     trace("developed");
     return { ...dev, ...codesFound, how };
   }
@@ -774,28 +781,21 @@ export function DocCamera(props) {
   const cancel = () => { L.stop = true; stopStream(); onCancel(); };
   const skip = () => { L.stop = true; stopStream(); onSkip(); };
   const live = phase === "live" && look;
-  const lookState = !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
-  const view = describe(flow, { shape, hint, guided, noun: tpl?.noun });
   const busy = phase === "reading" || phase === "saved";
+  // guided: green while the photo is taken and read, as well as once it is lined up
+  const lookState = guided && busy ? "ok" : !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
+  const view = describe(flow, { shape, hint, guided, noun: tpl?.noun });
 
   return (
     <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-scanner={scanner ? "1" : undefined} data-guided={guided ? "1" : undefined} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
       <video ref={video} playsInline muted autoplay />
-      {phase === "live" && !L.gave && (look?.points || bar?.points) && (
-        <svg class="dc-outline" aria-hidden="true" style={{ "--p": look?.progress || 0 }}>
-          {look?.points && <polygon key={`o${look.acq}`} class="dc-snap" points={look.points} />}
-          {look?.points && <polyline class="dc-prog" points={`${look.points} ${look.points.split(" ")[0]}`} pathLength="100" style={{ strokeDashoffset: 100 - 100 * (look.progress || 0) }} />}
-          {look?.points && look.points.split(" ").map((pt) => { const [x, y] = pt.split(","); return <circle cx={x} cy={y} r="6" />; })}
-          {bar?.points && <polygon class="dc-bar" points={bar.points} />}
-        </svg>
-      )}
       <div class="dc-stage">
         <div class="dc-frame" data-shape={shape} data-template={tpl?.id} data-ready={guided && view.id === "steady" ? "1" : undefined} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {guided && tpl.zones.map((z) => <span class="dc-zone" data-k={z.k} aria-hidden="true" style={{ left: `${z.x}%`, top: `${z.y}%`, width: `${z.w}%`, height: `${z.h}%` }} />)}
           {read.mrz && !guided && <span class="dc-mrz" data-shape={shape} />}
-          {phase === "live" && (view.id === "reading" || view.id === "verifying") && <span class="dc-sweep" aria-hidden="true"><i /></span>}
-          {phase === "reading" && <span class="dc-busy"><i /></span>}
+          {((phase === "live" && (view.id === "reading" || view.id === "verifying")) || (guided && phase === "reading")) && <span class="dc-sweep" aria-hidden="true"><i /></span>}
+          {phase === "reading" && !guided && <span class="dc-busy"><i /></span>}
           {phase === "saved" && <span class="dc-busy dc-saved" aria-hidden="true"><Icon name="check" /></span>}
         </div>
       </div>

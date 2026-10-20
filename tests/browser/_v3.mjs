@@ -50,44 +50,39 @@ export async function unlock(page) {
 }
 
 /**
- * Add is camera first (3.0): the first time it shows what to hold up ("Start camera"),
- * afterwards the camera itself. The picker is one tap away from either: "It's something else".
+ * Add (3.0.1): "What are you adding?" first, each kind of document listed; picking one opens
+ * its camera at once. No camera runs before a kind is picked.
  */
 export async function openAdd(page) {
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed, .doccam").first().waitFor({ timeout: 15_000 });
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 15_000 });
+  assert.equal(await page.locator(".doccam").count(), 0, "no camera before a kind is picked");
 }
-export async function openPicker(page) {
-  await openAdd(page);
-  const other = page.getByRole("button", { name: "It's something else" }).first();
-  await other.waitFor({ timeout: 15_000 });
-  await other.click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
+export const openPicker = openAdd;
+/** The picker's row for a kind: by its data-kind key, or by its exact title. */
+export function kindRow(page, which) {
+  if (/^[a-z_]+$/.test(which)) return page.locator(`.kinds .kind[data-kind="${which}"]`).first();
+  const t = which instanceof RegExp ? which : new RegExp(`^${which.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  return page.locator(".kinds .kind").filter({ has: page.locator("strong", { hasText: t }) }).first();
 }
-/** From the picker: choose a kind by its title (ID · Payment card · Wallet pass · Photo · File). */
-export async function pickKind(page, title) {
-  await page.locator(".kinds .kind", { hasText: title }).first().click();
-}
-/**
- * From the picker, the ID entry (3.0 with 2.2.0's guided scan): "Which ID is it?", then the ID
- * flow's Start camera opens the outline made for that document. `which`: an ID_CHOICES title
- * (Driver's license · Passport · ID card · Another card). Nothing opens the camera before the tap.
- */
+/** From the picker: choose a kind (Passport · Driver's license · State ID or ID card · … · Payment card · Document · Photo · Wallet pass · File). */
+export async function pickKind(page, which) { await kindRow(page, which).click(); }
+const ID_TITLE = { "ID card": "State ID or ID card" };
+/** From the picker, an ID kind: its outline opens at once. `which`: an ID_CHOICES title. */
 export async function chooseId(page, which) {
-  await pickKind(page, /^ID/);
-  await page.locator(".pushed").getByText("Which ID is it?").waitFor({ timeout: 10_000 });
-  await page.locator(".kinds .kind", { hasText: which }).first().click();
-  const start = page.locator(".pushed [data-start-camera]").first();
-  await start.waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".doccam").count(), 0, "choosing an ID doesn't start the camera");
-  await start.click();
+  await pickKind(page, ID_TITLE[which] || which);
   await page.locator(".doccam").waitFor({ timeout: 15_000 });
 }
-export async function pickId(page, which) { await openPicker(page); await chooseId(page, which); }
-/** Photo or Payment card: the "what to show" screen the first time, then the camera. */
+export async function pickId(page, which) { await openAdd(page); await chooseId(page, which); }
+/** Add ▸ File, choosing `file` (a path, or { name, mimeType, buffer }). Ends on the file's review. */
+export async function addFile(page, file) {
+  await openAdd(page);
+  const chooser = page.waitForEvent("filechooser");
+  await pickKind(page, "File");
+  await (await chooser).setFiles(file);
+}
+/** The camera a picked kind opened. */
 export async function startCamera(page) {
-  const start = page.locator("[data-start-camera]").first();
-  if (await start.count()) await start.click();
   await page.locator(".doccam").waitFor({ timeout: 15_000 });
 }
 /** Tabs. */

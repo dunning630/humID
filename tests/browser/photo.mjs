@@ -2,8 +2,8 @@
 // in view and straightens it, and the document is stamped with where it was sealed.
 // The fake camera shows a letter page lying sideways, tilted and off-centre on a
 // grained table, nowhere near the middle. Checks that:
-//   - nobody lines anything up: the outline is drawn over the page and the photo is
-//     taken by itself
+//   - Photo is picked first (3.0.1); nobody lines anything up: the page is found where it lies
+//     (no four-point outline is drawn over it: the frame's corners go green) and the photo is taken by itself
 //   - the proposal is the page straightened and turned upright (taller than wide);
 //     a clean scan of it (apps 1.12.0: light evened out, paper white) is marked
 //     Suggested; the straightened photo and the original are one tap away
@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, openAdd as openAddFlow, startCamera } from "./_v3.mjs";
+import { hold, enroll, openAdd as openAddFlow, pickKind, startCamera } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/docs", n);
@@ -79,12 +79,11 @@ try {
   step("enrolled (demo)");
 
   /* ---------------- 1. the camera finds the page by itself ---------------- */
-  // one way in: the + button (or the empty vault's one primary) opens the camera at once
-  // (3.0: camera first; the first time, a "what to show" screen with Start camera comes before it)
-  const openCamera = async () => { await openAddFlow(page); await startCamera(page); };
+  // one way in (3.0.1): the + button opens "What are you adding?"; Photo opens the camera at once
+  const openCamera = async () => { await openAddFlow(page); await pickKind(page, "Photo"); await startCamera(page); };
   if (process.env.KEEP_PNG) await page.evaluate(() => { globalThis.__humidKeepPng = true; });
   await openCamera();
-  await page.locator(".doccam .dc-outline polygon").waitFor({ timeout: 20_000 });
+  await page.waitForFunction(() => globalThis.__humidLook?.found && globalThis.__humidLook?.quad, null, { timeout: 20_000 });
   const look = await page.evaluate(() => globalThis.__humidLook);
   assert.ok(look?.found, "the page is found");
   // the camera keeps its whole field of view: a portrait 1080×1920 source must arrive
@@ -96,21 +95,17 @@ try {
   const q = look.quad;
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4 / look.vw, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4 / look.vh;
   assert.ok(Math.abs(cx - 0.5) < 0.056 && Math.abs(cy - 0.398) < 0.031, `outline centred at ${cx.toFixed(3)},${cy.toFixed(3)} of the frame`);
-  await page.locator(".dc-status").getByText(/Document/).waitFor({ timeout: 10_000 }); // the live label, in the step card's title (3.0)
-  assert.equal(await page.locator(".dc-status").getByRole("button", { name: "It's something else" }).count(), 1, "the way to the picker is on the camera");
-  await page.locator(".dc-tools").getByRole("button", { name: "More" }).click();
-  assert.equal(await page.locator(".dc-tools button").count() >= 3, true, "File and Type a card on the camera's bar, behind More");
-  await page.locator(".dc-tools").getByRole("button", { name: "Fewer options" }).click();
-  await shot(page, "1-outline");
-  step(`outline drawn over the page where it lies (${Math.round(cx * look.vw)}, ${Math.round(cy * look.vh)} of ${look.vw}×${look.vh}, uncropped), not in a frame; the label says Document`);
+  await page.locator(".doccam[data-look='ok'], .doccam[data-look='close'], .doccam[data-phase='reading']").first().waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator(".dc-outline, .doccam > svg, .dc-stage polygon").count(), 0, "no four-point outline is drawn over the page");
+  await shot(page, "1-found");
+  step(`the page is found where it lies (${Math.round(cx * look.vw)}, ${Math.round(cy * look.vh)} of ${look.vw}×${look.vh}, uncropped); the frame's corners say so, with no outline drawn over it`);
   // nobody presses the shutter
   await page.locator(".photo-choice").waitFor({ timeout: 30_000 }).catch(async (e) => {
     const l = await page.evaluate(() => globalThis.__humidLook);
     throw new Error(`no photo taken: ${JSON.stringify({ ...l, quad: undefined })}`, { cause: e });
   });
-  assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "photo", "a page goes to the photo review");
   assert.match(await page.locator(".pushed .row").filter({ hasText: "Kind" }).innerText(), /Photo/, "the review says it's a photo");
-  step("photo taken by itself once the page held still, and routed to the photo review");
+  step("photo taken by itself once the page held still, on to the photo review");
 
   /* ---------------- 2. the proposal: straightened and upright; or the original ---------------- */
   const size = async () => page.locator(".photo-preview img").evaluate((img) => new Promise((res) => {

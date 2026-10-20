@@ -14,7 +14,8 @@
 //   - lined up: the photo is taken by itself, cropped to the outline (compared with where the
 //     document is known to be), the barcode / MRZ / card number read from that still
 //   - the shutter always works, whatever the camera sees
-//   - nothing starts before Start camera; the stream is released on leaving
+//   - nothing starts before a kind is picked; picking one opens its outline at once; the stream is released on leaving
+//   - while the photo is read the outline stays green (no dark cover); no four-point outline is ever drawn
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
 //   node tests/browser/guided.mjs            (SHOTS=dir to keep screenshots, ONLY=regex to run some scenes)
@@ -41,7 +42,7 @@ const contexts = [];
 
 // where the outline falls in the 1080 x 1920 video at the 412 x 915 test viewport (brand/flows.css .dc-stage / .dc-frame: 3.0 keeps 2.2.0's layout);
 // the fixtures (make-guided.py) put their documents by these numbers
-const GUIDE = { id1: { x: 141, y: 526, w: 797, h: 503 }, td3: { x: 141, y: 497, w: 797, h: 561 } };
+const GUIDE = { id1: { x: 141, y: 526, w: 797, h: 503 }, td3: { x: 141, y: 497, w: 797, h: 561 }, page: { x: 141, y: 239, w: 797, h: 1076 } };
 const MARGIN = 0.04;
 
 const dev = spawn(process.execPath, [join(root, "tools/dev.mjs")], { cwd: root, env: { ...process.env, PORT: String(PORT) }, stdio: ["ignore", "pipe", "pipe"] });
@@ -71,7 +72,7 @@ async function launch(cameraFile) {
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
 async function enrol(page) { await page.goto(BASE); await enroll(page); }
 async function unlock(page) { await page.goto(BASE); await unlockV3(page); }
-/** 3.0: the picker is behind Add's "It's something else"; an ID is chosen by which ID it is, then Start camera. */
+/** 3.0.1: Add opens the picker; a kind opens its camera at once. */
 async function pick(page, name) {
   await openPicker(page);
   if (name === "Payment card") { await pickKind(page, "Payment card"); await startCamera(page); return; }
@@ -145,11 +146,9 @@ scene("outline", async (page) => {
     md.getUserMedia = async (c) => { globalThis.__gum++; globalThis.__constraints = c; const st = await real(c); globalThis.__tracks.push(...st.getTracks()); return st; };
   });
   await openPicker(page);
-  await pickKind(page, /^ID/);
-  await page.locator(".pushed .kinds .kind", { hasText: /Passport/ }).click();
   await page.waitForTimeout(700);
-  assert.equal(await count(), 0, "no camera request before Start camera");
-  await page.locator(".pushed [data-start-camera]").click();
+  assert.equal(await count(), 0, "no camera request before a kind is picked");
+  await pickKind(page, "Passport");
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await count(), 1, "one camera request");
@@ -165,7 +164,7 @@ scene("outline", async (page) => {
   const mask = await page.locator(".dc-frame").evaluate((e) => getComputedStyle(e).boxShadow);
   assert.match(mask, /rgba\(4, 10, 7, 0\.62\)/, "the outside is dimmed (the brand's --cam-dim)");
   assert.equal(await page.locator(".dc-frame .c").count(), 4, "four corner marks");
-  assert.equal(await page.locator(".dc-frame .dc-outline, .doccam > .dc-outline").count(), 0, "no free-form outline is drawn");
+  assert.equal(await page.locator(".dc-outline, .doccam > svg, .dc-stage polygon").count(), 0, "no four-point outline is drawn");
   const live = state(page).locator('[role="status"]');
   assert.equal(await live.getAttribute("aria-live"), "polite", "the card is a live region");
   assert.equal((await state(page).locator(".dc-steps li").first().textContent()).trim(), "Line up");
@@ -177,10 +176,8 @@ scene("outline", async (page) => {
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "closing the camera releases the stream");
-  step("the passport outline: 125:88, centred, dimmed outside, four corner marks, 1440p preview; no camera before Start; stream released");
-  // a card's outline
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  await page.getByRole("button", { name: "Back" }).first().click(); // the ID flow → the picker (3.0)
+  step("the passport outline: 125:88, centred, dimmed outside, four corner marks, 1440p preview; no camera before a kind is picked; stream released");
+  // closing the first camera goes back to the picker (3.0.1)
   await page.locator(".pushed").getByText("What are you adding?").waitFor();
   await chooseId(page, "Another card");
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
@@ -376,6 +373,80 @@ for (const [mode, expectSource, why] of [["same", "photo", "twice the pixels, sa
     step(`still, ${why}: used the ${d.source}${d.stillW ? ` (${d.stillW}px)` : ""}, crop overlap ${r.iou.toFixed(3)}${d.why ? `, "${d.why}"` : ""}`);
   }, "lic-back-ok");
 }
+
+// 3.0.1: a phone that hands the photo back upside down (a sensor mounted the other way up): the still is turned back,
+// so the crop is the way up the card was lined up in the preview
+scene("still-upside-down", async (page) => {
+  await page.evaluate(() => {
+    globalThis.ImageCapture = class {
+      constructor(track) { this.track = track; }
+      async getPhotoCapabilities() { return { imageWidth: { min: 160, max: 6000, step: 1 }, imageHeight: { min: 120, max: 8000, step: 1 } }; }
+      async takePhoto() {
+        const v = document.querySelector(".doccam video");
+        const c = document.createElement("canvas");
+        c.width = v.videoWidth * 2; c.height = v.videoHeight * 2;
+        const g = c.getContext("2d");
+        g.translate(c.width, c.height); g.rotate(Math.PI);
+        g.drawImage(v, 0, 0, c.width, c.height);
+        return new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+      }
+    };
+  });
+  await pick(page, "Payment card");
+  await page.waitForFunction(() => globalThis.__humidDevelop, null, { timeout: 40_000 });
+  const d = await developed(page);
+  assert.equal(d.source, "photo", `the turned photo is recognised as the same scene (${d.why || "ok"})`);
+  assert.equal(d.turned, 180, "and turned back");
+  // the crop agrees with the preview the right way up, not upside down
+  const way = await page.evaluate(async () => {
+    const v = document.querySelector(".doccam video"), r = globalThis.__humidGuide.rect;
+    const thumb = (src, x, y, w, h) => { const c = document.createElement("canvas"); c.width = 64; c.height = 40; const g = c.getContext("2d"); g.drawImage(src, x, y, w, h, 0, 0, 64, 40); const d = g.getImageData(0, 0, 64, 40).data; const o = []; for (let i = 0; i < d.length; i += 4) o.push(d[i] + d[i + 1] + d[i + 2]); return o; };
+    const im = new Image(); im.src = globalThis.__humidDevelop.png; await im.decode();
+    const m = 0.04 / 1.08;
+    const a = thumb(v, r.x, r.y, r.w, r.h), b = thumb(im, im.naturalWidth * m, im.naturalHeight * m, im.naturalWidth * (1 - 2 * m), im.naturalHeight * (1 - 2 * m));
+    const ncc = (p, q) => { const n = p.length, mp = p.reduce((t, x) => t + x, 0) / n, mq = q.reduce((t, x) => t + x, 0) / n; let s = 0, sp = 0, sq = 0; for (let i = 0; i < n; i++) { s += (p[i] - mp) * (q[i] - mq); sp += (p[i] - mp) ** 2; sq += (q[i] - mq) ** 2; } return s / Math.sqrt(sp * sq); };
+    return { upright: ncc(a, b), flipped: ncc(a, b.slice().reverse()) };
+  });
+  assert.ok(way.upright > way.flipped + 0.2, `the crop is the right way up: ${JSON.stringify(way)}`);
+  step(`a photo handed back upside down is turned back: the crop matches the preview upright (${way.upright.toFixed(2)} vs ${way.flipped.toFixed(2)} turned)`);
+}, "pay-front-ok");
+
+// 3.0.1: while the photo is read the outline is green, with no dark cover over the document
+scene("green-while-reading", async (page) => {
+  await page.evaluate(() => {
+    globalThis.__looks = new Set();
+    new MutationObserver(() => { const c = document.querySelector(".doccam"); if (c) globalThis.__looks.add(`${c.dataset.phase}:${c.dataset.look}:${!!c.querySelector(".dc-busy:not(.dc-saved)")}:${!!c.querySelector(".dc-sweep")}`); })
+      .observe(document.body, { subtree: true, attributes: true, childList: true });
+  });
+  await pick(page, "Passport");
+  await page.getByText("Read the ID chip").first().waitFor({ timeout: 90_000 });
+  const looks = await page.evaluate(() => [...globalThis.__looks]);
+  const reading = looks.filter((l) => l.startsWith("reading:"));
+  assert.ok(reading.length, `the photo was read: ${looks.join(" ")}`);
+  assert.ok(reading.every((l) => l.startsWith("reading:ok:false")), `green, uncovered while reading: ${reading.join(" ")}`);
+  assert.ok(reading.some((l) => l.endsWith(":true")), "a green line sweeps the outline while it is read");
+  step(`while the passport page is read the outline stays green and uncovered (${reading.join(", ")})`);
+}, "pp-ok");
+
+// 3.0.1: a document page: the page outline (between US Letter and A4), taken by itself, to the photo review with a clean scan
+scene("page", async (page) => {
+  await openPicker(page);
+  await pickKind(page, "Document");
+  await page.locator(".doccam[data-guided][data-shape='page']").waitFor({ timeout: 10_000 });
+  const f = await page.locator(".dc-frame").boundingBox();
+  assert.ok(Math.abs(f.height / f.width - 1.35) < 0.01, `a page's outline stands up, 1:1.35: ${(f.height / f.width).toFixed(3)}`);
+  await page.waitForFunction(() => globalThis.__humidGuide?.rect, null, { timeout: 20_000 });
+  const g = await guide(page);
+  for (const k of ["x", "y", "w", "h"]) assert.ok(Math.abs(g.rect[k] - GUIDE.page[k]) < 10, `the page outline's ${k} is ${g.rect[k]} in the video; the fixtures assume ${GUIDE.page[k]}`);
+  await shot(page, "page-outline");
+  await page.locator(".pushed", { hasText: "Review, then seal" }).waitFor({ timeout: 60_000 });
+  const d = await developed(page);
+  assert.equal(d.how, "auto", "taken by itself"); assert.equal(d.guided, true);
+  const r = await cropIoU(page, { size: 0.96, ratio: 8.5 / 11 }, "page");
+  assert.ok(r.iou > 0.9, `the crop holds the page where it was: overlap ${r.iou.toFixed(3)}`);
+  assert.equal(await page.locator(".pushed .eyebrow", { hasText: "Document" }).count() > 0, true, "reviewed as a document");
+  step(`a Letter page: the page outline (1:1.35), taken by itself, crop overlap ${r.iou.toFixed(3)}, reviewed as a document`);
+}, "page-letter-ok");
 
 /* ---------------- run ---------------- */
 

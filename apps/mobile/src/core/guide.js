@@ -24,7 +24,9 @@ const D2R = Math.PI / 180;
 /* ---------------- the outlines ---------------- */
 
 /** Real proportions (long side / short side): ID-1 is 85.6 × 54 mm, ID-3 (a passport's data page) 125 × 88 mm. */
-export const RATIO = { id1: 85.6 / 54, td3: 125 / 88 };
+export const RATIO = { id1: 85.6 / 54, td3: 125 / 88, page: 1.35 };
+// page: a sheet of paper, standing up (height / width). 1.35 sits between US Letter (1.294) and A4 (1.414),
+// so either fills the outline to within a few percent on one pair of sides and lines up.
 
 /**
  * What each outline shows inside it, as faint dashed zones ([x, y, w, h] in percent of the outline)
@@ -37,16 +39,20 @@ const ZONES = {
   "passport": [["photo", 4, 18, 24, 52], ["line", 34, 20, 56, 8], ["line", 34, 36, 48, 8], ["mrz", 3, 72, 94, 22]],
   "pay-front": [["chip", 7, 30, 15, 20], ["num", 7, 56, 86, 12], ["line", 7, 78, 50, 8]],
   "pay-back": [["stripe", 0, 12, 100, 18], ["sign", 7, 44, 58, 16]],
+  "page": [["line", 9, 7, 44, 3], ["line", 9, 15, 82, 2.4], ["line", 9, 20.5, 82, 2.4], ["line", 9, 26, 64, 2.4]],
   "plain": [],
 };
 
 /**
- * The template for a document: { id, shape ("id1" | "td3"), noun, side, expect ({ barcode, mrz }), zones }.
- *   kind  the ID kind picked on "What are you adding?" (driver_license, passport, id_card, residence_permit, other, card)
+ * The template for a document: { id, shape ("id1" | "td3" | "page"), noun, side, expect ({ barcode, mrz }), zones }.
+ *   kind  the kind picked on "What are you adding?" (driver_license, passport, id_card, residence_permit, other, card, page)
  *   side  "front" | "back"
  *   read  what the camera is to read ({ barcode, mrz }); what the template expects to see
  */
 export function templateFor({ kind = "other", side = "front", shape = "id1", read = {} } = {}) {
+  if (kind === "page" || shape === "page") {
+    return { id: "page", kind: "page", side: "front", shape: "page", ratio: RATIO.page, portrait: true, noun: "page", expect: { barcode: false, mrz: false }, forbid: {}, zones: ZONES.page.map(([k, x, y, w, h]) => ({ k, x, y, w, h })) };
+  }
   const td3 = shape === "td3" || kind === "passport";
   const back = side === "back";
   const noun = td3 ? "passport page" : kind === "driver_license" ? "license" : kind === "card" ? "card" : "card";
@@ -460,7 +466,9 @@ export function judge(m, template, extra = {}) {
   const D = TH.dark;
   if (m.sides >= 2 ? m.p95 < D.p95 || m.mean < D.mean : m.mean < D.empty.mean && m.p95 < D.empty.p95) return say("dark");
   const G = TH.glare, whitePaper = m.p50 >= G.paper;
-  if (m.patch >= (whitePaper ? G.paperCells : G.cells) && m.sat >= (whitePaper ? G.paperShare : G.share)) return say("glare");
+  // a page that is bright all over in strong light isn't glare: glare is a patch, and on paper the print still shows
+  const brightPage = template?.shape === "page" && m.sat > 0.4;
+  if (!brightPage && m.patch >= (whitePaper ? G.paperCells : G.cells) && m.sat >= (whitePaper ? G.paperShare : G.share)) return say("glare");
   // is anything there
   const textured = m.energy > 6;
   out.present = m.sides >= 2 || textured;

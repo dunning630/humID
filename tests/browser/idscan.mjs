@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, pickId } from "./_v3.mjs";
+import { hold, enroll, unlock, openAdd as openAddFlow, pickKind as pick, pickId } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -60,24 +60,9 @@ async function launch(cameraFile) {
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
 
-/**
- * One way in (3.0, camera first): the + button opens the Add camera itself (the first time,
- * a "what to show" screen with Start camera comes before it). A kind is never asked for up
- * front: the camera tells an ID from a card from a page and routes the photo.
- */
-async function openAdd(page) {
-  await openAddFlow(page);
-  await startCamera(page);
-}
-/** The picker ("It's something else"), then one kind; Photo and Payment card show what to hold up first. */
-async function pickKind(page, name) {
-  await openPicker(page);
-  await pick(page, name);
-}
-
 try {
-  /* ---------------- 1. a driver's license: front photo, barcode read live ---------------- */
-  let { ctx, page } = await launch(fixture("camera-card-back.mjpeg"));
+  /* ---------------- 1. a driver's license: picked, front photo, back's barcode read from the still ---------------- */
+  let { ctx, page } = await launch(fixture("guide/lic-back-ok.mjpeg"));
   await page.goto(BASE);
   await enroll(page);
   step("enrolled (demo)");
@@ -89,23 +74,19 @@ try {
     let fail = 2; // jpeg() tries twice (full size, then smaller)
     HTMLCanvasElement.prototype.toBlob = function (cb, ...a) { if (fail-- > 0) return setTimeout(() => cb(null)); return real.call(this, cb, ...a); };
   });
-  await openAdd(page);
-  await shot(page, "1-camera-add");
-  // nobody presses the shutter, and nobody says what it is: the camera finds the card, takes
-  // the photo by itself, reads the license barcode on it and opens the ID flow for the front
+  // 3.0.1: what it is comes first, and its camera opens with the pick
+  await pickId(page, "Driver's license");
+  await page.locator(".doccam[data-guided] .dc-frame[data-template='driver_license-front']").waitFor({ timeout: 10_000 });
+  await shot(page, "1-camera-license-front");
+  // the front: whatever is in view, the round button takes it; the save fails, and the camera stays open and says so
+  await page.locator(".doccam .dc-shutter:not([disabled])").click({ timeout: 20_000 });
   await page.getByText(/Couldn't save that photo/).waitFor({ timeout: 40_000 });
   assert.ok(await page.locator(".doccam").isVisible(), "the camera stays open after a failed save");
-  step("auto-capture took the back; the save failed, and the camera stayed open and said so");
-  // …then, after a pause to read that, takes it again; saved: a tick, then the front is asked for
-  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 40_000 });
-  assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "driver_license", "routed by the barcode");
-  await shot(page, "1b-back-saved");
-  step("the Add camera read the license barcode and routed to the ID flow; front camera open…");
-  // the front camera is open (showing the same back, which is fine for a photo of a card)
-  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await page.waitForTimeout(500);
-  if (await page.locator(".doccam").isVisible()) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
-  await page.getByText("Review, then seal").waitFor({ timeout: 45_000 });
+  step("the front's save failed: the camera stayed open and said so");
+  await page.locator(".doccam .dc-shutter:not([disabled])").click({ timeout: 20_000 });
+  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 40_000 });
+  step("front saved; the back's outline opened by itself, and the back is lined up…");
+  await page.getByText("Review, then seal").waitFor({ timeout: 60_000 });
   await shot(page, "2-license-review");
   const val = (id) => page.locator(`#idf-${id}`).inputValue();
   assert.equal(await val("surname"), "SPECIMEN");
@@ -232,22 +213,13 @@ try {
     const md = navigator.mediaDevices, real = md.getUserMedia.bind(md);
     md.getUserMedia = async (c) => { globalThis.__gum++; const st = await real(c); globalThis.__tracks.push(...st.getTracks()); return st; };
   });
-  // 3.0 is camera first, so the Add camera is already running: close it, go through the picker to
-  // Payment card (which shows what to hold up first), and count from there
+  // 3.0.1: Add opens the picker, and no camera runs until a kind is picked
   await openAddFlow(page);
-  const gum0 = await page.evaluate(() => globalThis.__gum);
-  await page.getByRole("button", { name: "It's something else" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
   await page.waitForTimeout(800);
-  assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "the picker releases the camera");
-  assert.equal(await page.evaluate(() => globalThis.__gum), gum0, "no camera request while the picker is up");
-  await pick(page, /Payment card/);
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  await page.waitForTimeout(800);
-  assert.equal(await page.evaluate(() => globalThis.__gum), gum0, "no camera request on the what-to-show screen");
-  await page.locator(".pushed [data-start-camera]").click();
+  assert.equal(await page.evaluate(() => globalThis.__gum), 0, "no camera request while the picker is up");
+  await pick(page, "Payment card");
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  assert.equal(await page.evaluate(() => globalThis.__gum), gum0 + 1, "one camera request after Start camera");
+  assert.equal(await page.evaluate(() => globalThis.__gum), 1, "one camera request, when the kind is picked");
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
@@ -256,16 +228,15 @@ try {
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "closing the camera releases the stream");
-  // closing the camera lands back on the picker it came from (3.0); the card's "what to show" again, then the camera
+  // closing the camera lands back on the picker it came from; picking again opens it again
   await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  await pick(page, /Payment card/);
-  await page.locator(".pushed [data-start-camera]").click();
+  await pick(page, "Payment card");
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await page.evaluate(() => globalThis.__tracks.some((t) => t.readyState === "live")), true, "the camera is on again");
   // the app goes to the background: the stream is released at once
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
-  step("an empty table: the camera keeps waiting and says what it needs; nothing starts before Start camera; closing or backgrounding releases the stream");
+  step("an empty table: the camera keeps waiting and says what it needs; nothing starts before a kind is picked; closing or backgrounding releases the stream");
   await ctx.close();
   console.log("ok — Scan an ID works end to end in the browser");
 } catch (e) {

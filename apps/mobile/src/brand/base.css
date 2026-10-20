@@ -69,16 +69,16 @@ img, svg, canvas, video { display: block; max-width: 100%; }
 .mk-ground { fill: var(--ground); }
 .mk-amber { stroke: var(--amber); }
 .mk-mint { stroke: var(--mint); }
-.mk-palm { fill: var(--amber); }
-.mk-prints { fill: var(--mint); }
+.mk-fp-a { stop-color: var(--amber); }
+.mk-fp-b { stop-color: var(--mint); }
 .mk-progress { stroke: var(--amber); opacity: 0; transition: stroke-dashoffset var(--d-slow) var(--ease-out), opacity var(--d-base); }
 .mk-badge { opacity: 0; transform: scale(0.6); transform-origin: 19px 19px; transition: opacity var(--d-base), transform var(--d-slow) var(--ease-out); }
 .mk-badge circle { fill: var(--mint); }
 .mk-ok { stroke: var(--mint-ink); }
 .mk-no { stroke: var(--danger-ink); display: none; }
-/* scanning: the ring turns and the fingertips breathe; both stop the moment the state changes */
+/* scanning: the ring turns and the ridges breathe; both stop the moment the state changes */
 .mark[data-state="scanning"] .mk-ring { animation: mk-turn 2.6s linear infinite; transform-origin: 0 0; }
-.mark[data-state="scanning"] .mk-prints { animation: mk-breathe 1.3s ease-in-out infinite; }
+.mark[data-state="scanning"] .mk-print { animation: mk-breathe 1.3s ease-in-out infinite; }
 .mark[data-state="scanning"] .mk-progress { opacity: 1; }
 .mark[data-state="verified"] .mk-badge, .mark[data-state="failed"] .mk-badge { opacity: 1; transform: scale(1); }
 .mark[data-state="verified"] .mk-progress { opacity: 1; stroke: var(--mint); }
@@ -86,12 +86,13 @@ img, svg, canvas, video { display: block; max-width: 100%; }
 .mark[data-state="failed"] .mk-ok { display: none; }
 .mark[data-state="failed"] .mk-no { display: block; }
 .mark[data-state="failed"] .mk-amber { stroke: var(--danger); }
+.mark[data-state="verified"] .mk-fp { stroke: var(--mint); }
 @keyframes mk-turn { to { transform: rotate(360deg); } }
 @keyframes mk-breathe { 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) {
-  .mark[data-state="scanning"] .mk-ring, .mark[data-state="scanning"] .mk-prints { animation: none; }
+  .mark[data-state="scanning"] .mk-ring, .mark[data-state="scanning"] .mk-print { animation: none; }
 }
-.hand { flex: none; }
+.hand, .print { flex: none; }
 .wordmark { display: inline-block; }
 
 /* ---------- buttons ---------- */

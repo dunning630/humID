@@ -1,7 +1,7 @@
 // "Add a payment card" in a real browser: the development build in Chromium, under the
 // Android app's origin and content security policy, with a fake camera showing a
 // specimen card (tests/fixtures/id/make-paycard.py; the Visa test number, not a real card).
-//   1. the front: the camera finds the card by itself; the number, expiry and name are read
+//   1. the front: Payment card picked, the card lined up in its outline is taken by itself; the number, expiry and name are read
 //      on this device; sealed; the list shows only the network and last four digits
 //   2. the back (the browser restarted with the back on camera): the security code and the
 //      bank's phone number are read, the code kept because the back was scanned, and no
@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, unlock, openAdd as openAddFlow, startCamera } from "./_v3.mjs";
+import { hold, enroll, unlock, openAdd as openAddFlow, pickKind, startCamera } from "./_v3.mjs";
 import { writeFileSync } from "node:fs";
 import { passChain, makePass, passJson } from "../support/pkpass.js";
 
@@ -59,30 +59,24 @@ async function launch(cameraFile) {
   return { ctx, page };
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-/** One way in (3.0, camera first): the + button opens the Add camera (the first time, "what to show" with Start camera comes before it). */
-async function openAdd(page) {
+/** 3.0.1: Add opens "What are you adding?"; Payment card opens its outline at once. */
+async function openCardCamera(page) {
   await openAddFlow(page);
+  await pickKind(page, "Payment card");
   await startCamera(page);
-}
-/** The camera bar's extras are folded into one "More" chip (3.0). */
-async function tool(page, name) {
-  await page.locator(".dc-tools").getByRole("button", { name: "More" }).click();
-  await page.locator(".dc-tools").getByRole("button", { name }).click();
 }
 
 try {
   /* ---------------- 1. the front ---------------- */
-  let { ctx, page } = await launch(fixture("camera-paycard-front.mjpeg"));
+  let { ctx, page } = await launch(fixture("guide/pay-front-ok.mjpeg"));
   await page.goto(BASE);
   await enroll(page);
   step("enrolled (demo)");
 
-  await openAdd(page);
-  // nobody presses the shutter, and nobody says what it is: the camera finds the card, takes
-  // the photo by itself, reads the number on it and opens the card review
-  await page.locator(".dc-status").getByText(/Looks like a card/).waitFor({ timeout: 20_000 }); // the live label, in the step card's title (3.0)
+  await openCardCamera(page);
+  // nobody presses the shutter: lined up in the outline, the photo is taken by itself and the number read
+  await page.locator(".doccam[data-guided] .dc-frame[data-template='card-front']").waitFor({ timeout: 10_000 });
   await page.locator("#cf-pan").waitFor({ timeout: 90_000 });
-  assert.equal((await page.evaluate(() => globalThis.__humidRoute))?.found, "card", "routed by the card number");
   await page.waitForFunction(() => document.querySelector("#cf-pan")?.value.replace(/\s/g, "").length >= 16, null, { timeout: 30_000 });
   assert.equal((await page.inputValue("#cf-pan")).replace(/\s/g, ""), "4111111111111111", "the number, read on this device");
   assert.equal(await page.inputValue("#cf-exp"), "08/29", "the expiry");
@@ -105,8 +99,8 @@ try {
   await page.goto(BASE);
   await unlock(page);
   await page.locator(".item", { hasText: "Travel card" }).waitFor({ timeout: 30_000 });
-  await openAdd(page);
-  await tool(page, /Type a card/);
+  await openCardCamera(page);
+  await page.locator(".dc-status").getByRole("button", { name: "Type it" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   await page.fill("#cf-pan", "4111 1111 1111 1112");
   assert.ok(await page.getByText("That number has a typo").isVisible(), "a typo is caught");
@@ -152,11 +146,12 @@ try {
   await page.locator(".pushed [data-back]").first().click();
   await page.locator(".pushed").waitFor({ state: "detached", timeout: 10_000 });
   await page.evaluate((der) => { globalThis.__humidExtraPassRoots = [der]; }, Buffer.from(chain.root.der).toString("base64"));
-  // File from the camera's bar: a .pkpass goes to the pass check
+  // File in the picker: a .pkpass goes to the pass check
   const addPassFile = async (path) => {
-    await openAdd(page);
-    await tool(page, "File");
-    await page.locator("#add-file").setInputFiles(path);
+    await openAddFlow(page);
+    const chooser = page.waitForEvent("filechooser");
+    await pickKind(page, "File");
+    await (await chooser).setFiles(path);
   };
   await addPassFile(forged);
   await page.getByText("HumID won't add this as a Wallet pass").waitFor({ timeout: 20_000 });
@@ -164,11 +159,10 @@ try {
   assert.ok(await page.getByRole("button", { name: "Seal", exact: true }).isDisabled(), "a forged pass can't be sealed as a pass");
   await shot(page, "5-pass-forged");
   await page.getByRole("button", { name: "Choose another file" }).waitFor();
-  // Back leaves the pass review for where it came from (3.0, camera first: the Add camera, or the
-  // "what to show" screen before the first photo), and one more Back closes Add
+  // Back leaves the pass review for the picker it came from, and one more Back closes Add
   assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
-  await page.locator(".doccam, [data-start-camera]").first().waitFor();
-  assert.match(await page.evaluate(() => globalThis.__humidBack()), /^(pushed|\.doccam)$/);
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed");
   await page.locator(".pushed").waitFor({ state: "detached" });
   await addPassFile(good);
   await page.getByText(/verified through Apple/).waitFor({ timeout: 20_000 });

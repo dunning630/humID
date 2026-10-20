@@ -76,7 +76,7 @@ test("every pushed-screen type and every sheet type is rendered in exactly one p
   for (const f of faces) assert.doesNotMatch(noComments(read(f)), /\bAddSheet\b|\bIdSheet\b|type: "id"|type: "card"/, `${f} still names a 1.x add sheet`);
 });
 
-test("three tabs: Vault, Activity, You; and the add flow is camera first", () => {
+test("three tabs: Vault, Activity, You; and the add flow asks what it is first", () => {
   const kit = read("ui/kit.jsx");
   const tabs = [...kit.matchAll(/\{ id: "([a-z]+)", label: "([A-Za-z]+)"/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(tabs, [["vault", "Vault"], ["activity", "Activity"], ["you", "You"]]);
@@ -86,7 +86,11 @@ test("three tabs: Vault, Activity, You; and the add flow is camera first", () =>
     assert.doesNotMatch(noComments(read(f)), /tab\.value = "(security|settings)"|=== "(security|settings)"/, `${f} still routes to an old tab id`);
   }
   const add = noComments(read("screens/add/index.jsx"));
-  assert.match(add, /It's something else/, "the way to the picker");
+  assert.match(add, /What are you adding\?/, "the picker");
+  assert.match(add, /: \{ at: "pick" \}\)/, "Add opens on the picker (3.0.1)");
+  assert.doesNotMatch(add, /\bnative\b/, "the phone's own document scanner (and its four-point outline) isn't used to add");
+  assert.doesNotMatch(noComments(read("screens/add/ids.jsx")), /\bnative=/, "nor for IDs");
+  assert.doesNotMatch(noComments(read("screens/add/camera.jsx")), /dc-outline|<polygon/, "no four-point outline is drawn");
 });
 
 test("the check overlay names itself plainly and takes focus; steppers say the three plain stages", () => {

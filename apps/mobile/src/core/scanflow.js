@@ -200,7 +200,8 @@ export function calmer({ dwell = 1200 } = {}) {
   return {
     /** The view to draw now, given the machine's latest. */
     show(view, now) {
-      if (!shown || view.id === shown.id || urgent(view) || now - at >= dwell) {
+      // "Getting ready" gives way at once: the camera is live, and saying so a second late reads as slow (3.0.1)
+      if (!shown || view.id === shown.id || shown.id === "starting" || urgent(view) || now - at >= dwell) {
         if (!shown || view.id !== shown.id) at = now;
         shown = view;
       } else shown = { ...shown, progress: view.progress, manual: view.manual };

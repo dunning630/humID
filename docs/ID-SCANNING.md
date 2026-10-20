@@ -159,6 +159,22 @@ a fixed outline, plain-word guidance, an automatic or manual still, a crop to th
 The camera no longer tracks a free-form quadrilateral live (that outline jumped, and the photo
 depended on it). Add > Photo and the Android document scanner are unchanged.
 
+**3.0.1.** What it is comes first: Add opens "What are you adding?", listing each kind directly
+(Passport, Driver's license, State ID or ID card, Green card or residence permit, Another card,
+Payment card, Document, Photo, Wallet pass, File; the last one used on top), and picking one opens
+its camera at once, with no "Start camera" step. The readers for that kind (the barcode reader for
+a license, the reader for the lines of <<< for a passport) start loading from the touch, so they are
+ready when the camera is. A **Document** is a page: an outline standing up at 1:1.35, between US Letter
+(1:1.294) and A4 (1:1.414), so either lines up; an evenly bright page isn't called glare. **Photo** is the
+whole view with nothing drawn over it. No four-point outline is drawn anywhere: the template's corners go
+amber when close and green when lined up, and the outline stays green, with a green line sweeping it,
+while the photo is read. **Which way up:** the guided photo is kept the way up it was lined up in the
+preview. No guess from the print turns it any more (`uprightOf` had turned real license fronts upside
+down), and a still the phone hands back turned 180° from the preview (a sensor mounted the other way up)
+is recognised by comparing it with the preview both ways and turned back (`takeStill`, `turned`). A
+passport page whose lines read only turned is still turned by its lines; the review's Rotate turns a card
+half round.
+
 **The template.** `templateFor` (`core/guide.js`) gives the outline for the kind chosen on "What are you
 adding?" (`SCAN_MODE` in `addroute.js`): ID-1, 85.6 x 54 mm, for licences, ID cards and payment cards (front and
 back); ID-3, 125 x 88 mm, for the passport page. It is centred, dimmed outside, with corner marks and faint
@@ -237,9 +253,15 @@ The seal screen offers three versions:
 The first two can be turned by hand in case the guess is wrong. Only the version
 chosen is sealed; the others are discarded.
 
-## Android: the phone's document scanner (apps 2.1.1; IDs off it since 2.1.2)
+## Android: the phone's document scanner (apps 2.1.1; IDs off it since 2.1.2; not used to add since 3.0.1)
 
-On Android, **Add ▸ Photo** and **Another card** open the phone's own document scanner
+**3.0.1: nothing opens the scanner any more.** Its screen draws its own four-point outline
+around whatever it finds, before the person has said what they're adding; since 3.0.1 the
+kind is picked first and every kind gets HumID's own camera with the template made for it
+(a page included). The plugin and `core/docscan.js` stay in the build, unused by Add;
+`tests/browser/docscan.mjs` checks that no kind opens it. What follows is how it worked.
+
+Until 3.0.1, on Android, **Add ▸ Photo** and **Another card** opened the phone's own document scanner
 instead of HumID's live view. Driver's licenses, passports, ID cards, permits and payment
 cards stay on HumID's camera, whose screen blocks screenshots and the recents thumbnail
 (the scanner's screen is Google's and isn't covered; see
