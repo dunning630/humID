@@ -19,7 +19,7 @@ export {
   Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS,
   MIN_TTL_MS, MAX_TTL_MS, MAX_DELETE, deleteBody, parseDelete, isTtl,
 } from "./session.js";
-export { MessageStore, TOMBSTONE_TTL_MS } from "./history.js";
+export { MessageStore, TOMBSTONE_TTL_MS, MAX_TOMBSTONES } from "./history.js";
 export { Conversation } from "./conversation.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,

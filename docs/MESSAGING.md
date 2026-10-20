@@ -140,20 +140,25 @@ Every kind of delete is in one object the app uses, `Conversation`
 |---|---|---|---|
 | **Delete for me** | The message is overwritten and left out of the next save. | Nothing. | Nothing. |
 | **Delete for both** (your own messages) | As above. | Their app erases it. If it hasn't arrived yet, their phone destroys the one key that would have opened it, so it can **never** be opened, even from a copy someone kept. | If the contact hasn't fetched it yet, it's **unsent**: removed, and you're told it was never delivered. |
-| **Disappearing messages** (either of you sets it, 30 s to a year, or off) | Each message is deleted when its time is up, counted from when it was sent. | Deleted when its time is up, counted from when it arrived. | Messages are kept at most 14 days anyway. |
+| **Disappearing messages** (either of you sets it, 30 s to a year, or off) | Each message is deleted when its time is up, counted from when it was sent. If it was never delivered, you can still unsend it or delete it for both for 14 days. | Deleted when its time is up, counted from when it arrived. Your own timer applies to what you receive too (the shorter wins), so a contact can't send you something that stays forever. | Messages are kept at most 14 days anyway. |
 | **Delete conversation, for me** | Every message and every key for this contact is overwritten; the contact's ID for you is forgotten for good. | Nothing; they aren't told. | — |
-| **Delete conversation, for both** | As above. | Their app erases every message you sent, then the conversation ends. | Anything not yet fetched is unsent. |
+| **Delete conversation, for both** | As above. | Their app erases every message you sent, then the conversation ends (the deletes count even if the "end" arrives first). | Anything not yet fetched is unsent, even if the conversation had already ended. |
 | **Cancel an invite / withdraw a request** | The invite's one-time keys are destroyed; requests to it can never be read. | — | The invite or request is taken down, so no one else can fetch it with the code. |
 
 ### Why a deleted message really is gone
 
 - **Keys, not files.** Erasing a file on a phone's flash storage doesn't
   reliably erase its bytes: the storage chip moves data around and old copies
-  survive. So the history is sealed under a **new random key every time it's
-  saved**, and the app keeps only the newest key, in the phone's secure storage
-  (Keychain / Keystore), overwriting the old one. A deleted message is absent
-  from the new save, and every older save that still held it is sealed under a
-  key that no longer exists. Tested: the old save doesn't open with the new key.
+  survive. So a conversation (its ratchet and its history, in one blob) is
+  sealed under a **new random key every time it's saved**, and the app keeps
+  only the newest key, in the phone's secure storage (Keychain / Keystore),
+  overwriting the old one. A deleted message, and the ratchet's key for a
+  message deleted before it arrived, are absent from the new save; every older
+  save that still held them is sealed under a key that no longer exists. Tested:
+  the old save doesn't open with the new key. One blob also means a crash can't
+  save half a change.
+- **Saved before it's sent.** With `persist`, every change is saved before
+  anything is handed back to post; if the save fails, nothing goes out. Tested.
 - **The ratchet already forgets.** Every message key is erased the moment it's
   used, so the conversation's own state never holds anything that could reopen
   past messages. Each step works on a copy of the state, and the copy it
@@ -168,7 +173,13 @@ Every kind of delete is in one object the app uses, `Conversation`
   nothing. Tested.
 - **Deleting a conversation** overwrites every key in it (root, chain, ratchet,
   mailbox and wire keys, keys held for late messages); the session refuses any
-  further use. Tested.
+  further use. Operations run one at a time, so a send or receive already under
+  way finishes first and is forgotten with the rest. Tested.
+- **Timers agree.** Both phones apply one rule to every timer change (the
+  later change wins; on a tie, the shorter timer), so they can't end up with
+  different settings. Tested.
+- **No flooding.** Remembered ids of deleted messages are capped (5,000, oldest
+  first), so a contact sending endless deletes can't fill your phone. Tested.
 
 ### What delete can't do
 
@@ -180,8 +191,9 @@ Every kind of delete is in one object the app uses, `Conversation`
   your phone, and you can't delete theirs from theirs: each person controls
   their own words on the other's phone, and their own copy of everything.
   Tested: a delete naming someone else's message is refused.
-- **After a conversation has ended**, a delete for both can't be delivered; the
-  app says so and keeps your copy so you can delete it for yourself.
+- **After a conversation has ended**, a new delete for both can't be sent; the
+  app says so and keeps your copy so you can delete it for yourself. Unsend at
+  the relay still works for anything not yet fetched.
 - **Wiping memory in JavaScript** is best effort: key material is overwritten,
   but text shown on screen is a JavaScript string, which can't be. The storage
   promise (keys, not files) doesn't depend on this.
@@ -275,7 +287,7 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 ## Try it
 
 ```bash
-node --test tests/msg.test.js                    # 46 tests: meeting, ratchet, stamps, delete, relay, rollback, fuzz
+node --test tests/msg.test.js                    # 55 tests: meeting, ratchet, stamps, delete, relay, rollback, fuzz
 MSG_FUZZ_CASES=3000 node --test tests/msg.test.js
 npm run test:timing                              # timing check of the current backend
 ```

@@ -52,11 +52,19 @@ const DH_RE = /^[0-9a-f]{64}$/;
  * The body of a "delete" message: which of MY messages the contact's app must
  * erase. Each entry names the message id and its place in the ratchet
  * ({ dh, n }, as encrypt returned it), so if the message hasn't arrived yet the
- * contact's phone destroys the key it would have opened with: the message can
- * then never be read, even if someone kept a copy of the ciphertext.
+ * contact's phone destroys the key it would have opened with. Saved with
+ * Conversation.seal (a new key every save), no stored copy of the conversation
+ * holds that key afterwards, so a kept copy of the ciphertext can't be opened.
  */
 export function deleteBody(entries) {
-  return encodeJSON({ d: entries.map((e) => ({ id: e.id, dh: e.pos.dh, n: e.pos.n })) });
+  if (!Array.isArray(entries)) throw new MsgError("bad_delete", "Nothing to delete");
+  const d = entries.map((e) => {
+    if (!e || typeof e.id !== "string" || !e.pos || typeof e.pos.dh !== "string") throw new MsgError("bad_delete", "This message can't be deleted for both of you");
+    return { id: e.id, dh: e.pos.dh, n: e.pos.n };
+  });
+  const body = encodeJSON({ d });
+  parseDelete(body);
+  return body;
 }
 
 export function parseDelete(bytes) {
@@ -76,6 +84,16 @@ function parseTimer(bytes) {
   const ms = /^\d{1,12}$/.test(t) ? Number(t) : NaN;
   if (!isTtl(ms)) throw new MsgError("bad_timer", "Timer must be off, or between 30 seconds and a year");
   return ms;
+}
+
+/**
+ * Both phones apply the same rule to every timer change, so they always agree:
+ * the later change wins; on a tie, the shorter timer (0 = off counts as longest).
+ */
+function newerTimer(cur, curAt, ms, at) {
+  if (at !== curAt) return at > curAt;
+  const len = (x) => (x === 0 ? Infinity : x);
+  return len(ms) < len(cur);
 }
 const MAX_BODY = 1_900_000;
 
@@ -140,7 +158,7 @@ export class Session {
       DHs: null, DHr: null, KEMs: null, KEMr: null, needSend: false, head: null,
       skipped: [], // [ "dhhex:n", messageKey, firstSeenMs ]
       lastRecv: null, lastSend: null,
-      timer: 0, // disappearing messages, ms (0 = off); set by either side with a "timer" message
+      timer: 0, timerAt: 0, // disappearing messages, ms (0 = off), and when it was last set; either side sets it
     };
     if (role === "a") {
       s.DHr = ratchet.peerRx; s.KEMr = checkKemPk(ratchet.peerRek); s.needSend = true;
@@ -165,11 +183,13 @@ export class Session {
   }
 
   async #commit(prev, next) {
-    this.s = next;
+    // persist sees the new state through its own Session view; everyone else keeps
+    // seeing the saved state until the save has succeeded.
     if (this.persist) {
-      try { await this.persist(this); }
-      catch (e) { this.s = prev; throw new MsgError("persist_failed", `Could not save the conversation: ${e?.message || e}`); }
+      try { await this.persist(new Session(next)); }
+      catch (e) { throw new MsgError("persist_failed", `Could not save the conversation: ${e?.message || e}`); }
     }
+    this.s = next;
     wipeState(prev); // the replaced copy's keys are overwritten, not left for the garbage collector
   }
 
@@ -256,6 +276,9 @@ export class Session {
       s.Ns += 1;
 
       const payload = { k: kind, b: b64u(bodyBytes), at: now, nonce: b64u(nonce), x: ttl };
+      // A change you make is always newer than the one you last saw, even if the clocks disagree.
+      const timerAt = Math.max(now, (s0.timerAt ?? 0) + 1);
+      if (newTimer !== null) payload.ta = timerAt;
       if (stamp) payload.st = stamp;
       payload.d = duress ? 1 : 0; // always present, same width: a duress message is the same size
       // Stamped or not, the payload is the same length (for stamp keys up to 4096 bits), so
@@ -270,7 +293,7 @@ export class Session {
       const outer = await aeadSeal(s.sendWire, wn, inner, concat(label("wire"), s.convId));
       const wire = concat(Uint8Array.of(WIRE_VERSION), wn, outer);
       if (kind === "close") s.status = "closed";
-      if (newTimer !== null) s.timer = newTimer;
+      if (newTimer !== null) { s.timer = newTimer; s.timerAt = timerAt; }
       s.lastSend = now;
       s.version += 1;
       await this.#commit(s0, s);
@@ -293,7 +316,6 @@ export class Session {
       const s0 = this.s;
       if (s0.status === "erased") throw new MsgError("erased", "This conversation was deleted");
       const s = track(cloneState(s0));
-      if (s.status === "closed") throw new MsgError("closed", "This conversation was closed");
       expireSkipped(s, now);
       const inner = unpad(await aeadOpen(s.recvWire, wire.subarray(1, 13), wire.subarray(13), concat(label("wire"), s.convId), "not_for_us"));
       if (inner.length < HEADER_BYTES + 16) throw new MsgError("malformed", "Message too short");
@@ -332,6 +354,9 @@ export class Session {
       wipe(mk, key, iv);
       const p = decodeJSON(pt);
       if (!KINDS.includes(p.k) || typeof p.at !== "number") throw new MsgError("malformed", "Bad message payload");
+      // After the conversation ends, only deletes still count: "delete for both" then
+      // "end" may arrive in either order, and the deletes must not be lost.
+      if (s.status === "closed" && p.k !== "delete") throw new MsgError("closed", "This conversation was closed");
       const body = unb64u(p.b);
       const nonce = unb64u(p.nonce, NONCE);
       let live = null;
@@ -339,10 +364,18 @@ export class Session {
         live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body }), { now });
       }
       const text = p.k === "text" ? fromUtf8(body) : undefined; // decode before committing: bad text moves nothing
-      const ttl = p.x ?? 0;
-      if (!isTtl(ttl)) throw new MsgError("malformed", "Bad disappearing time");
+      const sent = p.x ?? 0;
+      if (!isTtl(sent)) throw new MsgError("malformed", "Bad disappearing time");
+      // Your own timer applies to what you receive too: the shorter of the sender's and yours.
+      const ttl = !(p.k === "text" || p.k === "file-key") ? 0
+        : sent === 0 ? s.timer : s.timer === 0 ? sent : Math.min(sent, s.timer);
       const extra = {};
-      if (p.k === "timer") { extra.timer = parseTimer(body); s.timer = extra.timer; }
+      if (p.k === "timer") {
+        const ms = parseTimer(body);
+        const at = Number.isSafeInteger(p.ta) ? p.ta : p.at;
+        if (newerTimer(s.timer, s.timerAt ?? 0, ms, at)) { s.timer = ms; s.timerAt = at; }
+        extra.timer = s.timer;
+      }
       if (p.k === "delete") {
         const d = parseDelete(body);
         let destroyed = 0;
