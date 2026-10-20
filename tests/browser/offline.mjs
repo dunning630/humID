@@ -205,6 +205,9 @@ try {
   await shot(page, "7-reconnected-open");
   step("Reconnect: one live check, back online, and the document opens");
   await page.getByRole("button", { name: "Close and wipe" }).click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page); // 3.0: closing the viewer returns to the item; Back returns to the vault
+  await page.locator(".pushed").waitFor({ state: "detached", timeout: 10_000 });
 
   /* ---------------- 4. signed in: the connection drops and comes back ---------------- */
   const bar = page.locator(".linkbar");
