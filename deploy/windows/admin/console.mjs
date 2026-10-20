@@ -159,10 +159,11 @@ export function createConsole({
     return queueJob("os-scan", {}, { by: "schedule" });
   }
 
+  /** Backups on this computer, newest first: 2.x zips and 3.0 encrypted .humidbak files. */
   function backups() {
     let out = [];
     try {
-      out = readdirSync(backupsDir).filter((f) => f.endsWith(".zip") || f.endsWith(".humidbak")) // 2.x zips, 3.0 encrypted backups.map((f) => {
+      out = readdirSync(backupsDir).filter((f) => f.endsWith(".zip") || f.endsWith(".humidbak")).map((f) => {
         const st = statSync(join(backupsDir, f));
         return { name: f, bytes: st.size, at: st.mtime.toISOString() };
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
