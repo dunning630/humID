@@ -137,7 +137,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. a passport in view: the card follows the scan to Done ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pp-ok.mjpeg")));
   await page.goto(BASE);
   await page.getByRole("button", { name: /^Unlock$/ }).click();
   await hold(page);
