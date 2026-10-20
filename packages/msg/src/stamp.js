@@ -44,11 +44,22 @@ function modInv(a, m) {
   return t0 < 0n ? t0 + m : t0;
 }
 
-/** Stamp keys as the app accepts them: at most two, one issuing (the access-pass rule, same reason). */
-export function importStampKeys(list) {
-  try { return importKeySet(list); }
+/**
+ * Stamp keys as the app accepts them: at most two, one issuing (the access-pass
+ * rule, same reason). Pass the server's access-pass keys too: a stamp key that
+ * is also a pass key is refused, because a blind signer signs whatever it is
+ * handed and a "stamp" could then be a blinded access pass.
+ */
+export function importStampKeys(list, { passKeys = [] } = {}) {
+  let set;
+  try { set = importKeySet(list); }
   catch (e) { throw new MsgError(e.code === "too_many_keys" ? "too_many_stamp_keys" : "bad_stamp_key", e.message); }
+  const passIds = new Set(passKeys.map((k) => String(k.id).toLowerCase()));
+  if (set.keys.some((k) => passIds.has(k.id))) throw new MsgError("bad_stamp_key", "The server uses its access-pass key for stamps. Refusing.");
+  return set;
 }
+
+const today = (now) => new Date(now).toISOString().slice(0, 10);
 
 /** What a message's stamp commits to. Recomputed by the recipient from what it decrypted. */
 export function messageCommitment({ convId, senderFp, nonce, kind, body }) {
@@ -91,16 +102,17 @@ export function finalizeStamp(keyset, draft, blindSig) {
   const s = (z * BigInt(`0x${draft.inv}`)) % key.n;
   const stamp = { v: STAMP_VERSION, kid: key.id, input: draft.input, sig: pb64u(i2osp(s, key.k)) };
   const commitment = punb64u(draft.input).subarray(PREFIX + LABEL.length + 32);
-  if (!verifyStamp(keyset, stamp, commitment)) throw new MsgError("stamp_failed", "The server's stamp did not check out");
+  if (!verifyStamp(keyset, stamp, commitment, { now: 0 })) throw new MsgError("stamp_failed", "The server's stamp did not check out");
   return stamp;
 }
 
 /** Recipient: does this stamp cover exactly this commitment, under a published stamp key? */
-export function verifyStamp(keyset, stamp, commitment) {
+export function verifyStamp(keyset, stamp, commitment, { now = Date.now() } = {}) {
   try {
     if (stamp?.v !== STAMP_VERSION) return false;
     const key = keyset.keys.find((k) => k.id === stamp.kid);
     if (!key) return false;
+    if (key.acceptUntil && today(now) > key.acceptUntil) return false; // a retired key's stamps stop counting
     const input = punb64u(stamp.input), sig = punb64u(stamp.sig);
     if (input.length !== INPUT_LEN || sig.length !== key.k) return false;
     if (!input.subarray(PREFIX, PREFIX + LABEL.length).every((x, i) => x === LABEL[i])) return false;

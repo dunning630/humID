@@ -1,7 +1,8 @@
 // What the relay sees: opaque objects of a few fixed sizes, posted to random
-// 128-bit mailbox ids. Invites, contact requests and messages all share one
-// framing — a version byte, then bytes indistinguishable from random — and are
-// padded to the same size classes, so the relay cannot tell them apart.
+// 128-bit mailbox ids. Invites, contact requests and messages share one framing
+// (a version byte, then ciphertext) and the same size classes. The size class
+// still hints at the kind (invites 64 KiB, requests 128 KiB, messages usually
+// 8 KiB), and a request carries its ephemeral X25519 key in the clear.
 
 import { MsgError, u32, readU32, mac, label, toHex, dayOf } from "./util.js";
 

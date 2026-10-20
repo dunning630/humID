@@ -19,7 +19,7 @@
 // The ratchet runs inside a second layer (the wire key) so the relay never sees
 // ratchet keys, counters or which messages belong to one chain.
 
-import { backend, SIZES } from "./backend.js";
+import { backend, SIZES, checkKemPk } from "./backend.js";
 import { personaFingerprint, personaId, safetyCode, encodePub, decodePub } from "./persona.js";
 import { messageCommitment, verifyStamp } from "./stamp.js";
 import {
@@ -30,15 +30,21 @@ import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays } from "./wire.js
 
 export const MAX_SKIP = 1000;        // per chain step
 export const MAX_SKIPPED_TOTAL = 2000;
-export const HEADER_BYTES = SIZES.x + SIZES.kemCt + SIZES.kemPk + 8; // dh | kem ct | next kem ek | pn | n
+const SALT = 16;
+export const HEADER_BYTES = SIZES.x + SIZES.kemCt + SIZES.kemPk + SALT + 8; // dh | kem ct | next kem ek | salt | pn | n
+export const SKIPPED_TTL_MS = 14 * 24 * 3600_000; // a withheld message's key is kept no longer than the relay keeps the message
 const WIRE_OVERHEAD = 1 + 12 + 16;
 const NONCE = 16;
+const STAMP_ROOM = 1200; // characters reserved for a stamp in every payload
 export const KINDS = Object.freeze(["text", "accept", "file-key", "receipt", "close"]);
 const MAX_BODY = 1_900_000;
 
 const kdfRk = (rk, ikm) => { const o = kdf(ikm, rk, "ratchet step", 64); return [o.slice(0, 32), o.slice(32)]; };
 const kdfCk = (ck) => [mac(ck, Uint8Array.of(1)), mac(ck, Uint8Array.of(2))]; // [message key, next chain key]
-const msgKeys = (mk) => { const o = kdf(mk, undefined, "message key", 44); return [o.slice(0, 32), o.slice(32)]; };
+// The per-message salt (random, carried in the header) means that even if a
+// device were rolled back to an older state and reused a chain key, the AES
+// key and nonce would still never repeat.
+const msgKeys = (mk, salt) => { const o = kdf(mk, salt, "message key", 44); return [o.slice(0, 32), o.slice(32)]; };
 
 /** Keys both sides derive from the handshake. */
 export function conversationKeys(rk0, th, role) {
@@ -54,13 +60,13 @@ export function conversationKeys(rk0, th, role) {
 }
 
 function encodeHeader(h) {
-  return concat(h.dh, h.ct, h.ek, u32(h.pn), u32(h.n));
+  return concat(h.dh, h.ct, h.ek, h.salt, u32(h.pn), u32(h.n));
 }
 function decodeHeader(b) {
   let o = 0;
   const take = (n) => { const x = b.subarray(o, o + n); o += n; return x; };
-  const dh = take(SIZES.x), ct = take(SIZES.kemCt), ek = take(SIZES.kemPk);
-  return { dh, ct, ek, pn: readU32(b, o), n: readU32(b, o + 4) };
+  const dh = take(SIZES.x), ct = take(SIZES.kemCt), ek = take(SIZES.kemPk), salt = take(SALT);
+  return { dh, ct, ek, salt, pn: readU32(b, o), n: readU32(b, o + 4) };
 }
 
 const cloneState = (s) => structuredClone(s);
@@ -88,7 +94,7 @@ export class Session {
       lastRecv: null, lastSend: null,
     };
     if (role === "a") {
-      s.DHr = ratchet.peerRx; s.KEMr = ratchet.peerRek; s.needSend = true;
+      s.DHr = ratchet.peerRx; s.KEMr = checkKemPk(ratchet.peerRek); s.needSend = true;
     } else {
       s.DHs = { sk: ratchet.rxSk, pk: ratchet.rxPk };
       s.KEMs = { sk: ratchet.rekSk, pk: ratchet.rekPk };
@@ -96,9 +102,24 @@ export class Session {
     return new Session(s);
   }
 
-  constructor(state) {
+  /**
+   * @param state   from create() or fromJSON()
+   * @param opts.persist  async (session) => void. Called with the new state
+   *   before encrypt/decrypt return; if it throws, the step is undone and
+   *   nothing is handed back. The app seals and stores the conversation here,
+   *   so a message can never go out from a state that wasn't saved first.
+   */
+  constructor(state, { persist = null } = {}) {
     this.s = state;
+    this.persist = persist;
     this.queue = Promise.resolve();
+  }
+
+  async #commit(prev, next) {
+    this.s = next;
+    if (!this.persist) return;
+    try { await this.persist(this); }
+    catch (e) { this.s = prev; throw new MsgError("persist_failed", `Could not save the conversation: ${e?.message || e}`); }
   }
 
   get peerId() { return this.s.peer.id; }
@@ -126,7 +147,7 @@ export class Session {
    * Returns { box, wire } to post to the relay.
    */
   encrypt(kind, body, { now = Date.now(), stamper = null, duress = false } = {}) {
-    return this.#serial(async () => {
+    return this.#serial(() => guard(async () => {
       if (!KINDS.includes(kind)) throw new MsgError("bad_kind", `Unknown message kind "${kind}"`);
       const s0 = this.s;
       if (s0.status === "closed") throw new MsgError("closed", "This conversation was closed");
@@ -159,13 +180,17 @@ export class Session {
       }
       const [mk, next] = kdfCk(s.CKs);
       s.CKs = next;
-      const header = encodeHeader({ ...s.head, pn: s.PN, n: s.Ns });
+      const salt = random(SALT);
+      const header = encodeHeader({ ...s.head, salt, pn: s.PN, n: s.Ns });
       s.Ns += 1;
 
       const payload = { k: kind, b: b64u(bodyBytes), at: now, nonce: b64u(nonce) };
       if (stamp) payload.st = stamp;
-      if (duress) payload.d = 1;
-      const [key, iv] = msgKeys(mk);
+      payload.d = duress ? 1 : 0; // always present, same width: a duress message is the same size
+      // Stamped or not, the payload is the same length (for stamp keys up to 4096 bits), so
+      // the wire size never shows whether a live check was made.
+      payload.f = "0".repeat(Math.max(0, STAMP_ROOM - (stamp ? JSON.stringify(stamp).length + 6 : 0)));
+      const [key, iv] = msgKeys(mk, salt);
       const ct = await aeadSeal(key, iv, encodeJSON(payload), concat(label("message"), s.convId, header));
       wipe(mk, key, iv);
 
@@ -176,9 +201,9 @@ export class Session {
       if (kind === "close") s.status = "closed";
       s.lastSend = now;
       s.version += 1;
-      this.s = s;
+      await this.#commit(s0, s);
       return { box: boxFor(s.sendBox, dayOf(now)), wire };
-    });
+    }));
   }
 
   /**
@@ -191,8 +216,10 @@ export class Session {
   decrypt(wire, { now = Date.now(), stampKeys = null } = {}) {
     return this.#serial(() => guard(async () => {
       checkWire(wire);
-      const s = cloneState(this.s);
+      const s0 = this.s;
+      const s = cloneState(s0);
       if (s.status === "closed") throw new MsgError("closed", "This conversation was closed");
+      expireSkipped(s, now);
       const inner = unpad(await aeadOpen(s.recvWire, wire.subarray(1, 13), wire.subarray(13), concat(label("wire"), s.convId), "not_for_us"));
       if (inner.length < HEADER_BYTES + 16) throw new MsgError("malformed", "Message too short");
       const headerBytes = inner.subarray(0, HEADER_BYTES);
@@ -210,6 +237,7 @@ export class Session {
         if (!s.DHr || !equal(h.dh, s.DHr)) {
           if (!s.KEMs || !s.DHs) throw new MsgError("replay_or_old", "Not expecting a new chain");
           if (s.CKr) skip(s, h.pn, now);
+          checkKemPk(h.ek);
           const ss = b.kem.decapsulate(h.ct, s.KEMs.sk);
           const dhOut = b.x25519.shared(s.DHs.sk, h.dh);
           const ikm = concat(dhOut, ss);
@@ -222,7 +250,7 @@ export class Session {
         [mk, s.CKr] = kdfCk(s.CKr);
         s.Nr += 1;
       }
-      const [key, iv] = msgKeys(mk);
+      const [key, iv] = msgKeys(mk, h.salt);
       const pt = await aeadOpen(key, iv, ct, concat(label("message"), s.convId, headerBytes));
       wipe(mk, key, iv);
       const p = decodeJSON(pt);
@@ -231,17 +259,18 @@ export class Session {
       const nonce = unb64u(p.nonce, NONCE);
       let live = null;
       if (p.st && stampKeys) {
-        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body }));
-      } else if (p.st) live = null;
+        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body }), { now });
+      }
+      const text = p.k === "text" ? fromUtf8(body) : undefined; // decode before committing: bad text moves nothing
 
       if (s.status === "requested") s.status = "connected";
       if (p.k === "close") s.status = "closed";
       s.lastRecv = now;
       s.version += 1;
       // Commit only after everything checked: a tampered message never moves the ratchet.
-      this.s = s;
+      await this.#commit(s0, s);
       const out = { kind: p.k, body, at: p.at, n: h.n, live, duress: p.d === 1, stamped: !!p.st };
-      if (p.k === "text") out.text = fromUtf8(body);
+      if (text !== undefined) out.text = text;
       return out;
     }));
   }
@@ -258,7 +287,8 @@ export class Session {
   /* ---------- at rest ---------- */
 
   toJSON() { return toPlain(this.s); }
-  static fromJSON(o) { return new Session(fromPlain(o)); }
+  static fromJSON(o, opts) { return new Session(fromPlain(o), opts); }
+  get convId() { return this.s.convId; }
 
   /**
    * Seal the conversation for storage, under a key the app derives during a
@@ -276,18 +306,26 @@ export class Session {
 }
 
 /** Open a sealed conversation. minVersion: the highest version this device has seen for it. */
-export async function openSession(stateKey, blob, { minVersion = 0, convId = null } = {}) {
+export async function openSession(stateKey, blob, { convId, minVersion = 0, persist = null } = {}) {
   return guard(async () => {
+    if (!(convId instanceof Uint8Array) || convId.length !== 16) throw new MsgError("bad_request", "Say which conversation this copy should be (convId)");
     if (!(blob instanceof Uint8Array) || blob.length < 24 + 12 + 16) throw new MsgError("malformed", "Not a sealed conversation");
     const head = blob.subarray(0, 24);
     const version = readU32(head, 16) * 2 ** 32 + readU32(head, 20);
-    if (convId && !equal(head.subarray(0, 16), convId)) throw new MsgError("wrong_conversation", "Stored copy belongs to another conversation");
+    if (!equal(head.subarray(0, 16), convId)) throw new MsgError("wrong_conversation", "Stored copy belongs to another conversation");
     if (version < minVersion) throw new MsgError("rolled_back", "This is an older copy of the conversation. Refusing it.");
     const pt = await aeadOpen(stateKey, blob.subarray(24, 36), blob.subarray(36), concat(label("state"), head), "decrypt_failed");
-    const session = Session.fromJSON(decodeJSON(pt));
+    const session = Session.fromJSON(decodeJSON(pt), { persist });
     if (session.version !== version || !equal(session.s.convId, head.subarray(0, 16))) throw new MsgError("malformed", "Stored copy is inconsistent");
     return session;
   });
+}
+
+/** Forget skipped message keys older than SKIPPED_TTL_MS: the relay has dropped those messages by then anyway. */
+function expireSkipped(s, now) {
+  const keep = [];
+  for (const e of s.skipped) { if (now - e[2] < SKIPPED_TTL_MS) keep.push(e); else wipe(e[1]); }
+  if (keep.length !== s.skipped.length) s.skipped = keep;
 }
 
 function skip(s, until, now = Date.now()) {

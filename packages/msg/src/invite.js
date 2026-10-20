@@ -23,39 +23,51 @@
 // Breaking it needs ML-KEM-1024 AND X25519 broken, AND the invite secret.
 
 import { base32, unbase32, normalize } from "@humid/recovery";
-import { backend, SIZES } from "./backend.js";
+import { backend, SIZES, checkKemPk } from "./backend.js";
 import { newPersona, encodePub, decodePub, dualSign, dualVerify, personaFingerprint, personaId, safetyCode } from "./persona.js";
 import { requestCommitment, verifyStamp } from "./stamp.js";
 import { Session } from "./session.js";
 import {
-  MsgError, kdf, H, label, lp, unlp, concat, random, wipe, toHex, b64u, unb64u,
+  MsgError, kdf, H, label, lp, unlp, concat, random, wipe, toHex, b64u, unb64u, equal,
   encodeJSON, decodeJSON, aeadSeal, aeadOpen, guard,
 } from "./util.js";
 import { pad, unpad, checkWire, WIRE_VERSION, isBox } from "./wire.js";
 
-export const INVITE_SECRET_BYTES = 20;      // 160 bits
+export const INVITE_SECRET_BYTES = 16;      // 128 bits: what opens the bundle
+export const INVITE_PIN_BYTES = 10;         // 80 bits: which persona the bundle must carry
 export const DEFAULT_INVITE_TTL = 24 * 3600_000;   // a day: an invite read over a cloned voice call stops working soon
 export const MAX_INVITE_TTL = 7 * 24 * 3600_000;
 const SIG_MAX = SIZES.slhSig;
 
-/* ---------- invite codes: HI-XXXX-…  (32 data + 2 check characters) ---------- */
+/* ---------- invite codes: HI-XXXX-…  (42 data + 2 check characters) ----------
+ * The code carries the secret AND a pin: 80 bits of the inviter's persona
+ * fingerprint. Whoever opens the invite checks the bundle's persona against the
+ * pin, so someone else who learns the code (another invitee, someone who saw
+ * it) can't post their own bundle under it and pose as the inviter.
+ */
 
+const CODE_BYTES = INVITE_SECRET_BYTES + INVITE_PIN_BYTES;
+const DATA_CHARS = Math.ceil((CODE_BYTES * 8) / 5); // 42
 const check2 = (data) => base32(H(label("invite check"), new TextEncoder().encode(data))).slice(0, 2);
+const pinOf = (personaPub) => personaFingerprint(personaPub).subarray(0, INVITE_PIN_BYTES);
 
-export function formatInviteCode(secret) {
-  const data = base32(secret);
+export function formatInviteCode(secret, pin) {
+  if (secret.length !== INVITE_SECRET_BYTES || pin.length !== INVITE_PIN_BYTES) throw new MsgError("bad_invite_code");
+  const data = base32(concat(secret, pin));
   return `HI-${(data + check2(data)).match(/.{1,4}/g).join("-")}`;
 }
 
-/** The secret behind a typed or scanned code. Throws bad_invite_code (typos are caught here, on the phone). */
+/** { secret, pin } behind a typed or scanned code. Throws bad_invite_code (typos are caught here, on the phone). */
 export function parseInviteCode(input) {
   let s = normalize(input);
-  if (s.startsWith("H1") && s.length === 36) s = s.slice(2); // "HI" normalises to "H1"
-  if (s.length !== 34) throw new MsgError("bad_invite_code", "That isn't a HumID invite code");
-  const data = s.slice(0, 32);
-  if (check2(data) !== s.slice(32)) throw new MsgError("bad_invite_code", "That invite code has a typo");
-  try { return unbase32(data, INVITE_SECRET_BYTES); }
+  if (s.startsWith("H1") && s.length === DATA_CHARS + 4) s = s.slice(2); // "HI" normalises to "H1"
+  if (s.length !== DATA_CHARS + 2) throw new MsgError("bad_invite_code", "That isn't a HumID invite code");
+  const data = s.slice(0, DATA_CHARS);
+  if (check2(data) !== s.slice(DATA_CHARS)) throw new MsgError("bad_invite_code", "That invite code has a typo");
+  let raw;
+  try { raw = unbase32(data, CODE_BYTES); }
   catch { throw new MsgError("bad_invite_code", "That isn't a HumID invite code"); }
+  return { secret: raw.slice(0, INVITE_SECRET_BYTES), pin: raw.slice(INVITE_SECRET_BYTES) };
 }
 
 export const inviteBoxOf = (secret) => toHex(H(label("invite box"), secret)).slice(0, 32);
@@ -91,7 +103,7 @@ export async function createInvite(accountSeed, { now = Date.now(), ttlMs = DEFA
   const nonce = random(12);
   const ct = await aeadSeal(inviteKey(secret), nonce, pad(plain, 29), concat(label("bundle"), new TextEncoder().encode(box)));
   return {
-    code: formatInviteCode(secret),
+    code: formatInviteCode(secret, pinOf(persona.pub)),
     box,
     wire: concat(Uint8Array.of(WIRE_VERSION), nonce, ct),
     state: {
@@ -107,7 +119,7 @@ export async function createInvite(accountSeed, { now = Date.now(), ttlMs = DEFA
 
 export async function openInvite(code, wire, { now = Date.now() } = {}) {
   return guard(async () => {
-    const secret = typeof code === "string" ? parseInviteCode(code) : code;
+    const { secret, pin } = typeof code === "string" ? parseInviteCode(code) : code;
     checkWire(wire);
     const box = inviteBoxOf(secret);
     const plain = unpad(await aeadOpen(inviteKey(secret), wire.subarray(1, 13), wire.subarray(13),
@@ -117,10 +129,11 @@ export async function openInvite(code, wire, { now = Date.now() } = {}) {
     if (body.v !== 1 || !isBox(body.reply) || typeof body.exp !== "number") throw new MsgError("malformed", "Bad invite");
     if (now > body.exp) throw new MsgError("invite_expired", "This invite has expired. Ask for a new one.");
     const persona = decodePub(body.persona);
+    if (!equal(pinOf(persona), pin)) throw new MsgError("invite_mismatch", "This invite wasn't made by the person whose code you have");
     if (!dualVerify("bundle", bodyBytes, { dsa, slh }, persona)) throw new MsgError("bad_signature", "Invite signature is invalid");
     return {
       secret, persona, id: personaId(persona), replyBox: body.reply, expires: body.exp,
-      otk: { kemPk: unb64u(body.otk.kem, SIZES.kemPk), xPk: unb64u(body.otk.x, SIZES.x) },
+      otk: { kemPk: checkKemPk(unb64u(body.otk.kem, SIZES.kemPk)), xPk: unb64u(body.otk.x, SIZES.x) },
       bundleHash: H(label("bundle hash"), plain),
     };
   });
@@ -137,7 +150,11 @@ const REQ_OVERHEAD = REQ_PREFIX + 16;
  * @param opts.intro    optional short note shown with the request ("Parker, from the workshop")
  * @returns {{ box, wire, session, persona }}  post wire to box; keep the session (status "requested") and persona salt
  */
-export async function requestContact(accountSeed, invite, { intro = "", stamper = null, now = Date.now() } = {}) {
+export function requestContact(accountSeed, invite, opts = {}) {
+  return guard(() => makeRequest(accountSeed, invite, opts));
+}
+
+async function makeRequest(accountSeed, invite, { intro = "", stamper = null, now = Date.now() } = {}) {
   if (typeof intro !== "string" || intro.length > 280) throw new MsgError("bad_intro", "Keep the note to 280 characters");
   if (now > invite.expires) throw new MsgError("invite_expired", "This invite has expired. Ask for a new one.");
   const b = backend();
@@ -206,7 +223,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
     const r = decodeJSON(innerJSON);
     if (r.v !== 1 || typeof r.intro !== "string" || r.intro.length > 280) throw new MsgError("malformed", "Bad request");
     const peer = decodePub(r.persona);
-    const peerRx = unb64u(r.rx, SIZES.x), peerRek = unb64u(r.rek, SIZES.kemPk);
+    const peerRx = unb64u(r.rx, SIZES.x), peerRek = checkKemPk(unb64u(r.rek, SIZES.kemPk));
     const th = H(label("hello transcript"), lp(th0, H(innerJSON)));
     if (!dualVerify("request", th, { dsa, slh }, peer)) throw new MsgError("bad_signature", "Request signature is invalid");
     if (state.seen.includes(toHex(th))) throw new MsgError("replay_or_old", "This request was already handled");
@@ -215,7 +232,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
     wipe(ss1, ss2, dh1, dh2, dh3, bind);
     const senderFp = personaFingerprint(peer);
     let live = null;
-    if (r.st && stampKeys) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp }));
+    if (r.st && stampKeys) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp }), { now });
     return {
       from: personaId(peer), intro: r.intro, at: r.at, live, stamped: !!r.st,
       safetyCode: safetyCode(persona.pub, peer),

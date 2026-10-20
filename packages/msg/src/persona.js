@@ -14,7 +14,7 @@
 // and the salt; forgetting the salt forgets the persona for good.
 
 import { base32 } from "@humid/recovery";
-import { backend, SIZES } from "./backend.js";
+import { backend, SIZES, checkKemPk } from "./backend.js";
 import { MsgError, kdf, H, label, lp, b64u, unb64u, wipe, random, toHex } from "./util.js";
 
 export const PERSONA_ID_CHARS = 20;
@@ -73,7 +73,7 @@ export function encodePub(p) {
 export function decodePub(o) {
   if (!o || typeof o !== "object") throw new MsgError("malformed", "Missing persona");
   return {
-    kemPk: unb64u(o.kem, SIZES.kemPk),
+    kemPk: checkKemPk(unb64u(o.kem, SIZES.kemPk)),
     dsaPk: unb64u(o.dsa, SIZES.dsaPk),
     slhPk: unb64u(o.slh, SIZES.slhPk),
     xPk: unb64u(o.x, SIZES.x),

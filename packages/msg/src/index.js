@@ -6,16 +6,16 @@
 // See docs/MESSAGING.md.
 
 export { VERSION, MsgError } from "./util.js";
-export { backend, useBackend, checkBackend, resetBackend, SIZES } from "./backend.js";
+export { backend, useBackend, checkBackend, resetBackend, SIZES, isValidKemPk } from "./backend.js";
 export {
   newPersona, personaFromSalt, personaId, personaFingerprint, safetyCode, publicOf, wipePersona,
   encodePub, decodePub, dualSign, dualVerify, PERSONA_ID_CHARS, SAFETY_CHARS,
 } from "./persona.js";
 export {
   createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite,
-  formatInviteCode, parseInviteCode, inviteBoxOf, DEFAULT_INVITE_TTL, MAX_INVITE_TTL,
+  formatInviteCode, parseInviteCode, inviteBoxOf, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
-export { Session, openSession, conversationKeys, MAX_SKIP, KINDS } from "./session.js";
+export { Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS } from "./session.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,
 } from "./stamp.js";
