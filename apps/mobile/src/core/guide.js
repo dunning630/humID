@@ -471,7 +471,10 @@ export function judge(m, template, extra = {}) {
   if (scale == null && bar && template?.expect?.barcode) scale = bar.across / TH.barAcross * 0.9;
   out.scale = scale;
   // the edges can't be told apart from print: nothing is said about size, and nothing is taken by itself
-  if (Math.abs(m.aspect || 0) > TH.aspect) { out.present = true; out.unsure = true; out.present = false; return out; }
+  // (a document well past the outline is cut off by the picture's edge, which skews the shape: that is still "move back")
+  // (a turned or tilted document has a skewed shape too, and says so below)
+  const skewed = (Math.abs(m.rot) > TH.tilt && m.rotSpread < 6) || Math.abs(m.flatH) > TH.flat || Math.abs(m.flatV) > TH.flat;
+  if (Math.abs(m.aspect || 0) > TH.aspect && !skewed) { if (scale != null && m.sides >= 3 && scale > TH.big) return say("back"); out.unsure = true; out.present = false; return out; }
   const edgeOk = m.sides >= 3;
   if (scale != null && (edgeOk || bar)) {
     if (scale < TH.small) return say("closer");

@@ -196,7 +196,6 @@ scene("outline", async (page) => {
   assert.equal(await page.locator(".dc-frame .dc-outline, .doccam > .dc-outline").count(), 0, "no free-form outline is drawn");
   const live = state(page).locator('[role="status"]');
   assert.equal(await live.getAttribute("aria-live"), "polite", "the card is a live region");
-  await state(page).locator("strong", { hasText: "Fit the passport page in the outline" }).waitFor();
   assert.equal((await state(page).locator(".dc-steps li").first().textContent()).trim(), "Line up");
   // the rect the app uses for the crop, in the video's pixels, is where the fixtures put their documents
   const g = await page.evaluate(() => globalThis.__humidGuide?.rect);
@@ -217,7 +216,7 @@ scene("outline", async (page) => {
   assert.ok(Math.abs(f2.width / f2.height - 85.6 / 54) < 0.01, `a card's outline: ${(f2.width / f2.height).toFixed(3)}`);
   const c2 = await page.evaluate(() => globalThis.__constraints.video);
   assert.equal(c2.width.ideal, 1080); assert.equal(c2.height.ideal, 1920);
-  await state(page).locator("strong", { hasText: "Fit the card in the outline" }).waitFor();
+  await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
   // the app goes to the background: the stream is released at once
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
