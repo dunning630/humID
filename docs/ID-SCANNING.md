@@ -165,6 +165,15 @@ back); ID-3, 125 x 88 mm, for the passport page. It is centred, dimmed outside, 
 zones (barcode, MRZ, number). The camera starts after the kind is chosen, never before, and the stream is
 released on exit, Back or background.
 
+**In the 3.0 app** (`screens/add/camera.jsx`). The kind comes from where the camera is opened: Add > Payment card
+(card outline), an ID's later sides (the licence, ID card or permit outline, the passport page's), and the Add > ID camera, which
+doesn't know yet what it will be shown, so it carries a **Card / Passport page** switch (ID-1 or ID-3; the passport outline expects
+the two lines of <<<, the card outline a barcode or lines). Add > Photo and the phone's document scanner keep the free-form finder.
+The preview asks for the long side only with `resizeMode: "none"` (3.0 never lets a browser crop the field of view); if the
+preview comes back turned the wrong way for the screen it is asked once more with both sizes in the screen's orientation
+(`liveConstraints(..., { exact: true })`). The clean scan of a straightened page runs in the scan worker after the review opens
+(`core/scanjobs.js`, started from the bundled worker URL), and the sealing arithmetic warms up while a review is on screen.
+
 **Guidance** (`measure`, `judge`; pure, on a 288 px-wide picture of the outline plus a 30% margin, about 2-25 ms):
 
 | Says | When (thresholds in `TH`) |
@@ -194,8 +203,8 @@ the outline plus a 4% margin, at most 2400 px wide, deskewed when the card is tu
 upright from the guide orientation and the print, and handed to `develop()` as before, so reading and
 sealing are unchanged. The Rotate control stays on the review. Nothing is logged and no raw frame is kept.
 
-**Preview size.** 1080 x 1920 (portrait; 1440 x 2560 for a passport), orientation-aware; if the browser
-returns the other way round the camera asks again (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
+**Preview size.** About 1080 x 1920 (portrait; 1440 x 2560 for a passport): the long side is asked for, never both sides in
+3.0; if the browser returns the other way round the camera asks again (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
 in 2.1.1). Evidence, on synthetic specimens in Chromium: the PDF417 reads from frames 540, 720 and 1080 px
 wide; the MRZ reads at 720 and 1080 but misread a character at 540. So 1080 px is about 1.5x the width
 that was proven, and the passport asks for more. Real print and real optics need the device check below.
