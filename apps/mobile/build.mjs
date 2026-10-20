@@ -159,19 +159,26 @@ async function buildApp() {
   });
   const js = outputsOf(r.metafile, ".js").find((f) => /^assets\/app-/.test(f));
   const css = outputsOf(r.metafile, ".css").find((f) => /^assets\/app-/.test(f));
+  // Every screen's code (the chunks), for the service worker to keep: an installed web app
+  // opened with no connection still has all its screens. Not the scan engines (megabytes,
+  // and scanning needs the vault anyway): those stay on demand.
+  const screens = outputsOf(r.metafile, ".js").filter((f) => f.startsWith("assets/chunks/"));
   if (process.env.HUMID_META === "1") await writeFile(`${out}meta.json`, JSON.stringify(r.metafile));
-  await stampShell({ js, css });
+  await stampShell({ js, css, screens });
   await compressAll();
 }
 
 /* ---------- the shell: index.html, sw.js, manifest, icons ---------- */
-async function stampShell({ js, css }) {
+async function stampShell({ js, css, screens = [] }) {
   const html = (await readFile(here("./src/index.html"), "utf8")).replace(/__APP_JS__/g, `/${js}`).replace(/__APP_CSS__/g, `/${css}`);
   await writeFile(`${out}index.html`, html);
   await copyFile(here("./src/boot-guard.js"), `${out}boot-guard.js`);
   // The service worker precaches the shell by its hashed names: a new release is a new list.
   const shell = ["/", `/${js}`, `/${css}`, "/boot-guard.js", "/manifest.webmanifest", "/icons/icon-192.png"];
-  const sw = (await readFile(here("./src/sw.js"), "utf8")).replace("__HUMID_VERSION__", `humid-${app.version}-${short(Buffer.from(js + css))}`).replace("__HUMID_SHELL__", JSON.stringify(shell));
+  const sw = (await readFile(here("./src/sw.js"), "utf8"))
+    .replace("__HUMID_VERSION__", `humid-${app.version}-${short(Buffer.from([js, css, ...screens].join("\n")))}`)
+    .replace("__HUMID_SHELL__", JSON.stringify(shell))
+    .replace("__HUMID_SCREENS__", JSON.stringify(screens.map((f) => `/${f}`)));
   await writeFile(`${out}sw.js`, sw);
   await writeFile(`${out}modules.json`, JSON.stringify(versions, null, 2));
   await writeFile(`${out}manifest.webmanifest`, JSON.stringify({

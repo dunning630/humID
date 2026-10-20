@@ -149,6 +149,9 @@ try {
   await pick(page, /^ID/);
   await page.locator(".pushed").getByText("Which ID is it?").waitFor();
   await page.locator(".kinds .kind", { hasText: "Another card" }).click();
+  // the front is kept; nothing opens the camera (or the scanner) until the person taps
+  await page.getByText("Front saved.").waitFor();
+  await page.locator("[data-start-camera]").first().click();
   await page.getByText("Review, then seal").waitFor({ timeout: 90_000 });
   await shot(page, "3-another-card");
   assert.equal(await scans() - before3, 2, "front, then back");
@@ -205,6 +208,12 @@ try {
 } catch (e) {
   console.error(e);
   console.error(devLog.split("\n").slice(-20).join("\n"));
+  // where it stopped: the last page's screen and words, for whoever reads the failure
+  const last = contexts.at(-1)?.pages().at(-1);
+  if (last) {
+    if (SHOTS) await last.screenshot({ path: join(SHOTS, "failed.png") }).catch(() => {});
+    console.error("screen at failure:", (await last.locator("#app").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 400));
+  }
   process.exitCode = 1;
 } finally {
   for (const c of contexts) await c.close().catch(() => {});
