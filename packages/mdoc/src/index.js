@@ -11,6 +11,9 @@
 //             or MAC over this session)
 //   vical     reading a Verified Issuer Certificate Authority List (AAMVA's
 //             Digital Trust Service publishes the US and Canadian roots)
+//   dcapi     online requests through the browser's or phone's credential
+//             picker (Digital Credentials API): ISO 18013-7 Annex C
+//             (org-iso-mdoc, HPKE) and OpenID4VP session transcripts
 //
 // No transport or platform code: BLE / NFC move bytes, this decides.
 
@@ -22,6 +25,11 @@ export { encode, decode, get, plain, Encoded, Tagged, CborError } from "./cbor.j
 export { coseKey, ecCoseKey, parse1, verifySign1, verifyMac0, signSign1, macMac0, x5chain, ALG, CoseError } from "./cose.js";
 export { parseCertificate, readCertificates, issuedBy, fromPem, X509Error, OIDS } from "./x509.js";
 export { readEngagement, bleOptions, ReaderSession, sessionKey, ecdhX, SessionError, STATUS, RETRIEVAL } from "./session.js";
+export { hpkeKeyPair, hpkeOpen, hpkeSeal, HpkeError } from "./hpke.js";
+export {
+  annexCRequest, annexCOpen, annexCTranscript, openid4vpDcApiTranscript, openid4vpRedirectTranscript, transcriptBytes,
+  signedDeviceRequest, readEncryptionInfo, serializeOrigin, base64url, fromBase64url,
+} from "./dcapi.js";
 export { verifyIssuerSigned, verifyDeviceResponse, deviceAuthenticationBytes, encodeIssuerSigned, MdocError } from "./verify.js";
 
 export const MDL_DOCTYPE = "org.iso.18013.5.1.mDL";

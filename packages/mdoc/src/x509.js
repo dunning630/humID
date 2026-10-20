@@ -121,7 +121,8 @@ export function parseCertificate(input) {
 export function fromPem(text) {
   const m = /-----BEGIN CERTIFICATE-----([\s\S]+?)-----END CERTIFICATE-----/.exec(text);
   if (!m) fail("not a PEM certificate");
-  const s = atob(m[1].replace(/\s+/g, ""));
+  let s;
+  try { s = atob(m[1].replace(/\s+/g, "")); } catch { fail("not a PEM certificate"); }
   return Uint8Array.from(s, (c) => c.charCodeAt(0));
 }
 
