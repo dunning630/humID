@@ -16,7 +16,11 @@ const repo = fileURLToPath(new URL("../../", import.meta.url));
 const program = join(repo, "deploy", "windows", "src", "server.mjs");
 const work = mkdtempSync(join(tmpdir(), "humid-s3win-"));
 const children = [];
-after(() => { for (const c of children) c.kill(); rmSync(work, { recursive: true, force: true }); });
+after(async () => {
+  for (const c of children) c.kill();
+  await new Promise((r) => setTimeout(r, 500)); // Windows: files stay locked until the processes have gone
+  try { rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left in the temp folder */ }
+});
 
 const freePort = () => new Promise((resolve) => { const s = net.createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -74,6 +74,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Started from PowerShell 7 (Windows Terminal's default, or `humid` typed in it), Windows PowerShell 5.1
+# inherits PowerShell 7's module folders and then can't load its own built-in commands (Get-FileHash,
+# among others: "is not recognized"). Keep only Windows PowerShell's own module folders.
+if ($PSVersionTable.PSVersion.Major -le 5 -and $env:PSModulePath) {
+  $env:PSModulePath = (($env:PSModulePath -split ';') | Where-Object { $_ -and $_ -notmatch '\\PowerShell\\' }) -join ';'
+}
 $ProgressPreference = 'SilentlyContinue'   # Windows PowerShell downloads crawl with the progress bar on
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
