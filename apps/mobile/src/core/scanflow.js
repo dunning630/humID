@@ -11,24 +11,36 @@
 //   describe        a state → { title, detail, tone, step, steps, live, ... } to draw and announce
 //   diagnose        a look (core/docfind.js lookAt) → why it isn't good yet, or null
 //
+// The guided scan (core/guide.js: a fixed outline the document is lined up in) feeds the same
+// machine: its look carries `guide` (judge()'s verdict), and the problems it names (Move closer,
+// Fill the outline, Move back a little, Line it up, Straighten the card, Hold the phone flat,
+// Not sharp yet, Show the back…) are told in the same card.
+//
 // Nothing here sees a picture or a word read from one: only the verdicts.
+import { MESSAGES, SAY_AFTER } from "./guide.js";
 
 /** The steps shown, by what the camera has to do. */
 export const STEP_LISTS = {
   photo: [{ id: "looking", label: "Find" }, { id: "steady", label: "Steady" }, { id: "reading", label: "Capture" }, { id: "done", label: "Done" }],
   read: [{ id: "looking", label: "Find" }, { id: "steady", label: "Steady" }, { id: "reading", label: "Read" }, { id: "verifying", label: "Verify" }, { id: "done", label: "Done" }],
+  // the guided scan: the person lines the document up, rather than the camera finding it
+  guidedPhoto: [{ id: "looking", label: "Line up" }, { id: "steady", label: "Steady" }, { id: "reading", label: "Capture" }, { id: "done", label: "Done" }],
+  guidedRead: [{ id: "looking", label: "Line up" }, { id: "steady", label: "Steady" }, { id: "reading", label: "Read" }, { id: "verifying", label: "Verify" }, { id: "done", label: "Done" }],
 };
 
 /** Failures a person can fix by moving, lighting or holding differently; each with what to do. */
 export const FAILS = {
-  dark: { title: "Too dark", detail: "Turn on the light, or move somewhere brighter.", help: "light" },
+  dark: MESSAGES.dark,
   bright: { title: "Too bright", detail: "Move out of direct light.", help: null },
-  glare: { title: "Glare", detail: "Tilt the document a little.", help: null },
+  glare: MESSAGES.glare,
   far: { title: "Too far", detail: "Move closer until it fills the frame.", help: null },
   shape: { title: "Not the right document", detail: null, help: null }, // detail comes from the look
   other: { title: "Not a license barcode", detail: "Show the back of the license.", help: null },
   unreadable: { title: "Couldn't read it", detail: "Try again, or take the photo yourself and type the details.", help: "retry" },
   timeout: { title: "This is taking a while", detail: "Try again, or take the photo yourself.", help: "retry" },
+  // the guided scan's own (core/guide.js MESSAGES)
+  closer: MESSAGES.closer, fill: MESSAGES.fill, back: MESSAGES.back, shift: MESSAGES.shift, tilt: MESSAGES.tilt, flat: MESSAGES.flat,
+  blur: MESSAGES.blur, showback: MESSAGES.showback, showfront: MESSAGES.showfront, showpage: MESSAGES.showpage,
 };
 
 /** Times (ms): a problem must last this long before it is shown (so it doesn't flicker), and the scan's budget. */
@@ -36,11 +48,17 @@ export const TIMING = {
   showProblemAfter: 700,   // a look that is "too far", "glare"… must hold this long before it is said
   offerManualAfter: 10000, // still no read: say the shutter is there
   giveUpAfter: 30000,      // stop looking and offer Try again / Take photo
+  sayAfter: SAY_AFTER,     // a few guided problems wait longer than showProblemAfter (a blur is often just the focus settling)
 };
 
 /** Why a live look isn't good yet: a key of FAILS, "steady" (needs holding still), or null (it's good). */
 export function diagnose(look, { codes = false } = {}) {
   if (!look) return null;
+  if (look.guide) {
+    // the guided scan: its own verdict (a message key), "steady" while lined up but not yet still and sharp, else good
+    if (look.guide.key) return look.guide.key;
+    return look.found && !look.guide.ready ? "steady" : null;
+  }
   if (!look.found) return look.dim ? "dark" : null;
   if (look.fits === false) return "shape";
   if (look.big === false) return "far";
@@ -89,7 +107,7 @@ export function step(s, ev, now) {
       if (why && why !== "steady") {
         // a problem is said only once it has held for a moment
         const cand = s.cand?.id === why ? s.cand : { id: why, since: now };
-        const shown = now - cand.since >= TIMING.showProblemAfter || s.fail === why;
+        const shown = now - cand.since >= (TIMING.sayAfter[why] ?? TIMING.showProblemAfter) || s.fail === why;
         return shown ? set({ ...s, cand, progress: 0 }, { id: "problem", fail: why, note: ev.look?.hint || null }, now) : { ...s, cand, progress: 0 };
       }
       const base = { ...s, cand: null, fail: null, progress };
@@ -128,20 +146,24 @@ export function step(s, ev, now) {
 export const gaveUp = (s) => s.id === "timeout" || s.id === "unreadable";
 
 /** What to draw and say for a state. */
-export function describe(s, { shape = "id1", hint = "" } = {}) {
-  const list = s.codes ? STEP_LISTS.read : STEP_LISTS.photo;
+export function describe(s, { shape = "id1", hint = "", guided = false, noun = "card" } = {}) {
+  const list = guided ? (s.codes ? STEP_LISTS.guidedRead : STEP_LISTS.guidedPhoto) : s.codes ? STEP_LISTS.read : STEP_LISTS.photo;
   const idx = (id) => Math.max(0, list.findIndex((x) => x.id === id));
   const base = { id: s.id, steps: list, tone: "info", busy: false, progress: s.progress, fail: s.fail, manual: s.manual, action: null };
   switch (s.id) {
     case "starting":
       return { ...base, step: -1, title: "Getting ready", detail: s.codes ? "Starting the camera and the reader." : "Starting the camera.", busy: true, live: "Getting the camera ready." };
     case "looking": {
+      if (guided) {
+        const detail = s.manual ? "Taking a while? You can take the photo yourself with the round button." : s.loading ? "Getting the reader ready…" : (hint || `Hold the ${noun} flat inside the outline.`);
+        return { ...base, step: 0, title: `Fit the ${noun} in the outline`, detail, live: `Fit the ${noun} in the outline.` };
+      }
       const detail = s.manual ? "Taking a while? You can take the photo yourself with the round button."
         : s.loading ? "Getting the reader ready…" : (hint || (shape === "full" ? "Point the camera at the document." : "Point the camera at the card."));
       return { ...base, step: 0, title: "Looking for the document", detail, live: "Looking for the document." };
     }
     case "steady":
-      return { ...base, step: 1, title: "Hold steady", detail: s.manual ? "Taking a while? You can take the photo yourself with the round button." : s.codes ? "Keep the document still. It reads by itself." : "Keep the document still. The photo is taken by itself.", live: "Hold steady." };
+      return { ...base, step: 1, title: "Hold steady", detail: s.manual ? "Taking a while? You can take the photo yourself with the round button." : guided ? "Keep it lined up. The photo is taken by itself." : s.codes ? "Keep the document still. It reads by itself." : "Keep the document still. The photo is taken by itself.", live: "Hold steady." };
     case "reading":
       return { ...base, step: idx("reading"), title: s.codes ? "Reading" : "Capturing", detail: s.note || (s.codes ? "Keep the document in view." : "Straightening the photo."), busy: true, live: s.codes ? "Reading." : "Capturing." };
     case "verifying":
@@ -150,8 +172,9 @@ export function describe(s, { shape = "id1", hint = "" } = {}) {
       return { ...base, step: list.length - 1, title: "Done", detail: "Photo saved.", tone: "ok", live: "Done. Photo saved." };
     case "problem": {
       const f = FAILS[s.fail] || FAILS.unreadable;
-      const detail = s.fail === "shape" ? (s.note || (shape === "td3" ? "Show the passport's photo page." : "Show just the card.")) : f.detail;
-      return { ...base, step: 0, tone: "warn", title: f.title, detail, action: f.help, live: `${f.title}. ${detail}` };
+      const title = s.fail === "tilt" && guided && noun !== "card" ? `Straighten the ${noun}` : f.title;
+      const detail = s.fail === "shape" ? (s.note || (shape === "td3" ? "Show the passport's photo page." : "Show just the card.")) : guided && s.note ? s.note : f.detail;
+      return { ...base, step: 0, tone: "warn", title, detail, action: f.help, live: `${title}. ${detail}` };
     }
     case "unreadable":
     case "timeout": {
