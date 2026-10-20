@@ -153,9 +153,9 @@ scene("outline", async (page) => {
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await count(), 1, "one camera request");
-  // not 4K: 1440p for a passport page's small print
+  // not 4K; the long side only (2560 for a passport page's small print), never a crop: a width AND a height make a browser cut the frame to that shape
   const c = await page.evaluate(() => globalThis.__constraints.video);
-  assert.equal(c.width.ideal, 1440); assert.equal(c.height.ideal, 2560); // a portrait screen asks for a portrait preview
+  assert.equal(c.width.ideal, 2560); assert.equal(c.height, undefined); assert.equal(c.resizeMode, "none");
   const f = await page.locator(".dc-frame").boundingBox();
   const vp = page.viewportSize();
   assert.ok(Math.abs(f.width / f.height - 125 / 88) < 0.01, `a passport page's outline: ${(f.width / f.height).toFixed(3)}`);
@@ -187,14 +187,14 @@ scene("outline", async (page) => {
   const f2 = await page.locator(".dc-frame").boundingBox();
   assert.ok(Math.abs(f2.width / f2.height - 85.6 / 54) < 0.01, `a card's outline: ${(f2.width / f2.height).toFixed(3)}`);
   // the camera is asked again for this card; wait for that request (the last one on record is still the passport's until it is made)
-  await page.waitForFunction(() => globalThis.__constraints?.video?.height?.ideal === 1920, null, { timeout: 10_000 });
+  await page.waitForFunction(() => globalThis.__constraints?.video?.width?.ideal === 1920, null, { timeout: 10_000 });
   const c2 = await page.evaluate(() => globalThis.__constraints.video);
-  assert.equal(c2.width.ideal, 1080); assert.equal(c2.height.ideal, 1920);
+  assert.equal(c2.width.ideal, 1920); assert.equal(c2.height, undefined);
   await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
   // the app goes to the background: the stream is released at once
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
-  step("an ID-1 outline: 85.6:54, 1080p preview; backgrounding releases the stream");
+  step("an ID-1 outline: 85.6:54, long-side-only preview; backgrounding releases the stream");
 }, "lic-back-small");
 
 // 2. what it says, for each way a card can be wrong

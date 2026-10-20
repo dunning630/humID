@@ -605,9 +605,9 @@ export function DocCamera(props) {
         // the camera's own field of view at the nearest real resolution.
         // Guided (a card, license or passport page): 1080p (1440p for a passport's small print),
         // the right way round for the screen; the photo is a still, not a frame of this.
-        const size = codes ? { width: { ideal: 3840 }, resizeMode: "none" } : { width: { ideal: 1920 }, frameRate: { ideal: 24, max: 30 }, resizeMode: "none" };
+        const size = L.guided ? liveConstraints(tpl, { portrait: innerHeight >= innerWidth }) : codes ? { width: { ideal: 3840 }, resizeMode: "none" } : { width: { ideal: 1920 }, frameRate: { ideal: 24, max: 30 }, resizeMode: "none" };
         const portrait = () => innerHeight >= innerWidth;
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: L.guided ? liveConstraints(tpl, { portrait: portrait() }) : { facingMode: { ideal: "environment" }, ...size } });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, ...size } });
         if (L.stop) { stream.getTracks().forEach((t) => t.stop()); return; }
         L.stream = stream;
         L.track = stream.getVideoTracks()[0];
@@ -617,7 +617,7 @@ export function DocCamera(props) {
         await video.current.play().catch(() => {});
         // guided: a preview that came back turned the wrong way for the screen leaves the outline a third of the pixels: ask once more, the other way round
         if (L.guided && previewTurned(video.current.videoWidth, video.current.videoHeight, portrait())) {
-          const w = liveConstraints(tpl, { portrait: !portrait() });
+          const w = liveConstraints(tpl, { portrait: portrait(), exact: true });
           try { await L.track.applyConstraints({ width: w.width, height: w.height }); await sleep(250); } catch { /* the first size stays */ }
         }
         setPhase("live");
