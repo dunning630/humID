@@ -210,8 +210,9 @@ the outline plus a 4% margin, at most 2400 px wide, deskewed when the card is tu
 upright from the guide orientation and the print, and handed to `develop()` as before, so reading and
 sealing are unchanged. The Rotate control stays on the review. Nothing is logged and no raw frame is kept.
 
-**Preview size.** 1080 x 1920 (portrait; 1440 x 2560 for a passport), orientation-aware; if the browser
-returns the other way round the camera asks again (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
+**Preview size.** The long side only (1920 px; 2560 for a passport), with `resizeMode: "none"`, never a width and a height
+together: those make a browser cut the frame to that shape and lose the top and bottom of the page. If the preview
+comes back the other way round for the screen, the camera asks once more with both sizes in the screen's orientation (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
 in 2.1.1). Evidence, on synthetic specimens in Chromium: the PDF417 reads from frames 540, 720 and 1080 px
 wide; the MRZ reads at 720 and 1080 but misread a character at 540. So 1080 px is about 1.5x the width
 that was proven, and the passport asks for more. Real print and real optics need the device check below.

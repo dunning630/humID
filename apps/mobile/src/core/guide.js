@@ -84,9 +84,13 @@ export function templateFor({ kind = "other", side = "front", shape = "id1", rea
  * a third of the pixels; the browser may also crop a mismatched preview to the sizes asked for).
  * The caller checks what came back (previewTurned) and asks again the other way round if it is wrong.
  */
-export function liveConstraints(template, { portrait = true } = {}) {
+export function liveConstraints(template, { portrait = true, exact = false } = {}) {
   const td3 = template?.shape === "td3";
   const long = td3 ? 2560 : 1920, short = td3 ? 1440 : 1080;
+  // 3.0: only the long side is asked for, with resizeMode "none": a width AND a height make a browser cut the
+  // frame to that shape (a portrait phone lost the top and bottom of the page), and the outline needs the whole view.
+  if (!exact) return { facingMode: { ideal: "environment" }, width: { ideal: long }, frameRate: { ideal: 30, max: 30 }, resizeMode: "none" };
+  // the second ask, when the first came back turned the wrong way for the screen: both sizes, in the screen's orientation
   return { facingMode: { ideal: "environment" }, width: { ideal: portrait ? short : long }, height: { ideal: portrait ? long : short }, frameRate: { ideal: 30, max: 30 } };
 }
 
