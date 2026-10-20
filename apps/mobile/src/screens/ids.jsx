@@ -340,7 +340,7 @@ export function DocCamera(props) {
     for (const [name, run] of Object.entries(all)) {
       if (L.running.has(name)) continue;
       L.running.add(name);
-      run().catch((e) => { if (DEMO_BUILD) console.error("scan loop stopped:", name, e?.message); }).finally(() => L.running.delete(name)); // development builds name the loop that stopped (never a picture)
+      run().catch((e) => { if (DEMO_BUILD) globalThis.__humidLoopStopped = name; }).finally(() => L.running.delete(name)); // development builds record which loop stopped (a name, never a picture)
     }
   }
 
