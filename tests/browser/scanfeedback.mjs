@@ -118,7 +118,8 @@ try {
     new MutationObserver(() => { const s = document.querySelector(".doccam .dc-state"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
       .observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await pickKind(page, /^ID/); // 3.0: one ID entry; the camera tells a passport from a card
+  await pickKind(page, /^ID/); // 3.0: one ID entry; the camera has a Card / Passport page switch for the outline
+  await page.locator(".doccam .dc-kinds").getByRole("radio", { name: "Passport page" }).click();
   await state(page).locator(".dc-steps li").nth(4).waitFor({ timeout: 10_000 });
   assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Find, Steady, Read, Verify, Done");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 120_000 });
