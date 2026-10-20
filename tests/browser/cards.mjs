@@ -119,7 +119,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. the back ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-paycard-back.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pay-back-ok.mjpeg")));
   await page.goto(BASE);
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);

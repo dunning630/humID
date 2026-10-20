@@ -152,6 +152,66 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
 
+## The guided scan (apps 2.2.0)
+
+Cards, licences, ID cards and passports are scanned the way a bank's app does it:
+a fixed outline, plain-word guidance, an automatic or manual still, a crop to the outline.
+The camera no longer tracks a free-form quadrilateral live (that outline jumped, and the photo
+depended on it). Add > Photo and the Android document scanner are unchanged.
+
+**The template.** `templateFor` (`core/guide.js`) gives the outline for the kind chosen on "What are you
+adding?" (`SCAN_MODE` in `addroute.js`): ID-1, 85.6 x 54 mm, for licences, ID cards and payment cards (front and
+back); ID-3, 125 x 88 mm, for the passport page. It is centred, dimmed outside, with corner marks and faint
+zones (barcode, MRZ, number). The camera starts after the kind is chosen, never before, and the stream is
+released on exit, Back or background.
+
+**Guidance** (`measure`, `judge`; pure, on a 288 px-wide picture of the outline plus a 30% margin, about 2-25 ms):
+
+| Says | When (thresholds in `TH`) |
+|---|---|
+| Too dark (with the light button) | document in view: p95 < 85 or mean < 30; nothing in view: mean < 28 and p95 < 50 |
+| Too much glare | 253+ saturated share >= 2.5% and a patch cell >= 50% (white paper: p50 >= 228, share >= 10%, 2 cells) |
+| Move closer / Fill the outline | the edges' scale of the outline < 0.78 / < 0.88 |
+| Move back a little | scale > 1.06 |
+| Line it up (which way) | an edge more than 8.5% inside or 3% outside the outline, or a centre shift > 4.5% |
+| Straighten the card / passport page | turn > 6 degrees (1 to 10 degrees is deskewed in the crop instead) |
+| Hold the phone flat | keystone > 5.5 degrees |
+| Not sharp yet | Laplacian variance over gradient energy < 0.55, or < 60% of the best seen; said after 1.8 s |
+| Hold steady | frame-to-frame motion > 0.004 outline widths |
+| Show the back / front / the photo page | no PDF417 on a licence back; a PDF417 on a licence front; no MRZ lines on a passport; said after 1.8 to 2.2 s |
+
+Edges come from five-run profiles per side with a robust line fit; the shape is checked against the
+template's aspect (> 7% off: nothing is said about size and nothing is taken by itself, the round button
+works). A problem is said after 0.7 s (`SAY_AFTER` for the slower ones); the scan-state card (`scanflow.js`,
+`scanui.jsx`) shows it, as a live region.
+
+**Capture.** Lined up, steady and sharp for 0.6 s (`holdTracker`, 0.22 s grace) fires the shot with a short
+vibration; the round button is always there. `takeStill` (`core/guidecap.js`) asks `ImageCapture.takePhoto` for up to
+4096 px on the long side, maps the outline into the photo (`stillMapping`), and only uses it if a small grey copy
+agrees with the preview frame (normalised cross-correlation >= 0.6, shifts of 3 px searched). Otherwise
+(no ImageCapture, as in iOS WKWebView; a refused or different photo) it takes the full video frame. The crop is
+the outline plus a 4% margin, at most 2400 px wide, deskewed when the card is turned 1 to 10 degrees, set
+upright from the guide orientation and the print, and handed to `develop()` as before, so reading and
+sealing are unchanged. The Rotate control stays on the review. Nothing is logged and no raw frame is kept.
+
+**Preview size.** 1080 x 1920 (portrait; 1440 x 2560 for a passport), orientation-aware; if the browser
+returns the other way round the camera asks again (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
+in 2.1.1). Evidence, on synthetic specimens in Chromium: the PDF417 reads from frames 540, 720 and 1080 px
+wide; the MRZ reads at 720 and 1080 but misread a character at 540. So 1080 px is about 1.5x the width
+that was proven, and the passport asks for more. Real print and real optics need the device check below.
+
+**Tests.** `tests/guide.test.js` (metrics, verdicts, hold timer, templates, constraints, still mapping);
+`tests/browser/guided.mjs` (27 scenes with synthetic MJPEG fixtures from `tests/fixtures/id/make-guided.py`:
+too small, right, too big, tilted, keystone, blurred, glared, dark, shaking, wrong side, a takePhoto
+stand-in; asserts the message, that nothing is taken by itself until lined up, and the crop's overlap
+with the known document, about 0.997). Use `ONLY=regex` to run some.
+
+**Check on a phone** (the fake camera cannot tell): focus and the sharpness threshold on real video;
+glare under a lamp and window; whether `takePhoto` exists in the Android WebView, which size it returns,
+its framing and orientation (the correlation check falls back to the frame); the preview orientation;
+the vibration; the torch button; PDF417 and MRZ reads from real prints; a low-contrast card on a similar
+table (the outline cannot find its edges: only the round button works).
+
 ## Any document: Take a photo
 
 **Vault → + → Take a photo** uses the same camera for any document or card. Once the
@@ -207,12 +267,32 @@ a frame of that video.
   front and back, passport, back out, scan again, no scanner) and `tests/docscan.test.js`.
   The scanner itself can only be tried on a phone.
 
+## Measuring a capture
+
+How long from the shutter to the review screen, and where it goes. In a development
+build (`DEMO_BUILD`; never in a release build) the app records timings in
+`globalThis.__humidTrace.ev`: entries `[name, ms since page start, extra]`. Marks from the
+camera (`shoot`, `develop`, `developed`, `kept`, ...), `span:<stage>` entries with the stage's
+duration in `extra` (`develop-grab`, `develop-corners`, `develop-straighten`, `develop-orient`,
+`clean`, `jpeg`, `docscan-decode`, ...) and the seal marks (`seal-start`, `seal-prepared`,
+`seal-place`, `seal-keys`, `seal-signed`, `seal-uploaded`). Never a picture, text or size.
+
+- On a phone: build with demo allowed, open the app in the Android System WebView, attach
+  with Chrome's `chrome://inspect`, take a document, then run
+  `copy(JSON.stringify(__humidTrace.ev))` in the console.
+- In a desktop browser with a fake camera, repeatably (4x CPU throttle, 3 runs, median and
+  spread): `python3 tests/bench/make-4k-fixtures.py $OUT/fixtures`, then
+  `PORT=5333 OUT=$OUT node tests/bench/capture.mjs` (`PROFILE=1` adds top functions).
+  Sandbox and laptop CPUs are not phones: compare before with after, not with a phone.
+- Not covered by the harness: the native IPC (base64 over JSON), Play services' scanner, and
+  the real camera's still capture. Time those on the device.
+
 ## Where it was sealed
 
 Every seal screen (a file, a photo, an ID) has **Stamp where it's sealed**, on unless
 it's turned off for that document. While the screen is open the phone's location is
-watched, and the freshest fix (no older than two minutes, waiting up to five seconds
-for one) goes into the document's encrypted index beside its name and category:
+watched, and the freshest fix (no older than two minutes, waiting up to three seconds
+for one; the phone starts looking when the camera opens, if location was already allowed, and stops after 90 seconds) goes into the document's encrypted index beside its name and category:
 latitude and longitude to six decimals, the accuracy the phone gave, and the fix's
 time (`apps/mobile/src/core/place.js`). The document's details show it as **Sealed
 at**, with a map link that opens only when tapped. Nothing is looked up online.
