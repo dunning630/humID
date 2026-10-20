@@ -14,7 +14,9 @@ import {
 const keys = newInternalKeys();
 const dirs = [];
 const tmp = () => { const d = mkdtempSync(join(tmpdir(), "humid-s3-")); dirs.push(d); return d; };
-test.after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+// Windows keeps a database file locked while this process has it open (the ledgers below stay open until exit):
+// what can't be removed now is left in the temp folder rather than failing the run
+test.after(() => { for (const d of dirs) { try { rmSync(d, { recursive: true, force: true, maxRetries: 3 }); } catch { /* Windows: still open */ } } });
 
 /** A tiny service with the real framework: GET /objects, DELETE /objects, POST /echo. */
 async function service(opts = {}) {
