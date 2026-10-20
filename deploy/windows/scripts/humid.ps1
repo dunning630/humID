@@ -16,8 +16,12 @@
   server's memory only, so the commands that stop the server say how many
   vaults that would erase and go on only once you type ERASE.
 
+  Backups are encrypted with the server's backup key (humid backup-key: write it down, keep
+  it offline). Server secrets are sealed with DPAPI. Roles can run on separate machines with
+  mutual TLS between them (docs/DEPLOY-VMS.md).
+
   Run from Terminal (Admin):
-    humid install [-DevicePolicy attested|biometric|demo] [-AppleTeamId ABCDE12345] [-Port 8480] [-StayAwake]
+    humid install [-DevicePolicy attested|biometric|demo] [-AppleTeamId ABCDE12345] [-Port 8480] [-AdminPort 8490] [-StayAwake]
     humid expose tailscale                        give it a public https address through Tailscale Funnel
     humid expose cloudflare -Token <t> -Hostname vault.example.com
     humid expose none                             local only
@@ -25,11 +29,20 @@
     humid set KEY=VALUE [KEY=VALUE ...]           change a setting, then restart
     humid show                                    print the settings (secret key hidden)
     humid mint 50 [batch-name]                    print 50 new access codes to sell (cash or online)
-    humid backup [-Path file.zip] | restore -Path file.zip
+    humid backup [-Path <folder or name>]         two encrypted files, -main and -keys (default: C:\ProgramData\HumID\backups)
+    humid restore -Path <main.humidbak>[,<keys.humidbak>] [-BackupKey HBK-...]   (or -Path <backup.zip> from HumID 2.x)
+    humid backup-key                              print the backup key, to write down and keep offline
+    humid pki init | status | issue core|keys -Path <dir> | import -Path <dir>   roles on separate machines
+    humid selftest                                run the end-to-end self-test against this server
     humid console                                 open the admin console (a sign-in link that works once)
     humid admin token <github-token>              let the console check the private repository for HumID updates
     humid admin token clear | admin repo owner/name | admin reset (forget every administrator phone)
     humid uninstall [-RemoveData]
+
+  A test instance beside the live server (its own folders, data, ports and tasks; plain "humid"
+  still means the default install):
+    .\humid.ps1 install -Instance test -Port 8580 -DevicePolicy biometric
+    & "C:\Program Files\HumID Server (test)\humid.cmd" status | selftest | uninstall -RemoveData
 
   ("humid" works once installed. Before that, run .\humid.ps1 from the unzipped folder,
    or double-click "Install HumID Server.cmd".)
@@ -37,7 +50,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'expose', 'console', 'admin', 'probe', 'job-run', 'help')]
+  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'backup-key', 'pki', 'selftest', 'expose', 'console', 'admin', 'probe', 'job-run', 'help')]
   [string]$Command = 'help',
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
   [string[]]$Rest = @(),
@@ -45,11 +58,14 @@ param(
   [string]$DevicePolicy,
   [string]$AppleTeamId,
   [int]$Port,
+  [int]$AdminPort,
+  [string]$Instance,
   [string]$NodePath,
   [string]$NodeMajor = '22',
   [string]$Token,
   [string]$Hostname,
-  [string]$Path,
+  [string[]]$Path,
+  [string]$BackupKey,
   [switch]$StayAwake,
   [switch]$NoStart,
   [switch]$RemoveData,
@@ -62,11 +78,32 @@ $ProgressPreference = 'SilentlyContinue'   # Windows PowerShell downloads crawl 
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $Version     = '__HUMID_SERVER_VERSION__'
-$TaskName    = 'HumID Server'
+
+# Side by side: an instance (say, version 3.0 tried out beside the live server) has its own tasks,
+# program folder, data folder and ports, every name ending in " (<name>)". The instance's copy of
+# this script finds its name in instance.txt beside it, so its humid.cmd needs no flag. With neither
+# -Instance nor instance.txt, every name below is what it always was: the default install.
+if (-not $Instance -and $PSScriptRoot) {
+  $instanceFile = Join-Path $PSScriptRoot 'instance.txt'
+  if (Test-Path -LiteralPath $instanceFile) {
+    $Instance = ([string](Get-Content -LiteralPath $instanceFile -TotalCount 1)).Trim()
+    # Never fall back to the default install from an instance's own folder: that would act on the live server.
+    if (-not $Instance) { Write-Host "X  $instanceFile is empty; it should name this instance. Install the instance again with -Instance <name>." -ForegroundColor Red; exit 1 }
+  }
+}
+if ($Instance -and $Instance -cnotmatch '^[a-z][a-z0-9]{0,15}$') {
+  Write-Host "X  An instance name is 1 to 16 lower-case letters and digits, starting with a letter (for example: test). `"$Instance`" isn't one." -ForegroundColor Red
+  exit 1
+}
+$Suffix      = ''
+if ($Instance) { $Suffix = " ($Instance)" }
+
+$TaskName    = "HumID Server$Suffix"
 $ProgramFilesDir = $env:ProgramFiles; if (-not $ProgramFilesDir) { $ProgramFilesDir = 'C:\Program Files' }
 $ProgramDataDir  = $env:ProgramData;  if (-not $ProgramDataDir)  { $ProgramDataDir = 'C:\ProgramData' }
-$InstallDir  = Join-Path $ProgramFilesDir 'HumID Server'
+$InstallDir  = Join-Path $ProgramFilesDir "HumID Server$Suffix"
 $DataRoot    = Join-Path $ProgramDataDir 'HumID'
+if ($Instance) { $DataRoot = Join-Path $ProgramDataDir "HumID-$Instance" }
 $EnvFile     = Join-Path $DataRoot 'humid.env'
 $InfoFile    = Join-Path $DataRoot 'server.json'
 $LogFile     = Join-Path $DataRoot 'logs\humid-server.log'
@@ -78,8 +115,14 @@ $AdminDir    = Join-Path $DataRoot 'admin'        # the console's own records: S
 $BackupDir   = Join-Path $DataRoot 'backups'      # SYSTEM and Administrators only
 $AdminLog    = Join-Path $DataRoot 'logs\humid-admin.log'
 $PrevDir     = "$InstallDir.previous"             # the version before the last update, for rollback
-$AdminTask   = 'HumID Admin'
-$JobTask     = 'HumID Admin Job'
+$AdminTask   = "HumID Admin$Suffix"
+$JobTask     = "HumID Admin Job$Suffix"
+# How to run this install's commands in messages: "humid" (on the PATH) is the default install's;
+# an instance is run through its own humid.cmd.
+$HumidCmd    = 'humid'
+if ($Instance) { $HumidCmd = "& `"$(Join-Path $InstallDir 'humid.cmd')`"" }
+# -Path as one string: humid.cmd (powershell -File) passes "a,b" as one value, a PowerShell prompt as two.
+$PathText    = (@($Path) | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) -join ','
 
 # Well-known SIDs, so this works on every Windows language.
 $SidSystem       = 'S-1-5-18'
@@ -106,7 +149,9 @@ function Require-Admin {
 }
 
 function Require-Installed {
-  if (-not (Test-Path $ServerJs) -or -not (Test-Path $NodeExe)) { Die "HumID Server isn't installed. Run: .\humid.ps1 install" }
+  $how = '.\humid.ps1 install'
+  if ($Instance) { $how += " -Instance $Instance" }
+  if (-not (Test-Path $ServerJs) -or -not (Test-Path $NodeExe)) { Die "$TaskName isn't installed. Run: $how" }
 }
 
 function Confirm-Yes([string]$Question, [bool]$Default = $true) {
@@ -178,6 +223,47 @@ function Invoke-Server {
   if ($code -ne 0) { Die "humid-server $($ServerArgs[0]) failed (exit $code)." }
 }
 
+# Run humid-server.mjs and keep what it printed, for the commands whose answer this script reads
+# (one JSON line, an access code, the backup key): the exit code, stdout lines, stderr lines.
+function Invoke-ServerCapture {
+  param([string[]]$ServerArgs)
+  $all = $null
+  $code = 1
+  $out = @(); $err = @()
+  $old = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $a = @('--no-warnings', $ServerJs) + $ServerArgs
+    $all = & $NodeExe @a 2>&1
+    $code = $LASTEXITCODE
+  } catch { $err += $_.Exception.Message }   # node.exe missing: say so, don't stop (humid status still shows the rest)
+  finally { $ErrorActionPreference = $old }
+  foreach ($l in $all) {
+    if ($l -is [System.Management.Automation.ErrorRecord]) { $err += $l.ToString() } else { $out += [string]$l }
+  }
+  return [pscustomobject]@{ Code = $code; Out = $out; Err = $err }
+}
+
+# The last line of a command's output that is a JSON object, parsed; $null if there is none.
+function Get-JsonLine($Lines) {
+  $line = @($Lines | Where-Object { ([string]$_).Trim().StartsWith('{') }) | Select-Object -Last 1
+  if (-not $line) { return $null }
+  try { return ($line | ConvertFrom-Json) } catch { return $null }
+}
+
+# What went wrong, in one line: the first line humid-server wrote to stderr (a stack trace's first
+# line is its message), without the "Error:" in front.
+function Get-Reason($Result) {
+  $first = @(@($Result.Err) + @($Result.Out) | Where-Object { ([string]$_).Trim() }) | Select-Object -First 1
+  if (-not $first) { return "exit $($Result.Code)" }
+  return (([string]$first).Trim() -replace '^\w*Error:\s*', '')
+}
+
+# A full path for a -Path value, relative to the current folder; it doesn't have to exist yet.
+function Get-FullPath([string]$P) {
+  return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($P)
+}
+
 function Get-Setting([string]$Name, [string]$Default = '') {
   if (-not (Test-Path $EnvFile)) { return $Default }
   foreach ($line in Get-Content -LiteralPath $EnvFile) {
@@ -189,6 +275,35 @@ function Get-Setting([string]$Name, [string]$Default = '') {
 function Get-Info {
   if (-not (Test-Path $InfoFile)) { return $null }
   try { return Get-Content -LiteralPath $InfoFile -Raw | ConvertFrom-Json } catch { return $null }
+}
+
+# The roles this machine runs (docs/DEPLOY-VMS.md): front (edge + gateway), core, keys. What the
+# server reported when it last started, else the setting; all three unless split.
+function Get-Roles {
+  $info = Get-Info
+  if ($info -and $info.roles) { return @($info.roles | ForEach-Object { ([string]$_).Trim().ToLower() }) }
+  return @((Get-Setting 'HUMID_ROLES' 'front,core,keys') -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+}
+
+# Tailscale Funnel gives this computer one public address. The other HumID installs here (the
+# default one, instances) whose public address is on it, so one never takes Funnel from another,
+# or turns it off under it, by accident.
+function Get-OtherFunnelUsers {
+  $roots = @(Join-Path $ProgramDataDir 'HumID') + @(Get-ChildItem -LiteralPath $ProgramDataDir -Directory -Filter 'HumID-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+  $names = @()
+  foreach ($r in $roots) {
+    if ($r.TrimEnd('\') -eq $DataRoot.TrimEnd('\')) { continue }
+    $f = Join-Path $r 'humid.env'
+    $lines = @()
+    try { if (Test-Path -LiteralPath $f) { $lines = @(Get-Content -LiteralPath $f) } } catch {}
+    foreach ($line in $lines) {
+      if ($line -match '^\s*HUMID_PUBLIC_URL\s*=\s*(\S+)\s*$' -and $Matches[1] -like '*.ts.net') {
+        $leaf = Split-Path $r -Leaf
+        if ($leaf -eq 'HumID') { $names += 'HumID Server' } else { $names += "HumID Server ($($leaf.Substring(6)))" }
+      }
+    }
+  }
+  return $names
 }
 
 function Test-Healthy([int]$P) {
@@ -219,7 +334,7 @@ function Show-RecentErrors {
 
 function Start-Server {
   $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if (-not $t) { Die 'HumID Server is not installed.' }
+  if (-not $t) { Die "$TaskName is not installed." }
   if ($t.State -eq 'Running' -and (Test-Healthy ([int](Get-Setting 'HUMID_PORT' '8480')))) { Good 'HumID Server is already running.'; return $true }
   $since = (Get-Date).AddSeconds(-2)
   Start-ScheduledTask -TaskName $TaskName
@@ -254,6 +369,22 @@ function Set-PrivateAcl([string]$Dir) {
   if ($code -ne 0) { throw "Couldn't set permissions on $Dir." }
 }
 
+# A moved file or folder keeps the permissions of the place it came from: make it inherit from where it is now.
+function Reset-Inherited([string]$Item) {
+  $a = @($Item, '/reset', '/C', '/Q')
+  if (Test-Path -LiteralPath $Item -PathType Container) { $a += '/T' }   # /T on a file would match that name in every folder below
+  $code = Run-Native 'icacls.exe' $a -Silent
+  if ($code -ne 0) { Warn "Couldn't reset the permissions of $Item (icacls exit $code)." }
+}
+
+# The backup key opens every backup, so only SYSTEM and Administrators may read it, though the data
+# folder around it lets the server's account (LOCAL SERVICE) in. Files already inside follow the folder.
+function Protect-BackupKey {
+  $dir = Join-Path $DataRoot 'backup-key'
+  Set-PrivateAcl $dir
+  Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | ForEach-Object { Reset-Inherited $_.FullName }
+}
+
 function Stop-Admin {
   $t = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
   if ($t -and $t.State -eq 'Running') { Stop-ScheduledTask -TaskName $AdminTask; Start-Sleep -Seconds 1 }
@@ -278,18 +409,115 @@ function Register-AdminTasks {
   # Approved work (updates, backups, restarts) runs here, apart from the console, so an
   # update can replace the console and restart it without stopping itself.
   $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $jobAction = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'humid.ps1')`" job-run" -WorkingDirectory $InstallDir
+  $jobArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'humid.ps1')`" job-run"
+  # An instance's script also knows its name from instance.txt beside it; saying it here as well
+  # means a job can never run against the default install's data.
+  if ($Instance) { $jobArgs += " -Instance $Instance" }
+  $jobAction = New-ScheduledTaskAction -Execute $ps -Argument $jobArgs -WorkingDirectory $InstallDir
   $jobSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
   Register-ScheduledTask -TaskName $JobTask -Description "HumID admin jobs: runs what an administrator approved in the console." `
     -Action $jobAction -Principal $system -Settings $jobSettings -Force | Out-Null
 }
 
-function Make-Backup([string]$Target) {
-  # A consistent copy needs the databases closed: stop, zip settings + data, start again.
+# One encrypted backup file (.humidbak, under the backup key) of one part: all (everything a restore
+# needs), main (all but the key-share data) or keys (the key-share data only). The databases must be
+# closed, so call it with the server stopped. Returns what humid-server reports: file, bytes, files, part, keyId.
+function Write-BackupFile([string]$Target, [string]$Part) {
   New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
+  $r = Invoke-ServerCapture @('backup', '--root', $DataRoot, '--out', $Target, '--part', $Part)
+  $res = Get-JsonLine $r.Out
+  if ($r.Code -ne 0 -or -not $res) { throw "The $Part backup wasn't written: $(Get-Reason $r)" }
+  return $res
+}
+
+function Make-Backup([string]$Target, [string]$Part = 'all') {
+  # A consistent copy needs the databases closed: stop, write the encrypted file, start again.
+  Protect-BackupKey
   Stop-Server
-  try { Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $Target -Force }
+  try { return (Write-BackupFile $Target $Part) }
   finally { Start-Server | Out-Null }
+}
+
+# humid backup: the main part and the key-share part as two files, to be kept in different places,
+# with the server stopped once for both. No key-share data (a front or core machine): one file.
+function Make-BackupPair([string]$MainFile, [string]$KeysFile) {
+  Protect-BackupKey
+  Stop-Server
+  try {
+    $done = @(Write-BackupFile $MainFile 'main')
+    if ($KeysFile) { $done += Write-BackupFile $KeysFile 'keys' }
+    return $done
+  } finally { Start-Server | Out-Null }
+}
+
+# Decrypt .humidbak files into a new folder inside the data folder, closed to the server's account
+# while it holds keys. humid-server checks the backup key and every byte first, so a wrong key or a
+# damaged file ends here with the current data untouched. Returns the folder and what it holds.
+function Expand-HumidBackup([string[]]$Files, [string]$Key, [string]$Stamp) {
+  $staging = Join-Path $DataRoot "restore-staging-$Stamp"
+  if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+  Set-PrivateAcl $staging
+  $a = @('restore', '--root', $DataRoot, '--in', ($Files -join ','), '--to', $staging)
+  if ($Key) { $a += @('--backup-key', $Key.Trim()) }
+  $r = Invoke-ServerCapture $a
+  $res = Get-JsonLine $r.Out
+  if ($r.Code -ne 0 -or -not $res) {
+    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Error = (Get-Reason $r) }
+  }
+  $parts = @($res.parts | ForEach-Object { [string]$_ })
+  return [pscustomobject]@{
+    Error = $null; Staging = $staging; Files = $res.files; Parts = $parts; SealKey = [bool]$res.sealKey
+    Full = (($parts -contains 'all') -or ($parts -contains 'main'))
+  }
+}
+
+function Move-Into([string]$From, [string]$To) {
+  New-Item -ItemType Directory -Force -Path (Split-Path $To) | Out-Null
+  Move-Item -LiteralPath $From -Destination $To
+}
+
+# Put a decrypted backup ($Staging) where the current data is; the current data moves to
+# before-restore-<stamp>. A full backup (all, or main with or without keys) replaces everything a
+# backup holds; a -keys file alone replaces only the key-share data and the seal key that opens it
+# (the keys machine of a split install, docs/DEPLOY-VMS.md). The backup key changes only when the
+# restore brought one (-BackupKey). Stops the server; the caller starts it. Returns the before-restore folder.
+function Install-Staged([string]$Staging, [string]$Stamp, [bool]$Full) {
+  $names = @()
+  if ($Full) { $names = @('humid.env', 'data', 'pki', 'csca', 'keys') }
+  foreach ($e in @(Get-ChildItem -LiteralPath $Staging -Force)) {
+    if (-not $Full -and $e.PSIsContainer -and $e.Name -eq 'data') {
+      foreach ($s in @(Get-ChildItem -LiteralPath $e.FullName -Force)) { $names += "data\$($s.Name)" }
+    } elseif ($names -notcontains $e.Name) { $names += $e.Name }
+  }
+  Stop-Server
+  $old = Join-Path $DataRoot "before-restore-$Stamp"
+  New-Item -ItemType Directory -Force -Path $old | Out-Null
+  $movedOut = @(); $movedIn = @()
+  try {
+    foreach ($n in $names) {
+      $cur = Join-Path $DataRoot $n
+      if (Test-Path -LiteralPath $cur) { Move-Into $cur (Join-Path $old $n); $movedOut += $n }
+    }
+    foreach ($n in $names) {
+      $src = Join-Path $Staging $n
+      if (Test-Path -LiteralPath $src) { Move-Into $src (Join-Path $DataRoot $n); $movedIn += $n }
+    }
+  } catch {
+    $why = $_.Exception.Message
+    # Half a restore is worse than none: put everything back where it was.
+    foreach ($n in $movedIn) { try { Move-Into (Join-Path $DataRoot $n) (Join-Path $Staging $n) } catch {} }
+    foreach ($n in $movedOut) { try { Move-Into (Join-Path $old $n) (Join-Path $DataRoot $n) } catch {} }
+    throw "Moving the backup into place failed ($why). The previous data was put back; anything left over is in $old, and the opened backup in $Staging."
+  }
+  # The staging folder was closed to the server's account; what came from it inherits the data folder's permissions now.
+  foreach ($n in $movedIn) { if ($n -ne 'backup-key') { Reset-Inherited (Join-Path $DataRoot $n) } }
+  Set-DataAcl
+  Protect-BackupKey
+  if (@(Get-ChildItem -LiteralPath $Staging -Recurse -File -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+    Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
+  } else { Warn "Some files were left in $Staging." }
+  return $old
 }
 
 function Find-Tool([string]$Name, [string[]]$Candidates) {
@@ -302,12 +530,37 @@ function Find-Tool([string]$Name, [string[]]$Candidates) {
 function Show-AppBuildHint {
   $info = Get-Info
   $url = Get-Setting 'HUMID_PUBLIC_URL'
-  if (-not $info -or -not $url) { return }
+  if (-not $info -or -not $url -or -not $info.kid) { return }   # no kid: this machine has no front role
   Say ''
   Say 'To build the phone apps for this server, set these repository variables on GitHub'
   Say '(Settings > Secrets and variables > Actions > Variables), then run Actions > Release apps:'
   Say "   HUMID_SERVER_URL = $url"
   Say "   HUMID_SERVER_KID = $($info.kid)"
+}
+
+# This server's backup key as a person writes it down (HBK-XXXX-...). humid-server makes it if it's missing.
+function Get-BackupKeyText {
+  Protect-BackupKey
+  $r = Invoke-ServerCapture @('backup-key', '--root', $DataRoot)
+  $k = @($r.Out | Where-Object { ([string]$_).Trim() -match '^HBK-' }) | Select-Object -Last 1
+  if ($r.Code -ne 0 -or -not $k) { return [pscustomobject]@{ Key = $null; Error = (Get-Reason $r) } }
+  return [pscustomobject]@{ Key = ([string]$k).Trim(); Error = $null }
+}
+
+function Show-BackupKeyAdvice {
+  Say '   Write it down and keep it offline (on paper, somewhere safe). Every backup is encrypted with it:'
+  Say '   anyone with this key AND a backup file can read the backup, so never keep it beside the backups.'
+  Say "   A restore on another computer asks for it (-BackupKey). See it again with: $HumidCmd backup-key"
+}
+
+# How to reach an instance: plain "humid" is the default install's.
+function Show-InstanceHint {
+  if (-not $Instance) { return }
+  Say ''
+  Say "This is the instance '$Instance'. Plain ""humid"" still means the default install; run this one's commands with its own humid.cmd:"
+  Say "   $HumidCmd status"
+  Say "   $HumidCmd selftest"
+  Say "   $HumidCmd uninstall -RemoveData"
 }
 
 # ---------------------------------------------------------------- Node.js runtime
@@ -361,7 +614,8 @@ function Install-Node {
 function Do-Install {
   Require-Admin
   if (-not [Environment]::Is64BitOperatingSystem) { Die 'HumID Server needs 64-bit Windows.' }
-  Say "HumID Server for Windows $Version"
+  if ($Instance) { Say "HumID Server for Windows $Version, instance '$Instance' ($InstallDir, data in $DataRoot)" }
+  else { Say "HumID Server for Windows $Version" }
   Say ''
 
   $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -380,6 +634,8 @@ function Do-Install {
   }
   Get-ChildItem -LiteralPath $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
   Set-Content -LiteralPath (Join-Path $InstallDir 'humid.cmd') -Encoding ASCII -Value "@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0humid.ps1`" %*"
+  # The instance's copy of this script reads its name from here (its humid.cmd, its job task).
+  if ($Instance) { Set-Content -LiteralPath (Join-Path $InstallDir 'instance.txt') -Encoding ASCII -Value $Instance }
   Install-Node
   Run-Native 'icacls.exe' @($InstallDir, '/grant', "*$($SidLocalService):(OI)(CI)RX") -Silent | Out-Null
 
@@ -387,6 +643,7 @@ function Do-Install {
   Step "Preparing $DataRoot (readable only by administrators and the server)"
   New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
   Set-DataAcl
+  $fresh = -not (Test-Path $EnvFile)
   $sets = @()
   if ($DevicePolicy) { $sets += @('--set', "HUMID_DEVICE_POLICY=$DevicePolicy") }
   if ($AppleTeamId) {
@@ -394,9 +651,18 @@ function Do-Install {
     if ($team -notmatch '^[A-Z0-9]{10}$') { Die 'The Apple Team ID is 10 letters and digits (Apple Developer > Membership).' }
     $sets += @('--set', "HUMID_IOS_APP_ID=$team.app.humid.vault")
   }
-  if ($Port) { $sets += @('--set', "HUMID_PORT=$Port") }
+  $serverPort = $Port; $consolePort = $AdminPort
+  if ($Instance -and $fresh) {
+    # A new instance must not take the default install's ports (8480, 8490).
+    if (-not $serverPort) { $serverPort = 8580 }
+    if (-not $consolePort) { $consolePort = 8590 }
+  }
+  if ($serverPort) { $sets += @('--set', "HUMID_PORT=$serverPort") }
+  if ($consolePort) { $sets += @('--set', "HUMID_ADMIN_PORT=$consolePort") }
+  # init also makes the seal key (keys\, read by the server) and the backup key (backup-key\).
   Invoke-Server (@('init', '--root', $DataRoot) + $sets)
   Set-DataAcl
+  Protect-BackupKey
   Set-PrivateAcl $AdminDir
   Set-PrivateAcl $BackupDir
 
@@ -413,10 +679,13 @@ function Do-Install {
   Step "Registering '$AdminTask' (the admin console, as SYSTEM, 127.0.0.1 only) and '$JobTask'"
   Register-AdminTasks
 
-  # "humid" on the PATH for administrators' terminals
-  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-  if (($machinePath -split ';') -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable('Path', ($machinePath.TrimEnd(';') + ";$InstallDir"), 'Machine')
+  # "humid" on the PATH for administrators' terminals: the default install's only, so "humid"
+  # always means the live server. An instance is run through its own humid.cmd.
+  if (-not $Instance) {
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if (($machinePath -split ';') -notcontains $InstallDir) {
+      [Environment]::SetEnvironmentVariable('Path', ($machinePath.TrimEnd(';') + ";$InstallDir"), 'Machine')
+    }
   }
 
   # A laptop that sleeps can't answer phones.
@@ -430,16 +699,31 @@ function Do-Install {
     Good 'Plugged in, the laptop now stays awake (on battery it still sleeps as usual).'
   }
 
-  if ($NoStart) { Good 'Installed. Start it with: humid start'; return }
-  if (-not (Start-Server)) { exit 1 }
+  # A new server's backup key, shown once while an administrator is here to write it down.
+  $showKey = $fresh -and -not $Quiet
+  if ($NoStart) { Good "Installed. Start it with: $HumidCmd start"; Show-InstanceHint; if ($showKey) { Show-NewBackupKey }; return }
+  if (-not (Start-Server)) { if ($showKey) { Show-NewBackupKey }; exit 1 }
   Start-Admin
   Do-Status
-  if (-not (Get-Setting 'HUMID_PUBLIC_URL')) {
+  if (-not (Get-Setting 'HUMID_PUBLIC_URL') -and ((Get-Roles) -contains 'front')) {
     Say ''
     Say 'Next: give it an https address phones can reach. With Tailscale installed and signed in:'
-    Say '   humid expose tailscale'
+    Say "   $HumidCmd expose tailscale"
     Say '(or see README.txt for Cloudflare Tunnel with your own domain).'
   }
+  Show-InstanceHint
+  if ($showKey) { Show-NewBackupKey }
+}
+
+function Show-NewBackupKey {
+  $k = Get-BackupKeyText
+  Say ''
+  if (-not $k.Key) { Warn "Couldn't read the new backup key ($($k.Error)). See it with: $HumidCmd backup-key"; return }
+  Warn 'This server''s backup key:'
+  Say ''
+  Say "   $($k.Key)"
+  Say ''
+  Show-BackupKeyAdvice
 }
 
 function Do-Uninstall {
@@ -456,14 +740,23 @@ function Do-Uninstall {
   if (Test-Path $PrevDir) { Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue }
   $url = Get-Setting 'HUMID_PUBLIC_URL'
   if ($url -like '*.ts.net') {
-    $ts = Find-Tool 'tailscale' @("$env:ProgramFiles\Tailscale\tailscale.exe")
-    if ($ts) { Run-Native $ts @('funnel', '--https=443', 'off') -Silent | Out-Null; Good 'Tailscale Funnel turned off.' }
+    # Funnel is one address for the whole computer: leave it on while another HumID install here uses it.
+    $others = @(Get-OtherFunnelUsers)
+    if ($others.Count) { Say "Tailscale Funnel stays on: $($others -join ', ') on this computer uses it." }
+    else {
+      $ts = Find-Tool 'tailscale' @("$env:ProgramFiles\Tailscale\tailscale.exe")
+      if ($ts) { Run-Native $ts @('funnel', '--https=443', 'off') -Silent | Out-Null; Good 'Tailscale Funnel turned off.' }
+    }
   } elseif ($url) {
-    Warn "If you set up a Cloudflare Tunnel for $url, remove it with: cloudflared service uninstall"
+    if ($Instance) { Warn "If you added $url to a Cloudflare Tunnel, remove that public hostname in the Cloudflare dashboard (the tunnel may serve another HumID server too)." }
+    else { Warn "If you set up a Cloudflare Tunnel for $url, remove it with: cloudflared service uninstall" }
   }
-  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-  $kept = ($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }
-  [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'Machine')
+  # Only the default install is on the PATH; an instance never touches it.
+  if (-not $Instance) {
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $kept = ($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }
+    [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'Machine')
+  }
   if (Test-Path $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue; Good "Removed $InstallDir" }
   if ($RemoveData) {
     if ($Quiet -or (Confirm-Yes "Delete $DataRoot for good? Every account, sealed document and the server's identity will be gone." $false)) {
@@ -475,25 +768,62 @@ function Do-Uninstall {
   }
 }
 
+# Which of the server's secrets are sealed under the seal key (DPAPI on Windows).
+function Show-SealStatus {
+  $r = Invoke-ServerCapture @('seal-status', '--root', $DataRoot)
+  $s = Get-JsonLine $r.Out
+  if ($r.Code -ne 0 -or -not $s) { Write-Host "  Secrets         couldn't check ($(Get-Reason $r))" -ForegroundColor Yellow; return }
+  $sealed = @($s.sealed | Where-Object { $_ })
+  $plain = @($s.plain | Where-Object { $_ })
+  $mode = ([string]$s.mode).ToLower()
+  if ($mode -eq 'off') { Write-Host "  Secrets         not sealed (HUMID_SEAL=off): a copy of the data folder holds the server's keys" -ForegroundColor Yellow; return }
+  $how = 'DPAPI'
+  if ($mode -eq 'file') { $how = 'key file' }
+  $total = $sealed.Count + $plain.Count
+  $line = "sealed ($how), $($sealed.Count) of $total"
+  if ($total -eq 0) { $line = "sealed ($how); the server makes its keys when it first starts" }
+  $loose = @($plain)
+  if ($s.internalKey -eq 'plain') { $loose += 'the internal key in humid.env' }
+  if ($loose.Count) { Write-Host "  Secrets         $line; still in plain: $($loose -join ', ') (the server seals them when it starts: $HumidCmd restart)" -ForegroundColor Yellow }
+  else { Say "  Secrets         $line" }
+}
+
 function Do-Status {
   $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if (-not $t) { Die 'HumID Server is not installed.' }
+  if (-not $t) { Die "$TaskName is not installed." }
   $ti = Get-ScheduledTaskInfo -TaskName $TaskName
   $p = [int](Get-Setting 'HUMID_PORT' '8480')
   $healthy = Test-Healthy $p
   $info = Get-Info
+  $roles = @(Get-Roles)
+  $front = $roles -contains 'front'
   Say ''
   Say "HumID Server $Version"
+  if ($Instance) { Say "  Instance        $Instance  (beside the default install; commands: $HumidCmd ...)" }
   Say ("  Task            {0} (last result {1})" -f $t.State, $ti.LastTaskResult)
   if ($healthy) { Say "  Health          ok" } else { Say "  Health          not answering on 127.0.0.1:$p" }
+  Say "  Roles           $($roles -join ', ')"
+  Show-SealStatus
   if ($info) {
-    Say "  Local address   $($info.localUrl)"
+    if ($front) { Say "  Local address   $($info.localUrl)" } else { Say "  Local address   $($info.localUrl) (health check only: the front role runs elsewhere)" }
     $pub = Get-Setting 'HUMID_PUBLIC_URL'
-    if ($pub) { Say "  Public address  $pub" } else { Say "  Public address  (none yet: humid expose tailscale)" }
-    Say "  Fingerprint     $($info.fingerprint)"
-    Say "  Key id          $($info.kid)"
-    Say "  Device policy   $($info.devicePolicy)"
-    if ($info.iphones) { Say "  iPhones         accepted" } else { Say "  iPhones         not yet (humid set HUMID_IOS_APP_ID=<TeamID>.app.humid.vault)" }
+    if ($front) {
+      if ($pub) { Say "  Public address  $pub" } else { Say "  Public address  (none yet: $HumidCmd expose tailscale)" }
+    }
+    if ($info.fingerprint) { Say "  Fingerprint     $($info.fingerprint)" }
+    if ($info.kid) { Say "  Key id          $($info.kid)" }
+    if (-not $front -and $info.internal) {
+      # core and keys for a gateway on another machine: fixed ports, mutual TLS only
+      $label = '  Internal        '
+      foreach ($svc in $info.internal.PSObject.Properties) {
+        Say "$label$($svc.Name) on $($svc.Value) (mutual TLS)"
+        $label = '                  '
+      }
+    }
+    if ($front) {
+      Say "  Device policy   $($info.devicePolicy)"
+      if ($info.iphones) { Say "  iPhones         accepted" } else { Say "  iPhones         not yet (humid set HUMID_IOS_APP_ID=<TeamID>.app.humid.vault)" }
+    }
     Say "  Running since   $($info.startedAt)"
   }
   if ((Get-Setting 'HUMID_CHECKIN' 'off') -eq 'on') {
@@ -501,7 +831,7 @@ function Do-Status {
     if ($armed) { Say "  Check-in        on, $armed armed (anything that stops the server erases them)" } else { Say "  Check-in        on, none armed" }
   }
   $at = Get-ScheduledTask -TaskName $AdminTask -ErrorAction SilentlyContinue
-  if ($at) { Say ("  Admin console   http://127.0.0.1:{0}  ({1}; open it with: humid console)" -f (Get-Setting 'HUMID_ADMIN_PORT' '8490'), $at.State) }
+  if ($at) { Say ("  Admin console   http://127.0.0.1:{0}  ({1}; open it with: {2} console)" -f (Get-Setting 'HUMID_ADMIN_PORT' '8490'), $at.State, $HumidCmd) }
   else { Say "  Admin console   not installed (run humid install again)" }
   Say "  Data            $DataRoot"
   Say "  Log             $LogFile"
@@ -521,29 +851,95 @@ function Do-Set {
 
 function Do-Backup {
   Require-Admin; Require-Installed
-  $target = $Path
-  if (-not $target) { $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("HumID-backup-{0}.zip" -f (Get-Date -Format 'yyyyMMdd-HHmm')) }
+  # Where: the backups folder (administrators only), or -Path: a folder, or a name both files start with.
+  $dir = $BackupDir
+  $name = "HumID-backup-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+  if ($PathText) {
+    $p = Get-FullPath $PathText
+    if ((Test-Path -LiteralPath $p -PathType Container) -or $PathText.EndsWith('\') -or $PathText.EndsWith('/')) { $dir = $p }
+    else {
+      $dir = Split-Path $p -Parent
+      $given = (Split-Path $p -Leaf) -replace '(?i)(-main|-keys)?\.(humidbak|zip)$', ''
+      if ($given) { $name = $given }
+    }
+  }
+  $mainFile = Join-Path $dir "$name-main.humidbak"
+  $keysFile = $null
+  if (Test-Path -LiteralPath (Join-Path $DataRoot 'data\keyshare')) { $keysFile = Join-Path $dir "$name-keys.humidbak" }
   Confirm-ArmedErase 'a backup, which stops the server,'
+  if ($dir.TrimEnd('\') -eq $BackupDir.TrimEnd('\')) { Set-PrivateAcl $BackupDir } else { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   Step 'Stopping the server for a consistent copy...'
-  Make-Backup $target
-  Good "Backup written to $target"
-  Warn 'It holds the server keys and every sealed document. Keep it somewhere safe and offline.'
+  $done = @()
+  try { $done = @(Make-BackupPair $mainFile $keysFile) } catch { Die "The backup failed: $($_.Exception.Message)" }
+  Good "Backup written to $dir, encrypted with this server's backup key:"
+  foreach ($d in $done) { Say ("   {0}  ({1:N1} MB)" -f (Split-Path ([string]$d.file) -Leaf), ([double]$d.bytes / 1MB)) }
+  if ($keysFile) { Warn 'Keep the -keys file somewhere other than the -main file (a different drive, or offline).' }
+  Say "   A restore on another computer also needs the backup key ($HumidCmd backup-key): write it down, keep it offline."
+  $restoreArg = $mainFile
+  if ($keysFile) { $restoreArg = "$mainFile,$keysFile" }
+  Say "   To restore: $HumidCmd restore -Path `"$restoreArg`""
 }
 
 function Do-Restore {
   Require-Admin; Require-Installed
-  if (-not $Path -or -not (Test-Path $Path)) { Die 'Usage: humid restore -Path <backup.zip>' }
+  $files = @($PathText -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { Get-FullPath $_ })
+  if ($files.Count -eq 0) { Die 'Usage: humid restore -Path <main.humidbak>[,<keys.humidbak>] [-BackupKey HBK-...]   (or -Path <backup.zip> from HumID 2.x)' }
+  foreach ($f in $files) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Die "No backup file at $f" } }
+
+  # A backup from HumID 2.x: one zip of humid.env and data, restored as 2.x did. The server seals
+  # its plain secrets again at its next start.
+  if (@($files | Where-Object { $_ -match '(?i)\.zip$' }).Count) {
+    if ($files.Count -ne 1) { Die 'A HumID 2.x backup is one .zip file: humid restore -Path <backup.zip>' }
+    $zip = $files[0]
+    Confirm-ArmedErase 'restoring a backup'
+    if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($zip)?" $false)) { return }
+    Stop-Server
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $old = Join-Path $DataRoot "before-restore-$stamp"
+    New-Item -ItemType Directory -Force -Path $old | Out-Null
+    foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
+    Expand-Archive -LiteralPath $zip -DestinationPath $DataRoot -Force
+    Set-DataAcl
+    Good "Restored. The previous data is in $old"
+    Start-Server | Out-Null
+    return
+  }
+
+  if (@($files | Where-Object { $_ -notmatch '(?i)\.humidbak$' }).Count) { Die 'A HumID backup file ends in .humidbak (or .zip, from HumID 2.x).' }
+  if ($files.Count -gt 2) { Die 'Give one or two files: the -main file, and the -keys file after a comma.' }
   Confirm-ArmedErase 'restoring a backup'
-  if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($Path)?" $false)) { return }
-  Stop-Server
+  if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($files -join ' and ')?" $false)) { return }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $old = Join-Path $DataRoot "before-restore-$stamp"
-  New-Item -ItemType Directory -Force -Path $old | Out-Null
-  foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
-  Expand-Archive -LiteralPath $Path -DestinationPath $DataRoot -Force
-  Set-DataAcl
-  Good "Restored. The previous data is in $old"
-  Start-Server | Out-Null
+  Step 'Opening the backup (the key and every byte are checked before anything changes)...'
+  $r = Expand-HumidBackup $files $BackupKey $stamp
+  if ($r.Error) { Die "The backup can't be restored: $(([string]$r.Error).TrimEnd('.')). Nothing was changed." }
+  $parts = $r.Parts
+  if ($files.Count -eq 2 -and -not (($parts -contains 'main') -and ($parts -contains 'keys'))) {
+    Remove-Item -LiteralPath $r.Staging -Recurse -Force -ErrorAction SilentlyContinue
+    Die "Two files must be one -main file and one -keys file (these are: $($parts -join ', ')). Nothing was changed."
+  }
+  if (-not $r.Full) {
+    Warn 'This is the -keys file alone: it replaces the key-share data (data\keyshare) and the seal key that opens it. Everything else stays.'
+  } elseif (($parts -contains 'main') -and -not ($parts -contains 'keys') -and (Test-Path -LiteralPath (Join-Path $DataRoot 'data\keyshare'))) {
+    Warn 'No -keys file was given, so this restore has no key-share data, and the current key-share data moves aside with the rest.'
+    Say '   Documents with split keys need it. To restore both: -Path "<main file>,<keys file>"'
+    if (-not $Quiet -and -not (Confirm-Yes 'Go on without the key-share data?' $false)) {
+      Remove-Item -LiteralPath $r.Staging -Recurse -Force -ErrorAction SilentlyContinue
+      Say 'Stopped. Nothing was changed.'
+      return
+    }
+  }
+  Step 'Stopping the server and putting the backup in place...'
+  $old = $null
+  try { $old = Install-Staged $r.Staging $stamp $r.Full }
+  catch { Warn $_.Exception.Message; Start-Server | Out-Null; Die 'The restore did not finish.' }
+  Good "Restored $($r.Files) files ($($parts -join ' + ')). The previous data is in $old"
+  if (-not $r.Full -and $r.SealKey -and @(Get-ChildItem -LiteralPath (Join-Path $DataRoot 'pki') -Filter '*.key' -ErrorAction SilentlyContinue).Count) {
+    # This machine's role certificate key was sealed under its own seal key, which the restore just replaced.
+    Warn 'If the -keys file came from another machine, this machine''s role certificate (pki) was sealed under the seal key it replaced.'
+    Say "   If the server doesn't start, issue the role's bundle again on the front machine (humid pki issue keys -Path <dir>) and import it here ($HumidCmd pki import -Path <dir>)."
+  }
+  if (-not (Start-Server)) { exit 1 }
 }
 
 function Do-Expose {
@@ -568,6 +964,12 @@ function Do-Expose {
       if ($st.BackendState -ne 'Running') { Die 'Tailscale is installed but not signed in. Sign in from the Tailscale icon in the taskbar, then run this again.' }
       $dns = ([string]$st.Self.DNSName).TrimEnd('.')
       if (-not $dns) { Die "Tailscale didn't report this computer's name." }
+      # One Funnel address per computer: turning it on here would point the other server's address at this one.
+      $others = @(Get-OtherFunnelUsers)
+      if ($others.Count) {
+        Warn "$($others -join ', ') on this computer already uses Tailscale Funnel (https://$dns). Turning it on here takes that address away from it."
+        if (-not (Confirm-Yes 'Point the Funnel address at this server instead?' $false)) { Die 'Stopped. Nothing was changed. (A test instance can be tried locally, or through a Cloudflare Tunnel hostname.)' }
+      }
       Step "Turning on Tailscale Funnel: https://$dns -> 127.0.0.1:$p"
       Say '   (If your tailnet hasn''t allowed Funnel yet, Tailscale prints a link: open it, approve, and this continues.)'
       $code = Run-Native $ts @('funnel', '--bg', "$p")
@@ -586,6 +988,7 @@ function Do-Expose {
       }
       Step 'Installing the Cloudflare Tunnel service...'
       $code = Run-Native $cf @('service', 'install', $Token)
+      if ($code -ne 0 -and $Instance) { Die "cloudflared service install failed. If a tunnel service already runs (for the other HumID server on this computer), don't uninstall it: add a public hostname for this instance to that tunnel (Service: HTTP 127.0.0.1:$p), then: $HumidCmd set HUMID_PUBLIC_URL=https://<that hostname>" }
       if ($code -ne 0) { Die 'cloudflared service install failed (if a tunnel service already exists: cloudflared service uninstall, then retry).' }
       $url = "https://$($Hostname.Trim().TrimEnd('/'))"
     }
@@ -616,6 +1019,96 @@ function Do-Expose {
 function Do-Logs {
   if (-not (Test-Path $LogFile)) { Die "No log yet at $LogFile" }
   if ($Follow) { Get-Content -LiteralPath $LogFile -Tail 60 -Wait } else { Get-Content -LiteralPath $LogFile -Tail 60 }
+}
+
+function Do-BackupKey {
+  Require-Admin; Require-Installed
+  $k = Get-BackupKeyText
+  if (-not $k.Key) { Die "Couldn't read the backup key: $($k.Error)" }
+  Say "This server's backup key:"
+  Say ''
+  Say "   $($k.Key)"
+  Say ''
+  Show-BackupKeyAdvice
+}
+
+# Certificates for running the roles on separate machines, with mutual TLS between them (docs/DEPLOY-VMS.md).
+function Do-Pki {
+  Require-Admin; Require-Installed
+  $sub = ''; if ($Rest -and $Rest.Count -gt 0) { $sub = $Rest[0].ToLower() }
+  $more = @(); if ($Rest.Count -gt 1) { $more = @($Rest[1..($Rest.Count - 1)]) }
+  switch ($sub) {
+    'init' {
+      $extra = @($more | ForEach-Object { if (@('force', '-force', '--force') -contains $_.ToLower()) { '--force' } else { $_ } })
+      Invoke-Server (@('pki', 'init', '--root', $DataRoot) + $extra)
+      Say "Next: humid pki issue core|keys -Path <folder>, for each role that runs on another machine."
+    }
+    'status' { Invoke-Server @('pki', 'status', '--root', $DataRoot) }
+    'issue' {
+      $role = ''; if ($more.Count) { $role = ([string]$more[0]).ToLower() }
+      if (@('core', 'keys') -notcontains $role -or -not $PathText) { Die 'Usage: humid pki issue core|keys -Path <folder>   (a bundle to carry to the machine that runs that role)' }
+      $dir = Get-FullPath $PathText
+      # The bundle holds the role's private key until it is imported: a new folder starts closed to all but administrators.
+      if (-not (Test-Path -LiteralPath $dir)) { try { Set-PrivateAcl $dir } catch {} }
+      Invoke-Server @('pki', 'issue', $role, '--out', $dir, '--root', $DataRoot)
+      Warn "$dir holds the $role role's private key. Carry it to the $role machine, run humid pki import -Path <folder> there, then delete it on both."
+    }
+    'import' {
+      if (-not $PathText) { Die 'Usage: humid pki import -Path <folder>   (the bundle humid pki issue made on the front machine)' }
+      $dir = Get-FullPath $PathText
+      if (-not (Test-Path -LiteralPath $dir -PathType Container)) { Die "No folder at $dir" }
+      # The same choice humid-server makes: the bundle's role is the one whose certificate and key are in it.
+      $role = 'keys'
+      if ((Test-Path -LiteralPath (Join-Path $dir 'core.crt')) -and (Test-Path -LiteralPath (Join-Path $dir 'core.key'))) { $role = 'core' }
+      Invoke-Server @('pki', 'import', '--from', $dir, '--root', $DataRoot)
+      Say ''
+      Say "Next, give this machine its role and the address the gateway reaches it on (set restarts the server with it):"
+      Say "   $HumidCmd set HUMID_ROLES=$role HUMID_INTERNAL_BIND=<this machine's internal address>"
+      Say "Then, on the front machine, leave the $role role out and point at this one: humid set HUMID_ROLES=... HUMID_$($role.ToUpper())_HOST=<that address>"
+      Warn "Delete $dir now. Until the set above, this machine can't run the front role (its internal private key was removed)."
+    }
+    default {
+      Say 'Usage (roles on separate machines, mutual TLS between them; docs/DEPLOY-VMS.md):'
+      Say '   humid pki init                          on the front machine: a private CA and a certificate per role'
+      Say '   humid pki status                        the certificates on this machine and the days they have left'
+      Say '   humid pki issue core|keys -Path <dir>   a bundle to carry to the machine that runs that role'
+      Say '   humid pki import -Path <dir>            on that machine: take the bundle in'
+    }
+  }
+}
+
+# The deployment smoke test as one file (humid-selftest.mjs), run against this server's own 127.0.0.1
+# address with the bundled Node.js: a throwaway account, a sealed document, a second device, an
+# open with a live check, the log, and closing the account.
+function Do-Selftest {
+  Require-Admin; Require-Installed   # admin: it reads the settings and mints an access code
+  $test = Join-Path $InstallDir 'humid-selftest.mjs'
+  if (-not (Test-Path -LiteralPath $test)) { Die "$test is missing (it comes with HumID Server 3.0 and later)." }
+  $roles = @(Get-Roles)
+  if ($roles -notcontains 'front') { Die "This machine runs $($roles -join ', '), not the front role: run the self-test on the front machine." }
+  $p = [int](Get-Setting 'HUMID_PORT' '8480')
+  if (-not (Test-Healthy $p)) { Die "The server doesn't answer on 127.0.0.1:$p. Start it first: $HumidCmd start" }
+  $policy = Get-Setting 'HUMID_DEVICE_POLICY' 'attested'
+  $info = Get-Info
+  if ($info -and $info.devicePolicy) { $policy = [string]$info.devicePolicy }
+  $code = ''
+  if ((Get-Setting 'HUMID_REGISTRATION' 'pass') -eq 'pass') {
+    # A new account needs an access pass, so the test spends one access code of its own.
+    $m = Invoke-ServerCapture @('mint', '--root', $DataRoot, '1', 'selftest')
+    $code = [regex]::Match(($m.Out -join "`n"), 'HA-[0-9A-Z-]+').Value
+    if ($m.Code -ne 0 -or -not $code) { Die "Couldn't mint an access code for the self-test: $(Get-Reason $m)" }
+    Say 'Minted one access code for the self-test (batch "selftest").'
+  }
+  if ($policy -eq 'attested') {
+    Say 'The device policy is attested and the self-test has no phone, so it checks that a device without hardware proof is refused.'
+    Say 'On a TEST instance (never the live server), humid set HUMID_DEVICE_POLICY=biometric lets it run the whole flow.'
+  }
+  Step "Self-test against http://127.0.0.1:$p"
+  $a = @('--no-warnings', $test, "http://127.0.0.1:$p")
+  if ($code) { $a += $code }
+  $rc = Run-Native $NodeExe $a
+  if ($rc -eq 0) { Good 'Self-test passed.' } else { Warn "Self-test failed (exit $rc)." }
+  exit $rc
 }
 
 # ---------------------------------------------------------------- admin console (docs/ADMIN.md)
@@ -815,17 +1308,19 @@ function Job-Restart {
   return @{ ok = $true }
 }
 
+# The 10 newest backups in the backups folder stay: encrypted ones (.humidbak) and those from 2.x (.zip) alike.
 function Prune-Backups([int]$Keep = 10) {
-  Get-ChildItem -LiteralPath $BackupDir -Filter '*.zip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep |
+  Get-ChildItem -LiteralPath $BackupDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.humidbak' -or $_.Extension -eq '.zip' } |
+    Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
 function Job-Backup([string]$Name) {
   Set-PrivateAcl $BackupDir
-  if (-not $Name) { $Name = "HumID-backup-$(Get-Date -Format 'yyyyMMdd-HHmm').zip" }
+  if (-not $Name) { $Name = "HumID-backup-$(Get-Date -Format 'yyyyMMdd-HHmm').humidbak" }
   $target = Join-Path $BackupDir $Name
-  Job-Step "Backing up to backups\$Name (the server stops for a moment)"
-  Make-Backup $target
+  Job-Step "Backing up to backups\$Name (encrypted; the server stops for a moment)"
+  $null = Make-Backup $target 'all'
   if (-not (Test-Path $target)) { throw 'The backup file was not written.' }
   Job-Step ("Backup written ({0:N0} MB)" -f ((Get-Item -LiteralPath $target).Length / 1MB))
   Prune-Backups 10
@@ -838,16 +1333,23 @@ function Test-Updated([string]$Want, [string]$Kid, [datetime]$Since) {
   $info = Get-Info
   if ($info.version -ne $Want) { return "it reports version $($info.version), not $Want" }
   if ($Kid -and $info.kid -ne $Kid) { return "its server identity changed ($($info.kid)); phones would refuse it" }
-  try {
-    $keys = Invoke-RestMethod -Uri "http://127.0.0.1:$(Get-Setting 'HUMID_PORT' '8480')/htp/v1/keys" -TimeoutSec 10
-    if ($Kid -and $keys.kid -ne $Kid) { return "it serves a different server key" }
-  } catch { return "its key bundle doesn't answer" }
+  # Only the front role (the gateway) has a key bundle; core and keys answer just their health check.
+  if ($Kid -or ((Get-Roles) -contains 'front')) {
+    try {
+      $keys = Invoke-RestMethod -Uri "http://127.0.0.1:$(Get-Setting 'HUMID_PORT' '8480')/htp/v1/keys" -TimeoutSec 10
+      if ($Kid -and $keys.kid -ne $Kid) { return "it serves a different server key" }
+    } catch { return "its key bundle doesn't answer" }
+  }
   return $null
 }
 
 function Install-Package([string]$Dir) {
   $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  return (Run-Native $ps @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Dir 'humid.ps1'), 'install', '-Quiet', '-NoStart') -Silent)
+  $a = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Dir 'humid.ps1'), 'install', '-Quiet', '-NoStart')
+  # An update package doesn't know which install it is for: without this, an instance's update
+  # would install over the default one.
+  if ($Instance) { $a += @('-Instance', $Instance) }
+  return (Run-Native $ps $a -Silent)
 }
 
 function Copy-Program([string]$From, [string]$To) {
@@ -857,12 +1359,21 @@ function Copy-Program([string]$From, [string]$To) {
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $To -Recurse -Force }
 }
 
-function Restore-Quietly([string]$Zip) {
+# The data back from the backup a job took first (an encrypted .humidbak, or a .zip from 2.x).
+# Leaves the server stopped; the caller starts it.
+function Restore-Quietly([string]$File) {
+  if ($File -match '(?i)\.humidbak$') {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $r = Expand-HumidBackup @($File) '' $stamp
+    if ($r.Error) { throw "The backup $(Split-Path $File -Leaf) couldn't be opened: $($r.Error)" }
+    $null = Install-Staged $r.Staging $stamp $r.Full
+    return
+  }
   Stop-Server
   $old = Join-Path $DataRoot "before-restore-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
   New-Item -ItemType Directory -Force -Path $old | Out-Null
   foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
-  Expand-Archive -LiteralPath $Zip -DestinationPath $DataRoot -Force
+  Expand-Archive -LiteralPath $File -DestinationPath $DataRoot -Force
   Set-DataAcl
 }
 
@@ -887,7 +1398,7 @@ function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [stri
   if ($code -ne 0) { $again = "the installer stopped (exit $code)" } else { $again = Test-Updated $FallbackVersion $Kid $since }
   if ($again) {
     Job-Step "$FallbackVersion didn't come up either ($again). Restoring the data from the backup taken first"
-    Restore-Quietly $BackupZip
+    try { Restore-Quietly $BackupZip } catch { Job-Step "The restore didn't work either: $($_.Exception.Message)" }
     $since = (Get-Date).AddSeconds(-2)
     Start-Server | Out-Null
     $again = Test-Updated $FallbackVersion $Kid $since
@@ -915,7 +1426,7 @@ function Job-Update($A) {
   Get-ChildItem -LiteralPath $pkg -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
   $from = Read-PackageVersion $InstallDir
   $kid = (Get-Info).kid
-  $backup = Job-Backup "pre-update-$from-to-$v-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  $backup = Job-Backup "pre-update-$from-to-$v-$(Get-Date -Format 'yyyyMMdd-HHmm').humidbak"
   Job-Step "Keeping $from for rollback"
   Copy-Program $InstallDir $PrevDir
   Switch-Program $pkg $v $PrevDir $from $kid (Join-Path $BackupDir $backup.file)
@@ -928,7 +1439,7 @@ function Job-Rollback($A) {
   if (-not $to -or $to -ne [string]$A.to) { throw "The kept version is $to, not $($A.to)." }
   $from = Read-PackageVersion $InstallDir
   $kid = (Get-Info).kid
-  $backup = Job-Backup "pre-rollback-$from-to-$to-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  $backup = Job-Backup "pre-rollback-$from-to-$to-$(Get-Date -Format 'yyyyMMdd-HHmm').humidbak"
   $current = "$InstallDir.rollback"
   Job-Step "Keeping $from aside"
   Copy-Program $InstallDir $current
@@ -1034,6 +1545,9 @@ switch ($Command) {
   'mint'      { Require-Admin; Require-Installed; Invoke-Server (@('mint', '--root', $DataRoot) + $Rest) }
   'backup'    { Do-Backup }
   'restore'   { Do-Restore }
+  'backup-key' { Do-BackupKey }
+  'pki'       { Do-Pki }
+  'selftest'  { Do-Selftest }
   'expose'    { Do-Expose }
   'console'   { Do-Console }
   'admin'     { Do-AdminCmd }
