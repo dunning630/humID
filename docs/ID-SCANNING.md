@@ -207,12 +207,32 @@ a frame of that video.
   front and back, passport, back out, scan again, no scanner) and `tests/docscan.test.js`.
   The scanner itself can only be tried on a phone.
 
+## Measuring a capture
+
+How long from the shutter to the review screen, and where it goes. In a development
+build (`DEMO_BUILD`; never in a release build) the app records timings in
+`globalThis.__humidTrace.ev`: entries `[name, ms since page start, extra]`. Marks from the
+camera (`shoot`, `develop`, `developed`, `kept`, ...), `span:<stage>` entries with the stage's
+duration in `extra` (`develop-grab`, `develop-corners`, `develop-straighten`, `develop-orient`,
+`clean`, `jpeg`, `docscan-decode`, ...) and the seal marks (`seal-start`, `seal-prepared`,
+`seal-place`, `seal-keys`, `seal-signed`, `seal-uploaded`). Never a picture, text or size.
+
+- On a phone: build with demo allowed, open the app in the Android System WebView, attach
+  with Chrome's `chrome://inspect`, take a document, then run
+  `copy(JSON.stringify(__humidTrace.ev))` in the console.
+- In a desktop browser with a fake camera, repeatably (4x CPU throttle, 3 runs, median and
+  spread): `python3 tests/bench/make-4k-fixtures.py $OUT/fixtures`, then
+  `PORT=5333 OUT=$OUT node tests/bench/capture.mjs` (`PROFILE=1` adds top functions).
+  Sandbox and laptop CPUs are not phones: compare before with after, not with a phone.
+- Not covered by the harness: the native IPC (base64 over JSON), Play services' scanner, and
+  the real camera's still capture. Time those on the device.
+
 ## Where it was sealed
 
 Every seal screen (a file, a photo, an ID) has **Stamp where it's sealed**, on unless
 it's turned off for that document. While the screen is open the phone's location is
-watched, and the freshest fix (no older than two minutes, waiting up to five seconds
-for one) goes into the document's encrypted index beside its name and category:
+watched, and the freshest fix (no older than two minutes, waiting up to three seconds
+for one; the phone starts looking when the camera opens, if location was already allowed, and stops after 90 seconds) goes into the document's encrypted index beside its name and category:
 latitude and longitude to six decimals, the accuracy the phone gave, and the fix's
 time (`apps/mobile/src/core/place.js`). The document's details show it as **Sealed
 at**, with a map link that opens only when tapped. Nothing is looked up online.

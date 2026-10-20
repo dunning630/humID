@@ -30,6 +30,49 @@ export function validStamp(p) {
     && Number.isFinite(p.accuracy) && p.accuracy > 0 && typeof p.at === "string" && !Number.isNaN(Date.parse(p.at));
 }
 
+/**
+ * A fix kept from just before a seal screen opened, so the stamp is usually ready the moment
+ * the review is: warmPlace() starts a short watch when the camera opens (only where the
+ * location permission is already granted: it never asks early, and never keeps or sends what
+ * it hears), and the review's own watch starts from what it found.
+ */
+let warm = null;
+const WARM_MS = 90_000;
+
+function dropWarm() {
+  if (!warm) return;
+  clearTimeout(warm.timer);
+  try { warm.geo.clearWatch(warm.id); } catch { /* gone */ }
+  warm = null;
+}
+
+/** Start the early watch (a no-op if one is running, or the permission isn't already granted). Never throws, never waits. */
+export async function warmPlace({ geo = globalThis.navigator?.geolocation, now = () => Date.now(), allowed = null } = {}) {
+  if (warm) return true;
+  if (!geo?.watchPosition) return false;
+  try {
+    const ok = allowed ?? (async () => (await globalThis.navigator?.permissions?.query({ name: "geolocation" }))?.state === "granted");
+    if (!(await (typeof ok === "function" ? ok() : ok))) return false;
+    if (warm) return true;
+    const w = { geo, best: null, id: null, timer: null };
+    w.id = geo.watchPosition(
+      (pos) => { const s = stampFrom(pos); if (!w.best || s.accuracy <= w.best.accuracy || Date.parse(w.best.at) < now() - 15_000) w.best = s; },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 30_000, timeout: 20_000 },
+    );
+    w.timer = setTimeout(dropWarm, WARM_MS);
+    w.timer.unref?.();
+    warm = w;
+    return true;
+  } catch { return false; }
+}
+
+/** Stop the early watch (the person left before a review took over). */
+export const stopWarmPlace = dropWarm;
+
+/** The early watch's best fix, if it has one that is still fresh (the watch is left running until a review takes over or it times out). */
+const warmFix = (now) => (warm?.best && now() - Date.parse(warm.best.at) <= FRESH_MS ? warm.best : null);
+
 const why = (e) => (e?.code === 1 ? "denied" : e?.code === 3 ? "timeout" : "unavailable");
 
 /**
@@ -40,7 +83,8 @@ const why = (e) => (e?.code === 1 ? "denied" : e?.code === 3 ? "timeout" : "unav
  * "unsupported" (no location on this device).
  */
 export function watchPlace({ geo = globalThis.navigator?.geolocation, now = () => Date.now(), onChange } = {}) {
-  let best = null, reason = null, id = null;
+  let best = warmFix(now), reason = null, id = null;
+  dropWarm(); // the review's own watch takes over from here
   const waiters = new Set();
   const settle = () => { for (const w of waiters) w(); };
   if (!geo?.watchPosition) reason = "unsupported";
