@@ -14,7 +14,8 @@ import {
 const keys = newInternalKeys();
 const dirs = [];
 const tmp = () => { const d = mkdtempSync(join(tmpdir(), "humid-s3-")); dirs.push(d); return d; };
-test.after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+// Windows keeps a file locked until its handle closes (EBUSY); retry, and never fail a run over a temp folder.
+test.after(() => { for (const d of dirs) { try { rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* the OS clears its temp folder */ } } });
 
 /** A tiny service with the real framework: GET /objects, DELETE /objects, POST /echo. */
 async function service(opts = {}) {
