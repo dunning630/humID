@@ -362,3 +362,68 @@ export const anchorOf = (mrz, key) => createHmac("sha3-256", key).update(stableI
 
 /** Country and document kind only, for display ("Passport · USA"). Never names or numbers. */
 export const anchorSummary = (mrz) => ({ document: mrz.documentCode?.startsWith("P") ? "passport" : "ID card", country: mrz.issuer });
+
+/* ---------------- ICAO master lists ---------------- */
+
+const ML = { content: "2.23.136.1.1.2", signerEku: "2.23.136.1.1.3", extKeyUsage: "2.5.29.37" };
+
+/**
+ * Read an ICAO CSCA Master List (ICAO 9303 part 12): a CMS SignedData whose
+ * content is the list of country signing CAs a publishing state has checked.
+ * Germany's BSI, for example, publishes one openly. Trusting it means trusting
+ * the publisher's vetting, so its signer must chain to a CSCA you already
+ * trust for that publisher (`publisherCscas`).
+ *
+ * Returns { publisher, signer, cscas: [X509Certificate] } (expired CSCAs kept:
+ * a passport signed under one stays checkable until its own expiry rules say not).
+ */
+export function readMasterList(bytes, { publisherCscas = [], now = new Date() } = {}) {
+  return tryRead(() => readMasterListInner(bytes, publisherCscas, now), "bad_master_list", "The master list can't be read.");
+}
+
+function readMasterListInner(bytes, publisherCscas, now) {
+  if (!publisherCscas.length) fail("no_trust", "Reading a master list needs the publisher's own CSCA.");
+  const ci = kids(parse(Buffer.from(bytes)));
+  if (oid(ci[0]) !== OID.signedData) fail("bad_master_list", "The master list isn't CMS signed data.");
+  const sd = kids(kids(ci[1])[0]);
+  const eci = kids(sd[2]);
+  if (oid(eci[0]) !== ML.content) fail("bad_master_list", "This CMS isn't a CSCA master list.");
+  const eContent = octets(kids(eci[1])[0]);
+  let i = 3;
+  const certs = [];
+  if (ctx(sd[i], 0)) { for (const c of kids(sd[i])) certs.push(Buffer.from(c.raw)); i++; }
+  if (ctx(sd[i], 1)) i++;
+  const signers = kids(sd[i]);
+  if (signers.length !== 1) fail("bad_master_list", "The master list must have exactly one signer.");
+  const si = kids(signers[0]);
+  const digestAlg = HASHES[algorithm(si[2]).oid];
+  if (!digestAlg || digestAlg === "sha1") fail("unsupported", "The master list uses a hash HumID doesn't accept.");
+  if (!ctx(si[3], 0)) fail("bad_master_list", "The master list has no signed attributes.");
+  const attrs = new Map(kids(si[3]).map((a) => { const k = kids(a); return [oid(k[0]), kids(k[1])[0]]; }));
+  if (!attrs.get(OID.contentType) || oid(attrs.get(OID.contentType)) !== ML.content) fail("bad_master_list", "The master list's signed content type is wrong.");
+  if (!attrs.get(OID.messageDigest) || !same(octets(attrs.get(OID.messageDigest)), digest(digestAlg, eContent))) fail("data_altered", "The master list was altered.");
+  const signedAttrsDer = Buffer.from(si[3].raw);
+  signedAttrsDer[0] = 0x31;
+
+  const named = certs.filter((c) => signerIs(si[1], certFields(c)));
+  if (named.length !== 1) fail("bad_signature", "The master list's signer certificate is missing.");
+  const signer = new X509Certificate(named[0]);
+  const f = certFields(named[0]);
+  if (f.ca || !canSign(f.keyUsage)) fail("bad_signature", "The master list's signer isn't a signing certificate.");
+  if (!verifyWith(signer.publicKey, algorithm(si[4]), digestAlg, signedAttrsDer, octets(si[5]))) fail("bad_signature", "The master list's signature doesn't verify.");
+  if (now < new Date(signer.validFrom) || now > new Date(signer.validTo)) fail("bad_signature", "The master list's signer certificate isn't valid now.");
+  const publisher = publisherCscas.map(asCert).find((ca) => { try { return signer.checkIssued(ca) && signer.verify(ca.publicKey); } catch { return false; } });
+  if (!publisher) fail("untrusted_country", "The master list isn't signed by the publisher you trust.");
+
+  // CscaMasterList ::= SEQUENCE { version INTEGER, certList SET OF Certificate }
+  const ml = kids(parse(eContent));
+  if (int(ml[0]) !== 0) fail("unsupported", "Unknown master list version.");
+  const cscas = [];
+  for (const c of kids(ml[1])) {
+    let x;
+    try { x = new X509Certificate(Buffer.from(c.raw)); } catch { continue; }
+    if (!certFields(x.raw).ca) continue; // only CA certificates belong in a CSCA list
+    cscas.push(x);
+  }
+  return { publisher: certFields(publisher.raw).country, signer: signer.subject, cscas };
+}
