@@ -28,6 +28,7 @@ import { grabWindow, takeStill, uprightOf, deskewOf } from "../core/guidecap.js"
 import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../core/barcodefind.js";
 import { DEMO_BUILD } from "@humid/gate";
 import { docScanner } from "../core/docscan.js";
+import { confirmedByStill } from "../core/mrzseed.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -45,8 +46,12 @@ function cameraError(e) {
  * voting. A straightened card whose way up was a guess is also read turned round, since
  * the MRZ's check digits settle which way is right. Returns { barcode, mrz, consensus,
  * flipped } (flipped: the MRZ read only with the photo turned 180°).
+ *   seed   the live loop's MrzConsensus, when it had a valid reading that wasn't yet confirmed
+ *          (taking the photo by itself after a steady wait): the still's own read then only has
+ *          to agree with it, one OCR pass instead of two. The still must read, valid and the same,
+ *          on its own: what is stored is checked against its own page.
  */
-export async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) {
+export async function readStill(c, read, shape, wide = null, { tryFlip = false, seed = null } = {}) {
   const out = { barcode: null, mrz: null, consensus: false, flipped: false };
   if (read.barcode) {
     try {
@@ -69,12 +74,13 @@ export async function readStill(c, read, shape, wide = null, { tryFlip = false }
       const ocr = await mrzReader();
       for (const turn of tryFlip ? [0, 180] : [0]) {
         const src = turn ? rotateCanvas(c, 180) : c;
-        const vote = new MrzConsensus();
+        const vote = seed && !turn && seed.lastKey ? seed : new MrzConsensus();
         let mrz = null, stable = false;
         for (const opts of [{}, { threshold: true }, { scale: 1.3 }]) {
           const r = vote.add(await ocr.read(mrzBand(src, shape, opts)));
           if (r.result) mrz = r.result;
-          if (r.stable) { stable = true; break; }
+          // with the live reads behind it, "stable" also needs this page's own reading to be that result
+          if (confirmedByStill(r, vote === seed)) { stable = true; break; }
         }
         if (mrz || stable) { out.mrz = mrz || vote.reads.at(-1) || null; out.consensus = stable; out.flipped = !!turn; break; }
         if (!out.mrz) out.mrz = vote.reads.at(-1) || null;
@@ -312,7 +318,7 @@ export function DocCamera(props) {
       cheer();
       send({ t: "saved" });
       setPhase("saved");
-      await sleep(450);
+      await sleep(200); // long enough to see the tick; the screen it leads to is what the person is waiting for
       stopStream();
     } catch (e) {
       // Keep the camera open and say why: never drop back to the list as if nothing happened.
@@ -690,7 +696,7 @@ export function DocCamera(props) {
     else if (codes) {
       send({ t: "verifying" }); // the photo is straight; now it is read closely and the details checked
       await sleep(0);
-      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned || cropped ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
+      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned || cropped ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened, seed: read.mrz ? L.consensus : null });
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
       // guided, taken by itself, and what the outline holds wasn't read: say so and keep looking (twice; then the photo is kept as it is, and the shutter always keeps it)
       if (cropped && how === "auto" && !(readOut.barcode || readOut.mrz?.valid) && ++L.misses < 3) {

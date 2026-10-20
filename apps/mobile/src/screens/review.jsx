@@ -9,6 +9,7 @@ import { Steps, usePlaceStamp, HowProtectedLink, SEAL_STEPS } from "../ui.jsx";
 import { TAGS, kindOf } from "../core/categories.js";
 import { rotateCanvas } from "../core/scan.js";
 import * as S from "../core/state.js";
+import { warmSeal } from "../core/controller.js";
 
 /** Tags: optional labels for what an item is about. Any number can be on. */
 export function TagPicker({ tags, onChange, label = "Tags (optional)" }) {
@@ -41,6 +42,7 @@ export function TagPicker({ tags, onChange, label = "Tags (optional)" }) {
 export function Review({ kind, preview, name, setName, fields, tags, setTags, note, onChangeKind, onSeal, disabled, secondary, fine, error }) {
   const stage = S.sheet.value?.stage;
   const place = usePlaceStamp();
+  useEffect(() => { warmSeal(); }, []); // the sealing arithmetic warms up while this is read
   const k = kindOf(kind);
   if (stage != null) return <Steps current={{ seal: 0, upload: 1, done: 2 }[stage]} steps={SEAL_STEPS} />;
   return (
@@ -102,10 +104,11 @@ export function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
     canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
     return () => { gone = true; if (made) URL.revokeObjectURL(made); };
   }, [shot, which, turn]);
-  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
+  const suggested = (shot.clean || shot.cleanP) && shot.cleanSuggested ? "clean" : "proposed";
   const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
   const note = !shot.changed ? "As taken: no document edges were found to straighten."
     : which === "original" ? "The photo exactly as the camera took it."
+    : which === "clean" && shot.cleanP ? "Making the clean scan: shadows gone, paper white. A moment…"
     : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
     : "Straightened, keeping its true colours and light.";
   return (
