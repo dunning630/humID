@@ -2,9 +2,11 @@
 // reads PDF417 barcodes (zxing-cpp, WebAssembly), all off the main thread, so the
 // camera view and the buttons stay smooth while the analysis runs. Everything stays
 // on this device: the worker gets small pictures in memory and answers with corners.
-// It never logs, stores or sends a picture. Started by core/analyzer.js.
+// It never logs, stores or sends a picture. Started by core/analyzer.js (the live looks and
+// barcode reads) and core/scanjobs.js (the clean scan of a page).
 import { createCore } from "./scancore.js";
 import { toGray } from "./docfind.js";
+import { cleanScan } from "./scanclean.js";
 
 const core = createCore();
 /* global __HUMID_SCAN_DIR__ */
@@ -50,6 +52,10 @@ self.onmessage = async (e) => {
       const img = new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h);
       const r = await zxr.readBarcodes(img, { formats: ["PDF417"], tryHarder: m.harder !== false, tryRotate: m.harder !== false, tryInvert: false, textMode: "Plain", maxNumberOfSymbols: 1 });
       self.postMessage({ id: m.id, ok: true, texts: r.filter((x) => x.isValid && x.text).map((x) => x.text) });
+    } else if (m.op === "clean") {
+      // the clean scan of a page (core/scanclean.js): RGBA in, RGBA out, the buffers moved, not copied
+      const out = cleanScan({ width: m.w, height: m.h, data: new Uint8ClampedArray(m.buf) });
+      self.postMessage({ id: m.id, ok: true, w: out.width, h: out.height, buf: out.data.buffer, paper: out.paper }, [out.data.buffer]);
     } else if (m.op === "warm") {
       await barcodes();
       self.postMessage({ id: m.id, ok: true });

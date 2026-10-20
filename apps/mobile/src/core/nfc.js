@@ -5,7 +5,7 @@ import { fromB64, toB64, toHex } from "@humid/codec";
 import { SERVER_URL } from "./config.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
-// The development-build flag is tested inline (see controller.js): release builds fold
+// The development-build flag is tested inline (see core/config.js DEMO_BUILD): release builds fold
 // it to false and the simulated chip below, with its /dev/chip endpoints, is dropped.
 
 const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";

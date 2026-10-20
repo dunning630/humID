@@ -2,8 +2,9 @@
 // an ID-1 card with a license barcode or a page with an MRZ to the ID flow (ids.jsx), a card
 // with a payment number to the card flow (cards.jsx), anything else to the photo review.
 // The step card says what the camera thinks it sees ("Looks like a card") and offers
-// "It's something else", which opens the picker: one ID entry (the kind is detected from
-// the photo), then Card, Wallet pass, Photo, File, the last-used kind first. A short
+// "It's something else", which opens the picker: one ID entry (which ID it is, then the
+// guided outline made for it: 2.2.0), then Card, Wallet pass, Photo, File, the last-used
+// kind first. A short
 // "what to show" screen appears only until the first successful capture of that kind on
 // this device. Every kind ends in the one Review (review.jsx), then Seal.
 //
@@ -15,7 +16,8 @@ import { Banner } from "../../ui/kit.jsx";
 import { fmtSize } from "../../ui/format.js";
 import { suggestTags, kindFromType } from "../../core/categories.js";
 import { shapeOf, liveLabel, mrzBandLikely, idKindFrom, guideFor, LIGHT_TIP } from "../../core/addroute.js";
-import { cleanCanvas, grayOf, grab, rotateCanvas } from "../../core/scan.js";
+import { cleanCanvasAsync, paperOf, grayOf, grab, rotateCanvas } from "../../core/scan.js";
+import { warmPlace, stopWarmPlace } from "../../core/place.js";
 import * as S from "../../core/state.js";
 import { addDocument, checkPass, addPass, toast, markPicking, setPref, setDraft, clearDraft } from "../../core/index.js";
 import { DocCamera, readStill, findBarcode } from "./camera.jsx";
@@ -35,7 +37,7 @@ const markSeen = (kind) => { if (!seen(kind)) setPref({ readySeen: { ...(S.prefs
 /** The first step for a kind: its camera, or the "what to show" screen the first time. */
 function firstStep(kind) {
   if (kind === "card") return seen("card") ? { at: "cardcam" } : { at: "ready", kind: "card" };
-  if (kind === "id") return { at: "idcam" };
+  if (kind === "id") return { at: "idpick" }; // which ID it is picks the guided outline (2.2.0)
   if (kind === "pass" || kind === "file") return { at: "pick" };
   return seen("photo") ? { at: "camera" } : { at: "ready", kind: "photo" };
 }
@@ -48,7 +50,7 @@ const closeAdd = () => { clearDraft(); if (S.push.value?.type === "add") S.push.
 /** The picker's choices, in order: the last-used kind first. */
 function picks() {
   const all = [
-    { kind: "id", icon: "idcard", title: "ID", sub: "Driver's license, passport, ID card or permit. HumID tells which from the photo.", go: "id" },
+    { kind: "id", icon: "idcard", title: "ID", sub: "Driver's license, passport, ID card or permit. Line it up in an outline made for it.", go: "id" },
     { kind: "card", icon: "card", title: "Payment card", sub: "Credit or debit. Scan the front, tap it, or type it. Never the PIN.", go: "card" },
     { kind: "pass", icon: "ticket", title: "Wallet pass", sub: "A boarding pass, ticket or membership from Apple Wallet (.pkpass). Checked against its issuer.", go: "pass" },
     { kind: "photo", icon: "camera", title: "Photo", sub: "Any page or card. HumID finds it and straightens it.", go: "photo" },
@@ -102,6 +104,9 @@ function AddFlow({ open }) {
   const barSeen = useRef(0);
   const looks = useRef(0);
   useEffect(() => { cardTapReader().then(setNfc); }, []);
+  // a location fix is usually ready by the time the review is (only where the permission is already granted: this never asks early)
+  useEffect(() => { if (step.at === "camera" || step.at === "cardcam") warmPlace(); }, [step.at]);
+  useEffect(() => () => stopWarmPlace(), []);
   useEffect(() => {
     if (open.draft && step.at === "pass" && step.recheck) checkPass(step.file).then((r) => setStep((s) => (s.at === "pass" && s.file === step.file ? { ...s, check: r, recheck: false } : s)));
     if (open.draft) toast("Picked up where you left off.");
@@ -141,9 +146,8 @@ function AddFlow({ open }) {
   /**
    * The photo's taken. Look at it, cheapest first, and say where it goes. Throws keep the
    * camera open with the reason; the returned function runs once the tick has shown.
-   *   intent  "any" (the Add camera) or "id" (the picker's ID entry: a kind is always chosen)
    */
-  async function photographed(res, intent = "any") {
+  async function photographed(res) {
     when.current = new Date();
     const shape = res.straightened ? shapeOf(res.canvas.width, res.canvas.height) : "page";
     let found = null;
@@ -157,7 +161,7 @@ function AddFlow({ open }) {
       res = { ...res, canvas: card };
       const r = await readStill(card, { barcode: true }, "id1", res.original);
       if (r.barcode && idKindFrom({ barcode: r.barcode })) found = { kind: "driver_license", side: "back", canvas: card, barcode: r.barcode };
-      else if (intent === "any") {
+      else {
         const c = await readFrontEitherWay(card);
         if (c.r?.pan) found = { card: { canvas: c.canvas, read: c.r } };
       }
@@ -172,14 +176,20 @@ function AddFlow({ open }) {
     if (found?.card) { markSeen("card"); return () => go({ at: "card", start: { front: found.card } }, "camera"); }
     if (found) {
       const { rec, note } = await recordFrom(found).catch(() => { throw new Error("Couldn't save that photo. Try again, or choose one with Photo."); });
-      return () => go({ at: "id", start: { rec, note, step: "auto" } }, intent === "id" ? "pick" : "camera");
+      return () => go({ at: "id", start: { rec, note, step: "auto" } }, "camera");
     }
-    if (intent === "id") return () => go({ at: "idpick", shot: res }, "pick"); // which ID is it? the person says
     markSeen("photo");
+    // a straightened page also gets a clean scan. It is made in the background (off the main
+    // thread): the review opens now, says whether the scan is suggested (a quick look at a small
+    // copy), and offers the scan itself the moment it exists. Seal waits for it only if it is chosen.
     if (res.straightened) {
-      await new Promise((r) => setTimeout(r, 0));
-      try { const c = cleanCanvas(res.canvas); res = { ...res, clean: c.canvas, cleanSuggested: c.paper >= PAPER_SHARE }; }
-      catch { /* low memory: the straightened photo is still offered */ }
+      try {
+        const page = res.canvas;
+        // started a moment from now: reading the page out of its canvas is main-thread work, and the review should be on screen first
+        const cleanP = new Promise((r) => setTimeout(r, 350)).then(() => cleanCanvasAsync(page)).then((c) => c.canvas);
+        cleanP.catch(() => {}); // the review handles a failure (low memory: the straightened photo is still offered)
+        res = { ...res, cleanSuggested: paperOf(res.canvas) >= PAPER_SHARE, cleanP };
+      } catch { /* low memory: the straightened photo is still offered */ }
     }
     return () => go({ at: "photo", shot: res, shape, pick: { which: !res.changed ? "original" : res.cleanSuggested ? "clean" : "proposed", turn: 0 } }, "camera");
   }
@@ -205,8 +215,8 @@ function AddFlow({ open }) {
 
   async function picked(c, shot) {
     if (c.go === "id") {
-      if (shot) return go({ at: "idpick", shot }, "pick");
-      return go({ at: "idcam" }, "pick");
+      // which ID it is, first: the camera then draws that document's outline (2.2.0's guided scan)
+      return go({ at: "idpick", shot }, "pick");
     }
     if (c.go === "card") {
       if (shot) { const r = await readFrontEitherWay(shot.canvas); return go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "pick"); }
@@ -230,7 +240,7 @@ function AddFlow({ open }) {
 
   /* ---------------- render ---------------- */
 
-  const toPick = (shot) => go({ at: "pick", shot }, step.at === "camera" || step.at === "idcam" ? "camera" : "close");
+  const toPick = (shot) => go({ at: "pick", shot }, step.at === "camera" ? "camera" : "close");
   const extra = { text: "It's something else", icon: "folder", onClick: () => toPick() };
   const tools = <MoreTools nfc={nfc} onFile={() => choose("")} onType={() => go({ at: "card", start: {} }, "camera")} onTap={() => go({ at: "card", start: { tap: true } }, "camera")} />;
 
@@ -243,15 +253,11 @@ function AddFlow({ open }) {
         onFile={() => choose("")} onPick={() => go({ at: "pick" }, "close")} />}
       {step.at === "camera" && (
         <DocCamera shape="full" native title="Add to your vault" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
-          onCancel={() => (from.current === "pick" ? go({ at: "pick" }, "close") : closeAdd())} onDone={(r) => photographed(r, "any")} onLook={looked}
+          onCancel={() => (from.current === "pick" ? go({ at: "pick" }, "close") : closeAdd())} onDone={photographed} onLook={looked}
           lead={label?.text || null} extra={extra} tools={tools} />
       )}
-      {step.at === "idcam" && (
-        <DocCamera shape="id1" read={{ barcode: true, mrz: true }} eyebrow="ID" title="Scan the ID" hint="Front or back, any ID. A license barcode or the lines of <<< read by themselves."
-          onCancel={() => go({ at: "pick" }, "close")} onDone={(r) => photographed(r, "id")} onLook={looked} lead={label?.text || null} />
-      )}
       {step.at === "cardcam" && (
-        <DocCamera shape="id1" eyebrow="Payment card" title="The front of the card" hint="Fit the card in the frame, number side up. Never the PIN."
+        <DocCamera kind="card" side="front" shape="id1" eyebrow="Payment card" title="The front of the card" hint="Line the card up inside the outline, number side up. Never the PIN."
           onCancel={() => (from.current === "pick" ? go({ at: "pick" }, "close") : closeAdd())}
           onDone={async ({ canvas }) => { const r = await readFrontEitherWay(canvas); markSeen("card"); return () => go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "cardcam"); }} />
       )}
@@ -332,12 +338,37 @@ function PhotoReview({ step, setStep, when, onBack, onRetake, onPick, onDraft })
   const { shot, pick } = step;
   const setPick = (p) => setStep((s) => ({ ...s, pick: p }));
   useEffect(() => { onDraft({ name, tags }); }, [name, tags]);
+  // The clean scan is made in the background (photographed(), above): take it in when it arrives.
+  useEffect(() => {
+    const p = shot.cleanP;
+    if (!p) return;
+    let gone = false;
+    p.then(
+      (clean) => { if (!gone) setStep((s) => (s.at === "photo" && s.shot === shot ? { ...s, shot: { ...shot, clean, cleanP: null } } : s)); },
+      () => { if (!gone) setStep((s) => (s.at === "photo" && s.shot === shot ? { ...s, shot: { ...shot, cleanP: null, cleanSuggested: false }, pick: s.pick.which === "clean" ? { ...s.pick, which: "proposed" } : s.pick } : s)); },
+    );
+    return () => { gone = true; };
+  }, [shot]);
+  const waiting = !!shot.cleanP && pick.which === "clean"; // the version chosen is still being made
+  // Encoded ahead, while it is read: what Seal needs is then already a JPEG (a 2600 px page takes a moment to encode).
+  const ahead = useRef({ key: "", p: null });
+  useEffect(() => {
+    if (waiting) return;
+    const key = `${pick.which}:${pick.turn}:${shot.clean ? 1 : 0}`;
+    if (ahead.current.key === key) return;
+    const run = () => { ahead.current = { key, p: canvasBlob(versionOf(shot, pick.which, pick.turn), 0.9).catch(() => null) }; };
+    ahead.current = { key: "", p: null };
+    const t = setTimeout(run, 900); // after the preview has been drawn
+    return () => clearTimeout(t);
+  }, [shot, pick.which, pick.turn, waiting]);
+  useEffect(() => () => { ahead.current = { key: "", p: null }; }, []);
   async function seal(place) {
-    if (busy) return;
+    if (busy || waiting) return;
     setBusy(true);
     try {
-      const c = versionOf(shot, pick.which, pick.turn);
-      const blob = await canvasBlob(c, 0.9);
+      const key = `${pick.which}:${pick.turn}:${shot.clean ? 1 : 0}`;
+      const blob = (ahead.current.key === key && await ahead.current.p) || await canvasBlob(versionOf(shot, pick.which, pick.turn), 0.9);
+      ahead.current = { key: "", p: null };
       const t = when.current || new Date();
       const tag = { original: "", clean: " (scan)", proposed: " (straightened)" }[pick.which] ?? "";
       const f = new File([blob], `Photo ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${tag}.jpg`, { type: "image/jpeg" });
@@ -351,7 +382,7 @@ function PhotoReview({ step, setStep, when, onBack, onRetake, onPick, onDraft })
       <Review kind="photo" name={name} setName={setName} focusName tags={tags} setTags={setTags}
         preview={<PhotoChoice shot={shot} which={pick.which} turn={pick.turn} onChange={setPick} onRetake={onRetake} />}
         note={step.shape === "card" ? <p class="small muted">Looks like a card, but nothing could be read from it. It's kept as a photo; <button class="linklike" type="button" onClick={onPick}>say what it is</button> to file it as an ID or a payment card.</p> : null}
-        onChangeKind={onPick} onSeal={seal} disabled={busy}
+        onChangeKind={onPick} onSeal={seal} disabled={busy || waiting}
         secondary={{ label: "Retake", onClick: onRetake }}
         fine="One check seals it on this phone. Only the version shown is kept." />
     </Step>

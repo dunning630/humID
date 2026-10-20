@@ -20,6 +20,8 @@
   --brand-amber: #F5A623;
   --brand-mint:  #6FE3B4;
   --brand-ink:   #0B1410;
+  /* the camera is always dark, in either theme: what dims the view outside a guided outline */
+  --cam-dim: rgba(4, 10, 7, 0.62);
 
   /* --- ground & surfaces --- */
   --abyss:     #060D0A;   /* behind everything; the viewer and camera */

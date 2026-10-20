@@ -1,4 +1,4 @@
-// App state as signals. Screens read these; only core/controller.js writes them.
+// App state as signals. Screens read these; only the kernel (core/) writes them.
 import { signal, computed } from "@preact/signals";
 import { DEMO_BUILD } from "@humid/gate";
 import { loadPrefs, sortItems } from "./prefs.js";

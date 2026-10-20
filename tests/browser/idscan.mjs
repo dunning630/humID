@@ -1,6 +1,6 @@
 // "Scan an ID" in a real browser: the development build of the app in Chromium,
 // with a fake camera that shows a specimen card or passport page. Checks the
-// whole path a person takes: camera → barcode or MRZ read live → chip read
+// whole path a person takes: camera → barcode or MRZ read (live, or from the guided still) → chip read
 // (the dev server's simulated chip, with its photo) → review → sealed into the
 // vault → opened again as an ID card.
 //
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
+import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, pickId } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -69,7 +69,7 @@ async function openAdd(page) {
   await openAddFlow(page);
   await startCamera(page);
 }
-/** The picker ("It's something else"), then one kind; ID opens its camera at once, Photo and Payment card show what to hold up first. */
+/** The picker ("It's something else"), then one kind; Photo and Payment card show what to hold up first. */
 async function pickKind(page, name) {
   await openPicker(page);
   await pick(page, name);
@@ -142,16 +142,15 @@ try {
   step("opened again as an ID card");
   await ctx.close();
 
-  /* ---------------- 2. a passport: MRZ read live, then the chip with its photo ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
+  /* ---------------- 2. a passport: the MRZ read from the guided still, then the chip with its photo ---------------- */
+  ({ ctx, page } = await launch(fixture("guide/pp-ok.mjpeg")));
   await page.goto(BASE);
   await unlock(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
   step("unlocked again (new camera)");
 
-  await pickKind(page, /^ID/);
-  step("ID chosen from the picker (which ID it is, the camera tells); camera open, reading the MRZ live…");
-  await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {}); // may already be done
+  await pickId(page, "Passport");
+  step("ID → Passport from the picker; the guided outline for a photo page, reading the MRZ from the still…");
   await shot(page, "4-camera-passport");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 90_000 });
   await page.getByText("Read the ID chip").first().waitFor({ timeout: 10_000 });
@@ -189,39 +188,26 @@ try {
   step("passport sealed and opened, with the chip photo");
   await ctx.close();
 
-  /* ---------------- 2b. the barcode anywhere in view (apps 1.12.0) ---------------- */
-  // A cluttered desk: the license lies sideways and small in the lower corner, slightly
-  // tilted, beside a printed page and a store card whose own (bigger, central) PDF417
-  // isn't a license barcode. Like a store's scan-and-go, the camera finds and highlights
-  // the barcode wherever it is, reads just that spot, passes over the store card's, and
-  // reads the license live: no photo taken as a fallback, nothing lined up.
-  ({ ctx, page } = await launch(fixture("camera-license-desk.mjpeg")));
+  /* ---------------- 2b. a license chosen in the picker: the guided outline (apps 2.2.0) ---------------- */
+  // ID → Driver's license → Start camera: the front is taken with the round button (whatever is in view), then the
+  // back, lined up in the outline, is taken by itself and its PDF417 read from the still. Reading a barcode anywhere
+  // in view went with the free-form outline for IDs (2.2.0); the Add camera still finds and routes a license (1. above).
+  ({ ctx, page } = await launch(fixture("guide/lic-back-ok.mjpeg")));
   await page.goto(BASE);
   await unlock(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
-  // 3.0: the ID camera reads live from the start, so the back (with its barcode) is found and read
-  // first, whichever side is up; then the front is asked for
-  await pickKind(page, /^ID/);
-  const seen = [];
-  const watchBar = setInterval(() => page.evaluate(() => globalThis.__humidBar?.box).then((b) => { if (b) seen.push(b); }).catch(() => {}), 150);
-  await page.locator(".doccam .dc-outline polygon.dc-bar").waitFor({ timeout: 20_000 }).catch(() => {}); // may read before it's caught on screen
-  await shot(page, "7a-barcode-found");
-  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 45_000 });
-  clearInterval(watchBar);
-  const how = await page.evaluate(() => globalThis.__humidDevelop?.how);
-  assert.equal(how, "live", "read live from the found barcode, not from a fallback photo");
-  // the front: the same card is on camera; take it
+  await pickId(page, "Driver's license");
+  await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await page.waitForTimeout(500);
-  if (await page.locator(".doccam").isVisible()) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
+  if (await page.locator(".dc-saved-chip").count() === 0) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
+  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 20_000 });
   await page.getByText("Review, then seal").waitFor({ timeout: 45_000 });
+  const how = await page.evaluate(() => globalThis.__humidDevelop?.how);
+  assert.equal(how, "auto", "taken by itself once lined up, steady and sharp");
   assert.equal(await page.locator("#idf-surname").inputValue(), "SPECIMEN");
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
-  // the license's barcode lies in the lower right of the 1080×1920 view
-  const onLicense = seen.filter((b) => b.x + b.w / 2 > 640 && b.y + b.h / 2 > 1200);
-  assert.ok(seen.length === 0 || onLicense.length > 0, `the highlight found the license's barcode: ${JSON.stringify(seen.slice(-3))}`);
-  await shot(page, "7b-desk-read");
-  step(`barcode found anywhere in view and read live (sideways, small, tilted, beside a store card's barcode)${seen.length ? `; highlighted ${seen.length}×` : ""}`);
+  await shot(page, "7b-guided-read");
+  step("license back lined up in the outline: taken by itself, the barcode read from the still");
   // Android Back inside the ID flow steps back (review → capture), rather than closing Add
   const back = () => page.evaluate(() => globalThis.__humidBack());
   assert.equal(await back(), "pushed", "back inside the ID flow is a step");
@@ -265,7 +251,7 @@ try {
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
-  await page.locator(".dc-status").getByText(/Fit the card in the frame/).waitFor();
+  await page.locator(".doccam .dc-state strong", { hasText: /Fit the card in the outline|Too dark/ }).waitFor(); // this fixture is a dim table: "Too dark" is the honest answer
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });

@@ -6,10 +6,10 @@ import { Icon } from "../../brand/icons.jsx";
 import { Toggle, Row } from "../../ui/kit.jsx";
 import { openExternal } from "../../core/external.js";
 import * as S from "../../core/state.js";
-import { addCardRecord, readCardTap, readCardPhoto, chipReader, setPref } from "../../core/index.js";
+import { addCardRecord, readCardTap, readCardPhoto, chipReader, setPref, toast } from "../../core/index.js";
 import { jpeg, imageUrl, releaseReaders, rotateCanvas, warmScan } from "../../core/scan.js";
 import { PLATFORM } from "../../core/config.js";
-import { DocCamera } from "./camera.jsx";
+import { DocCamera, turnedImage } from "./camera.jsx";
 import { Review, Step, Note } from "./review.jsx";
 import {
   newCard, applyRead, applyTyped, setStoreCvv, setImage, view, title as cardTitle, checkPan, brandOf, formatPan, showExpiry, HANDLING,
@@ -124,8 +124,8 @@ export function CardFlow({ start, onExit, onDraft }) {
       <Step eyebrow="Payment card" title={tapping ? "Hold the card still…" : "Review, then seal"} onBack={onExit}>
         <CardForm rec={rec.current} note={note} pending={pendingCvv} resume={start.rec ? start : null} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} onDraft={onDraft} />
       </Step>
-      {cam === "front" && <DocCamera shape="id1" eyebrow="Card · front" title="The front of the card" hint="Fit the card in the frame, number side up." onCancel={() => setCam(null)} onDone={front} />}
-      {cam === "back" && <DocCamera shape="id1" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
+      {cam === "front" && <DocCamera kind="card" side="front" shape="id1" eyebrow="Card · front" title="The front of the card" hint="Line the card up inside the outline, number side up." onCancel={() => setCam(null)} onDone={front} />}
+      {cam === "back" && <DocCamera kind="card" side="back" shape="id1" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip, lined up inside the outline. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
     </>
   );
 }
@@ -193,9 +193,12 @@ function CardForm({ rec, note, pending, resume, onRetake, onBack, onChange, onDr
     </div>
   );
 
+  // a card the outline couldn't tell the way up of: turn the photo a quarter
+  const rotate = async () => { try { setImage(rec, "front", await turnedImage(rec.images.front)); onChange(); } catch { toast("Couldn't turn that photo. Retake it instead.", "warn"); } };
+
   return (
     <Review kind="card" name={name} setName={setName} tags={tags} setTags={setTags}
-      preview={rec.images.front ? <div class="id-thumbs"><figure data-shape="id1"><img src={imageUrl(rec.images.front)} alt="Front of the card" /><figcaption>Front<button class="linklike" type="button" onClick={onRetake}>Retake</button></figcaption></figure></div>
+      preview={rec.images.front ? <div class="id-thumbs"><figure data-shape="id1"><img src={imageUrl(rec.images.front)} alt="Front of the card" /><figcaption>Front<span class="id-thumb-acts"><button class="linklike" type="button" aria-label="Rotate the front" onClick={rotate}>Rotate</button><button class="linklike" type="button" onClick={onRetake}>Retake</button></span></figcaption></figure></div>
         : <div class="row-x"><span class="icon-btn" style={{ width: 64, height: 64, borderRadius: 18, background: "var(--amber-wash)", color: "var(--amber)" }}><Icon name="card" /></span><div class="grow"><div style={{ fontWeight: 600 }}>{c?.ok ? `${brand.name} •••• ${c.pan.slice(-4)}` : "A payment card"}</div><div class="muted small">Only the network, last four digits and expiry show in your list.</div></div></div>}
       note={note && <Note {...note} />}
       fields={fields}

@@ -10,7 +10,7 @@ import { Steps, SEAL_STEPS, Toggle, Row, HowProtectedLink, Pushed } from "../../
 import { TAGS, kindOf } from "../../core/categories.js";
 import { rotateCanvas } from "../../core/scan.js";
 import { watchPlace, formatCoords, formatAccuracy, REASONS } from "../../core/place.js";
-import { setPref } from "../../core/index.js";
+import { setPref, warmSeal } from "../../core/index.js";
 import * as S from "../../core/state.js";
 
 /** A full-screen add step. While a seal runs the back control is withheld: the check decides. */
@@ -92,6 +92,7 @@ export function Review({ kind, preview, name, setName, focusName, fields, tags, 
   const k = kindOf(kind);
   const nameRef = useRef(null);
   useEffect(() => { if (focusName && nameRef.current && !nameRef.current.value) nameRef.current.focus(); }, []);
+  useEffect(() => { warmSeal(); }, []); // the sealing arithmetic warms up while this is read (2.2.0)
   if (stage != null) return <Steps current={{ seal: 0, upload: 1, done: 2 }[stage]} steps={SEAL_STEPS} />;
   return (
     <div class="stack" data-kind={kind}>
@@ -145,10 +146,11 @@ export function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
     canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
     return () => { gone = true; if (made) URL.revokeObjectURL(made); };
   }, [shot, which, turn]);
-  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
+  const suggested = (shot.clean || shot.cleanP) && shot.cleanSuggested ? "clean" : "proposed";
   const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
   const note = !shot.changed ? "As taken: no document edges were found to straighten."
     : which === "original" ? "The photo exactly as the camera took it."
+    : which === "clean" && shot.cleanP ? "Making the clean scan: shadows gone, paper white. A moment…"
     : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
     : "Straightened, keeping its true colours and light.";
   return (

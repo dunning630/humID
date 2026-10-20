@@ -5,6 +5,9 @@
 // no scanner (iPhone, a computer, a browser, a phone without Play services or with too
 // little memory), HumID's own camera is used instead, and for the rest of the session.
 
+import { b64Bytes } from "./bytes.js";
+import { span } from "./perf.js";
+
 /* global __HUMID_ALLOW_DEMO__ */
 const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
 const onAndroid = () => /\bAndroid\b/i.test(globalThis.navigator?.userAgent || "");
@@ -46,7 +49,9 @@ export function createDocScanner({ invoke = tauriInvoke, supported = () => !!fak
         throw Object.assign(new Error(kind === "unavailable" ? "The phone's document scanner isn't available. Using HumID's camera." : "The scanner couldn't hand the page back. Scan it again."), { kind });
       }
       if (!page?.data) throw Object.assign(new Error("The scanner gave back no page. Try again."), { kind: "failed" });
-      const bytes = Uint8Array.from(atob(page.data), (ch) => ch.charCodeAt(0));
+      const end = span("docscan-decode");
+      const bytes = b64Bytes(page.data); // a plain loop: the iterator-and-callback way took 25x longer
+      end();
       return { blob: new Blob([bytes], { type: page.mime || "image/jpeg" }), width: page.width, height: page.height };
     },
   };
