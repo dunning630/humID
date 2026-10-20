@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -59,52 +60,26 @@ async function launch(cameraFile) {
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
 
-/** The demo "biometric": press and hold. */
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus();
-  await page.keyboard.down(" ");
-  await page.waitForTimeout(1500);
-  await page.keyboard.up(" ");
-}
-
-/** One way in: the + button (or the empty vault's one primary) opens the list of what to add; Photo, then Start camera, opens the camera. */
+/**
+ * One way in (3.0, camera first): the + button opens the Add camera itself (the first time,
+ * a "what to show" screen with Start camera comes before it). A kind is never asked for up
+ * front: the camera tells an ID from a card from a page and routes the photo.
+ */
 async function openAdd(page) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
-  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
-  await page.locator(".pushed [data-start-camera]").click();
-  await page.locator(".doccam").waitFor({ timeout: 10_000 });
+  await openAddFlow(page);
+  await startCamera(page);
 }
+/** The picker ("It's something else"), then one kind; ID opens its camera at once, Photo and Payment card show what to hold up first. */
 async function pickKind(page, name) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  await page.locator(".pushed button.kind", { hasText: name }).click();
-  assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
-  await page.locator(".pushed [data-start-camera]").click();
+  await openPicker(page);
+  await pick(page, name);
 }
 
 try {
   /* ---------------- 1. a driver's license: front photo, barcode read live ---------------- */
   let { ctx, page } = await launch(fixture("camera-card-back.mjpeg"));
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  // the dev server, like production, needs an access pass to create a HumID (docs/ANONYMITY.md)
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  // confirm the recovery card by typing back the group the app asks for
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
+  await enroll(page);
   step("enrolled (demo)");
 
   // A photo that can't be saved (Android ran out of memory encoding it, say) keeps the
@@ -130,7 +105,7 @@ try {
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   await page.waitForTimeout(500);
   if (await page.locator(".doccam").isVisible()) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
-  await page.getByText("Check the details").waitFor({ timeout: 45_000 });
+  await page.getByText("Review, then seal").waitFor({ timeout: 45_000 });
   await shot(page, "2-license-review");
   const val = (id) => page.locator(`#idf-${id}`).inputValue();
   assert.equal(await val("surname"), "SPECIMEN");
@@ -142,6 +117,8 @@ try {
   assert.equal(await page.getByLabel("ZIP or postal code").inputValue(), "60174");
   assert.match(await page.locator(".id-proof").innerText(), /barcode/i);
   step("barcode read: details filled");
+  // the location stamp is off unless the person turns it on (3.0)
+  assert.equal(await page.getByRole("switch", { name: /Location stamp/ }).getAttribute("aria-checked"), "false", "the location stamp is opt-in");
 
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
@@ -153,13 +130,13 @@ try {
   step("sealed into the vault as an ID; the chip row says so");
 
   await lic.click();
-  await page.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await hold(page);
   await page.locator(".id-view").waitFor({ timeout: 20_000 });
   await shot(page, "3-license-view");
   const view = await page.locator(".id-view").innerText();
   assert.match(view, /Jordan Alex Specimen/);
-  assert.match(view, /From the barcode/);
+  assert.match(view, /Read from the barcode/);
   assert.match(view, /S12345678901/);
   await page.getByRole("button", { name: "Close and wipe" }).click();
   step("opened again as an ID card");
@@ -168,13 +145,12 @@ try {
   /* ---------------- 2. a passport: MRZ read live, then the chip with its photo ---------------- */
   ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
+  await unlock(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
   step("unlocked again (new camera)");
 
-  await pickKind(page, /^Passport/);
-  step("passport chosen from the picker; camera open, reading the MRZ live…");
+  await pickKind(page, /^ID/);
+  step("ID chosen from the picker (which ID it is, the camera tells); camera open, reading the MRZ live…");
   await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {}); // may already be done
   await shot(page, "4-camera-passport");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 90_000 });
@@ -186,7 +162,7 @@ try {
   step("MRZ read: the chip's access details are filled in");
 
   await page.getByRole("button", { name: /^Read the ID chip$/ }).click();
-  await page.getByText("Check the details").waitFor({ timeout: 60_000 });
+  await page.getByText("Review, then seal").waitFor({ timeout: 60_000 });
   await shot(page, "6-passport-review");
   assert.equal(await val("surname"), "PERSON");
   assert.equal(await val("given"), "DEMO");
@@ -199,14 +175,14 @@ try {
   const pp = page.locator(".item", { hasText: "Passport ·" });
   await pp.waitFor({ timeout: 30_000 });
   await pp.click();
-  await page.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await hold(page);
   await page.locator(".id-view").waitFor({ timeout: 20_000 });
   await page.getByRole("tab", { name: "Chip photo" }).click();
   await shot(page, "7-passport-view");
   const pview = await page.locator(".id-view").innerText();
   assert.match(pview, /Demo Person/);
-  assert.match(pview, /Chip data integrity-checked/);
+  assert.match(pview, /Read from the chip/, "three plain tiers (3.0): chip, barcode or lines, typed");
   assert.doesNotMatch(pview, /P<UTOPERSON<<DEMO/, "the raw lines from the document are folded away");
   await page.locator(".id-view details summary", { hasText: "Details" }).click();
   assert.match(await page.locator(".id-view").innerText(), /P<UTOPERSON<<DEMO/);
@@ -221,21 +197,24 @@ try {
   // reads the license live: no photo taken as a fallback, nothing lined up.
   ({ ctx, page } = await launch(fixture("camera-license-desk.mjpeg")));
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
+  await unlock(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
-  await pickKind(page, /Driver's license/);
-  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  if (await page.locator(".dc-saved-chip").count() === 0) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
-  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 20_000 });
+  // 3.0: the ID camera reads live from the start, so the back (with its barcode) is found and read
+  // first, whichever side is up; then the front is asked for
+  await pickKind(page, /^ID/);
   const seen = [];
   const watchBar = setInterval(() => page.evaluate(() => globalThis.__humidBar?.box).then((b) => { if (b) seen.push(b); }).catch(() => {}), 150);
   await page.locator(".doccam .dc-outline polygon.dc-bar").waitFor({ timeout: 20_000 }).catch(() => {}); // may read before it's caught on screen
   await shot(page, "7a-barcode-found");
-  await page.getByText("Check the details").waitFor({ timeout: 45_000 });
+  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 45_000 });
   clearInterval(watchBar);
   const how = await page.evaluate(() => globalThis.__humidDevelop?.how);
   assert.equal(how, "live", "read live from the found barcode, not from a fallback photo");
+  // the front: the same card is on camera; take it
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.waitForTimeout(500);
+  if (await page.locator(".doccam").isVisible()) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
+  await page.getByText("Review, then seal").waitFor({ timeout: 45_000 });
   assert.equal(await page.locator("#idf-surname").inputValue(), "SPECIMEN");
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
   // the license's barcode lies in the lower right of the 1080×1920 view
@@ -259,8 +238,7 @@ try {
   /* ---------------- 3. nothing but a table in view: it never takes a photo by itself ---------------- */
   ({ ctx, page } = await launch(fixture("camera-empty.mjpeg")));
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
+  await unlock(page);
   await page.locator(".item").first().waitFor({ timeout: 20_000 });
   // count the camera streams the page opens, to show none starts before a kind is chosen and all are released
   await page.evaluate(() => {
@@ -268,25 +246,33 @@ try {
     const md = navigator.mediaDevices, real = md.getUserMedia.bind(md);
     md.getUserMedia = async (c) => { globalThis.__gum++; const st = await real(c); globalThis.__tracks.push(...st.getTracks()); return st; };
   });
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  // 3.0 is camera first, so the Add camera is already running: close it, go through the picker to
+  // Payment card (which shows what to hold up first), and count from there
+  await openAddFlow(page);
+  const gum0 = await page.evaluate(() => globalThis.__gum);
+  await page.getByRole("button", { name: "It's something else" }).first().click();
   await page.locator(".pushed").getByText("What are you adding?").waitFor();
   await page.waitForTimeout(800);
-  assert.equal(await page.evaluate(() => globalThis.__gum), 0, "no camera request while the picker is up");
-  await page.locator(".pushed button.kind", { hasText: /Another card/ }).click();
+  assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "the picker releases the camera");
+  assert.equal(await page.evaluate(() => globalThis.__gum), gum0, "no camera request while the picker is up");
+  await pick(page, /Payment card/);
   await page.locator(".pushed [data-start-camera]").waitFor();
   await page.waitForTimeout(800);
-  assert.equal(await page.evaluate(() => globalThis.__gum), 0, "no camera request on the what-to-show screen");
+  assert.equal(await page.evaluate(() => globalThis.__gum), gum0, "no camera request on the what-to-show screen");
   await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  assert.equal(await page.evaluate(() => globalThis.__gum), 1, "one camera request after Start camera");
+  assert.equal(await page.evaluate(() => globalThis.__gum), gum0 + 1, "one camera request after Start camera");
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
-  await page.locator(".dc-status").getByText(/Point the camera at the card/).waitFor();
+  await page.locator(".dc-status").getByText(/Fit the card in the frame/).waitFor();
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "closing the camera releases the stream");
+  // closing the camera lands back on the picker it came from (3.0); the card's "what to show" again, then the camera
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  await pick(page, /Payment card/);
   await page.locator(".pushed [data-start-camera]").click();
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await page.evaluate(() => globalThis.__tracks.some((t) => t.readyState === "live")), true, "the camera is on again");

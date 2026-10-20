@@ -112,7 +112,9 @@ export function Scanner({ onCode, onCancel, expect }) {
     (async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error("This device can't open its camera here. Type the code instead.");
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+        // The long side only, never a crop (a width and a height cut a portrait frame square),
+        // at a modest frame rate: a QR code needs few pixels and the look runs every 200 ms.
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, frameRate: { ideal: 15, max: 30 }, resizeMode: "none" }, audio: false });
         if (stop) return;
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});

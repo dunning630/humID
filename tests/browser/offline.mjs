@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { hold, enroll, youScreen, backOut } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const PORT = Number(process.env.PORT || 5197);
@@ -40,23 +41,21 @@ async function startDev(env = {}) {
 }
 
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus(); await page.keyboard.down(" "); await page.waitForTimeout(1500); await page.keyboard.up(" ");
-  await page.locator(".interrupt").waitFor({ state: "detached", timeout: 20_000 });
-}
 async function addDoc(page, name) {
+  // 3.0 is camera first; a file goes in from the "what to show" screen the first time, or the camera's More chip after
   await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  await page.locator(".pushed button.kind", { hasText: /^File/ }).click();
+  await page.locator(".pushed, .doccam").first().waitFor();
+  const fileBtn = page.getByRole("button", { name: "Choose a file or photo instead" });
+  if (await fileBtn.count()) await fileBtn.click();
+  else { await page.locator(".dc-tools").getByRole("button", { name: "More" }).click(); await page.locator(".dc-tools").getByRole("button", { name: "File" }).click(); }
   await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: the walnut desk goes to Sam.\n`) });
-  await page.locator(".pushed .review").waitFor();
+  await page.locator(".pushed").getByText("Review, then seal").waitFor();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
   await page.locator(".item", { hasText: name.replace(/\.\w+$/, "") }).waitFor({ timeout: 30_000 });
 }
-const names = (page) => page.locator(".list .item .name").allInnerTexts();
+const names = (page) => page.locator(".rows .item .name").allInnerTexts();
+const offlineBanner = (page) => page.locator(".banner", { hasText: "Offline · read only" });
 const tab = (page, label) => page.locator(".tabbar button", { hasText: label }).click();
 /** Everything this origin keeps in IndexedDB, as text (Uint8Arrays as latin1). */
 const idbDump = (page) => page.evaluate(async () => {
@@ -85,48 +84,36 @@ try {
 
   /* ---------------- set up: a HumID with two documents, one of them a decoy ---------------- */
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
+  await enroll(page);
   step("enrolled (demo)");
 
-  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (the list of what to add; no camera yet)
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  assert.equal(await page.locator(".doccam").count(), 0, "no camera until a kind is chosen");
-  await page.locator(".pushed > .topbar").getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (what to show; no camera yet)
+  await page.locator(".pushed [data-start-camera]").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "no camera before Start camera");
+  await page.locator(".pushed [data-back]").first().click();
   await page.locator(".pushed").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Last will.txt");
   await addDoc(page, "Gym membership.txt");
 
   // duress: three taps on the mark; the gym card is the decoy
-  await tab(page, "You");
-  await page.getByRole("button", { name: /Set up|Settings/ }).filter({ hasText: /Set up|Settings/ }).first().waitFor();
-  await page.locator(".card", { hasText: "Duress protection" }).getByRole("button").first().click();
-  await page.locator(".sheet label.toggle", { hasText: "Duress gesture" }).click();
-  await page.getByRole("button", { name: /Tap the mark three times/ }).click();
-  await page.locator(".sheet").getByRole("button", { name: "Save" }).click();
+  await youScreen(page, "Duress gesture");
+  await page.getByRole("switch", { name: "Duress gesture" }).click();
+  await page.getByRole("radio", { name: /Tap the mark three times/ }).click();
+  await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText("Duress protection is on").waitFor({ timeout: 15_000 });
   await tab(page, "Vault");
-  // the item is pushed over the vault; its overflow menu holds the decoy switch
+  // the item is pushed over the vault; its overflow menu holds the decoy switch (a live check, 3.0)
   await page.locator(".item", { hasText: "Gym membership" }).click();
-  await page.locator(".pushed").getByRole("button", { name: "More" }).click();
-  await page.locator(".sheet [role=menuitem]", { hasText: "Show in decoy view" }).click();
+  await page.locator(".pushed").getByRole("button", { name: "More", exact: true }).click();
+  await page.locator(".sheet .row", { hasText: "Show in decoy view" }).click();
+  await hold(page);
   await page.getByText(/will show in the decoy view/).waitFor({ timeout: 15_000 });
-  await page.locator(".pushed > .topbar").getByRole("button", { name: "Back" }).click();
+  await backOut(page);
   await page.locator(".pushed").waitFor({ state: "detached" });
   // visit each tab so its state is in the copy
-  await tab(page, "Activity"); await page.locator(".tl, .timeline, .entry, li").first().waitFor({ timeout: 15_000 }).catch(() => {});
+  await tab(page, "Activity"); await page.locator(".event").first().waitFor({ timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(800);
-  await tab(page, "You"); await page.locator("details.about summary").click(); await page.getByText("Pinned server key").waitFor();
+  await youScreen(page, "About"); await page.getByText("Pinned server key").waitFor(); await backOut(page);
   await page.waitForTimeout(1200);
   await tab(page, "Vault");
   step("two documents sealed, the gym card marked as the decoy, duress gesture set");
@@ -144,19 +131,20 @@ try {
   await shot(page, "1-locked-offline");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);
-  await page.locator(".banner.offline").waitFor({ timeout: 15_000 });
+  await offlineBanner(page).waitFor({ timeout: 15_000 });
   assert.deepEqual((await names(page)).sort(), ["Gym membership", "Last will"]);
-  assert.match(await page.locator(".banner.offline").innerText(), /Offline · read only/);
-  assert.equal(await page.locator(".banner.offline button").count(), 0, "no Reconnect while there's no network");
-  assert.equal(await page.locator("button.fab").count(), 0, "nothing can be added offline");
-  assert.equal(await page.locator("section.protect").count(), 0, "no to-do list that can't be done offline");
+  assert.equal(await offlineBanner(page).locator("button").count(), 0, "no Reconnect while there's no network");
+  // nothing can be added offline: the + is still there (3.0: never a vanished control) and says why
+  await page.getByRole("button", { name: "Add to your vault" }).first().click();
+  await page.getByText("Adding needs a connection").waitFor();
+  assert.equal(await page.locator(".pushed").count(), 0, "Add doesn't open offline");
   await shot(page, "2-vault-offline");
   step("offline: a live check opens the list, read only, with no way to add");
 
   await page.locator(".item", { hasText: "Last will" }).click();
   await page.getByText("Opening needs a connection").waitFor();
   assert.ok(await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).isDisabled(), "Open is disabled offline");
-  assert.equal(await page.locator(".pushed").getByRole("button", { name: "More" }).count(), 0, "no menu (rename, export, delete) offline");
+  assert.equal(await page.locator(".pushed").getByRole("button", { name: "More", exact: true }).count(), 0, "no menu (rename, export, delete) offline");
   assert.equal(await page.locator(".pushed").getByText("Show in decoy view").count(), 0);
   await shot(page, "3-item-offline");
   assert.equal(await page.evaluate(() => globalThis.__humidBack()), "pushed", "back leaves the item");
@@ -164,14 +152,14 @@ try {
   step("a document can't be opened, renamed, exported or deleted offline");
 
   await tab(page, "Activity");
-  await page.locator(".banner.offline").waitFor();
-  await page.getByText("Record as checked when last online").waitFor({ timeout: 10_000 });
+  await offlineBanner(page).waitFor();
+  await page.getByText("Verified when last online").waitFor({ timeout: 10_000 });
   await page.getByText(/Sealed Last will/).waitFor();
   await shot(page, "4-activity-offline");
-  await tab(page, "You");
-  await page.locator("details.about summary").click();
-  await page.getByText(/Offline · read only · auto-locks/).waitFor();
+  await youScreen(page, "About");
+  await page.getByText(/Offline · read only · locks in/).waitFor();
   await page.getByText(/This device|Web|Chrome|Linux/).first().waitFor();
+  await backOut(page);
   await shot(page, "5-security-offline");
   assert.equal(await page.locator(".toast[data-kind=error]").count(), 0, `no error toasts from screens loading offline: ${await page.locator(".toast").allInnerTexts()}`);
   step("Activity and You show the saved state, marked offline; no errors");
@@ -182,9 +170,8 @@ try {
   const mark = page.getByRole("button", { name: "Unlock HumID" });
   for (let i = 0; i < 3; i++) await mark.click({ delay: 20 });
   await hold(page);
-  await page.locator(".banner.offline").waitFor({ timeout: 15_000 });
+  await offlineBanner(page).waitFor({ timeout: 15_000 });
   assert.deepEqual(await names(page), ["Gym membership"], "duress offline shows only the decoy");
-  assert.equal(await page.locator("section.protect").count(), 0);
   await shot(page, "6-duress-offline");
   await page.getByRole("button", { name: "Lock now" }).first().click();
   step("duress gesture offline: only the decoy document");
@@ -194,22 +181,22 @@ try {
   await current.stop();
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await hold(page);
-  await page.locator(".banner.offline").waitFor({ timeout: 20_000 });
+  await offlineBanner(page).waitFor({ timeout: 20_000 });
   assert.equal((await names(page)).length, 2);
   step("vault server down: Unlock falls back to the copy");
 
   // still down: Reconnect fails and the copy stays open
-  await page.locator(".banner.offline").getByRole("button", { name: "Reconnect" }).click();
+  await offlineBanner(page).getByRole("button", { name: /Reconnect|Try again/ }).click();
   await page.locator(".interrupt").waitFor({ state: "detached", timeout: 20_000 });
-  await page.locator(".banner.offline").waitFor();
+  await offlineBanner(page).waitFor();
   assert.equal((await names(page)).length, 2, "a failed reconnect keeps the copy open");
 
   /* ---------------- 3. back online: Reconnect ---------------- */
   current = await startDev({ HUMID_DEV_DATA: data });
-  await page.locator(".banner.offline").getByRole("button", { name: "Reconnect" }).click();
+  await offlineBanner(page).getByRole("button", { name: /Reconnect|Try again/ }).click();
   await hold(page);
-  await page.locator(".banner.offline").waitFor({ state: "detached", timeout: 20_000 });
-  await page.locator("button.fab").waitFor();
+  await offlineBanner(page).waitFor({ state: "detached", timeout: 20_000 });
+  await page.getByRole("button", { name: "Add to your vault" }).first().waitFor();
   await page.locator(".item", { hasText: "Last will" }).click();
   await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
   await hold(page);
@@ -228,7 +215,7 @@ try {
   await bar.waitFor({ state: "detached", timeout: 15_000 });
   await tab(page, "Activity");
   await page.getByText(/Sealed Last will/).waitFor({ timeout: 15_000 });
-  assert.equal(await page.locator(".banner.offline").count(), 0, "still signed in, not the offline copy");
+  assert.equal(await offlineBanner(page).count(), 0, "still signed in, not the offline copy");
   step("a network drop: the bar says so, and when it's back the same session carries on");
   // healthy and idle: HumID sends nothing just to check the connection
   await page.waitForTimeout(3000); // let Activity finish loading (the public-log check follows the ledger)
@@ -263,7 +250,7 @@ try {
   await hold(page);
   await page.locator(".tabbar").waitFor({ timeout: 20_000 });
   await tab(page, "Vault");
-  await page.locator(".list .item").first().waitFor({ timeout: 20_000 });
+  await page.locator(".rows .item").first().waitFor({ timeout: 20_000 });
   step("the server is back: reconnected by itself; its forgotten session asks for one live check");
 
   await ctx.close();

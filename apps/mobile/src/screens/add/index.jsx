@@ -240,7 +240,7 @@ function AddFlow({ open }) {
       {step.at === "ready" && <Ready kind={step.kind} nfc={nfc} onBack={() => (from.current === "pick" ? go({ at: "pick" }, "close") : closeAdd())}
         onStart={() => go({ at: step.kind === "card" ? "cardcam" : "camera" }, from.current)}
         onType={() => go({ at: "card", start: {} }, "close")} onTap={() => go({ at: "card", start: { tap: true } }, "close")}
-        onFile={() => choose("")} />}
+        onFile={() => choose("")} onPick={() => go({ at: "pick" }, "close")} />}
       {step.at === "camera" && (
         <DocCamera shape="full" native title="Add to your vault" hint="Point the camera at an ID, a card or a document. It finds the edges by itself."
           onCancel={() => (from.current === "pick" ? go({ at: "pick" }, "close") : closeAdd())} onDone={(r) => photographed(r, "any")} onLook={looked}
@@ -302,7 +302,7 @@ function MoreTools({ nfc, onFile, onType, onTap }) {
 /* ---------------- before the camera, once ---------------- */
 
 /** What to hold up and one clear "Start camera". Shown until the first capture of this kind on this device. */
-function Ready({ kind, nfc, onBack, onStart, onType, onTap, onFile }) {
+function Ready({ kind, nfc, onBack, onStart, onType, onTap, onFile, onPick }) {
   const g = guideFor(kind);
   return (
     <Step eyebrow={g.eyebrow} title={g.title} onBack={onBack}>
@@ -313,6 +313,7 @@ function Ready({ kind, nfc, onBack, onStart, onType, onTap, onFile }) {
         {kind === "card" && <button class="btn ghost block" onClick={onType}><Icon name="pencil" />Type it instead</button>}
         {kind === "card" && nfc?.available && <button class="btn ghost block" onClick={onTap}><Icon name="nfc" />{nfc.kind === "reader" ? "Read a chip" : "Tap the card"}</button>}
         {kind === "photo" && <button class="btn ghost block" onClick={onFile}><Icon name="file" />Choose a file or photo instead</button>}
+        {onPick && <button class="btn quiet block" onClick={onPick}><Icon name="folder" />It's something else</button>}
       </div>
       <p class="fine" style={{ marginTop: 14 }}>The camera stays on this phone and stops when you leave this screen. This screen shows only until your first {kind === "card" ? "card" : "photo"}.</p>
     </Step>

@@ -1,10 +1,10 @@
 // The phone's document scanner (Android; apps 2.1.1, narrowed in 2.1.2): the development
 // build in Chromium with a stand-in for the scanner (globalThis.__humidFakeScanner,
 // development builds only) that hands back flat pages the way ML Kit does. Checks that:
-//   - driver's licenses and passports use HumID's own camera, never the scanner (its
-//     screen isn't covered by HumID's screenshot protection)
-//   - Add ▸ Photo uses the scanner: a passport page scanned there is read (MRZ) and
-//     routed to the passport flow; Another card scans front and back
+//   - IDs (the picker's ID entry: licenses, passports) use HumID's own camera, never the
+//     scanner (its screen isn't covered by HumID's screenshot protection)
+//   - the Add camera (3.0: camera first) uses the scanner: a passport page scanned there is
+//     read (MRZ) and routed to the passport flow; Another card scans front and back
 //   - backing out of the scanner closes the camera screen
 //   - a page that can't be handed back offers Scan again and Use HumID's camera
 //   - no scanner on the phone: HumID's own camera opens instead, for the rest of the session
@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { hold, enroll, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -95,37 +96,15 @@ async function launch() {
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
 const queue = (page, ...items) => page.evaluate((xs) => { globalThis.__scanQueue.push(...xs); }, items);
 
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus();
-  await page.keyboard.down(" ");
-  await page.waitForTimeout(1500);
-  await page.keyboard.up(" ");
-}
-async function pickKind(page, name) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor();
-  await page.locator(".pushed button.kind", { hasText: name }).click();
-  await page.locator(".pushed [data-start-camera]").click();
-}
+/** The Add camera (3.0, camera first; the first time, "what to show" with Start camera comes before it). */
+async function openCamera(page) { await openAddFlow(page); await startCamera(page); }
+/** The picker ("It's something else"), then ID: its own camera at once. */
+async function pickId(page) { await openPicker(page); await pick(page, /^ID/); }
 
 try {
   const { page } = await launch();
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
+  await enroll(page);
   step("enrolled (demo)");
 
   const unlock = async () => {
@@ -139,33 +118,38 @@ try {
   const closeCamera = async () => { await page.getByRole("button", { name: "Close the camera" }).click(); await page.locator(".doccam").waitFor({ state: "detached" }); };
 
   /* ---------------- 1. IDs stay on HumID's own camera ---------------- */
-  for (const kind of ["Driver's license", /^Passport/]) {
-    await pickKind(page, kind);
-    await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-    await closeCamera();
-    assert.equal(await streams(), 1, "HumID's own camera opened");
-    assert.equal(await scans(), 0, "the scanner wasn't opened");
-    await unlock(); // a fresh page: the counters start again
-  }
-  step("driver's license and passport: HumID's own camera, never the scanner");
+  await pickId(page);
+  await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await closeCamera();
+  assert.equal(await streams(), 1, "HumID's own camera opened");
+  assert.equal(await scans(), 0, "the scanner wasn't opened");
+  await unlock(); // a fresh page: the counters start again
+  step("IDs (licenses, passports): HumID's own camera, never the scanner");
 
   /* ---------------- 2. Add ▸ Photo: the scanner; a passport page scanned there is read ---------------- */
   await queue(page, { data: b64("passport-page.jpg") });
-  await pickKind(page, /^Photo/);
+  await openCamera(page);
   await page.getByText("Read the ID chip").first().waitFor({ timeout: 90_000 });
   await shot(page, "2-photo-scanned-passport");
   assert.equal(await page.locator("#doc-num").inputValue(), "D00000001");
   assert.equal(await page.locator("#doc-birth").inputValue(), "1974-08-12");
   assert.equal(await scans(), 1);
   assert.equal(await page.locator(".interrupt .hold").count(), 0, "the vault didn't lock while the scanner was on screen");
-  step("Add ▸ Photo: the scanner took the page; the MRZ was read from it and routed to the passport flow");
+  step("the Add camera: the scanner took the page; the MRZ was read from it and routed to the passport flow");
   await unlock();
 
   /* ---------------- 3. Another card: front and back from the scanner ---------------- */
   const before3 = await scans();
   await queue(page, { data: b64("card-front.jpg") }, { data: b64("card-back.jpg") });
-  await pickKind(page, "Another card");
-  await page.getByText("Check the details").waitFor({ timeout: 90_000 });
+  // 3.0: the scanner takes the front; nothing on it reads as an ID or a payment card, so it's offered as a
+  // photo with "say what it is" → Which ID is it? → Another card, whose back then comes from the scanner too
+  await openCamera(page);
+  await page.getByRole("button", { name: "say what it is" }).click({ timeout: 90_000 });
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  await pick(page, /^ID/);
+  await page.locator(".pushed").getByText("Which ID is it?").waitFor();
+  await page.locator(".kinds .kind", { hasText: "Another card" }).click();
+  await page.getByText("Review, then seal").waitFor({ timeout: 90_000 });
   await shot(page, "3-another-card");
   assert.equal(await scans() - before3, 2, "front, then back");
   step("Another card: front and back came from the scanner");
@@ -173,15 +157,16 @@ try {
 
   /* ---------------- 4. backing out ---------------- */
   const s0 = await streams();
-  await pickKind(page, /^Photo/);
+  await openCamera(page);
   await page.locator(".doccam").waitFor({ timeout: 10_000 }).catch(() => {});
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 20_000 }); // the empty queue answers "cancelled"
+  await page.locator(".pushed").waitFor({ state: "detached", timeout: 5000 }); // 3.0: camera first, so backing out closes Add
   assert.equal(await streams(), s0, "no live camera");
-  step("backing out of the scanner closes the camera screen");
+  step("backing out of the scanner closes the camera screen, and Add with it");
 
   /* ---------------- 5. a page that couldn't be handed back ---------------- */
   await queue(page, { reject: "The scanned page couldn't be read: no data" });
-  await page.locator(".pushed [data-start-camera]").click();
+  await openCamera(page);
   await page.locator(".dc-scanner[data-state='error']").waitFor({ timeout: 20_000 });
   await shot(page, "5-scan-failed");
   assert.match(await page.locator(".dc-scanner").innerText(), /Scan again/);
@@ -194,7 +179,7 @@ try {
 
   /* ---------------- 6. off the screen too long from the scanner: locks ---------------- */
   await queue(page, { data: b64("passport-page.jpg"), holdMs: 63_000 });
-  await pickKind(page, /^Photo/);
+  await openCamera(page);
   await page.getByRole("button", { name: /^Unlock$/ }).waitFor({ timeout: 90_000 });
   await shot(page, "6-locked-after-60s");
   step("off the screen 60 s from the scanner: HumID locked");
@@ -205,13 +190,13 @@ try {
   /* ---------------- 7. no scanner on this phone ---------------- */
   await queue(page, { reject: "unavailable: Google Play services isn't available" });
   const s7 = await streams();
-  await pickKind(page, /^Photo/);
+  await openCamera(page);
   await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   await shot(page, "7-fallback-camera");
   assert.equal(await streams(), s7 + 1, "HumID's own camera opened instead");
   await closeCamera();
   const scansBefore = await scans();
-  await page.locator(".pushed [data-start-camera]").click();
+  await openCamera(page);
   await page.locator(".doccam:not([data-scanner]) .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await scans(), scansBefore, "the scanner isn't tried again this session");
   step("no scanner: HumID's camera opened, and stays the camera for the session");

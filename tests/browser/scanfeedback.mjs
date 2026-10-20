@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -54,47 +55,16 @@ async function launch(cameraFile) {
   return { ctx, page };
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus();
-  await page.keyboard.down(" ");
-  await page.waitForTimeout(1500);
-  await page.keyboard.up(" ");
-}
-/** Add opens the list of what to add (no camera yet); Photo, then Start camera, opens the camera. */
-async function openPhotoCamera(page) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".doccam").count(), 0, "the camera doesn't start until a kind is chosen");
-  await page.locator(".pushed button.kind", { hasText: /^Photo/ }).click();
-  await page.locator(".pushed [data-start-camera]").click();
-  await page.locator(".doccam").waitFor({ timeout: 10_000 });
-}
-async function pickKind(page, name) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
-  await page.locator(".pushed button.kind", { hasText: name }).click();
-  await page.locator(".pushed [data-start-camera]").click();
-}
+/** One way in (3.0, camera first): the + button opens the Add camera (the first time, "what to show" with Start camera comes before it). */
+async function openAdd(page) { await openAddFlow(page); await startCamera(page); }
+/** The picker ("It's something else"), then one kind. */
+async function pickKind(page, name) { await openPicker(page); await pick(page, name); }
 const state = (page) => page.locator(".doccam .dc-state");
 
 try {
   let { ctx, page } = await launch(fixture("camera-empty.mjpeg"));
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
+  await enroll(page);
   step("enrolled (demo)");
 
   /* ---------------- 1. nothing in view: what it says, the offer at 10 s, the stop at 30 s ---------------- */
@@ -139,22 +109,23 @@ try {
   /* ---------------- 2. a passport in view: the card follows the scan to Done ---------------- */
   ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
+  await unlock(page);
   await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 20_000 });
   await page.evaluate(() => {
     globalThis.__seen = [];
     new MutationObserver(() => { const s = document.querySelector(".doccam .dc-state"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
       .observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await pickKind(page, /^Passport/);
+  await pickKind(page, /^ID/); // 3.0: one ID entry; the camera tells a passport from a card
   await state(page).locator(".dc-steps li").nth(4).waitFor({ timeout: 10_000 });
   assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Find, Steady, Read, Verify, Done");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 120_000 });
   const seen = await page.evaluate(() => globalThis.__seen);
   step(`the card said: ${seen.join(" → ")}`);
-  assert.ok(seen.includes("Done"), "it ended on Done");
-  assert.ok(seen.indexOf("Done") === seen.length - 1 || seen.slice(seen.indexOf("Done")).every((x) => x === "Done"), "nothing after Done");
+  const isDone = (t) => /(^|· )Done$/.test(t); // the live label may lead the title (3.0)
+  const firstDone = seen.findIndex(isDone);
+  assert.ok(firstDone >= 0, "it ended on Done");
+  assert.ok(seen.slice(firstDone).every(isDone), "nothing after Done");
   assert.ok(seen.some((t) => /Reading|Verifying|Hold steady/.test(t)), "it showed progress");
   await ctx.close();
   console.log("ok — The camera says what it is doing, in the browser");
