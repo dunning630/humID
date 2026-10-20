@@ -1,5 +1,15 @@
 # @humid/mobile
 
+## 2.2.0
+
+### Minor Changes
+
+- cbe9dc2: Scanning a card, licence or passport is now a guided scan, like a bank's. A fixed outline in the right shape for what you chose (licence or ID card, payment card, passport page) sits in the middle of the camera, and plain words say what to change: Move closer, Move back a little, Fill the outline, Hold steady, Too much glare, Too dark, Hold the phone flat, Show the back. When the document is lined up, steady and sharp for about half a second the photo is taken by itself with a buzz (the round button is always there), as a full-resolution still where the phone offers one. The photo is cut to the outline and set upright; Rotate stays on the review. The outline no longer chases the document, so it no longer jumps. Photo and the phone's own document scanner work as before.
+
+### Patch Changes
+
+- ee4a59f: Faster from capture to review. The picture is straightened from the part of the frame the document is in (not the whole 8 MP frame) and at the size that is stored (1600 px cards, 2600 px pages), the clean scan is made in a worker after the review opens, text is read from a smaller card image, the scanner's pages are decoded without a per-byte callback, the "saved" pause is shorter, and the seal step reuses its hash, warms the crypto up while the review is open, and reads the location in parallel (waiting up to three seconds, was five). Nothing is kept or logged that wasn't before. Review now opens before the clean scan is ready: the Seal button waits for it only if the clean scan is the chosen version.
+
 ## 2.1.2
 
 ### Patch Changes
