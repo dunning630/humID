@@ -3,6 +3,7 @@
 Two ways:
 
 - **On one Windows PC, no Docker:** [windows/README.md](windows/README.md).
+- **On VMs and shared storage (server 3.0):** [../docs/DEPLOY-VMS.md](../docs/DEPLOY-VMS.md): front, core and keys on separate VMs over mutual TLS, secrets sealed under a TPM-bound key, encrypted backups.
   Unzip, double-click the installer, then give it an https address with
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
