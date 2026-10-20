@@ -110,6 +110,25 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-frame .br { bottom: -2px; right: -2px; border-left: 0; border-top: 0; border-radius: 0 0 16px 0; }
 .dc-mrz { position: absolute; left: 3%; right: 3%; bottom: 3%; height: 24%; border: 1.5px dashed rgba(245,166,35,.85); border-radius: 8px; background: rgba(245,166,35,.06); }
 .dc-mrz[data-shape="id1"] { height: 32%; }
+/* The guided scan (core/guide.js): a fixed outline at the document's real proportions (ID-1 85.6 x 54 mm, ID-3 125 x 88 mm),
+   centred, with everything outside it dimmed and four corner marks. It never moves: the person lines the document up in it. */
+.doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(3,10,7,.62), inset 0 0 0 1.5px rgba(255,255,255,.5); aspect-ratio: 85.6 / 54; transition: box-shadow .25s var(--ease); }
+.doccam[data-guided] .dc-frame[data-shape="td3"] { aspect-ratio: 125 / 88; }
+.doccam[data-guided] .dc-frame .c { opacity: 1; width: 30px; height: 30px; border-color: #fff; }
+.doccam[data-guided][data-look="close"] .dc-frame .c { border-color: var(--amber-hi); }
+.doccam[data-guided][data-look="ok"] .dc-frame .c { border-color: var(--mint); }
+.doccam[data-guided][data-look="ok"] .dc-frame { box-shadow: 0 0 0 100vmax rgba(3,10,7,.62), inset 0 0 0 2.5px var(--mint); }
+.doccam[data-guided][data-look="searching"] .dc-frame .c { animation: none; }
+.dc-zone { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,255,255,.42); border-radius: 6px; pointer-events: none; }
+.dc-zone[data-k="photo"] { border-radius: 8px; }
+.dc-zone[data-k="line"], .dc-zone[data-k="num"] { border-width: 0 0 1.5px; border-radius: 0; }
+.dc-zone[data-k="chip"] { border-radius: 4px; }
+.dc-zone[data-k="stripe"] { border: 0; background: rgba(255,255,255,.14); border-radius: 0; }
+.dc-zone[data-k="sign"] { border-style: solid; border-width: 0 0 1.5px; border-radius: 0; }
+.dc-zone[data-k="mrz"] { border-color: rgba(218,147,74,.85); background: rgba(218,147,74,.07); }
+.dc-zone[data-k="bar"] { border-color: rgba(255,255,255,.5); }
+.doccam[data-guided][data-phase="reading"] .dc-zone, .doccam[data-guided][data-phase="saved"] .dc-zone { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .doccam[data-guided] .dc-frame { transition: none; } }
 /* auto-capture: the corners say how close it is; a fill sweeps across as it's about to take the photo */
 .dc-frame .c { transition: border-color .2s var(--ease), opacity .25s var(--ease); }
 .doccam[data-look="searching"] .dc-frame .c { border-color: rgba(255,255,255,.75); }
@@ -203,7 +222,8 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .id-thumbs img, .id-thumbs .empty-thumb { display: grid; place-items: center; width: 100%; aspect-ratio: 1.586; object-fit: cover; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--abyss); color: var(--muted); font-size: 12px; }
 .id-thumbs figure[data-shape="td3"] img, .id-thumbs figure[data-shape="td3"] .empty-thumb { aspect-ratio: 1.42; }
 .id-thumbs figure[data-shape="portrait"] img { aspect-ratio: .78; }
-.id-thumbs figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
+.id-thumb-acts { display: inline-flex; gap: 10px; }
+.id-thumbs figcaption { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
 /* an inline text link: looks like text, but its hit area is 44 px tall (the margins keep the text where it was) */
 .linklike { display: inline-flex; align-items: center; min-height: 44px; border: 0; background: none; padding: 0 6px; margin: -12px -6px; color: var(--amber-hi); font-size: var(--t-sm); text-decoration: underline; text-underline-offset: 3px; vertical-align: middle; }
 .id-proof { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; font-size: var(--t-sm); color: var(--text-2); background: var(--surface); border: 1px solid var(--line); }

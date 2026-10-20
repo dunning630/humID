@@ -3,13 +3,14 @@
 // document of that kind is sealed or opened, so the first paint carries none of them.
 import { batch } from "@preact/signals";
 import { toB64, fromB64, toHex, MEDIA_TYPE, EXTENSION } from "@humid/codec";
-import { suite, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
+import { suite, random, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
 import { saveBytes, readFile } from "@humid/io";
 import { ApiError } from "@humid/api";
 import { sealLiveMessage, b64u } from "@humid/htp";
 import { classify, inferKind, kindFromType } from "./categories.js";
 import * as S from "./state.js";
 import { validStamp, REASONS } from "./place.js";
+import { mark } from "./perf.js";
 import { R, MAX_FILE, wipe, sleep, fromB64u, epoch, stale, localChallenge } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
@@ -111,12 +112,17 @@ export async function readCardTap() {
   }
 }
 
+const CARD_OCR_PX = 1300;
+
 /** Read a card from a photo with the on-device text reader. Best effort: the holder checks what was read. */
 export async function readCardPhoto(canvas, { side = "front", pan = null } = {}) {
   try {
-    const [{ textReader }, { readCardText, readCardBack }] = await Promise.all([import("./scan.js"), cards()]);
+    const [{ textReader, grab }, { readCardText, readCardBack }] = await Promise.all([import("./scan.js"), cards()]);
     const ocr = await textReader();
-    const text = await ocr.read(canvas, { front: side === "front" });
+    // A card's print is sharp at 1300 px across (digits 40 px tall); the reader's time grows with the picture's
+    // area, and the whole picture also goes through a PNG encode first.
+    const small = canvas.width > CARD_OCR_PX ? grab(canvas, null, CARD_OCR_PX) : canvas;
+    const text = await ocr.read(small, { front: side === "front" });
     return side === "front" ? readCardText(text) : readCardBack(text, { pan });
   } catch { return null; }
 }
@@ -148,6 +154,34 @@ export async function addPass({ checked, name, tags = [], place = null }) {
 
 /* ---------------- sealing ---------------- */
 
+/** Resolves after the screen has had a frame to draw (or 60 ms, if the page is hidden and none comes). */
+const paint = () => new Promise((r) => {
+  const t = setTimeout(r, 60);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => { clearTimeout(t); setTimeout(r, 0); });
+});
+
+let sealWarm = false;
+/**
+ * Run the sealing arithmetic once on throwaway data, so the first real seal isn't also the
+ * first time this phone's JavaScript engine meets it (ML-KEM, ML-DSA and SHA-3 start slow:
+ * their first run costs several times a warm one). Called while a review is on screen. Only
+ * random, made-up keys and a few bytes go through it: nothing of the person's, nothing kept.
+ */
+export function warmSeal() {
+  if (sealWarm || !S.identity.value) return;
+  sealWarm = true;
+  setTimeout(async () => {
+    let Suite = null, k = null;
+    try {
+      Suite = suite(S.identity.value?.suite);
+      k = Suite.deriveKeys(random(32));
+      const p = await Suite.prepareSeal({ bytes: random(64), name: "warm", type: "application/octet-stream" }, { kemPk: k.kemPk, xPk: k.xPk });
+      Suite.finishSeal(p, k, { identityCommit: "warm", interrupt: {} });
+    } catch { /* only a warm-up */ }
+    finally { if (k) Suite.wipeKeys(k); }
+  }, 1200); // after the review has drawn
+}
+
 /**
  * Encrypt on this device, one live check signs it, upload. S.sealing shows the stages.
  * place: a location watch (core/place.js) when the person chose to stamp where it was sealed.
@@ -156,42 +190,57 @@ async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], ext
   const id = S.identity.value;
   if (S.offline.value) { toast(friendly({ code: "offline" }), "warn"); return false; }
   S.sealing.value = "seal";
+  mark("seal-start");
   let share = null, prepared;
   try {
+    // where it's being sealed: the wait for a first fix (a few seconds at most) runs beside the
+    // encryption below, not before it
+    const fix = place ? place.take(3000) : null;
     let stamp = null;
-    if (place) {
-      const got = await place.take(5000);
-      if (got.stamp && validStamp(got.stamp)) stamp = got.stamp;
-      else extra = { ...extra, placeNote: REASONS[got.reason] || REASONS.unavailable };
-    }
-    if (stamp) extra = { ...extra, place: stamp };
     // Encrypt first (public keys only), then one live check signs the ciphertext's hash
     // in hardware and releases the key that signs the envelope.
     const Suite = suite(id.suite);
     const size = bytes.length;
-    const plainHash = toHex(Suite.sha3_512(bytes));
+    await paint(); // the "Sealing" step is on screen before the arithmetic starts (hashing a photo holds the thread a while)
+    let plainHash;
     // Split keys: the document is first encrypted under its own key, which goes to the
     // keyshare service and is forgotten here. The account keys alone then open nothing.
     // Split keys ratchet: once this HumID has seen a vault that splits keys, it never seals
     // unsplit again, whatever an (unauthenticated) policy hint says later.
     const splitKeys = await splitKeysRatchet(id);
     if (splitKeys) {
+      plainHash = toHex(Suite.sha3_512(bytes)); // of the document itself; what's encrypted below is its wrapped form
       const w = await splitWrap({ bytes, name: finalName, type });
       wipe(bytes);
       bytes = w.file.bytes; share = w.share;
       prepared = await Suite.prepareSeal(w.file, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
-    } else prepared = await Suite.prepareSeal({ bytes, name: finalName, type }, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
+    } else {
+      prepared = await Suite.prepareSeal({ bytes, name: finalName, type }, { kemPk: fromB64(id.pub.kemPk), xPk: fromB64(id.pub.xPk) });
+      plainHash = prepared.plainHash; // the same SHA3-512 of the same bytes: not computed a second time
+    }
     wipe(bytes); bytes = null;
+    mark("seal-prepared");
+    if (fix) {
+      const got = await fix;
+      if (got.stamp && validStamp(got.stamp)) stamp = got.stamp;
+      else extra = { ...extra, placeNote: REASONS[got.reason] || REASONS.unavailable };
+    }
+    if (stamp) extra = { ...extra, place: stamp };
+    mark("seal-place");
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
+      mark("seal-keys");
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
       const idx = await Suite.sealIndex(R.indexKey, { name: finalName, type, size, kind, ...(tags.length ? { tags } : {}), addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
+      mark("seal-signed");
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sealing.value = "upload";
     await R.api.upload(envelope, index, share);
+    mark("seal-uploaded");
     wipe(share); share = null;
     S.sealing.value = "done";
     await refresh();
+    mark("seal-refreshed");
     await sleep(650);
     S.sealing.value = null;
     toast(`${finalName} sealed. Only your face or fingerprint can open it.`);

@@ -10,16 +10,20 @@
 // is no second pill over the viewfinder; the separate UI tick timers are folded into the
 // look loop; the camera's tools fold into one "More" chip; and the track is stopped,
 // not only the loop, the moment the app leaves the screen.
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { markPicking, toast, buzz as buzzPref } from "../../core/index.js";
 import {
-  barcodeReader, mrzReader, frameInVideo, grab, imageData, imageUrl, fileToCanvas, mrzBand, looksBlank,
+  barcodeReader, mrzReader, frameInVideo, grab, imageData, imageUrl, fileToCanvas, imageBytes, jpeg, mrzBand, looksBlank,
   grayOf, grayRegion, cornersIn, develop as developPhoto, straighten, rotateCanvas, canvas as newCanvas,
   createAnalyzer, liveMrzBand, scanOptions,
 } from "../../core/scan.js";
 import { begin as flowBegin, step as flowStep, describe, gaveUp, pace, calmer } from "../../core/scanflow.js";
-import { tracker, scaleQuad } from "../../core/docfind.js";
+import { tracker, scaleQuad, shrink } from "../../core/docfind.js";
+import { LIGHT_TIP, mrzBandLikely } from "../../core/addroute.js";
+import { templateFor, liveConstraints, previewTurned, measure, judge, holdTracker, barcodeSignal, bottomBand, TH } from "../../core/guide.js";
+import { grabWindow, takeStill, uprightOf, deskewOf } from "../../core/guidecap.js";
+import { confirmedByStill } from "../../core/mrzseed.js";
 import { locateBarcodes, barTracker, boxCorners, readBox, searchBox, fromArea, overlap, barAngle } from "../../core/barcodefind.js";
 import { docScanner } from "../../core/docscan.js";
 import { parseAamva, MrzConsensus } from "@humid/idscan";
@@ -50,10 +54,10 @@ function useCalm(view) {
  *   lead     what the live view thinks it sees ("Looks like a card"), merged into the title
  *   extra    one more action for the card's row (the Add camera's "It's something else")
  */
-function ScanState({ view: latest, notice, error, onRetry, onShoot, onTorch, torch, lead, extra }) {
+function ScanState({ view: latest, notice, noticeTitle, error, onRetry, onShoot, onTorch, torch, lead, extra }) {
   const view = useCalm(latest);
   const tone = error || notice ? "warn" : view.tone;
-  const base = error ? "Camera problem" : notice ? "Couldn't keep that photo" : view.title;
+  const base = error ? "Camera problem" : notice ? (noticeTitle || "Couldn't keep that photo") : view.title;
   const title = lead && !error && !notice && view.id !== "done" ? `${lead} · ${base}` : base;
   const detail = error || notice || view.detail;
   const icon = error ? "alert" : notice ? "alert" : ICON[view.id] || "scan";
@@ -100,8 +104,12 @@ function cameraError(e) {
  * Read a still photo: barcode (tried hard) and the MRZ from a few versions of the image,
  * voting. Returns { barcode, mrz, consensus, flipped } (flipped: the MRZ read only with
  * the photo turned 180°).
+ *   seed   the live loop's MrzConsensus, when it had a valid reading that wasn't yet confirmed
+ *          (taking the photo by itself after a steady wait): the still's own read then only has
+ *          to agree with it, one OCR pass instead of two. The still must read, valid and the same,
+ *          on its own: what is stored is checked against its own page.
  */
-export async function readStill(c, read, shape, wide = null, { tryFlip = false } = {}) {
+export async function readStill(c, read, shape, wide = null, { tryFlip = false, seed = null } = {}) {
   const out = { barcode: null, mrz: null, consensus: false, flipped: false };
   if (read.barcode) {
     try {
@@ -121,12 +129,13 @@ export async function readStill(c, read, shape, wide = null, { tryFlip = false }
       const ocr = await mrzReader();
       for (const turn of tryFlip ? [0, 180] : [0]) {
         const src = turn ? rotateCanvas(c, 180) : c;
-        const vote = new MrzConsensus();
+        const vote = seed && !turn && seed.lastKey ? seed : new MrzConsensus();
         let mrz = null, stable = false;
         for (const opts of [{}, { threshold: true }, { scale: 1.3 }]) {
           const r = vote.add(await ocr.read(mrzBand(src, shape, opts)));
           if (r.result) mrz = r.result;
-          if (r.stable) { stable = true; break; }
+          // with the live reads behind it, "stable" also needs this page's own reading to be that result
+          if (confirmedByStill(r, vote === seed)) { stable = true; break; }
         }
         if (mrz || stable) { out.mrz = mrz || vote.reads.at(-1) || null; out.consensus = stable; out.flipped = !!turn; break; }
         if (!out.mrz) out.mrz = vote.reads.at(-1) || null;
@@ -253,12 +262,14 @@ function nextFrame(v) {
  */
 export function DocCamera(props) {
   const preset = props.mode ? scanOptions(props.mode, { side: props.side }) : {};
-  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, lead, extra, tools, native = false } = props;
+  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, lead, extra, tools, native = false, kind = "other", anySide = false } = props;
   const shape = props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
+  const side = props.side ?? preset.side ?? "front";
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState("");
+  const [noticeTitle, setNoticeTitle] = useState(null);
   const [torch, setTorch] = useState(null);
   const [scanner, setScanner] = useState(() => native && docScanner.available());
   const [toldSaved, setToldSaved] = useState(!!saved);
@@ -266,8 +277,11 @@ export function DocCamera(props) {
   const [bar, setBar] = useState(null);
   const codes = !!(read.barcode || read.mrz);
   const card = shape !== "full";
+  // a fixed outline for every document with a known shape, unless the phone's own scanner is taking the photo
+  const guided = card && !scanner;
+  const tpl = useMemo(() => (guided ? templateFor({ kind, side: anySide ? "back" : side, shape, read: anySide ? {} : read }) : null), [guided, kind, side, shape]);
   const [flow, setFlow] = useState(() => flowBegin({ codes }));
-  const L = useRef({ stop: false, done: false, paused: false, gave: false, stream: null, track: null, running: new Set(), holdUntil: 0, quad: null, an: null, spots: null, readingAt: 0, flow: null, acq: 0, tickAt: 0 }).current;
+  const L = useRef({ stop: false, done: false, paused: false, gave: false, stream: null, track: null, running: new Set(), holdUntil: 0, quad: null, an: null, spots: null, readingAt: 0, flow: null, acq: 0, tickAt: 0, guided: false, hold: null, misses: 0, bestFocus: 0, guideNow: null }).current;
   L.flow ||= flow;
   const trace = (name, extra) => { if (DEMO_BUILD) { const t = (globalThis.__humidTrace ||= { ev: [] }); t.ev.push([name, Math.round(performance.now()), extra]); } };
   const send = (ev) => {
@@ -284,7 +298,7 @@ export function DocCamera(props) {
     send({ t: "tick" });
     if (gaveUp(L.flow) && !L.gave) { L.gave = true; oops(); setLook((l) => l && { ...l, points: null }); }
   };
-  const flash = (msg, ms = 4000) => { setNotice(msg); setTimeout(() => setNotice((n) => (n === msg ? "" : n)), ms); };
+  const flash = (msg, ms = 4000, title = null) => { setNotice(msg); setNoticeTitle(title); setTimeout(() => setNotice((n) => (n === msg ? "" : n)), ms); };
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
 
   const stopStream = () => {
@@ -305,7 +319,7 @@ export function DocCamera(props) {
       cheer();
       send({ t: "saved" });
       setPhase("saved");
-      await sleep(450);
+      await sleep(200); // long enough to see the tick; the screen it leads to is what the person is waiting for
       stopStream();
     } catch (e) {
       L.done = false; L.paused = false;
@@ -324,12 +338,59 @@ export function DocCamera(props) {
   function loop() {
     L.consensus ||= new MrzConsensus();
     L.tracker ||= tracker({ need: codes ? 3 : 4, hold: codes ? 0 : HOLD_MS });
-    L.retry = () => { L.consensus.reset(); L.tracker.reset(); L.quad = null; L.spots = null; };
-    const all = { look: lookLoop, ...(read.barcode ? { barcode: barcodeLoop } : {}), ...(read.mrz ? { mrz: mrzLoop } : {}) };
+    L.hold ||= holdTracker();
+    L.retry = () => { L.consensus.reset(); L.tracker.reset(); L.hold.reset(); L.quad = null; L.spots = null; L.bestFocus = 0; L.guideNow = null; };
+    // guided: one loop measures the outline's part of the frame; nothing live reads a barcode or MRZ (the still is read)
+    const all = L.guided ? { guide: guideLoop } : { look: lookLoop, ...(read.barcode ? { barcode: barcodeLoop } : {}), ...(read.mrz ? { mrz: mrzLoop } : {}) };
     for (const [name, run] of Object.entries(all)) {
       if (L.running.has(name)) continue;
       L.running.add(name);
-      run().catch(() => {}).finally(() => L.running.delete(name));
+      run().catch((e) => { if (DEMO_BUILD) globalThis.__humidLoopStopped = name; }).finally(() => L.running.delete(name)); // development builds record which loop stopped (a name, never a picture)
+    }
+  }
+
+  /**
+   * The guided scan's loop: measure the outline's part of the frame (core/guide.js), say what to
+   * change, and take the photo once it has been lined up, steady and sharp for about 0.6 s. On this
+   * thread: the picture is a few hundred pixels and a look takes a few milliseconds.
+   */
+  async function guideLoop() {
+    const needBar = !!(tpl?.expect?.barcode || tpl?.forbid?.barcode);
+    let prev = null, lastMs = 0, wasAligned = false;
+    while (!L.stop) {
+      await sleep(pace(lastMs, { min: 90, max: 280 }));
+      const v = video.current;
+      await nextFrame(v);
+      if (document.hidden) { await sleep(400); continue; }
+      tick();
+      if (inactive() || Date.now() < L.holdUntil) { prev = null; continue; }
+      const rect = frameRect(v, frame.current, 0);
+      if (!rect) continue;
+      const t0 = performance.now();
+      let m, verdict, win, extra;
+      try {
+        const got = grabWindow(v, rect);
+        win = got.win;
+        m = measure(got.im, win.guide, { prev });
+        prev = got.im;
+        // strong extra signals, where the document has them: a barcode in the outline (and how big), the lines of an MRZ
+        extra = { bestFocus: L.bestFocus };
+        if (needBar) extra.barcode = barcodeSignal(locateBarcodes(got.im), win.guide);
+        if (tpl?.expect?.mrz) extra.mrz = mrzBandLikely(bottomBand(got.im, win.guide));
+        verdict = judge(m, tpl, extra);
+      } catch { await sleep(150); continue; }
+      lastMs = performance.now() - t0;
+      if (inactive()) continue; // taken, or given up, while it was measuring: drop this one
+      const now = Date.now();
+      L.bestFocus = verdict.aligned && m.focus ? Math.max((L.bestFocus || 0) * 0.985, m.focus) : (L.bestFocus || 0) * 0.97;
+      const h = L.hold.feed(verdict.ready, now);
+      L.guideNow = { rect, verdict, at: now };
+      if (DEMO_BUILD) globalThis.__humidGuide = { key: verdict.key, present: verdict.present, aligned: verdict.aligned, ready: verdict.ready, steady: verdict.steady, sharp: verdict.sharp, scale: m.scale, dx: m.dx, dy: m.dy, rot: m.rot, flatH: m.flatH, flatV: m.flatV, sides: m.sides, focus: m.focus, motion: m.motion, mean: m.mean, p95: m.p95, sat: m.sat, patch: m.patch, energy: m.energy, ms: Math.round(lastMs), rect, video: [v.videoWidth, v.videoHeight], extra: { bar: extra.barcode ? Math.round(extra.barcode.across * 100) / 100 : extra.barcode, mrz: extra.mrz } }; // development builds: tests can see what the guidance sees (numbers, never pictures)
+      if (verdict.aligned && !wasAligned) nudge();
+      wasAligned = verdict.aligned;
+      send({ t: "look", look: { found: verdict.present, guide: verdict, hint: verdict.detail }, progress: h.progress });
+      setLook({ ok: verdict.aligned, found: verdict.present, progress: h.progress, points: null, key: verdict.key });
+      if (h.fire && !L.stop) { L.stop = true; trace("hold"); shoot("auto"); return; }
     }
   }
 
@@ -502,7 +563,7 @@ export function DocCamera(props) {
     trace("mount");
     if (L.native === undefined) L.native = scanner;
     if (read.mrz) { send({ t: "engine", loading: true }); mrzReader().catch(() => null); }
-    if (read.barcode && L.native) barcodeReader().then(() => {}, () => {});
+    if (read.barcode && (L.native || guided)) barcodeReader().then(() => {}, () => {});
     if (L.native) scanNative();
     else startCamera();
     return () => { L.stop = true; L.an?.close(); stopStream(); };
@@ -510,7 +571,8 @@ export function DocCamera(props) {
 
   function startCamera() {
     L.native = false;
-    if (!L.an) {
+    L.guided = card; // a card, license or passport page: the fixed outline (the screen's `guided` follows the scanner flag)
+    if (!L.an && !L.guided) {
       L.an = createAnalyzer({ shape, bar: !!read.barcode });
       L.an.warm();
       if (read.barcode && L.an.where === "main") barcodeReader().then(() => {}, () => {});
@@ -527,8 +589,8 @@ export function DocCamera(props) {
         // browser cut the frame to that shape (a portrait phone asked for 1920×1080 gets a
         // 1080×1080 square, losing the top and bottom of the page). resizeMode "none" keeps
         // the camera's own field of view at the nearest real resolution.
-        const size = codes ? { width: { ideal: 3840 }, resizeMode: "none" } : { width: { ideal: 1920 }, frameRate: { ideal: 24, max: 30 }, resizeMode: "none" };
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, ...size } });
+        const size = L.guided ? liveConstraints(tpl, { portrait: innerHeight >= innerWidth }) : codes ? { width: { ideal: 3840 }, resizeMode: "none" } : { width: { ideal: 1920 }, frameRate: { ideal: 24, max: 30 }, resizeMode: "none" };
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, ...size } }); // guided: 1080p (1440p for a passport page), the photo is a still, not a frame of this
         if (L.stop) { stream.getTracks().forEach((t) => t.stop()); return; }
         L.stream = stream;
         L.track = stream.getVideoTracks()[0];
@@ -536,6 +598,11 @@ export function DocCamera(props) {
         try { if (L.track.getCapabilities?.().torch) setTorch(false); } catch { /* not offered */ }
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
+        // guided: a preview that came back turned the wrong way for the screen leaves the outline a third of the pixels: ask once more, the other way round
+        if (L.guided && previewTurned(video.current.videoWidth, video.current.videoHeight, innerHeight >= innerWidth)) {
+          const w = liveConstraints(tpl, { portrait: innerHeight >= innerWidth, exact: true });
+          try { await L.track.applyConstraints({ width: w.width, height: w.height }); await sleep(250); } catch { /* the first size stays */ }
+        }
         setPhase("live");
         trace("camera");
         send({ t: "ready" });
@@ -576,13 +643,17 @@ export function DocCamera(props) {
     startCamera();
   }
 
-  async function develop(original, hintQuad, how, known = {}) {
+  async function develop(original, hintQuad, how, known = {}, { guided: cropped = false, source = null } = {}) {
     await sleep(0);
     trace("develop");
     const scanned = how === "scan";
-    const quad = scanned ? null : cornersIn(original, { hint: hintQuad, shape });
+    const quad = scanned || cropped ? null : cornersIn(original, { hint: hintQuad, shape });
     let dev;
-    if (scanned) {
+    if (cropped) {
+      // guided: the photo is already the outline's crop (core/guidecap.js); it is only turned upright (0 or 180) and read
+      const up = uprightOf(original);
+      dev = { canvas: up.rotate ? rotateCanvas(original, up.rotate) : original, original, straightened: true, rotate: up.rotate, confidence: up.confidence, changed: true };
+    } else if (scanned) {
       dev = { ...developPhoto(original, null, { shape }), straightened: true, changed: true };
     } else if (known.mrz && quad) {
       let flat = straighten(original, quad, { prefer: shape, max: 2000 });
@@ -598,11 +669,15 @@ export function DocCamera(props) {
     else if (codes) {
       send({ t: "verifying" });
       await sleep(0);
-      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened });
+      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned || cropped ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened, seed: read.mrz ? L.consensus : null });
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
+      // guided, taken by itself, and what the outline holds wasn't read: say so and keep looking (twice; then the photo is kept as it is, and the shutter always keeps it)
+      if (cropped && !anySide && how === "auto" && !(readOut.barcode || readOut.mrz?.valid) && ++L.misses < 3) {
+        throw Object.assign(new Error(read.barcode ? "Move a little closer to the barcode and hold steady." : "Keep the whole page inside the outline and hold steady."), { title: read.barcode ? "Couldn't read the barcode" : "Couldn't read the two lines" });
+      }
     }
     const { turn, flipped, ...codesFound } = readOut;
-    if (DEMO_BUILD) globalThis.__humidDevelop = { how, straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
+    if (DEMO_BUILD) globalThis.__humidDevelop = { how, guided: cropped, source: source?.source, stillW: source?.width, why: source?.why, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, quad, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
     trace("developed");
     return { ...dev, ...codesFound, how };
   }
@@ -616,18 +691,24 @@ export function DocCamera(props) {
     send({ t: "captured" });
     if (how === "auto") buzz();
     try {
-      let c = null;
+      let c = null, still = null;
+      // guided: the outline's part of the best still the phone gives (turned straight by the guidance's own small, reliable angle)
+      const rect = L.guided ? frameRect(v, frame.current, 0) : null;
+      const tilt = rect ? deskewOf(L.guideNow?.verdict?.deskew) : 0;
       for (let i = 0; i < 6 && !c; i++) {
-        if (v.readyState >= 2 && v.videoWidth) { const got = grab(v, null); if (!looksBlank(got)) c = got; }
+        if (v.readyState >= 2 && v.videoWidth) {
+          if (rect) { const st = await takeStill(v, L.track, rect, { tilt, photo: i === 0 }); if (!looksBlank(st.canvas)) { c = st.canvas; still = st; } }
+          else { const got = grab(v, null); if (!looksBlank(got)) c = got; }
+        }
         if (!c) await sleep(150);
       }
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
-      await finish(await develop(c, L.quad, how, known));
+      await finish(await develop(c, L.quad, how, known, rect ? { guided: true, source: still } : {}));
     } catch (e) {
       L.paused = false; L.gave = false;
       L.holdUntil = Date.now() + 2500;
       oops();
-      flash(e?.message || "Couldn't take the photo. Try again.");
+      flash(e?.message || "Couldn't take the photo. Try again.", 4000, e?.title);
       send({ t: "retry" });
       L.retry?.();
       setPhase(L.stream ? "live" : "error");
@@ -663,6 +744,7 @@ export function DocCamera(props) {
     L.gave = false; L.holdUntil = 0; L.barSeen = 0; L.bcMain = null;
     L.retry?.();
     setNotice("");
+    L.misses = 0;
     send({ t: "retry" });
     if (L.stream) { L.stop = false; loop(); }
   }
@@ -671,11 +753,11 @@ export function DocCamera(props) {
   const skip = () => { L.stop = true; stopStream(); onSkip(); };
   const live = phase === "live" && look;
   const lookState = !live ? undefined : look.ok ? "ok" : look.found ? "close" : "searching";
-  const view = describe(flow, { shape, hint });
+  const view = describe(flow, { shape, hint, guided, noun: tpl?.noun });
   const busy = phase === "reading" || phase === "saved";
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-scanner={scanner ? "1" : undefined} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
+    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-scanner={scanner ? "1" : undefined} data-guided={guided ? "1" : undefined} data-phase={phase} data-shape={shape} data-look={lookState} data-bar={bar?.points ? "found" : undefined} data-flow={view.id} data-fail={view.fail || undefined}>
       <video ref={video} playsInline muted autoplay />
       {phase === "live" && !L.gave && (look?.points || bar?.points) && (
         <svg class="dc-outline" aria-hidden="true" style={{ "--p": look?.progress || 0 }}>
@@ -686,9 +768,10 @@ export function DocCamera(props) {
         </svg>
       )}
       <div class="dc-stage">
-        <div class="dc-frame" data-shape={shape} ref={frame}>
+        <div class="dc-frame" data-shape={shape} data-template={tpl?.id} data-ready={guided && view.id === "steady" ? "1" : undefined} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
-          {read.mrz && <span class="dc-mrz" data-shape={shape} />}
+          {guided && tpl.zones.map((z) => <span class="dc-zone" data-k={z.k} aria-hidden="true" style={{ left: `${z.x}%`, top: `${z.y}%`, width: `${z.w}%`, height: `${z.h}%` }} />)}
+          {read.mrz && !guided && <span class="dc-mrz" data-shape={shape} />}
           {phase === "live" && (view.id === "reading" || view.id === "verifying") && <span class="dc-sweep" aria-hidden="true"><i /></span>}
           {phase === "reading" && <span class="dc-busy"><i /></span>}
           {phase === "saved" && <span class="dc-busy dc-saved" aria-hidden="true"><Icon name="check" /></span>}
@@ -722,7 +805,7 @@ export function DocCamera(props) {
           )}
         </div>
       ) : (
-        <ScanState view={view} notice={notice} error={phase === "error" ? error : null} torch={torch} onTorch={torch != null ? toggleTorch : null} onRetry={retry} onShoot={() => shoot()}
+        <ScanState view={view} notice={notice} noticeTitle={noticeTitle} error={phase === "error" ? error : null} torch={torch} onTorch={torch != null ? toggleTorch : null} onRetry={retry} onShoot={() => shoot()}
           lead={phase === "live" ? lead : null} extra={phase === "live" || phase === "error" ? extra : null} />
       )}
       <footer class="dc-bottom" data-tools={tools ? "1" : undefined}>

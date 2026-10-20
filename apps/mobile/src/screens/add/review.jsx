@@ -10,7 +10,7 @@ import { Steps, SEAL_STEPS, Toggle, Row, HowProtectedLink, Pushed } from "../../
 import { TAGS, kindOf } from "../../core/categories.js";
 import { rotateCanvas } from "../../core/scan.js";
 import { watchPlace, formatCoords, formatAccuracy, REASONS } from "../../core/place.js";
-import { setPref } from "../../core/index.js";
+import { setPref, warmSeal } from "../../core/index.js";
 import * as S from "../../core/state.js";
 
 /** A full-screen add step. While a seal runs the back control is withheld: the check decides. */
@@ -91,6 +91,7 @@ export function Review({ kind, preview, name, setName, focusName, fields, tags, 
   const place = usePlaceStamp();
   const k = kindOf(kind);
   const nameRef = useRef(null);
+  useEffect(() => { warmSeal(); }, []); // the sealing arithmetic warms up while this is read
   useEffect(() => { if (focusName && nameRef.current && !nameRef.current.value) nameRef.current.focus(); }, []);
   if (stage != null) return <Steps current={{ seal: 0, upload: 1, done: 2 }[stage]} steps={SEAL_STEPS} />;
   return (
@@ -145,17 +146,18 @@ export function PhotoChoice({ shot, which, turn, onChange, onRetake }) {
     canvasBlob(small, 0.8).then((b) => { if (gone) return; made = URL.createObjectURL(b); setUrl(made); }).catch(() => {});
     return () => { gone = true; if (made) URL.revokeObjectURL(made); };
   }, [shot, which, turn]);
-  const suggested = shot.clean && shot.cleanSuggested ? "clean" : "proposed";
+  const suggested = (shot.clean || shot.cleanP) && shot.cleanSuggested ? "clean" : "proposed";
   const tag = (w) => suggested === w && <span class="tag">Suggested</span>;
   const note = !shot.changed ? "As taken: no document edges were found to straighten."
     : which === "original" ? "The photo exactly as the camera took it."
+    : which === "clean" && shot.cleanP ? "Making the clean scan: shadows gone, paper white. A moment…"
     : which === "clean" ? "Straightened and evened out like a scanner: shadows gone, paper white."
     : "Straightened, keeping its true colours and light.";
   return (
     <div class="photo-choice" data-more={more ? "1" : "0"}>
       {more && shot.changed && (
-        <div class="seg" data-n={shot.clean ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
-          {shot.clean && (
+        <div class="seg" data-n={shot.clean || shot.cleanP ? "3" : "2"} role="radiogroup" aria-label="Which version to seal">
+          {(shot.clean || shot.cleanP) && (
             <button role="radio" aria-checked={which === "clean"} aria-pressed={which === "clean"} onClick={() => onChange({ which: "clean", turn })}>
               <Icon name="sparkle" /><span>Clean scan</span>{tag("clean")}
             </button>
