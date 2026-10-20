@@ -9,7 +9,7 @@ import { sealTime } from "../core/sealtime.js";
 import { openExternal } from "../core/external.js";
 import { formatCoords, formatAccuracy, mapLink, validStamp } from "../core/place.js";
 import * as S from "../core/state.js";
-import { openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, lockNow, setDecoy, setPinned, cancelRecovery, checkIn } from "../core/index.js";
+import { openItem, saveCopy, exportSealed, deleteItem, renameItem, closeViewer, lockNow, setDecoy, setPinned, cancelRecovery, checkIn, reconnect, toast } from "../core/index.js";
 import { TagPicker } from "../ui/tags.jsx";
 // Opening Add is a push; the flow itself (camera, readers) is a chunk main.jsx loads then.
 const openAdd = () => { S.push.value = { type: "add", kind: null, n: Date.now() }; };
@@ -35,7 +35,7 @@ export function TabBanners() {
 function OfflineBanner() {
   const o = S.offline.value;
   if (!o) return null;
-  return <Banner tone="amber" icon="signal" title="Offline · read only" text={`Your vault as it was ${o.savedAt ? fmtAgo(o.savedAt) : "last time you were online"}. Opening or changing anything needs a connection.`} action={S.online.value ? (S.link.value.state === "up" ? "Reconnect" : "Try again") : null} onAction={() => import("../core/index.js").then((m) => m.reconnect())} />;
+  return <Banner tone="amber" icon="signal" title="Offline · read only" text={`Your vault as it was ${o.savedAt ? fmtAgo(o.savedAt) : "last time you were online"}. Opening or changing anything needs a connection.`} action={S.online.value ? (S.link.value.state === "up" ? "Reconnect" : "Try again") : null} onAction={reconnect} />;
 }
 
 /** Heartbeat, while armed: when the next one is due, in the server's time, with the button. */
@@ -114,7 +114,7 @@ export function Vault() {
 
       {all.length > 0 && (
         <button class="btn primary" style={{ position: "fixed", right: "max(16px, calc(50% - var(--col) / 2 + 16px))", bottom: "calc(var(--safe-b) + var(--tabbar-h) + 16px)", zIndex: 31, width: 56, height: 56, padding: 0, borderRadius: 999, opacity: off ? 0.5 : 1 }}
-          aria-label="Add to your vault" onClick={() => (off ? import("../core/index.js").then((m) => m.toast("Adding needs a connection to your vault.", "warn")) : openAdd())}>
+          aria-label="Add to your vault" onClick={() => (off ? toast("Adding needs a connection to your vault.", "warn") : openAdd())}>
           <Icon name="plus" />
         </button>
       )}

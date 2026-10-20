@@ -5,11 +5,18 @@
 // 3.0: every file under /assets/ has a content hash in its name, so those are cache-first
 // and kept until the next release's worker activates; the shell (/, index.html, sw.js,
 // the manifest) is always fetched fresh, so a new release is picked up on the next open.
+// Every screen's code is kept too (SCREENS), so an installed HumID opened with no connection
+// has Activity and You, read only, not just the vault list.
 const VERSION = "__HUMID_VERSION__";
 const SHELL = __HUMID_SHELL__;
+const SCREENS = __HUMID_SCREENS__;
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "no-cache" })))).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(async (c) => {
+    await c.addAll(SHELL.map((u) => new Request(u, { cache: "no-cache" })));
+    // hashed, so the HTTP cache may answer; one missing screen must not stop the install
+    await Promise.all(SCREENS.map((u) => c.add(u).catch(() => {})));
+  }).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {

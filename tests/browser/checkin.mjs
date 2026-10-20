@@ -196,7 +196,7 @@ try {
   await page.getByText("Vault erased by Heartbeat").waitFor({ timeout: 15_000 });
   await youScreen(page, "Heartbeat");
   assert.match(await page.locator(".pushed").innerText(), /erased/i);
-  assert.match(await page.locator(".pushed .eyebrow").first().innerText(), /Off/);
+  assert.match(await page.locator(".pushed .eyebrow").first().innerText(), /off/i); // the eyebrow is set in capitals
   step("ordinary unlock: the vault says it was erased; only the decoy is left; Activity agrees");
 
   console.log("ok — Heartbeat checks pass");
