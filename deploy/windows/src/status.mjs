@@ -94,9 +94,11 @@ export function startStatus({ root, version, appVersion, services, edgePort, ses
     lastCpu = process.cpuUsage(); lastAt = t;
     const checks = await Promise.all(Object.entries(services).map(async ([name, s]) => {
       const port = s.server?.address?.()?.port;
+      // a role that serves another machine speaks mutual TLS only: listening is what can be seen from here
+      if (s.tls) return { name, port, ok: !!s.server?.listening, tls: true };
       return { name, port, ...(port ? await probe(port) : { ok: false, error: "not listening" }) };
     }));
-    const edge = await probe(edgePort);
+    const edge = edgePort ? await probe(edgePort) : null;
     if (now - sizesAt > 5 * 60_000) { // sizes change slowly; walking folders isn't free
       dataSizes = Object.keys(services).filter((n) => n !== "gateway").concat("gateway").map((name) => ({ name, bytes: folderBytes(join(root, "data", name)) }));
       sizesAt = now;
