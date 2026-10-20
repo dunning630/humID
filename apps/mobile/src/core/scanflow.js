@@ -107,7 +107,7 @@ export function step(s, ev, now) {
       if (why && why !== "steady") {
         // a problem is said only once it has held for a moment
         const cand = s.cand?.id === why ? s.cand : { id: why, since: now };
-        const shown = now - cand.since >= (TIMING.sayAfter[why] ?? TIMING.showProblemAfter) || s.fail === why;
+        const shown = now - cand.since >= ((ev.look?.guide && TIMING.sayAfter[why]) || TIMING.showProblemAfter) || s.fail === why;
         return shown ? set({ ...s, cand, progress: 0 }, { id: "problem", fail: why, note: ev.look?.hint || null }, now) : { ...s, cand, progress: 0 };
       }
       const base = { ...s, cand: null, fail: null, progress };
