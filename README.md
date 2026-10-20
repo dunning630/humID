@@ -18,8 +18,9 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
 doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC),
 [docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone),
-[docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in), and
-[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups).
+[docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in),
+[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups), and
+[docs/MESSAGING.md](docs/MESSAGING.md) (HumID 4.0, provisional: person to person, known only by an ID).
 
 ## Try it on your machine
 
@@ -100,6 +101,7 @@ packages/            independently versioned modules
   cards                            payment cards: number checks, camera (both sides) + contactless capture, sealed record (no PIN, no back photo)
   wallet                           Apple Wallet passes: bounded unzip, manifest hashes, issuer signature through Apple's pinned roots
   backup                           (3.0, provisional) computer backups: sealed pieces, 2-of-3 key parts (HumID, sheet, contact)
+  msg                              (4.0, provisional) person to person: persona IDs, PQ double ratchet, live stamps, relay rules
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare
