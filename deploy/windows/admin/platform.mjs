@@ -7,9 +7,17 @@
 //   startJob()   starts the "HumID Admin Job" task, which runs `humid.ps1 job-run`:
 //                every request in <root>\admin\jobs that has no result yet
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const JOB_TASK = "HumID Admin Job";
+
+/** The job task's name for the install in `installDir`: a test instance's (instance.txt beside it) has its name in brackets, as humid.ps1 names it. */
+export function jobTaskFor(installDir) {
+  const f = join(installDir, "instance.txt");
+  const name = existsSync(f) ? readFileSync(f, "utf8").split(/\r?\n/)[0].trim() : "";
+  return /^[a-z][a-z0-9]{0,15}$/.test(name) ? `${JOB_TASK} (${name})` : JOB_TASK;
+}
 
 const run = (exe, args, timeoutMs) => new Promise((resolve, reject) => {
   execFile(exe, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -31,7 +39,7 @@ export function windowsPlatform({ installDir }) {
       return JSON.parse(line);
     },
     async startJob() {
-      await run(schtasks, ["/Run", "/TN", JOB_TASK], 30_000);
+      await run(schtasks, ["/Run", "/TN", jobTaskFor(installDir)], 30_000);
     },
   };
 }

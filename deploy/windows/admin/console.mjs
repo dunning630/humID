@@ -162,7 +162,7 @@ export function createConsole({
   function backups() {
     let out = [];
     try {
-      out = readdirSync(backupsDir).filter((f) => f.endsWith(".zip")).map((f) => {
+      out = readdirSync(backupsDir).filter((f) => f.endsWith(".zip") || f.endsWith(".humidbak")) // 2.x zips, 3.0 encrypted backups.map((f) => {
         const st = statSync(join(backupsDir, f));
         return { name: f, bytes: st.size, at: st.mtime.toISOString() };
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
