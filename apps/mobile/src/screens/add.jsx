@@ -174,7 +174,7 @@ export function Add() {
           onCancel={() => toReady("photo")} onDone={photographed} onLook={looked} label={liveLabelEl} tools={tools} />
       )}
       {step.at === "cardcam" && (
-        <DocCamera shape="id1" eyebrow="Payment card" title="The front of the card" hint="Fit the card in the frame, number side up. Never the PIN."
+        <DocCamera kind="card" side="front" shape="id1" eyebrow="Payment card" title="The front of the card" hint="Line the card up inside the outline, number side up. Never the PIN."
           onCancel={() => toReady("card")}
           onDone={async ({ canvas }) => { const r = await readFrontEitherWay(canvas); return () => go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "readycard"); }} />
       )}

@@ -29,13 +29,13 @@ export function useCalm(view) {
 /**
  * The scan card.
  *   view      core/scanflow.js describe()
- *   notice    a one-off message (a photo that wasn't kept), shown as a problem for a few seconds
+ *   notice    a one-off message (a photo that wasn't kept, a read that failed: noticeTitle says which), shown as a problem for a few seconds
  *   onRetry   Try again          onShoot   Take the photo myself      onTorch   Light on (when the camera has one)
  */
-export function ScanState({ view: latest, notice, error, onRetry, onShoot, onTorch, torch }) {
+export function ScanState({ view: latest, notice, noticeTitle, error, onRetry, onShoot, onTorch, torch }) {
   const view = useCalm(latest);
   const tone = error || notice ? "warn" : view.tone;
-  const title = error ? "Camera problem" : notice ? "Couldn't keep that photo" : view.title;
+  const title = error ? "Camera problem" : notice ? noticeTitle || "Couldn't keep that photo" : view.title;
   const detail = error || notice || view.detail;
   const icon = error ? "alert" : notice ? "alert" : ICON[view.id] || "scan";
   const pct = Math.round(Math.max(0, Math.min(1, view.progress || 0)) * 100);

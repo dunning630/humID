@@ -92,7 +92,7 @@ export const LIGHT_TIP = "Good light helps most: face a window or a lamp, and ke
  * number, "photo" takes any document as it is. null for anything with no camera.
  */
 export const GUIDE = {
-  card: { mode: "card", shape: "id1", eyebrow: "Payment card", title: "Scan the card", hold: "Hold the card flat with the number side up, anywhere in view. It takes the photo by itself and reads the number, expiry and name." },
+  card: { mode: "card", shape: "id1", eyebrow: "Payment card", title: "Scan the card", hold: "Line the card up inside the outline on the screen, number side up. It tells you if it needs to be closer, steadier or less shiny, takes the photo by itself and reads the number, expiry and name." },
   photo: { mode: "photo", shape: "full", eyebrow: "Photo", title: "Photograph a document", hold: "Lay the page or card on a dark, flat surface and hold the phone above it. It finds the edges, straightens it and takes the photo by itself." },
 };
 export const guideFor = (kind) => GUIDE[kind] || null;
