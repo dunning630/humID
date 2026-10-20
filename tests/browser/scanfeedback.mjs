@@ -109,7 +109,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. a passport in view: the card follows the scan to Done ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pp-ok.mjpeg")));
   await page.goto(BASE);
   await unlock(page);
   await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 20_000 });
