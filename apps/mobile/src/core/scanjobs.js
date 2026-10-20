@@ -7,6 +7,7 @@
 // the same way; nothing is stored, logged or sent anywhere. Where a phone's WebView has no
 // worker, or the worker fails, the same function runs on the main thread, after the screen
 // has had its turn (a timer), so the review still shows first.
+/* global __HUMID_WORKER__ */
 import { cleanScan } from "./scanclean.js";
 import { span } from "./perf.js";
 
@@ -29,7 +30,7 @@ function drop(err) {
 
 function spawn() {
   if (worker) return worker;
-  const w = new Worker(new URL("./scanworker.js", import.meta.url), { type: "module" });
+  const w = new Worker(typeof __HUMID_WORKER__ !== "undefined" ? __HUMID_WORKER__ : new URL("./scanworker.js", import.meta.url), { type: "module" });
   w.onmessage = (e) => {
     const p = pending.get(e.data.id);
     if (!p) return;

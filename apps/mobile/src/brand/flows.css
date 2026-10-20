@@ -119,6 +119,9 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .doccam[data-guided][data-look="ok"] .dc-frame .c { border-color: var(--mint); }
 .doccam[data-guided][data-look="ok"] .dc-frame { box-shadow: 0 0 0 100vmax rgba(3,10,7,.62), inset 0 0 0 2.5px var(--mint); }
 .doccam[data-guided][data-look="searching"] .dc-frame .c { animation: none; }
+.dc-kinds { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 74px); display: inline-flex; padding: 3px; border-radius: 999px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.22); }
+.dc-kinds button { min-height: 44px; padding: 0 16px; border: 0; border-radius: 999px; background: none; color: #fff; font-size: 13.5px; }
+.dc-kinds button[aria-checked="true"] { background: rgba(255,255,255,.2); font-weight: 600; }
 .dc-zone { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,255,255,.42); border-radius: 6px; pointer-events: none; }
 .dc-zone[data-k="photo"] { border-radius: 8px; }
 .dc-zone[data-k="line"], .dc-zone[data-k="num"] { border-width: 0 0 1.5px; border-radius: 0; }

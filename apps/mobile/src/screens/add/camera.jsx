@@ -262,8 +262,11 @@ function nextFrame(v) {
  */
 export function DocCamera(props) {
   const preset = props.mode ? scanOptions(props.mode, { side: props.side }) : {};
-  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, lead, extra, tools, native = false, kind = "other", anySide = false } = props;
-  const shape = props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
+  const { auto = true, eyebrow, saved, onDone, onCancel, onSkip, onLook, lead, extra, tools, native = false, kind = "other", guide = true } = props;
+  // shapes: the outlines on offer ("id1" card, "td3" passport page): the Add > ID camera doesn't know which it will be shown
+  const shapes = props.shapes || null;
+  const [chosen, setChosen] = useState(() => shapes?.[0] ?? null);
+  const shape = chosen ?? props.shape ?? preset.shape ?? "id1", read = props.read ?? preset.read ?? {}, title = props.title ?? preset.title, hint = props.hint ?? preset.hint ?? "";
   const side = props.side ?? preset.side ?? "front";
   const video = useRef(null), frame = useRef(null), file = useRef(null);
   const [phase, setPhase] = useState("starting"); // starting | live | reading | saved | error
@@ -278,11 +281,15 @@ export function DocCamera(props) {
   const codes = !!(read.barcode || read.mrz);
   const card = shape !== "full";
   // a fixed outline for every document with a known shape, unless the phone's own scanner is taking the photo
-  const guided = card && !scanner;
-  const tpl = useMemo(() => (guided ? templateFor({ kind, side: anySide ? "back" : side, shape, read: anySide ? {} : read }) : null), [guided, kind, side, shape]);
+  // (guide={false}: the Add > ID camera, which doesn't know yet whether it will see a card or a passport, finds the document by itself)
+  const guided = card && !scanner && guide !== false;
+  // a passport page has the two lines and no barcode: with both outlines on offer, that is what the passport outline expects
+  const expects = shapes && shape === "td3" ? { mrz: true } : read;
+  const tpl = useMemo(() => (guided ? templateFor({ kind, side, shape, read: expects }) : null), [guided, kind, side, shape]);
   const [flow, setFlow] = useState(() => flowBegin({ codes }));
   const L = useRef({ stop: false, done: false, paused: false, gave: false, stream: null, track: null, running: new Set(), holdUntil: 0, quad: null, an: null, spots: null, readingAt: 0, flow: null, acq: 0, tickAt: 0, guided: false, hold: null, misses: 0, bestFocus: 0, guideNow: null }).current;
   L.flow ||= flow;
+  L.tpl = tpl; L.shape = shape; // the loops started on the first render read these, so a changed outline is seen by them
   const trace = (name, extra) => { if (DEMO_BUILD) { const t = (globalThis.__humidTrace ||= { ev: [] }); t.ev.push([name, Math.round(performance.now()), extra]); } };
   const send = (ev) => {
     const next = flowStep(L.flow, ev, Date.now());
@@ -355,7 +362,7 @@ export function DocCamera(props) {
    * thread: the picture is a few hundred pixels and a look takes a few milliseconds.
    */
   async function guideLoop() {
-    const needBar = !!(tpl?.expect?.barcode || tpl?.forbid?.barcode);
+    const needBar = !!(L.tpl?.expect?.barcode || L.tpl?.forbid?.barcode);
     let prev = null, lastMs = 0, wasAligned = false;
     while (!L.stop) {
       await sleep(pace(lastMs, { min: 90, max: 280 }));
@@ -376,8 +383,8 @@ export function DocCamera(props) {
         // strong extra signals, where the document has them: a barcode in the outline (and how big), the lines of an MRZ
         extra = { bestFocus: L.bestFocus };
         if (needBar) extra.barcode = barcodeSignal(locateBarcodes(got.im), win.guide);
-        if (tpl?.expect?.mrz) extra.mrz = mrzBandLikely(bottomBand(got.im, win.guide));
-        verdict = judge(m, tpl, extra);
+        if (L.tpl?.expect?.mrz) extra.mrz = mrzBandLikely(bottomBand(got.im, win.guide));
+        verdict = judge(m, L.tpl, extra);
       } catch { await sleep(150); continue; }
       lastMs = performance.now() - t0;
       if (inactive()) continue; // taken, or given up, while it was measuring: drop this one
@@ -571,7 +578,7 @@ export function DocCamera(props) {
 
   function startCamera() {
     L.native = false;
-    L.guided = card; // a card, license or passport page: the fixed outline (the screen's `guided` follows the scanner flag)
+    L.guided = card && guide !== false; // a card, license or passport page: the fixed outline (the screen's `guided` follows the scanner flag)
     if (!L.an && !L.guided) {
       L.an = createAnalyzer({ shape, bar: !!read.barcode });
       L.an.warm();
@@ -647,19 +654,19 @@ export function DocCamera(props) {
     await sleep(0);
     trace("develop");
     const scanned = how === "scan";
-    const quad = scanned || cropped ? null : cornersIn(original, { hint: hintQuad, shape });
+    const quad = scanned || cropped ? null : cornersIn(original, { hint: hintQuad, shape: L.shape });
     let dev;
     if (cropped) {
       // guided: the photo is already the outline's crop (core/guidecap.js); it is only turned upright (0 or 180) and read
       const up = uprightOf(original);
       dev = { canvas: up.rotate ? rotateCanvas(original, up.rotate) : original, original, straightened: true, rotate: up.rotate, confidence: up.confidence, changed: true };
     } else if (scanned) {
-      dev = { ...developPhoto(original, null, { shape }), straightened: true, changed: true };
+      dev = { ...developPhoto(original, null, { shape: L.shape }), straightened: true, changed: true };
     } else if (known.mrz && quad) {
-      let flat = straighten(original, quad, { prefer: shape, max: 2000 });
+      let flat = straighten(original, quad, { prefer: L.shape, max: 2000 });
       if (flat.height > flat.width) flat = rotateCanvas(flat, 90);
       dev = { canvas: known.turn ? rotateCanvas(flat, known.turn) : flat, original, straightened: true, rotate: known.turn || 0, confidence: 1, changed: true };
-    } else dev = developPhoto(original, quad, { shape });
+    } else dev = developPhoto(original, quad, { shape: L.shape });
     if (card && !dev.straightened) {
       const v = video.current, r = v && how !== "file" && !scanned ? frameRect(v, frame.current, 0.02) : null;
       if (r) { const c = grab(original, r); dev = { canvas: c, original, straightened: false, rotate: 0, confidence: 0, changed: true }; }
@@ -669,10 +676,10 @@ export function DocCamera(props) {
     else if (codes) {
       send({ t: "verifying" });
       await sleep(0);
-      readOut = await readStill(dev.canvas, read, shape, how === "file" || scanned || cropped ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened, seed: read.mrz ? L.consensus : null });
+      readOut = await readStill(dev.canvas, read, L.shape, how === "file" || scanned || cropped ? null : grab(original, quad ? around(quad, original.width, original.height, 0.15) : null, 2400), { tryFlip: dev.straightened, seed: read.mrz ? L.consensus : null });
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
       // guided, taken by itself, and what the outline holds wasn't read: say so and keep looking (twice; then the photo is kept as it is, and the shutter always keeps it)
-      if (cropped && !anySide && how === "auto" && !(readOut.barcode || readOut.mrz?.valid) && ++L.misses < 3) {
+      if (cropped && how === "auto" && !(readOut.barcode || readOut.mrz?.valid) && ++L.misses < 3) {
         throw Object.assign(new Error(read.barcode ? "Move a little closer to the barcode and hold steady." : "Keep the whole page inside the outline and hold steady."), { title: read.barcode ? "Couldn't read the barcode" : "Couldn't read the two lines" });
       }
     }
@@ -781,6 +788,13 @@ export function DocCamera(props) {
         <div class="dc-saved-chip" role="status">
           {saved.img && <img src={imageUrl(saved.img)} alt="" />}
           <span><Icon name="check" />{saved.text}</span>
+        </div>
+      )}
+      {shapes && guided && (
+        <div class="dc-kinds" role="radiogroup" aria-label="What is in the outline">
+          {shapes.map((sh) => (
+            <button type="button" role="radio" aria-checked={shape === sh} data-shape={sh} onClick={() => { if (sh !== shape) { setChosen(sh); L.retry?.(); L.misses = 0; } }}>{sh === "td3" ? "Passport page" : "Card"}</button>
+          ))}
         </div>
       )}
       <header class="dc-top">

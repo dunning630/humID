@@ -258,7 +258,7 @@ function AddFlow({ open }) {
           lead={label?.text || null} extra={extra} tools={tools} />
       )}
       {step.at === "idcam" && (
-        <DocCamera shape="id1" anySide read={{ barcode: true, mrz: true }} eyebrow="ID" title="Scan the ID" hint="Front or back, any ID. A license barcode or the lines of <<< read by themselves."
+        <DocCamera shapes={["id1", "td3"]} side="back" read={{ barcode: true, mrz: true }} eyebrow="ID" title="Scan the ID" hint="Line the ID up inside the outline, either side. A license barcode or the lines of <<< read by themselves."
           onCancel={() => go({ at: "pick" }, "close")} onDone={(r) => photographed(r, "id")} onLook={looked} lead={label?.text || null} />
       )}
       {step.at === "cardcam" && (

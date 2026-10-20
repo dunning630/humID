@@ -1,4 +1,4 @@
-// The guided scan (apps 2.2.0) in a real browser, with a fake camera: a fixed outline for each
+// The guided scan (apps 2.2.0, 3.0 screens) in a real browser, with a fake camera: a fixed outline for each
 // kind of document, plain words on what to change, an automatic photo only when the document
 // is lined up, steady and sharp, and a crop to the outline. Fixtures: tests/fixtures/id/guide/*
 // (made by tests/fixtures/id/make-guided.py: a license back, a passport page and a payment card
@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { enroll, unlock as unlockV3, openPicker, pickKind as pickKindV3, startCamera } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id/guide", `${n}.mjpeg`);
@@ -68,43 +69,24 @@ async function launch(cameraFile) {
   return { ctx, page };
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-async function hold(page) {
-  const b = page.locator(".interrupt .hold");
-  await b.waitFor({ timeout: 20_000 });
-  await b.focus();
-  await page.keyboard.down(" ");
-  await page.waitForTimeout(1500);
-  await page.keyboard.up(" ");
-}
-async function enrol(page) {
-  await page.goto(BASE);
-  await page.getByRole("button", { name: "Create my HumID" }).click();
-  await page.getByRole("button", { name: "Trust this server" }).click();
-  await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
-  await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel(/Only I use/).check();
-  await page.getByRole("button", { name: /Use demo mode/ }).click();
-  await hold(page);
-  const ask = await page.locator('label[for="card-check"]').innerText();
-  const groups = await page.locator(".cardcode span").allInnerTexts();
-  await page.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await page.getByRole("button", { name: "Open my vault" }).click();
-}
-async function unlock(page) {
-  await page.goto(BASE);
-  await page.getByRole("button", { name: /^Unlock$/ }).click();
-  await hold(page);
-  await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 30_000 });
-}
+async function enrol(page) { await page.goto(BASE); await enroll(page); }
+async function unlock(page) { await page.goto(BASE); await unlockV3(page); }
+/**
+ * 3.0: the picker's "ID" opens the ID camera (card outline; the Card / Passport page switch is on it); "Payment card"
+ * goes through its "what to show" screen and Start camera. `name` is a document: "Another card" / "Driver's license"
+ * (card outline), "Passport" (passport-page outline), "Payment card".
+ */
 async function pick(page, name) {
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 });
-  await page.locator(".pushed button.kind", { hasText: name }).click();
-  assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
-  await page.locator(".pushed [data-start-camera]").click();
+  await openPicker(page);
+  if (name === "Payment card") {
+    await pickKindV3(page, /^Payment card/);
+    assert.equal(await page.locator(".doccam").count(), 0, "choosing a kind doesn't start the camera");
+    await startCamera(page);
+    return;
+  }
+  await pickKindV3(page, /^ID/);
   await page.locator(".doccam").waitFor({ timeout: 10_000 });
+  if (name === "Passport") await page.locator(".doccam .dc-kinds").getByRole("radio", { name: "Passport page" }).click();
 }
 const state = (page) => page.locator(".doccam .dc-state");
 const title = async (page) => (await state(page).locator("strong").first().innerText()).trim();
@@ -165,7 +147,7 @@ const problem = (name, file, kindName, text, { hold: ms = 4500, waitFor = 25_000
 
 /* ---------------- what the scenes do ---------------- */
 
-// 1. the outline itself, the first moments, and the stream's life (a license front: any picture will do)
+// 1. the outline itself, the first moments, and the stream's life (3.0: the ID camera's Card / Passport page switch, and the payment card's)
 scene("outline", async (page) => {
   const count = async () => page.evaluate(() => globalThis.__gum || 0);
   await page.evaluate(() => {
@@ -173,19 +155,26 @@ scene("outline", async (page) => {
     const md = navigator.mediaDevices, real = md.getUserMedia.bind(md);
     md.getUserMedia = async (c) => { globalThis.__gum++; globalThis.__constraints = c; const st = await real(c); globalThis.__tracks.push(...st.getTracks()); return st; };
   });
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed button.kind", { hasText: /Passport/ }).click();
+  await openPicker(page);
   await page.waitForTimeout(700);
-  assert.equal(await count(), 0, "no camera request before Start camera");
-  await page.locator(".pushed [data-start-camera]").click();
+  assert.equal(await count(), 0, "no camera request while the kind is being chosen");
+  await pickKindV3(page, /^ID/);
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   assert.equal(await count(), 1, "one camera request");
-  // not 4K: 1440p for a passport page's small print
+  // not 4K; the long side only, never a crop (3.0: a width AND a height make a browser cut the frame to that shape)
   const c = await page.evaluate(() => globalThis.__constraints.video);
-  assert.equal(c.width.ideal, 2560); assert.equal(c.height, undefined, "long side only: a width AND a height make a browser crop the frame (3.0)"); assert.equal(c.resizeMode, "none");
-  const f = await page.locator(".dc-frame").boundingBox();
+  assert.equal(c.width.ideal, 1920); assert.equal(c.height, undefined); assert.equal(c.resizeMode, "none");
   const vp = page.viewportSize();
+  const f2 = await page.locator(".dc-frame").boundingBox();
+  assert.ok(Math.abs(f2.width / f2.height - 85.6 / 54) < 0.01, `a card's outline: ${(f2.width / f2.height).toFixed(3)}`);
+  assert.ok(Math.abs(f2.x + f2.width / 2 - vp.width / 2) < 2, "centred across");
+  assert.equal(await page.locator(".doccam .dc-kinds button").count(), 2, "Card and Passport page");
+  await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer|Show the back/ }).waitFor({ timeout: 20_000 });
+  // the passport page's outline
+  await page.locator(".doccam .dc-kinds").getByRole("radio", { name: "Passport page" }).click();
+  await page.waitForFunction(() => document.querySelector(".dc-frame")?.getAttribute("data-shape") === "td3");
+  const f = await page.locator(".dc-frame").boundingBox();
   assert.ok(Math.abs(f.width / f.height - 125 / 88) < 0.01, `a passport page's outline: ${(f.width / f.height).toFixed(3)}`);
   assert.ok(Math.abs(f.x + f.width / 2 - vp.width / 2) < 2, "centred across");
   const stage = await page.locator(".dc-stage").boundingBox();
@@ -196,33 +185,32 @@ scene("outline", async (page) => {
   assert.equal(await page.locator(".dc-frame .dc-outline, .doccam > .dc-outline").count(), 0, "no free-form outline is drawn");
   const live = state(page).locator('[role="status"]');
   assert.equal(await live.getAttribute("aria-live"), "polite", "the card is a live region");
-  assert.equal((await state(page).locator(".dc-steps li").first().textContent()).trim(), "Line up");
+  assert.equal(await count(), 1, "switching the outline doesn't ask the camera again");
   // the rect the app uses for the crop, in the video's pixels, is where the fixtures put their documents
+  await page.waitForFunction(() => globalThis.__humidGuide?.rect?.h > 540, null, { timeout: 10_000 }); // the passport page's (the card's was measured first)
   const g = await page.evaluate(() => globalThis.__humidGuide?.rect);
-  if (g) for (const k of ["x", "y", "w", "h"]) assert.ok(Math.abs(g[k] - GUIDE.td3[k]) < 10, `the outline's ${k} is ${g[k]} in the video; the fixtures assume ${GUIDE.td3[k]} (re-run make-guided.py if the layout moved)`);
+  for (const k of ["x", "y", "w", "h"]) assert.ok(Math.abs(g[k] - GUIDE.td3[k]) < 10, `the outline's ${k} is ${g[k]} in the video; the fixtures assume ${GUIDE.td3[k]} (re-run make-guided.py if the layout moved)`);
   await shot(page, "outline-passport");
   // the stream is released on leaving
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => globalThis.__tracks.every((t) => t.readyState === "ended")), true, "closing the camera releases the stream");
-  step("the passport outline: 125:88, centred, dimmed outside, four corner marks, 1440p preview; no camera before Start; stream released");
-  // a card's outline
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  await page.getByRole("button", { name: "Back" }).first().click();
-  await page.locator(".pushed button.kind", { hasText: /Another card/ }).click();
-  await page.locator(".pushed [data-start-camera]").click();
+  step("the ID camera: card 85.6:54 and passport page 125:88 outlines, centred, dimmed outside, four corner marks, long-side-only preview; no camera before the kind is chosen; stream released");
+  // a payment card's outline: choose, then Start camera
+  await page.locator(".pushed").getByText("What are you adding?").waitFor({ timeout: 10_000 }); // closing the ID camera returns to the picker
+  await pickKindV3(page, /^Payment card/);
+  await page.waitForTimeout(500);
+  assert.equal(await count(), 1, "no new camera request before Start camera");
+  await startCamera(page);
   await page.locator(".doccam[data-guided]").waitFor({ timeout: 10_000 });
-  const f2 = await page.locator(".dc-frame").boundingBox();
-  assert.ok(Math.abs(f2.width / f2.height - 85.6 / 54) < 0.01, `a card's outline: ${(f2.width / f2.height).toFixed(3)}`);
-  // the camera is asked again for this card; wait for that request (the last one on record is still the passport's until it is made)
-  await page.waitForFunction(() => globalThis.__constraints?.video?.width?.ideal === 1920, null, { timeout: 10_000 });
-  const c2 = await page.evaluate(() => globalThis.__constraints.video);
-  assert.equal(c2.width.ideal, 1920); assert.equal(c2.height, undefined);
-  await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
+  await page.waitForFunction(() => globalThis.__gum === 2, null, { timeout: 10_000 });
+  const f3 = await page.locator(".dc-frame").boundingBox();
+  assert.ok(Math.abs(f3.width / f3.height - 85.6 / 54) < 0.01, `a card's outline: ${(f3.width / f3.height).toFixed(3)}`);
+  assert.equal(await page.locator(".doccam .dc-kinds").count(), 0, "a payment card has no switch");
   // the app goes to the background: the stream is released at once
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
-  await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
-  step("an ID-1 outline: 85.6:54, 1080p preview; backgrounding releases the stream");
+  await page.waitForFunction(() => globalThis.__tracks.slice(1).every((t) => t.readyState === "ended"), null, { timeout: 5000 });
+  step("a payment card: ID-1 outline; backgrounding releases the stream");
 }, "lic-back-small");
 
 // 2. what it says, for each way a card can be wrong
@@ -252,17 +240,14 @@ scene("card-shaky", async (page) => {
   step(`a shaking view: "Hold steady", no photo (motion ${g?.motion?.toFixed?.(3)})`);
 }, "lic-back-shaky");
 
-// 4. the wrong side: a license's front where the back is asked for
+// 4. the wrong side: a license's front, where the ID camera wants a barcode or the lines of <<<
 scene("license-wrong-side", async (page) => {
   await pick(page, "Driver's license");
-  // the front: whatever the camera sees, the shutter takes it
-  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await page.locator(".doccam .dc-shutter").click();
-  // the back's camera opens by itself once the front is kept
   await says(page, "Show the back", 40_000);
-  await page.waitForTimeout(3000);
-  assert.equal(await page.locator(".doccam").count(), 1, "the front where the back is asked for isn't taken by itself");
-  step('a license front where the back is asked for: "Show the back", no photo by itself');
+  await page.waitForTimeout(3500);
+  assert.equal(await page.locator(".doccam").count(), 1, "the front, where a barcode is wanted, isn't taken by itself");
+  assert.equal(await developed(page), null);
+  step('a license front where a barcode is wanted: "Show the back", no photo by itself');
 }, "lic-front-ok");
 
 // 5. the shutter always works: a card that is far too small is still taken when asked
@@ -270,7 +255,6 @@ scene("manual-shutter", async (page) => {
   await pick(page, "Another card");
   await says(page, "Move closer");
   await page.locator(".doccam .dc-shutter").click();
-  await page.locator(".pushed", { hasText: "Check it, then seal it" }).or(page.locator(".pushed").getByText("Front saved")).first().waitFor({ timeout: 30_000 }).catch(() => {});
   await page.waitForFunction(() => globalThis.__humidDevelop, null, { timeout: 30_000 });
   const d = await developed(page);
   assert.equal(d.how, "shutter"); assert.equal(d.guided, true);
@@ -279,32 +263,33 @@ scene("manual-shutter", async (page) => {
   step(`the shutter takes a card the guidance called too small (overlap with where it lay: ${r.iou.toFixed(2)}, ${d.source} ${d.stillW}px)`);
 }, "lic-back-small");
 
-// 6. lined up: taken by itself, cropped to the outline, read from the still. The license back
+// 6. lined up: taken by itself, cropped to the outline, read from the still. The license back (the ID camera), then the front
 scene("license-back-ok", async (page) => {
   await pick(page, "Driver's license");
-  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
-  await page.locator(".doccam .dc-shutter").click(); // the front: any view
-  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 30_000 });
-  await page.evaluate(() => { globalThis.__humidDevelop = undefined; }); // the back's camera has opened by itself
   const seen = new Set();
   const watch = setInterval(() => page.evaluate(() => document.querySelector(".doccam .dc-state strong")?.textContent).then((t) => t && seen.add(t)).catch(() => {}), 120);
-  await page.locator(".pushed", { hasText: "Check the details" }).waitFor({ timeout: 60_000 });
+  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 60_000 });
   clearInterval(watch);
   const d = await developed(page);
   assert.equal(d.how, "auto", "taken by itself");
   assert.equal(d.guided, true);
-  assert.ok(seen.has("Hold steady") || seen.has("Reading") || seen.has("Verifying"), `it said ${[...seen].join(", ")}`);
+  assert.ok(seen.has("Hold steady") || seen.has("Reading") || seen.has("Verifying") || [...seen].some((t) => /Hold steady|Reading|Verifying/.test(t)), `it said ${[...seen].join(", ")}`);
   const r = await cropIoU(page, { size: 0.97, ratio: 85.6 / 54 }, "license-back");
   assert.ok(r.iou > 0.93, `the crop holds the whole card where it was: overlap ${r.iou.toFixed(3)}`);
   assert.ok(Math.abs(r.ratio - 85.6 / 54) < 0.02, `ID-1 proportions: ${r.ratio.toFixed(3)}`);
+  step(`license back: taken by itself, crop overlap ${r.iou.toFixed(3)}, barcode read from the ${d.source} (${d.stillW}px wide), rotate ${d.rotate}`);
+  // the front: its camera (the license's own outline) has opened by itself; the shutter takes whatever it sees
+  await page.locator(".doccam .dc-frame[data-template='driver_license-front']").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam .dc-shutter").click();
+  await page.getByText("Review, then seal").waitFor({ timeout: 60_000 });
   assert.equal(await page.locator("#idf-surname").inputValue(), "SPECIMEN", "the barcode was read from the still");
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
   await shot(page, "license-back-read");
-  step(`license back: taken by itself, crop overlap ${r.iou.toFixed(3)}, barcode read from the ${d.source} (${d.stillW}px wide), rotate ${d.rotate}`);
   // the review has a Rotate control
   const rot = page.locator(".id-thumbs").getByRole("button", { name: /Rotate the back/ });
   assert.ok((await rot.boundingBox()).height >= 44, "Rotate is a 44 px target");
-  const before = await page.locator(".id-thumbs figure[data-shape='id1'] img").nth(1).getAttribute("src").catch(() => null);
+  const before = await page.locator(".id-thumbs img").nth(1).getAttribute("src");
   await rot.click();
   await page.waitForFunction((b) => document.querySelectorAll(".id-thumbs img")[1]?.getAttribute("src") !== b, before, { timeout: 10_000 });
   step("the review's Rotate turns the photo");
@@ -359,11 +344,11 @@ scene("passport-720p", async (page) => {
 }, "pp-ok-720p");
 scene("license-720p", async (page) => {
   await pick(page, "Driver's license");
+  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 60_000 });
+  const d = await developed(page);
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   await page.locator(".doccam .dc-shutter").click();
-  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 30_000 });
-  await page.locator(".pushed", { hasText: "Check the details" }).waitFor({ timeout: 60_000 });
-  const d = await developed(page);
+  await page.getByText("Review, then seal").waitFor({ timeout: 60_000 });
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
   step(`license back at 720p: barcode read (${d.source} ${d.stillW}px wide)`);
 }, "lic-back-ok-720p");
