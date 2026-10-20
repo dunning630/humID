@@ -10,7 +10,11 @@
 //             for MRZs (DoubangoTelecom/tesseractMRZ, BSD-3-Clause)
 
 import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad, bandPlan } from "./docfind.js";
-import { cleanScan } from "./scanclean.js";
+import { cleanScan, lightField, paperShare } from "./scanclean.js";
+import { cleanPixels } from "./scanjobs.js";
+import { findNear } from "./docnear.js";
+import { b64Bytes, bytesB64 } from "./bytes.js";
+import { span } from "./perf.js";
 
 export { createAnalyzer } from "./analyzer.js";
 export * as flow from "./scanflow.js";
@@ -77,7 +81,10 @@ export function textReader() {
       await worker.setParameters({ tessedit_char_whitelist: front ? "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/-.' " : "", tessedit_pageseg_mode: "11", preserve_interword_spaces: "1" });
       mode = front;
     };
-    return { read: async (canvas, { front = true } = {}) => { await set(front); return (await worker.recognize(canvas)).data.text || ""; }, stop: () => worker.terminate() };
+    // A card photo goes to the reader as a JPEG (q 0.95): the reader's own conversion of a canvas is a PNG, which takes
+    // two to three times as long to make (0.5 s against 0.2 s for a 2600 px card at 4x slower than this machine) and leaves the print as sharp.
+    const asImage = async (canvas) => { try { return await toBlob(canvas, "image/jpeg", 0.95); } catch { return canvas; } };
+    return { read: async (canvas, { front = true } = {}) => { await set(front); return (await worker.recognize(await asImage(canvas))).data.text || ""; }, stop: () => worker.terminate() };
   })();
   textP.catch(() => { textP = null; });
   return textP;
@@ -131,18 +138,20 @@ export const imageData = (c) => ctx2d(c).getImageData(0, 0, c.width, c.height);
 /** A small grey copy of part of a video frame or picture, at most `max` wide. */
 export const grayRegion = (src, rect, max = 560) => toGray(imageData(grab(src, rect, max)));
 
-// Small chunks: spreading tens of thousands of arguments can overflow the stack on phones.
-const b64 = (bytes) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x1000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x1000)); return btoa(s); };
+const b64 = bytesB64;
 const toBlob = (c, type, q) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't encode the photo."))), type, q));
 
 /** A canvas as a JPEG for the record: { type, data (base64), width, height, size }. */
 export async function jpeg(c, { maxW = 1600, quality = 0.86 } = {}) {
+  const end = span("jpeg");
   const src = c.width > maxW ? grab(c, null, maxW) : c;
   let blob;
   try { blob = await toBlob(src, "image/jpeg", quality); }
   catch { blob = await toBlob(src.width > 1000 ? grab(src, null, 1000) : src, "image/jpeg", 0.8); } // low memory: smaller
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  return { type: "image/jpeg", data: b64(bytes), width: src.width, height: src.height, size: bytes.length };
+  const out = { type: "image/jpeg", data: b64(bytes), width: src.width, height: src.height, size: bytes.length };
+  end();
+  return out;
 }
 
 /**
@@ -160,17 +169,65 @@ export function looksBlank(c) {
   return max - min < 12;
 }
 export const imageUrl = (img) => (img ? `data:${img.type};base64,${img.data}` : null);
-export const imageBytes = (img) => Uint8Array.from(atob(img.data), (ch) => ch.charCodeAt(0));
+export const imageBytes = (img) => b64Bytes(img.data);
 
 /* ---------------- straightening ---------------- */
 
-/** The document inside `quad` (in c's pixels), straightened into its own canvas. */
-export function straighten(c, quad, { prefer = null, max = 3000 } = {}) {
-  const size = outputSize(quad, { prefer, max });
-  const out = warp(imageData(c), quad, size.width, size.height);
+/**
+ * The longest side, in pixels, a straightened picture is made at: the proportion sealed is
+ * what a person reads, and a bigger picture only costs time (the warp, the clean scan, the
+ * JPEG, and on a phone every megapixel is a second or so). A card is kept at the width
+ * its record stores (jpeg() saves 1600; the card flow 1200); a page at about 235 dpi on a
+ * letter or A4 sheet, which is where small print is still crisp.
+ */
+export const CARD_PX = 1600;
+export const PAGE_PX = 2600;
+
+/**
+ * The part of c the document lies in, as pixels to warp from: not the whole 8 megapixel
+ * frame (reading all of it back from the canvas cost more than the warp), just the
+ * quad's bounding box plus a margin, and when the output is much smaller than the
+ * source, that part scaled down by the browser first (so the warp isn't sampling a
+ * picture twice its size: faster, and smoother than skipping pixels). Returns
+ * { src (RGBA { width, height, data }), quad (the same corners, in src's pixels) }.
+ */
+function sourceFor(c, quad, size) {
+  const xs = quad.map((p) => p.x), ys = quad.map((p) => p.y);
+  const x0 = Math.max(0, Math.floor(Math.min(...xs)) - 2), y0 = Math.max(0, Math.floor(Math.min(...ys)) - 2);
+  const x1 = Math.min(c.width, Math.ceil(Math.max(...xs)) + 2), y1 = Math.min(c.height, Math.ceil(Math.max(...ys)) + 2);
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+  const side = Math.max(Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y), Math.hypot(quad[3].x - quad[2].x, quad[3].y - quad[2].y),
+    Math.hypot(quad[3].x - quad[0].x, quad[3].y - quad[0].y), Math.hypot(quad[2].x - quad[1].x, quad[2].y - quad[1].y));
+  const k = Math.max(size.width, size.height) / Math.max(1, side); // output pixels per source pixel
+  if (k >= 0.75) return { src: ctx2d(c).getImageData(x0, y0, w, h), quad: quad.map((p) => ({ x: p.x - x0, y: p.y - y0 })) };
+  const sc = canvas(w * k, h * k);
+  const g = ctx2d(sc);
+  g.imageSmoothingQuality = "medium";
+  g.drawImage(c, x0, y0, w, h, 0, 0, sc.width, sc.height);
+  const fx = sc.width / w, fy = sc.height / h;
+  return { src: g.getImageData(0, 0, sc.width, sc.height), quad: quad.map((p) => ({ x: (p.x - x0) * fx, y: (p.y - y0) * fy })) };
+}
+
+/**
+ * Straighten, and keep the grey 900 px copy the page's orientation is judged from, made from
+ * the pixels just warped (an area average: cheap) rather than by drawing the new canvas
+ * smaller (which made the browser build a mip chain of every megapixel of it).
+ */
+function straightenWith(c, quad, { prefer = null, max = 3000 } = {}) {
+  const end = span("straighten");
+  const size = outputSize(quad, { prefer, max: Math.min(max, prefer ? CARD_PX : PAGE_PX) });
+  const { src, quad: q } = sourceFor(c, quad, size);
+  const out = warp(src, q, size.width, size.height);
   const oc = canvas(size.width, size.height);
   ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
-  return oc;
+  const gray = shrink(toGray(out), 900);
+  end();
+  return { canvas: oc, gray };
+}
+
+/** The document inside `quad` (in c's pixels), straightened into its own canvas. */
+export function straighten(c, quad, { prefer = null, max = 3000 } = {}) {
+  return straightenWith(c, quad, { prefer, max }).canvas;
 }
 
 /**
@@ -179,7 +236,31 @@ export function straighten(c, quad, { prefer = null, max = 3000 } = {}) {
  * paper, so a photo or a dark card isn't offered as a scan by default.
  */
 export function cleanCanvas(c) {
+  const end = span("clean-main");
   const out = cleanScan(imageData(c));
+  const oc = canvas(out.width, out.height);
+  ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
+  end();
+  return { canvas: oc, paper: out.paper };
+}
+
+/**
+ * Does this page look like paper? The same measure cleanCanvas() reports as `paper`, from a
+ * small copy (the light is judged in blocks, so 600 px says what 2600 does): a few
+ * milliseconds, so the review can say whether to suggest the clean scan before it exists.
+ */
+export function paperOf(c) {
+  const small = c.width > 600 ? grab(c, null, 600) : c;
+  return paperShare(lightField(imageData(small)));
+}
+
+/**
+ * cleanCanvas(), made off the main thread (core/scanjobs.js): the page is read out of the
+ * canvas, handed to the scan worker, and the result drawn back into a new canvas. Resolves
+ * { canvas, paper }; the screen waiting for it carries on meanwhile.
+ */
+export async function cleanCanvasAsync(c) {
+  const out = await cleanPixels(imageData(c));
   const oc = canvas(out.width, out.height);
   ctx2d(oc).putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
   return { canvas: oc, paper: out.paper };
@@ -215,10 +296,14 @@ export function grayOf(src, max = 320) {
  * the still agrees, the still's (finer) corners, else the live view's. null if neither.
  */
 export function cornersIn(c, { hint = null, shape = "full" } = {}) {
+  const end = span("corners");
+  try { return cornersInside(c, { hint, shape }); } finally { end(); }
+}
+function cornersInside(c, { hint, shape }) {
   const im = grayOf(c, 640), k = c.width / im.w;
   const prior = hint ? scaleQuad(hint, 1 / k) : null;
   const ratio = { id1: 1.586, td3: 1.42 }[shape] || null;
-  const d = findDocument(im, { minArea: hint ? 0.03 : 0.12, prior, ratio });
+  const d = hint ? findNear(im, prior, { ratio, minArea: 0.03 }) : findDocument(im, { minArea: 0.12, prior, ratio });
   if (d) {
     const q = scaleQuad(d.quad, k);
     if (!hint) return q;
@@ -237,9 +322,12 @@ export function cornersIn(c, { hint = null, shape = "full" } = {}) {
  */
 export function develop(original, quad, { shape = "full" } = {}) {
   const card = shape !== "full";
-  const flat = quad ? straighten(original, quad, { prefer: card ? shape : null, max: card ? 2000 : 3000 }) : null;
+  const st = quad ? straightenWith(original, quad, { prefer: card ? shape : null, max: card ? CARD_PX : PAGE_PX }) : null;
+  const flat = st?.canvas || null;
   const base = flat || original;
-  const o = orientation(grayOf(base, 1100), { landscape: card });
+  const endO = span("orientation");
+  const o = orientation(st?.gray || grayOf(base, 900), { landscape: card }); // orientation() works at 900
+  endO();
   // Turn it when it's clear which way up it reads. Text clearly running down the page is
   // turned across even when which way is up is a closer call (a sideways page is wrong
   // either way; the guess is right far more often than not, and a tap turns it). A
@@ -251,7 +339,7 @@ export function develop(original, quad, { shape = "full" } = {}) {
 }
 
 /** A photo file (camera roll, Files) → canvas, upright, at most maxSide on its long side. */
-export async function fileToCanvas(file, maxSide = 3200) {
+export async function fileToCanvas(file, maxSide = PAGE_PX) {
   // Older WebKit rejects the options bag; it already applies the photo's orientation.
   const bmp = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => createImageBitmap(file));
   const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
