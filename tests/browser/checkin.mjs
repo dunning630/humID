@@ -16,7 +16,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, confirmCard, youScreen, backOut } from "./_v3.mjs";
+import { hold, confirmCard, youScreen, backOut, addFile } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const PORT = Number(process.env.PORT || 5196);
@@ -33,13 +33,8 @@ dev.stderr.on("data", (d) => { log += d; });
 const stop = () => new Promise((r) => { if (dev.exitCode !== null) return r(); dev.once("exit", r); dev.kill(); });
 
 async function addDoc(page, name) {
-  // 3.0 is camera first; a file goes in from the "what to show" screen the first time, or the camera's More chip after
-  await page.getByRole("button", { name: "Add to your vault" }).first().click();
-  await page.locator(".pushed, .doccam").first().waitFor();
-  const fileBtn = page.getByRole("button", { name: "Choose a file or photo instead" });
-  if (await fileBtn.count()) await fileBtn.click();
-  else { await page.locator(".dc-tools").getByRole("button", { name: "More" }).click(); await page.locator(".dc-tools").getByRole("button", { name: "File" }).click(); }
-  await page.locator("#add-file").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`${name}: kept for the test.\n`) });
+  // 3.0.1: Add opens "What are you adding?"; File opens the file chooser
+  await addFile(page, { name, mimeType: "text/plain", buffer: Buffer.from(`${name}: kept for the test.\n`) });
   await page.locator(".pushed").getByText("Review, then seal").waitFor();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
   await hold(page);
@@ -90,9 +85,9 @@ try {
   await confirmCard(page);
   await page.getByRole("button", { name: "I've written it down" }).click();
   await page.getByRole("button", { name: "Open my vault" }).click();
-  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add (what to show; no camera yet)
-  await page.locator(".pushed [data-start-camera]").waitFor();
-  assert.equal(await page.locator(".doccam").count(), 0, "no camera before Start camera");
+  await page.getByRole("button", { name: "Add to your vault" }).first().click(); // empty state → Add: what it is, first; no camera yet
+  await page.locator(".pushed").getByText("What are you adding?").waitFor();
+  assert.equal(await page.locator(".doccam").count(), 0, "no camera before a kind is picked");
   await page.locator(".pushed [data-back]").first().click();
   await page.locator(".pushed").waitFor({ state: "detached", timeout: 5000 });
   await addDoc(page, "Passport scan.txt");

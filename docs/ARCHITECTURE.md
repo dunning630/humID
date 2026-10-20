@@ -52,10 +52,10 @@ check · your recovery card · you're in) or *I already have HumID* (connect ·
 choose: another device, or prove it's you with two proofs · the first check ·
 wait) → Lock → three tabs. **Vault** (search; a chip row of the *kinds* that
 exist: All · IDs · Cards · Passes · Photos · Files, with a secondary tag row
-once any item carries a tag; one **Add** flow, camera first: the photo routes
-itself to the ID flow, the card review or the photo review, with File, Type a
-card and Tap a card on the camera's own bar and "It's something else" for the
-picker; every kind then goes through one shared *Review* (name, kind, the kind's
+once any item carries a tag; one **Add** flow, what it is first: "What are you
+adding?" lists each kind (each ID kind on its own, payment card, document page,
+photo, pass, file) and opens that kind's camera, with its template, at once;
+every kind then goes through one shared *Review* (name, kind, the kind's
 fields, tags, location stamp, Seal). Tapping a row pushes the **Item** screen:
 the preview first (one Open = one check), the facts, and a ··· menu with Rename
 · Pin · Show in decoy · Export sealed · Delete; Save a copy lives in the opened

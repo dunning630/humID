@@ -16,6 +16,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 W, H = 1080, 1920
 GUIDE_ID1 = (141, 526, 797, 503)   # x, y, w, h in the video's pixels
 GUIDE_TD3 = (141, 497, 797, 561)
+GUIDE_PAGE = (141, 239, 797, 1076)  # 3.0.1: a paper page's outline (1:1.35, standing up)
 sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 sansb = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 mono = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
@@ -140,7 +141,14 @@ bg = table()
 back = Image.open(f"{here}/card-back.jpg").convert("RGB")
 front = Image.open(f"{here}/card-front.jpg").convert("RGB")
 pp = Image.open(f"{here}/passport-page.jpg").convert("RGB")
-G1, G2 = GUIDE_ID1, GUIDE_TD3
+import gzip
+def pgm_gz(path):
+    raw = gzip.open(path).read()
+    parts = raw.split(b"\n", 3) if raw[:2] == b"P5" else None
+    w, h = map(int, parts[1].split()) if len(parts[1].split()) == 2 else (None, None)
+    return Image.frombytes("L", (w, h), parts[3][: w * h]).convert("RGB")
+letter = pgm_gz(f"{here}/../docs/page-letter.pgm.gz").point(lambda v: int(v * 0.88))  # paper in a room's light, not clipped white
+G1, G2, G3 = GUIDE_ID1, GUIDE_TD3, GUIDE_PAGE
 gcx1, gcy1 = G1[0] + G1[2] / 2, G1[1] + G1[3] / 2
 gcx2, gcy2 = G2[0] + G2[2] / 2, G2[1] + G2[3] / 2
 
@@ -167,11 +175,15 @@ specs = {
     "pay-front-ok":      dict(card=paycard("front"), g=G1, scale=0.97),
     "pay-front-small":   dict(card=paycard("front"), g=G1, scale=0.6),
     "pay-back-ok":       dict(card=paycard("back"), g=G1, scale=0.97),
+    "page-letter-ok":    dict(card=letter, g=G3, scale=0.96, round_=0),
 }
+# ONLY=name1,name2 writes just those (the others keep their bytes)
+only = set(filter(None, os.environ.get("ONLY", "").split(",")))
+if only: specs = {k: v for k, v in specs.items() if k in only}
 for name, s in specs.items():
     kw = dict(s)
     card, g = kw.pop("card"), kw.pop("g")
     cam = {k: kw.pop(k) for k in ("blur", "glare", "dark") if k in kw}
     save(name, [camera(place(card, g, bg=bg, **kw), **cam)])
-save("lic-back-shaky", shaky(back, G1))
-print("wrote", len(specs) + 1, "fixtures to", out)
+if not only or "lic-back-shaky" in only: save("lic-back-shaky", shaky(back, G1))
+print("wrote", len(specs) + (0 if only and "lic-back-shaky" not in only else 1), "fixtures to", out)

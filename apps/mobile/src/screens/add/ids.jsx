@@ -39,12 +39,13 @@ export const PLAN = {
   ],
 };
 
-/** The ID kinds, for when the camera couldn't tell which one it saw. */
+/** The ID kinds on "What are you adding?" (3.0.1: listed there directly; each opens its own outline at once). */
 export const ID_CHOICES = [
-  { kind: "driver_license", icon: "idcard", title: "Driver's license", sub: "US or Canada. Reads the barcode on the back." },
-  { kind: "passport", icon: "passport", title: "Passport", sub: "Reads the photo page, and the chip on phones with NFC." },
-  { kind: "id_card", icon: "idcard", title: "ID card", sub: "A state ID, or a national ID card with a chip." },
-  { kind: "other", icon: "file", title: "Another card", sub: "Insurance, membership, anything with two sides." },
+  { kind: "passport", icon: "passport", title: "Passport", sub: "The photo page. Reads the lines of <<<, and the chip on phones with NFC." },
+  { kind: "driver_license", icon: "idcard", title: "Driver's license", sub: "The front, then the barcode on the back." },
+  { kind: "id_card", icon: "idcard", title: "State ID or ID card", sub: "A state ID, or a national ID card. Front, then back." },
+  { kind: "residence_permit", icon: "idcard", title: "Green card or residence permit", sub: "The front, then the lines of <<< on the back." },
+  { kind: "other", icon: "file", title: "Another card", sub: "Insurance, membership, student ID: front and back." },
 ];
 
 const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "Scanned", typed: "You" };
@@ -87,16 +88,18 @@ export async function recordFrom(found) {
 /**
  * The ID flow: capture each side (the camera reads a barcode or MRZ as it goes), read the
  * chip where there is one, review the details, seal.
- *   start    { rec, note, step, name, tags } — a record to carry on with; step: "capture"
- *            (default), "auto" (the Add camera already read a side), "chip", or "review"
+ *   start    { rec, note, step, name, tags } — a record to carry on with; step: "camera" (open the
+ *            first side's outline at once: the kind was just picked), "capture" (default), "auto" (a
+ *            side was already read), "chip", or "review"
  *   onExit   the flow is left from its first step (Back)
  *   onDraft  ({ rec, step, name, tags }) whenever something worth keeping across a lock changes
  */
 export function IdFlow({ start, onExit, onDraft }) {
   const rec = useRef(start.rec);
   const [, redraw] = useReducer((n) => n + 1, 0);
-  const [step, setStep] = useState(start.step === "auto" ? "capture" : start.step || "capture"); // capture | chip | review
-  const [cam, setCam] = useState(null);
+  const [step, setStep] = useState(start.step === "auto" || start.step === "camera" ? "capture" : start.step || "capture"); // capture | chip | review
+  // picked a moment ago: the first side's camera opens with the flow, no "Start camera" between
+  const [cam, setCam] = useState(() => (start.step === "camera" ? (PLAN[start.rec.kind] || PLAN.other).find((p) => !start.rec.images[p.side]) || null : null));
   const camRun = useRef({ cam: null, n: 0 });
   if (cam !== camRun.current.cam) camRun.current = { cam, n: camRun.current.n + 1 };
   const [saved, setSaved] = useState(null);
@@ -192,18 +195,19 @@ export function IdFlow({ start, onExit, onDraft }) {
   }
 
   const retake = (p) => { fields.current?.commit(); setCam(p); };
-  // the outline settles which way up a card is held; the print and the reads turn the rest, and this turns what is left
+  // the outline settles which way up a card is held; this turns what is left: half round for a card or a
+  // passport page (they're always landscape), a quarter for anything else
   const rotate = async (p) => {
     const img = rec.current.images[p.side];
     if (!img) return;
-    try { setImage(rec.current, p.side, await turnedImage(img)); redraw(); }
+    try { setImage(rec.current, p.side, await turnedImage(img, p.shape === "id1" || p.shape === "td3" ? 180 : 90)); redraw(); }
     catch { toast("Couldn't turn that photo. Retake it instead.", "warn"); }
   };
   const toChip = () => { fields.current?.commit(); setStep("chip"); };
   const seal = async (place) => {
     fields.current?.commit();
     const ok = await addIdRecord(rec.current, name || recordTitle(rec.current), place, { tags });
-    if (ok) { setPref({ lastKind: "id" }); S.push.value = null; }
+    if (ok) { setPref({ lastKind: rec.current.kind }); S.push.value = null; }
   };
   const missing = step === "review" ? (fields.current?.missing?.() || []) : [];
 
@@ -252,8 +256,8 @@ export function IdFlow({ start, onExit, onDraft }) {
         )}
       </Step>
       {cam && (
-        <DocCamera key={`${cam.side}-${camRun.current.n}`} kind={r.kind} side={cam.side} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint} native={r.kind === "other"}
-          saved={saved} onCancel={() => { setSaved(null); setCam(null); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
+        <DocCamera key={`${cam.side}-${camRun.current.n}`} kind={r.kind} side={cam.side} shape={cam.shape} read={cam.read} eyebrow={kindLabel(r.kind)} title={cam.title} hint={cam.hint}
+          saved={saved} onCancel={() => { setSaved(null); setCam(null); if (start.step === "camera" && !done.length) onExit(); }} onSkip={cam.optional ? () => { setSaved(null); skipSide(cam); } : null} onDone={(res) => captured(cam, res)} />
       )}
     </>
   );

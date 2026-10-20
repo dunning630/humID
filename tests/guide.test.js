@@ -138,3 +138,23 @@ test("scanflow in guided mode: its steps, its words, and problems are shown afte
   s = step(s, { t: "look", look: { found: true, guide: { key: "closer", detail: "x", present: true }, hint: "x" }, progress: 0 }, 1200);
   assert.equal(describe(s, { guided: true, noun: "card" }).title, "Move closer");
 });
+
+test("3.0.1: a paper page's outline stands up between US Letter and A4, and both line up in it", () => {
+  const PAGE = templateFor({ kind: "page" });
+  assert.equal(PAGE.shape, "page"); assert.equal(PAGE.ratio, RATIO.page); assert.equal(PAGE.noun, "page");
+  assert.ok(RATIO.page > 11 / 8.5 && RATIO.page < 297 / 210);
+  const letter = pgm("page-letter"), a4 = pgm("page-a4");
+  for (const [name, page, size] of [["Letter", letter, 0.97], ["A4", a4, 0.94]]) {
+    const o = { card: page, ratio: 1 / RATIO.page, size, table: 62 };
+    const { im, guide } = scene(o), prev = scene({ ...o, seed: 9 }).im;
+    const v = judge(measure(im, guide, { prev }), PAGE, {});
+    assert.ok(v.ready, `${name} in the page outline: ${JSON.stringify({ key: v.key, scale: v.scale })}`);
+  }
+});
+
+test("3.0.1: a page bright all over isn't glare; a bright patch on it still is", () => {
+  const PAGE = templateFor({ kind: "page" });
+  const m = { n: 1, sides: 4, p95: 255, mean: 230, p50: 245, patch: 20, sat: 0.7, energy: 12, scale: 0.97, edges: {}, dx: 0, dy: 0, rot: 0, rotSpread: 0, flatH: 0, flatV: 0, aspect: 0, focus: 2, motion: 0 };
+  assert.notEqual(judge(m, PAGE, {}).key, "glare");
+  assert.equal(judge({ ...m, sat: 0.2 }, PAGE, {}).key, "glare");
+});

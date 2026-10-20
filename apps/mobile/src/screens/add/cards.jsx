@@ -194,7 +194,7 @@ function CardForm({ rec, note, pending, resume, onRetake, onBack, onChange, onDr
   );
 
   // a card the outline couldn't tell the way up of: turn the photo a quarter
-  const rotate = async () => { try { setImage(rec, "front", await turnedImage(rec.images.front)); onChange(); } catch { toast("Couldn't turn that photo. Retake it instead.", "warn"); } };
+  const rotate = async () => { try { setImage(rec, "front", await turnedImage(rec.images.front, 180)); onChange(); } catch { toast("Couldn't turn that photo. Retake it instead.", "warn"); } };
 
   return (
     <Review kind="card" name={name} setName={setName} tags={tags} setTags={setTags}

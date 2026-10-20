@@ -4,7 +4,9 @@
 //   grabWindow(video, rect)       the analysis picture: the outline and a margin, as a small grey picture
 //   takeStill(video, track, rect) the best still the phone gives, cropped to the outline (and a margin),
 //                                 turned straight by a small reliable angle; { canvas, source, ... }
-//   uprightOf(canvas)             which way up a cropped card reads: 0 or 180
+//   uprightOf(canvas)             which way up a cropped card reads by its print: 0 or 180 (not used on guided
+//                                 crops since 3.0.1: the outline's zones say which way up, and the print's
+//                                 guess turned real license fronts upside down)
 //
 // The still: ImageCapture.takePhoto() (the sensor's full resolution, when the WebView offers it)
 // is checked against the preview frame taken at the same moment (the two must show the same
@@ -98,7 +100,8 @@ async function photoSettings(ic) {
  *   rect           the outline in the video's pixels
  *   tilt           degrees to turn the crop straight by (0 for none), from the guidance's reliable estimate
  *   photo          try ImageCapture.takePhoto first (default true)
- * Returns { canvas, source: "photo" | "frame", width, height (of the source still), why? (why a photo wasn't used) }.
+ * Returns { canvas, source: "photo" | "frame", width, height (of the source still), turned (0 | 180: the photo
+ * came back turned half round from the preview and was turned back), why? (why a photo wasn't used) }.
  * Never throws for a missing or failing ImageCapture: the preview's frame is the fallback.
  */
 export async function takeStill(video, track, rect, { tilt = 0, photo = true, timeoutMs = 3000 } = {}) {
@@ -118,20 +121,39 @@ export async function takeStill(video, track, rect, { tilt = 0, photo = true, ti
     const map = stillMapping(vw, vh, bmp.width, bmp.height);
     // no more pixels than the preview has: nothing gained (and the framing is the less certain)
     if (map.scale < 1.2) return fromFrame("not bigger");
-    // is it the same scene? compare a small copy of the outline's area in both (and correct a small offset)
+    // is it the same scene? compare a small copy of the outline's area in both (and correct a small offset).
+    // Some phones hand the photo back turned 180° from the preview (a sensor mounted the other way up, or an
+    // orientation tag read differently): the photo turned half round is compared too, and the better one wins,
+    // so the still is always the way up the person lined it up in the preview.
     const a = rectInStill(rect, map);
-    const t = thumb(bmp, a);
-    const ag = agree(frameThumb, t, 3);
+    const ag0 = agree(frameThumb, thumb(bmp, a), 3);
+    const ag180 = agree(frameThumb, turnGray(thumb(bmp, mirrored(a, bmp))), 3);
+    const turned = ag180.score > ag0.score + 0.05;
+    const ag = turned ? ag180 : ag0;
     if (ag.score < STILL_AGREES) return fromFrame(`different framing (${ag.score.toFixed(2)})`);
     const k = rect.w / frameThumb.w; // video pixels per thumbnail pixel
     const r = rectInStill(rect, map, ag.dx * k, ag.dy * k);
-    const canvas = cropOut(bmp, r, { tilt });
-    return { canvas, source: "photo", width: bmp.width, height: bmp.height, score: ag.score };
+    const canvas = turned ? turn180(cropOut(bmp, mirrored(r, bmp), { tilt })) : cropOut(bmp, r, { tilt });
+    return { canvas, source: "photo", width: bmp.width, height: bmp.height, score: ag.score, turned: turned ? 180 : 0 };
   } catch (e) {
     return fromFrame(String(e?.message || e).slice(0, 60));
   } finally {
     try { bmp?.close?.(); } catch { /* gone */ }
   }
+}
+
+/** A rectangle's place in a picture turned half round (about its centre). */
+const mirrored = (r, pic) => ({ x: pic.width - r.x - r.w, y: pic.height - r.y - r.h, w: r.w, h: r.h });
+/** A grey picture turned 180°. */
+const turnGray = (im) => ({ w: im.w, h: im.h, g: im.g.slice().reverse() });
+/** A canvas turned 180°. */
+function turn180(c) {
+  const out = make(c.width, c.height);
+  const g = ctxOf(out);
+  g.translate(out.width, out.height);
+  g.rotate(Math.PI);
+  g.drawImage(c, 0, 0);
+  return out;
 }
 
 /** A small grey copy of a canvas, at most `max` on its long side. */

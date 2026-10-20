@@ -31,7 +31,8 @@ export const DEFAULTS = Object.freeze({
   readySeen: {},       // 3.0: kinds whose "Ready" explainer has been seen (shown once per kind)
 });
 
-const KIND_IDS = ["id", "card", "pass", "photo", "file"];
+// 3.0.1: the kind as picked (each ID kind on its own); 3.0's "id" is no longer one of them
+const KIND_IDS = ["passport", "driver_license", "id_card", "residence_permit", "other", "card", "page", "photo", "pass", "file"];
 
 /** Anything stored (or tampered with) comes back as valid preferences: unknown keys dropped, bad values defaulted. */
 export function sanitize(raw) {

@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { hold, enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, chooseId } from "./_v3.mjs";
+import { enroll, unlock, openAdd as openAddFlow, openPicker, pickKind as pick, startCamera, chooseId } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = (n) => join(root, "tests/fixtures/id", n);
@@ -55,12 +55,8 @@ async function launch(cameraFile) {
   return { ctx, page };
 }
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
-/** One way in (3.0, camera first): the + button opens the Add camera (the first time, "what to show" with Start camera comes before it). */
-async function openAdd(page) { await openAddFlow(page); await startCamera(page); }
-/** The picker ("It's something else"), then one kind. */
-async function pickKind(page, name) { await openPicker(page); await pick(page, name); }
-/** The photo camera itself: the picker's Photo, then (the first time) Start camera. */
-async function openPhotoCamera(page) { await pickKind(page, /^Photo/); await startCamera(page); } // anchored: the ID entry's text says "…from the photo"
+/** The photo camera (3.0.1): Add opens the picker, Photo opens the camera at once. */
+async function openPhotoCamera(page) { await openAddFlow(page); await pick(page, "Photo"); await startCamera(page); }
 const state = (page) => page.locator(".doccam .dc-state");
 
 try {
@@ -77,7 +73,7 @@ try {
   assert.equal(await live.count(), 1, "the card is a live region");
   assert.equal(await live.getAttribute("aria-live"), "polite");
   assert.equal(await state(page).locator(".dc-steps li").count(), 4, "four steps for a photo: Find, Steady, Capture, Done");
-  await page.locator(".doccam .dc-outline, .doccam .dc-frame").first().waitFor({ state: "attached" });
+  await page.locator(".doccam .dc-frame").first().waitFor({ state: "attached" });
   await page.waitForFunction(() => globalThis.__humidLook, null, { timeout: 15_000 });
   assert.equal(await page.evaluate(() => globalThis.__humidLook.where), "worker", "the analysis runs in the worker");
   const ms = await page.evaluate(() => globalThis.__humidLook.ms);
@@ -118,7 +114,7 @@ try {
     new MutationObserver(() => { const s = document.querySelector(".doccam .dc-state"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
       .observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await openPicker(page); await chooseId(page, "Passport"); // 3.0's one ID entry: which ID it is, then the guided outline (2.2.0)
+  await openPicker(page); await chooseId(page, "Passport"); // 3.0.1: Passport in the picker opens its outline at once
   await state(page).locator(".dc-steps li").nth(4).waitFor({ timeout: 10_000 });
   assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Line up, Steady, Read, Verify, Done");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 120_000 });
