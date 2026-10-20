@@ -36,7 +36,10 @@ export const SKIPPED_TTL_MS = 14 * 24 * 3600_000; // a withheld message's key is
 const WIRE_OVERHEAD = 1 + 12 + 16;
 const NONCE = 16;
 const STAMP_ROOM = 1200; // characters reserved for a stamp in every payload
-export const KINDS = Object.freeze(["text", "accept", "file-key", "receipt", "close", "delete", "timer"]);
+// challenge / challenge-reply: "Is this really you?" (challenge.js). media: a
+// voice note, photo or clip with its capture details (media.js). All kinds pad
+// to the same size classes, so the relay can't tell a challenge from a text.
+export const KINDS = Object.freeze(["text", "accept", "file-key", "receipt", "close", "delete", "timer", "challenge", "challenge-reply", "media"]);
 
 /* ---------- delete and disappearing messages ---------- */
 

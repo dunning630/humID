@@ -1,6 +1,7 @@
 # Person to person (HumID 4.0, provisional)
 
-> **Status:** 4.0 track, on branch `v4/p2p-comms`. The protocol, formats,
+> **Status:** 4.0 track, on branch `v4/p2p-comms`; "Proving it's you" and
+> credentials are built on top of it. The protocol, formats,
 > delete and relay rules are built and tested (`packages/msg`, `tests/msg.test.js`,
 > `tools/timing-msg.mjs`); the relay service, the gateway's stamp route and the
 > app screens are not. Like the rest of HumID, it needs an independent
@@ -19,6 +20,7 @@ and can carry proof that a live human sent it, without saying which human.
 | "Not crackable" | Every key needs **both** ML-KEM-1024 and X25519 broken, and handshakes need **both** ML-DSA-87 and SLH-DSA (hash-based) forged. Keys change every time the conversation changes direction, so copying ciphertext now and decrypting it with a quantum computer later gains nothing. | "Not crackable" means no known attack, classical or quantum, comes close. No one can promise more than that for any system; the weak point in practice is a compromised phone, not the maths. |
 | "I can delete it" | Delete one message or a whole conversation, for you or for both of you; turn on disappearing messages; unsend a message the contact hasn't fetched yet. Deletes destroy keys, so deleted data can't be read back from the phone's storage or from a copy of the ciphertext. | Nothing can reach into the contact's phone against their will: a screenshot, a modified app or a second camera keeps what it saw. "For both" deletes *your* messages from *their* phone; what they sent stays theirs. |
 | "Validated as a live human" | A **live stamp** in a message proves a live face or fingerprint check on a proven phone approved those exact bytes. The server signs it blind, so it can't connect the stamp to anyone. | It proves *a* human approved the message, not *which* one; the ratchet proves it came from your contact. A person could still approve messages written by someone else (see "Limits"). |
+| "Prove it's really me, not a deepfake" | Anyone you've connected with can ask your phone **"Is this really you?"**; you answer with a live check and read a spoken code on the call. Your media can carry a live stamp, and your real voice and photo sit sealed in an **evidence locker** HumID can't open. | Nothing ever compares a voice or a face. It works with people you connected with beforehand. |
 
 ## How two people meet
 
@@ -198,6 +200,108 @@ Every kind of delete is in one object the app uses, `Conversation`
   but text shown on screen is a JavaScript string, which can't be. The storage
   promise (keys, not files) doesn't depend on this.
 
+## Proving it's you
+
+> Built on branch `v4/prove-its-me` (`challenge.js`, `media.js`,
+> `evidence.js` in `packages/msg`; `tests/prove.test.js`, 17 tests).
+
+Someone gets a call that sounds exactly like you, asking for money. A stored
+copy of your voice or face can't settle it: a clone is *built* to match what
+you sound and look like, so comparing the call with a sample proves nothing,
+and doing the comparison would mean HumID handling biometrics, which it never
+does. What a faker can't do is pass a live check on **your** phone. So HumID
+doesn't try to recognise the fake. It lets the real you answer, live.
+
+| Piece | What it does | What it proves |
+|---|---|---|
+| **"Is this really you?"** | The person on the call asks your phone, over the conversation they pinned when you connected. You answer yes or no with a live check. On a yes, both phones show the same spoken code; you read it aloud on the call. | The answer came from your device (the ratchet), a live human approved this answer to this question (the stamp), and the voice on the call knows a code that exists only on your phone after that check. |
+| **Stamped media** | A voice note, photo or clip sent in a conversation carries a live stamp over its exact bytes. For media you publish outside HumID, a sidecar credential is signed by your **public persona** (ML-DSA-87 + SLH-DSA) and stamped. | These exact bytes were approved by a live human on a proven phone; with the credential, by the holder of the persona ID you publish. Anything that claims to be you without a stamp is unverified. |
+| **Evidence locker** | Your real voice and photo, sealed on the device under a key from your account seed. Opened only after a live check. Released as a packet with a signed, stamped release statement naming who it went to, why, and until when. | "This is the real me, recorded on this date", for a platform's impersonation team, a lawyer or the police. A copy that travels further carries its own paper trail. |
+
+### "Is this really you?"
+
+```
+ verifier (got the suspicious call)              claimant (the real you, wherever you are)
+ ────────                                        ────────
+ sendChallenge("call", note) ── "challenge" ───► readChallenge
+                                                   "Are you on a voice call with me right now?"
+                                                   live check → replyToChallenge(yes | no)
+ checkReply ◄──── "challenge-reply" + live stamp ─ shows the spoken code (yes only): 7QX4-M2KD
+   confirmed + 7QX4-M2KD   → "ask them to read their code"
+   denied                  → "they say it isn't them: hang up"
+   unverified / expired    → never shown as confirmed
+```
+
+- **One question, one answer.** A challenge has a random 128-bit id and lasts
+  5 minutes by default (30 at most). The reply carries the id and a fresh
+  nonce; its live stamp commits to exactly those bytes, so it can't confirm a
+  different question. A second answer to the same question is flagged
+  `already_answered`, and the first stands.
+- **The spoken code** is 8 characters (40 bits) from
+  `SHA3-256("spoken code" ‖ lp(conversation id, challenge id, reply nonce))`.
+  It appears on your phone only after you pass the check, so even if you said
+  "yes" by mistake, a faker on the line can't read it. The caller reads; the
+  person who asked listens and compares. Never the other way round.
+- **Verdicts are conservative.** `confirmed` needs a "yes", a valid live
+  stamp, an answer in time by the verifier's own clock, and no duress flag. A
+  "no" is `denied` whether or not it is stamped, because the safe action is the
+  same. A "yes" sent from a duress unlock comes back `unverified` with
+  `duress: true`: a coerced confirmation never turns green.
+- **The relay can't tell.** A challenge, a reply and a media message pad to the
+  same size class as a text. Tested.
+
+### Stamped media
+
+- **In a conversation**: kind `media`, body `lp(capture details, bytes)`, up to
+  1.8 MB (larger files wait for attachments). The message's stamp covers the
+  whole body.
+- **Portable credential** (`clip.mp4.humid.json`): the media's SHA3-256 hash,
+  size, kind, type and capture time, signed by your public persona with
+  ML-DSA-87 **and** SLH-DSA-SHA2-256f over the statement plus its live stamp.
+  `verifyMediaCredential` passes only if the bytes match, both signatures
+  verify, the stamp is valid, and (when given) the signer is the persona ID
+  you publish. Changing the capture time, the kind, the stamp or the signer
+  fails. Tested.
+- **Use a dedicated public persona.** A credential is meant to be attributable.
+  Signing with one of your contact personas would let anyone link that contact
+  to your public self.
+
+### Evidence locker
+
+```
+locker key = HKDF-SHA3-256(account seed, "HUMID-MSG-v1 evidence locker")      on the device, after a live check
+item       = AES-256-GCM(item key, lp(details ‖ media credential, bytes), aad = item id)
+record     = { id, AES-256-GCM(locker key, item key, aad = item id), item }   kind, type, note, hash: all inside
+release    = dual-signed + stamped: hash, recipient, purpose, released, expires, signer
+```
+
+- **HumID can't open it.** The key comes from the account seed, which only
+  your devices hold. A stored record shows its id and rough size and nothing
+  else: not the bytes, not their hash, not the kind or the note. Records can't
+  be mixed up (each item's key and content are bound to its id). Tested.
+- **Never a matcher.** The locker hashes and encrypts; it never extracts
+  features from a recording or compares it with anything. A test fails the
+  build if the API grows anything that looks like a matcher or a biometric
+  export.
+- **Releases expire as statements, not as copies.** A recipient's copy exists
+  once handed over; what expires is your signed authorisation, so a copy shown
+  after its date, or to someone else, is visibly out of bounds.
+
+### Limits of proving it's you
+
+- **Capture and release times are what you state**, signed but not
+  independently witnessed. Anchoring statements to an independent timestamp
+  (RFC 3161, or a transparency log) is listed below.
+- **The challenge needs a connection made beforehand.** It works between people
+  who connected in HumID before the suspicious call. Connect with the people who
+  would act on a call from you (family, your finance contact) now.
+- **A careless "yes" is caught by the code, not by the stamp.** The stamp
+  proves *you* answered; the code proves the voice on the call is you. Both
+  have to line up.
+- **Illinois BIPA and similar laws.** Raw recordings and photos sealed so HumID
+  can't read them, with no feature extraction, are designed to stay outside
+  "biometric identifier" handling. Counsel should confirm before launch.
+
 ## Who can know what
 
 | Party | Sees | Never sees |
@@ -281,7 +385,12 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 7. **Multi-device**, cover traffic, delivery receipts, rotating the mailbox
    and wire keys with the root key, Elligator-encoded request keys, one size
    class for invites and requests.
-8. **Independent review** of the handshake and ratchet, and a machine-checked
+8. **Proving it's you, in the app**: the "Is this really you?" button on every
+   contact and on incoming-call screens, the spoken-code screen, the locker
+   capture screen, a public persona with its ID shown for publishing, and an
+   independent timestamp (RFC 3161 or a transparency log) on media
+   credentials and releases.
+9. **Independent review** of the handshake and ratchet, and a machine-checked
    model (Tamarin or ProVerif), as the audit recommends for the rest of HumID.
 
 ## Try it
@@ -289,5 +398,6 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 ```bash
 node --test tests/msg.test.js                    # 55 tests: meeting, ratchet, stamps, delete, relay, rollback, fuzz
 MSG_FUZZ_CASES=3000 node --test tests/msg.test.js
+node --test tests/prove.test.js                  # 17 tests: challenge verdicts, spoken code, stamped media, locker, release
 npm run test:timing                              # timing check of the current backend
 ```

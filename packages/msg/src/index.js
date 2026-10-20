@@ -26,3 +26,17 @@ export {
 } from "./stamp.js";
 export { BUCKETS, isWireSize, isBox, boxFor, pollDays, WIRE_VERSION, newRetract, retractTag } from "./wire.js";
 export { memoryRelay, rateKey, RELAY_DEFAULTS } from "./relay.js";
+// Proving it's you (docs/MESSAGING.md, "Proving it's you"): answer live instead
+// of being matched. Nothing below looks at, records or compares a voice or face.
+export {
+  makeChallenge, sendChallenge, readChallenge, replyToChallenge, replyId, checkReply, spokenCode,
+  CHALLENGE_TTL, MAX_CHALLENGE_TTL, CLOCK_SKEW, PURPOSES, ANSWERS, QUESTIONS, SPOKEN_CODE_CHARS,
+} from "./challenge.js";
+export {
+  encodeMedia, decodeMedia, makeMediaCredential, verifyMediaCredential, mediaHash, mediaCommitment,
+  MEDIA_KINDS, MEDIA_VERSION, MAX_IN_MESSAGE,
+} from "./media.js";
+export {
+  lockerKey, sealEvidence, openEvidence, makeRelease, verifyRelease, releaseCommitment,
+  EVIDENCE_VERSION, MAX_EVIDENCE, MAX_RELEASE_DAYS,
+} from "./evidence.js";
