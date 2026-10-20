@@ -364,14 +364,50 @@ jobs:
           if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed on restart" }
-      - name: Backup, restore, and update in place keep the server's identity
+      - name: Secrets are sealed (DPAPI); the backup key is closed to the server's account
+        shell: pwsh
+        run: |
+          $j = & "C:\Program Files\HumID Server\node\node.exe" --no-warnings "C:\Program Files\HumID Server\humid-server.mjs" seal-status --root C:\ProgramData\HumID
+          $j
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $s = ($j | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1) | ConvertFrom-Json
+          if ($s.mode -ne 'dpapi') { throw "secrets aren't sealed with DPAPI (mode: $($s.mode))" }
+          if (@($s.plain).Count) { throw "secrets still in plain files: $($s.plain -join ', ')" }
+          if ($s.internalKey -ne 'sealed') { throw "the internal key in humid.env is $($s.internalKey)" }
+          if (-not @($s.sealed).Count) { throw 'no sealed secrets reported' }
+          foreach ($p in 'C:\ProgramData\HumID\backup-key', 'C:\ProgramData\HumID\backup-key\backup.dpapi') {
+            $acl = (Get-Acl $p).Access | ForEach-Object { $_.IdentityReference.Value }
+            if ($acl -match 'LOCAL SERVICE|Users|Everyone') { throw "$p is open to: $($acl -join ', ')" }
+          }
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID status | Out-String
+          if ($out -notmatch 'Secrets\s+sealed \(DPAPI\)') { throw "humid status doesn't show sealed secrets: $out" }
+          $key = powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup-key | Out-String
+          if ($key -notmatch 'HBK-[A-Z0-9-]+') { throw "humid backup-key printed no key: $key" }
+      - name: Encrypted backup (two files), restore, and update in place keep the server's identity
         shell: pwsh
         run: |
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path "$env:RUNNER_TEMP\b.zip"
-          if ($LASTEXITCODE -or -not (Test-Path "$env:RUNNER_TEMP\b.zip")) { throw 'backup failed' }
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$env:RUNNER_TEMP\b.zip" -Quiet
+          $bk = "$env:RUNNER_TEMP\backups"
+          New-Item -ItemType Directory -Force -Path $bk | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path $bk
+          if ($LASTEXITCODE) { throw 'backup failed' }
+          $main = Get-ChildItem $bk -Filter 'HumID-backup-*-main.humidbak' | Select-Object -First 1
+          $keys = Get-ChildItem $bk -Filter 'HumID-backup-*-keys.humidbak' | Select-Object -First 1
+          if (-not $main -or -not $keys) { throw "backup didn't write a -main and a -keys file: $((Get-ChildItem $bk).Name -join ', ')" }
+          if (Select-String -LiteralPath $main.FullName -Pattern 'HUMID_INTERNAL_PK' -SimpleMatch -Quiet) { throw 'the backup is not encrypted' }
+          # a wrong backup key is refused, and nothing changes
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$($main.FullName),$($keys.FullName)" -BackupKey HBK-AAAA-AAAA-AAAA -Quiet
+          if (-not $LASTEXITCODE) { throw 'a restore with a wrong backup key went ahead' }
+          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8480/healthz -TimeoutSec 5).StatusCode -ne 200) { throw 'the server stopped after a refused restore' }
+          if (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'restore-staging-*') { throw 'a refused restore left its staging folder' }
+          # both files, with this server's own key
+          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$($main.FullName),$($keys.FullName)" -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'before-restore-*')) { throw 'the restore kept no copy of the previous data' }
+          if (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'restore-staging-*') { throw 'the restore left its staging folder' }
+          $mid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          if ($mid -ne $kid) { throw "server identity changed on restore" }
+          if ((Invoke-RestMethod http://127.0.0.1:8480/htp/v1/keys -TimeoutSec 10).kid -ne $kid) { throw 'the restored server serves a different key' }
           powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
@@ -417,6 +453,101 @@ jobs:
           if ($armed -ne 0) { throw "the server didn't rewrite server-status.json (armed: $armed)" }
           node tests/smoke.mjs http://127.0.0.1:8480
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: A test instance runs beside the server
+        shell: pwsh
+        run: |
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $empty = (New-TemporaryFile).FullName
+          function Humid([string]$Ps1, [string[]]$Arguments, [int]$Seconds = 300) {
+            $o = "$env:RUNNER_TEMP\inst-out.txt"; $e = "$env:RUNNER_TEMP\inst-err.txt"
+            $p = Start-Process -FilePath $ps -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$Ps1`"") + $Arguments) `
+              -RedirectStandardInput $empty -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
+            $null = $p.Handle   # so ExitCode is kept
+            if (-not $p.WaitForExit($Seconds * 1000)) { $p.Kill(); throw "humid $($Arguments -join ' ') hung (waiting for input?)" }
+            $out = @((Get-Content -LiteralPath $o -Raw), (Get-Content -LiteralPath $e -Raw)) -join "`n"
+            Write-Host $out
+            return [pscustomobject]@{ Code = $p.ExitCode; Out = $out }
+          }
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          $test = 'C:\Program Files\HumID Server (test)\humid.ps1'
+          $r = Humid "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" @('install', '-Instance', 'test', '-Port', '8580', '-DevicePolicy', 'biometric', '-Quiet') 900
+          if ($r.Code) { throw "instance install failed (exit $($r.Code))" }
+          foreach ($n in 'HumID Server (test)', 'HumID Admin (test)', 'HumID Admin Job (test)') { if (-not (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue)) { throw "task $n missing" } }
+          if ((Get-Content 'C:\Program Files\HumID Server (test)\instance.txt' -Raw).Trim() -ne 'test') { throw 'instance.txt missing' }
+          if (([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') -contains 'C:\Program Files\HumID Server (test)') { throw 'the instance put itself on the PATH' }
+          # its own humid.cmd needs no -Instance
+          $st = & 'C:\Program Files\HumID Server (test)\humid.cmd' status | Out-String
+          $st
+          if ($st -notmatch 'Instance\s+test' -or $st -notmatch 'HumID-test') { throw 'the instance status shows the wrong install' }
+          $r = Humid $test @('selftest')
+          if ($r.Code) { throw "selftest failed (exit $($r.Code))" }
+          if ($r.Out -notmatch 'blind-signed pass') { throw "the self-test didn't run the full flow with an access pass" }
+          # the default install didn't notice
+          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8480/healthz -TimeoutSec 5).StatusCode -ne 200) { throw 'the default server stopped answering' }
+          if ((Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid -ne $kid) { throw 'the default server identity changed' }
+          if ((Invoke-RestMethod http://127.0.0.1:8480/htp/v1/keys -TimeoutSec 10).kid -ne $kid) { throw 'the default server serves another key' }
+          $r = Humid $env:HUMID @('uninstall', '-Instance', 'test', '-RemoveData', '-Quiet')
+          if ($r.Code) { throw "instance uninstall failed (exit $($r.Code))" }
+          foreach ($n in 'HumID Server (test)', 'HumID Admin (test)', 'HumID Admin Job (test)') { if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) { throw "task $n still registered" } }
+          if (Test-Path 'C:\Program Files\HumID Server (test)') { throw 'instance program folder still there' }
+          if (Test-Path 'C:\ProgramData\HumID-test') { throw 'instance data still there' }
+          if (-not (Get-ScheduledTask -TaskName 'HumID Server' -ErrorAction SilentlyContinue)) { throw 'the default task is gone' }
+          if (([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') -notcontains 'C:\Program Files\HumID Server') { throw 'the default install left the PATH' }
+          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8480/healthz -TimeoutSec 5).StatusCode -ne 200) { throw 'the default server stopped answering' }
+      - name: Split roles on one machine (front+core here, keys in an instance, mutual TLS)
+        shell: pwsh
+        run: |
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $empty = (New-TemporaryFile).FullName
+          function Humid([string]$Ps1, [string[]]$Arguments, [int]$Seconds = 300) {
+            $o = "$env:RUNNER_TEMP\split-out.txt"; $e = "$env:RUNNER_TEMP\split-err.txt"
+            $p = Start-Process -FilePath $ps -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$Ps1`"") + $Arguments) `
+              -RedirectStandardInput $empty -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit($Seconds * 1000)) { $p.Kill(); throw "humid $($Arguments -join ' ') hung (waiting for input?)" }
+            $out = @((Get-Content -LiteralPath $o -Raw), (Get-Content -LiteralPath $e -Raw)) -join "`n"
+            Write-Host $out
+            if ($p.ExitCode) { throw "humid $($Arguments -join ' ') failed (exit $($p.ExitCode))" }
+            return $out
+          }
+          $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
+          $keysPs = 'C:\Program Files\HumID Server (keys)\humid.ps1'
+          $bundle = "$env:RUNNER_TEMP\keysbundle"
+          $null = Humid "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" @('install', '-Instance', 'keys', '-Port', '8680', '-AdminPort', '8690', '-NoStart', '-Quiet') 900
+          $null = Humid $env:HUMID @('pki', 'init')
+          $null = Humid $env:HUMID @('pki', 'issue', 'keys', '-Path', $bundle)
+          foreach ($f in 'ca.crt', 'keys.crt', 'keys.key', 'internal.pub') { if (-not (Test-Path (Join-Path $bundle $f))) { throw "the bundle has no $f" } }
+          $null = Humid $keysPs @('pki', 'import', '-Path', $bundle)
+          $null = Humid $keysPs @('set', 'HUMID_ROLES=keys', 'HUMID_INTERNAL_BIND=127.0.0.1', 'HUMID_INTERNAL_PORT_BASE=8600')
+          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8680/healthz -TimeoutSec 5).StatusCode -ne 200) { throw 'the keys instance does not answer its health check' }
+          $listen = @(Get-NetTCPConnection -LocalPort 8606 -State Listen -ErrorAction SilentlyContinue)
+          if (-not $listen.Count -or ($listen.LocalAddress | Where-Object { $_ -ne '127.0.0.1' })) { throw "keyshare listens on: $($listen.LocalAddress -join ', ')" }
+          $refused = $false
+          try { Invoke-WebRequest -UseBasicParsing -SkipCertificateCheck https://127.0.0.1:8606/healthz -TimeoutSec 10 | Out-Null } catch { $refused = $true }
+          if (-not $refused) { throw 'keyshare answered a client without a certificate' }
+          $st = Humid $keysPs @('status')
+          if ($st -notmatch 'Roles\s+keys' -or $st -notmatch 'keyshare on 127\.0\.0\.1:8606') { throw 'the keys instance status shows no internal address' }
+          # the default install runs front and core, and reaches keys over mutual TLS
+          $null = Humid $env:HUMID @('set', 'HUMID_DEVICE_POLICY=biometric', 'HUMID_ROLES=front,core', 'HUMID_KEYS_HOST=127.0.0.1', 'HUMID_INTERNAL_PORT_BASE=8600')
+          $info = Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json
+          if (($info.roles -join ',') -ne 'front,core') { throw "the default install runs $($info.roles -join ',')" }
+          if ($info.kid -ne $kid) { throw 'the server identity changed with the roles' }
+          $code = [regex]::Match((Humid $env:HUMID @('mint', '1', 'ci')), 'HA-[0-9A-Z-]+').Value
+          if (-not $code) { throw 'humid mint printed no access code' }
+          $out = node tests/smoke.mjs http://127.0.0.1:8480 $code
+          $out
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
+          # back to one machine, all roles; the keys instance goes
+          $null = Humid $env:HUMID @('set', 'HUMID_ROLES=front,core,keys', 'HUMID_KEYS_HOST=', 'HUMID_INTERNAL_PORT_BASE=8500')
+          $null = Humid $env:HUMID @('uninstall', '-Instance', 'keys', '-RemoveData', '-Quiet')
+          foreach ($n in 'HumID Server (keys)', 'HumID Admin (keys)', 'HumID Admin Job (keys)') { if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) { throw "task $n still registered" } }
+          if (Test-Path 'C:\ProgramData\HumID-keys') { throw 'keys instance data still there' }
+          Remove-Item -LiteralPath $bundle -Recurse -Force
+          $info = Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json
+          if (($info.roles -join ',') -ne 'front,core,keys') { throw "the default install runs $($info.roles -join ',')" }
+          node tests/smoke.mjs http://127.0.0.1:8480
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Admin console (SYSTEM, 127.0.0.1 only), sign-in link, jobs, update with automatic rollback, rollback
         shell: pwsh
         run: ./tests/windows/admin-console.ps1 -Repo $env:GITHUB_WORKSPACE
@@ -437,6 +568,7 @@ jobs:
           Get-ScheduledTaskInfo -TaskName 'HumID Admin Job' -ErrorAction SilentlyContinue | Format-List
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
           Get-Content C:\ProgramData\HumID\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
+          foreach ($i in 'test', 'keys') { Get-Content "C:\ProgramData\HumID-$i\logs\humid-server.log" -Tail 60 -ErrorAction SilentlyContinue }
           Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
       - uses: actions/upload-artifact@v4
         with:

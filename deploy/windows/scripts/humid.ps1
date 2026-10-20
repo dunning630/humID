@@ -86,7 +86,7 @@ $Version     = '__HUMID_SERVER_VERSION__'
 if (-not $Instance -and $PSScriptRoot) {
   $instanceFile = Join-Path $PSScriptRoot 'instance.txt'
   if (Test-Path -LiteralPath $instanceFile) {
-    $Instance = ([string](Get-Content -LiteralPath $instanceFile -TotalCount 1)).Trim()
+    $Instance = ('' + (Get-Content -LiteralPath $instanceFile -TotalCount 1)).Trim()   # '' + : an empty file gives $null
     # Never fall back to the default install from an instance's own folder: that would act on the live server.
     if (-not $Instance) { Write-Host "X  $instanceFile is empty; it should name this instance. Install the instance again with -Instance <name>." -ForegroundColor Red; exit 1 }
   }
