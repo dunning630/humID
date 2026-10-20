@@ -166,7 +166,7 @@ try {
   await ctx.close();
 
   /* ---------------- 2. a passport: MRZ read live, then the chip with its photo ---------------- */
-  ({ ctx, page } = await launch(fixture("camera-passport.mjpeg")));
+  ({ ctx, page } = await launch(fixture("guide/pp-ok.mjpeg")));
   await page.goto(BASE);
   await page.getByRole("button", { name: /^Unlock$/ }).click();
   await hold(page);
@@ -214,12 +214,9 @@ try {
   await ctx.close();
 
   /* ---------------- 2b. the barcode anywhere in view (apps 1.12.0) ---------------- */
-  // A cluttered desk: the license lies sideways and small in the lower corner, slightly
-  // tilted, beside a printed page and a store card whose own (bigger, central) PDF417
-  // isn't a license barcode. Like a store's scan-and-go, the camera finds and highlights
-  // the barcode wherever it is, reads just that spot, passes over the store card's, and
-  // reads the license live: no photo taken as a fallback, nothing lined up.
-  ({ ctx, page } = await launch(fixture("camera-license-desk.mjpeg")));
+  // A licence's back lined up in the outline: the camera reads the PDF417 from the still and takes the photo by itself
+  // (the front step is taken with the round button). Reading the barcode anywhere in view is gone with the free-form outline.
+  ({ ctx, page } = await launch(fixture("guide/lic-back-ok.mjpeg")));
   await page.goto(BASE);
   await page.getByRole("button", { name: /^Unlock$/ }).click();
   await hold(page);
@@ -228,21 +225,13 @@ try {
   await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
   if (await page.locator(".dc-saved-chip").count() === 0) await page.locator(".doccam .dc-shutter:not([disabled])").click().catch(() => {});
   await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 20_000 });
-  const seen = [];
-  const watchBar = setInterval(() => page.evaluate(() => globalThis.__humidBar?.box).then((b) => { if (b) seen.push(b); }).catch(() => {}), 150);
-  await page.locator(".doccam .dc-outline polygon.dc-bar").waitFor({ timeout: 20_000 }).catch(() => {}); // may read before it's caught on screen
-  await shot(page, "7a-barcode-found");
   await page.getByText("Check the details").waitFor({ timeout: 45_000 });
-  clearInterval(watchBar);
   const how = await page.evaluate(() => globalThis.__humidDevelop?.how);
-  assert.equal(how, "live", "read live from the found barcode, not from a fallback photo");
+  assert.equal(how, "auto", "taken by itself once lined up, steady and sharp");
   assert.equal(await page.locator("#idf-surname").inputValue(), "SPECIMEN");
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
-  // the license's barcode lies in the lower right of the 1080×1920 view
-  const onLicense = seen.filter((b) => b.x + b.w / 2 > 640 && b.y + b.h / 2 > 1200);
-  assert.ok(seen.length === 0 || onLicense.length > 0, `the highlight found the license's barcode: ${JSON.stringify(seen.slice(-3))}`);
   await shot(page, "7b-desk-read");
-  step(`barcode found anywhere in view and read live (sideways, small, tilted, beside a store card's barcode)${seen.length ? `; highlighted ${seen.length}×` : ""}`);
+  step("licence back lined up in the outline: taken by itself, the barcode read from the still");
   // Android Back inside the ID flow steps back (review → capture), rather than closing Add
   const back = () => page.evaluate(() => globalThis.__humidBack());
   assert.equal(await back(), "pushed", "back inside the ID flow is a step");
@@ -282,7 +271,7 @@ try {
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
-  await page.locator(".dc-status").getByText(/Point the camera at the card/).waitFor();
+  await page.locator(".doccam .dc-state strong", { hasText: /Fit the card in the outline|Too dark/ }).waitFor(); // this fixture is a dim table: "Too dark" is the honest answer
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
