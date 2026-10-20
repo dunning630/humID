@@ -60,6 +60,21 @@ await esbuild.build({
   logLevel: "info",
 });
 
+// 2c. The self-test (humid selftest): the deployment smoke test as one file, run against this
+// server's own 127.0.0.1 address (server 3.0).
+await esbuild.build({
+  entryPoints: [join(repo, "tests", "smoke.mjs")],
+  outfile: join(pkg, "humid-selftest.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  minify: false,
+  legalComments: "eof",
+  banner: { js: "// HumID self-test: node humid-selftest.mjs http://127.0.0.1:PORT [ACCESS-CODE]" },
+  logLevel: "info",
+});
+
 // 3. Installer and docs, with Windows line endings. PowerShell 5.1 reads a
 // script without a byte-order mark as ANSI, so .ps1 gets a UTF-8 BOM.
 const crlf = (s) => s.replace(/\r?\n/g, "\r\n");

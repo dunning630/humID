@@ -303,7 +303,7 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
   });
   const stop = () => new Promise((resolve) => server.close(() => resolve()));
   for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => { log.info("shutdown", { sig }); stop().then(() => process.exit(0)); });
-  return { server, start, stop, log };
+  return { server, start, stop, log, tls: !!tls };
 }
 
 /* ---------------- calls between services ---------------- */
