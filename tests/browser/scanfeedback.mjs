@@ -59,6 +59,8 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
 async function openAdd(page) { await openAddFlow(page); await startCamera(page); }
 /** The picker ("It's something else"), then one kind. */
 async function pickKind(page, name) { await openPicker(page); await pick(page, name); }
+/** The photo camera itself: the picker's Photo, then (the first time) Start camera. */
+async function openPhotoCamera(page) { await pickKind(page, "Photo"); await startCamera(page); }
 const state = (page) => page.locator(".doccam .dc-state");
 
 try {
