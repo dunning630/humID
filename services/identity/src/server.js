@@ -230,6 +230,22 @@ export function createIdentity({
       return respondWithDevice(created ? 201 : 200, account, device);
     }],
 
+    // Gateway only: is this device already part of that account? (A device that already
+    // joined may sign in to finish joining again without fresh evidence.)
+    ["GET", "/internal/devices/:id", ({ params, claims }) => {
+      gatewayOnly(claims);
+      const d = getDevice.get(params.id);
+      if (!d) throw new HttpError(404, "unknown_device", "No such device.");
+      return json(200, { account: d.account_id, revoked: !!d.revoked_at });
+    }],
+    // Gateway only: undo an enrolment whose evidence turned out to be spent meanwhile.
+    ["POST", "/internal/devices/:id/revoke", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      db.prepare("UPDATE device_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL").run(new Date().toISOString(), params.id, String(r.account));
+      return json(200, { revoked: true });
+    }],
+
     // Check a sign-in signature made by one device of an account.
     ["POST", "/internal/verify", ({ body, claims }) => {
       gatewayOnly(claims);
@@ -239,9 +255,12 @@ export function createIdentity({
       if (!device || device.account_id !== account.id) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
       if (device.revoked_at) throw new HttpError(403, "device_removed", "This device was removed from your HumID.");
       const message = unb64u(String(r.message));
+      // The liveness key signs the challenge it was given before the prompt; the device key may
+      // sign a longer message that also carries what the check decided (the duress flag).
+      const liveMessage = r.liveMessage != null ? unb64u(String(r.liveMessage)) : message;
       if (!verify(unb64u(String(r.sig)), message, new Uint8Array(device.dsa_pk))) return json(401, { ok: false, error: "bad_signature" });
       // A device with a liveness key must prove a live biometric on every sign-in.
-      if (device.live_pub && !verifyLiveSig(device.live_pub, message, r.live ? unb64u(String(r.live)) : null)) {
+      if (device.live_pub && !verifyLiveSig(device.live_pub, liveMessage, r.live ? unb64u(String(r.live)) : null)) {
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
       }
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment

@@ -83,8 +83,13 @@ test("history and the public log verify on the phone; duress locks sensitive cha
   assert.equal(l.ok, true, l.reason);
   const c = await phone.continuity();
   assert.equal(c.ok, true, c.reason);
+  // The old after-the-fact report does nothing now (PC-01): duress lives in the signed sign-in.
   await phone.presence(true);
-  assert.deepEqual(await phone.duressStatus(), { lockdown: false }, "the coerced session sees a calm account");
+  assert.equal((await phone.duressStatus()).lockdown, false, "a bare presence request changes nothing");
+  const forced = api();
+  await forced.login({ id: alice.id, device: alice.deviceId, sign: alice.unlockSign(1) });
+  assert.deepEqual(await forced.duressStatus(), { lockdown: false }, "the coerced session sees a calm account");
+  await assert.rejects(forced.setSettings({ duressAlert: true }, alice.stepUp), (e) => e.code === "busy");
   await assert.rejects(phone.setSettings({ duressAlert: true }, alice.stepUp), (e) => e.code === "busy");
 });
 

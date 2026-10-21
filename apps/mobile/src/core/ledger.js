@@ -5,6 +5,25 @@ import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, SESSION_LOST } from "./notify.js";
 import { isNetworkFailure } from "./link.js";
 import { keepOffline } from "./session.js";
+import { parseCosigners } from "@humid/api";
+import { TLOG_COSIGNERS } from "./config.js";
+
+/** Cosigners of the public log this build trusts. The server's own list is never used (PC-04). */
+const COSIGNERS = parseCosigners(TLOG_COSIGNERS);
+
+/**
+ * The ledger's signing key, pinned on this device the first time it verifies (PC-04).
+ * Without the pin a server could present a made-up history under a fresh key of its own;
+ * with it, a changed key fails verification and Activity reports it.
+ */
+async function rememberLedgerKey(fp) {
+  const id = S.identity.value;
+  if (!fp || !id || id.ledgerKeyFp) return;
+  const record = { ...id, ledgerKeyFp: fp };
+  delete record.schema;
+  await R.store.putIdentity(record);
+  S.identity.value = { ...record, schema: id.schema ?? 4 };
+}
 
 /** In a decoy session, Activity shows only what a calm account with these documents would show. */
 const DECOY_TYPES = new Set(["identity.created", "session.opened", "session.closed", "device.added", "device.removed", "object.sealed", "object.opened", "object.updated", "object.deleted"]);
@@ -18,8 +37,9 @@ export async function loadLedger() {
   S.ledgerLoading.value = true;
   const ep = epoch();
   try {
-    const l = S.offline.value ? (R.offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await R.api.ledger({ limit: 300 });
+    const l = S.offline.value ? (R.offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await R.api.ledger({ limit: 300, trustedKeyFp: S.identity.value?.ledgerKeyFp || undefined });
     if (stale(ep)) return;
+    if (!S.offline.value && l.ok) await rememberLedgerKey(l.keyFp);
     keepOffline({ ledger: l });
     for (const it of S.items.value) R.knownNames.set(it.id, it.name);
     S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l) : l), names: new Map(R.knownNames), checkedAt: Date.now() };
@@ -36,10 +56,10 @@ export async function checkContinuity() {
   const id = S.identity.value;
   if (S.offline.value) { S.continuity.value = { ok: false, pending: true, reason: "Checked when you're back online" }; return; }
   try {
-    const r = await R.api.continuity({ previous: id?.tlog || null });
+    const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: id?.ledgerKeyFp || undefined, cosigners: COSIGNERS });
     S.continuity.value = r;
     if (r.ok && (!id.tlog || r.size >= id.tlog.size)) {
-      const record = { ...id, tlog: { size: r.size, root: r.root, at: r.at } };
+      const record = { ...id, ledgerKeyFp: id.ledgerKeyFp || r.keyFp, tlog: { size: r.size, root: r.root, at: r.at } };
       delete record.schema;
       await R.store.putIdentity(record);
       S.identity.value = { ...record, schema: id.schema ?? 4 };

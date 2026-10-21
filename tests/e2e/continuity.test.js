@@ -259,18 +259,27 @@ test("duress: a decoy session works for reading, sensitive changes fail like a b
   // Alice chose to let her witnesses know.
   await phone.setSettings({ duressAlert: true }, alice.stepUp);
 
-  // She's forced to unlock: she uses her duress gesture.
+  // (a second device of hers, joined the proper way, to show lockdown reaches every session)
   const coerced = anotherDevice(alice);
+  const lk0 = receiveKeys();
+  const joiner = new HumidApi({ baseUrl: stack.baseUrl });
+  const link0 = await joiner.startLink({ kemPk: lk0.kemPk, xPk: lk0.xPk, devicePk: coerced.device.dsaPk, platform: "Alice's tablet" });
+  await phone.approveLink(link0.code, await sealBytes(alice, alice.seed, await phone.getLink(link0.code)), alice.stepUp);
+  await joiner.enrollDevice({ account: alice.id, device: coerced.device, via: "link", linkCode: link0.code, sign: coerced.enrollSign });
+  await joiner.logout();
+
+  // She's forced to unlock: she uses her duress gesture. The flag is signed into the sign-in.
+  const calmApi = new HumidApi({ baseUrl: stack.baseUrl });
+  const normalShape = await calmApi.login({ id: alice.id, device: coerced.deviceId, sign: coerced.unlockSign(0) });
+  await calmApi.logout();
   const forcedApi = new HumidApi({ baseUrl: stack.baseUrl });
-  // (a second device of hers, to show lockdown reaches every session)
+  const duressShape = await forcedApi.login({ id: alice.id, device: coerced.deviceId, sign: coerced.unlockSign(1) });
+  assert.deepEqual(Object.keys(normalShape), Object.keys(duressShape), "the reply is the same either way");
+  await sleep(150);
+  // A link someone starts during the lockdown, for the approval check below.
   const lk = receiveKeys();
   const linker = new HumidApi({ baseUrl: stack.baseUrl });
-  const { code } = await linker.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "Attacker's phone" });
-  await forcedApi.enrollDevice({ account: alice.id, device: coerced.device, via: "link", sign: coerced.enrollSign });
-  const normalShape = await forcedApi.presence(false);
-  const duressShape = await forcedApi.presence(true);
-  assert.deepEqual(normalShape, duressShape, "the reply is the same either way");
-  await sleep(150);
+  const { code } = await linker.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: lk.dsaPk, platform: "Attacker's phone" });
 
   // Reading still works, so nothing looks wrong.
   assert.ok((await forcedApi.list()).items.length >= 1);
@@ -334,7 +343,9 @@ test("transparency: anyone can fetch checkpoints; a configured cosigner vouches;
   assert.equal((await post({ name: "test-cosigner", size, sig: b64u(sig) })).status, 200);
   assert.equal((await post({ name: "test-cosigner", size, sig: b64u(random(sig.length)) })).status, 401);
   assert.equal((await post({ name: "stranger", size, sig: b64u(sig) })).status, 403);
-  const withCosig = await phone.continuity({ previous: firstCheck });
+  // Only cosigners built into the app count (PC-04): without that list, the server's word means nothing.
+  assert.deepEqual((await phone.continuity({ previous: firstCheck })).cosigned, []);
+  const withCosig = await phone.continuity({ previous: firstCheck, cosigners: new Map([["test-cosigner", cosigner.publicKey]]) });
   assert.deepEqual(withCosig.cosigned, ["test-cosigner"]);
 
   // The server rewrites the first entries of the log.

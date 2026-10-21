@@ -33,14 +33,12 @@ async function holder(label) {
   const h = makeHolder(label);
   const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
   await api.register({ pub: h.pub, commit: h.commit, device: h.device, sign: h.registerSign });
-  await api.presence(false);
   return { h, api };
 }
-/** Another session for the same holder: an unlock, ordinary or with the duress gesture. */
+/** Another session for the same holder: an unlock, ordinary or with the duress gesture (signed into the sign-in). */
 async function unlock(h, { duress = false } = {}) {
   const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
-  await api.login({ id: h.id, device: h.deviceId, sign: h.sign });
-  await api.presence(duress);
+  await api.login({ id: h.id, device: h.deviceId, sign: h.unlockSign(duress ? 1 : 0) });
   return api;
 }
 const split = async ({ h, api }, name, text) => {
@@ -197,6 +195,32 @@ test("a duress unlock while armed erases at once, and the duress session still l
   assert.ok(!(await vaultIds(safe)).includes(doc));
   const types = await events(safe);
   assert.ok(types.includes("checkin.erased") && types.includes("duress.signaled"));
+});
+
+test("PC-01: a bare presence request from a signed-in session can't erase or lock down an armed vault", async () => {
+  const a = await holder("checkin-mallory-target");
+  const doc = await split(a, "will.txt", "the real will");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  // Malware riding a live session (no biometric) sends the old duress report.
+  const riding = await unlock(a.h);
+  assert.deepEqual(await riding.presence(true), { ok: true }, "same answer as ever");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(rows(a.h.id).length, 1, "the fuse key is still there");
+  assert.equal(await openText(a, doc), "the real will");
+  assert.equal((await a.api.duressStatus()).lockdown, false, "no lockdown either");
+  assert.ok(!(await events(a.api)).includes("duress.signaled"));
+});
+
+test("PC-01: a duress flag the device key didn't sign is refused like any bad sign-in", async () => {
+  const a = await holder("checkin-forged-flag");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
+  // The device key signed d = 0; the request claims d = 1.
+  const lying = async (m, ctx) => ({ ...(await a.h.unlockSign(0)(m, ctx)), d: 1 });
+  await assert.rejects(api.login({ id: a.h.id, device: a.h.deviceId, sign: lying }), (e) => e.code === "bad_proof");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(rows(a.h.id).length, 0, "nothing was split yet, and nothing was erased");
+  assert.equal((await a.api.checkin()).state, "armed");
 });
 
 test("turning it off puts every key back; a later restart erases nothing", async () => {

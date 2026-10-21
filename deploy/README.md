@@ -115,7 +115,7 @@ payment off.
 | `deploy/csca/` (mounted at `/csca`) | Country signing certificates (CSCA) for passport and ID chips. Empty = ID anchors off. See [csca/README.md](csca/README.md). |
 | `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. |
 | `HUMID_DURESS_COOLOFF_MS` | How long it must be calm after a duress signal before the owner can lift the lockdown (default 24 h). |
-| `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. |
+| `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. Build the apps with the same value (`HUMID_TLOG_COSIGNERS` when running `build.mjs`): phones count only cosigners built into them, never a list the server sends. |
 | `RECOVERY_DELAY_MS` | The base wait (72 h). Station = ⅓, witnesses = 1×, card + chip = 7⁄3; doubled after a duress signal. |
 
 The edge serves the public log at `/tlog/v1/checkpoint`, `/tlog/v1/consistency`

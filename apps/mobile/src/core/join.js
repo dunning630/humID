@@ -57,7 +57,8 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
     let pending;
     if (method === "link") {
       const lk = Suite.deriveKeys(x);
-      const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM });
+      // The link names this device's key (PC-02): only this device can join with it once it's approved.
+      const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: dkeys.dsaPk });
       Suite.wipeKeys(lk);
       pending = { method, code: r.code, expiresAt: r.expiresAt };
     } else if (method === "card") {
@@ -117,7 +118,8 @@ export async function renewLink() {
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     x = random(SEED);
     const lk = Suite.deriveKeys(x);
-    const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM });
+    // A fresh code for the same bound device key (PC-02).
+    const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: fromB64(p.devicePub) });
     Suite.wipeKeys(lk);
     next = concat(both.subarray(0, SEED), x);
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
@@ -175,7 +177,7 @@ async function finishJoin(st) {
   const pieces = [];
   try {
     const sess = await R.api.enrollDevice({
-      account, via: p.method, recoveryId: p.requestId, soleBiometric: !!p.soleBiometric,
+      account, via: p.method, recoveryId: p.requestId, linkCode: p.method === "link" ? p.code : undefined, soleBiometric: !!p.soleBiometric,
       device: { dsaPk: fromB64(p.devicePub), platform: PLATFORM, gateMethod: id.method, assurance: id.assurance },
       sign: async (message, th) => {
         showInterrupt({ progress: 0.2, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)} to finish.` });
