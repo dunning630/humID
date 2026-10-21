@@ -138,13 +138,6 @@ export function verify(envelope) {
   return { ok: sigOk && ctOk, sigOk, ctOk, manifest };
 }
 
-const sameBytes = (a, b) => {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
-  return d === 0;
-};
-
 /**
  * Verify, then decrypt with the holder's keys.
  *
@@ -178,6 +171,34 @@ export async function open(envelope, keys, { signer } = {}) {
   const bytes = framed.slice(4 + mLen);
   if (toHex(sha3_512(bytes)) !== meta.sha3_512) throw new Error("Payload hash mismatch.");
   return { meta, bytes, manifest };
+}
+
+/** Constant-time byte comparison (lengths are public). */
+function sameBytes(a, b) {
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array) || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
+  return d === 0;
+}
+
+/**
+ * Open a document from the holder's own vault: as open, and the envelope must
+ * also be signed by the holder's own ML-DSA key (keys.dsaPk). Anyone holding
+ * the holder's public keys can seal a valid envelope to them; only the holder
+ * can sign one. Without this check a server could plant a document that opens
+ * as the holder's own (precert finding PC-03, prior H-1).
+ */
+export async function openOwn(envelope, keys) {
+  if (!(keys?.dsaPk instanceof Uint8Array)) throw new Error("The account's signing key is needed to check who sealed this.");
+  const { manifest } = unpack(envelope);
+  let signer;
+  try { signer = fromB64(manifest?.signer?.mldsa87Pk || ""); } catch { signer = null; }
+  if (!sameBytes(signer, keys.dsaPk)) {
+    const e = new Error("This document wasn't sealed by your account. It wasn't opened.");
+    e.code = "wrong_signer";
+    throw e;
+  }
+  return open(envelope, keys);
 }
 
 export const isAddressedTo = (manifest, kemPk) => manifest.recipient.kemPkFp === toHex(sha3_256(kemPk));

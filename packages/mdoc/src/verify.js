@@ -16,7 +16,7 @@
 import { sha256, sha384, sha512 } from "@noble/hashes/sha2.js";
 import { decode, encode, get, plain, Encoded, Tagged } from "./cbor.js";
 import { parse1, verifySign1, verifyMac0, x5chain, coseKey, CoseError } from "./cose.js";
-import { parseCertificate, issuedBy, curveOf, OIDS, X509Error } from "./x509.js";
+import { parseCertificate, issuedBy, curveOf, OIDS, X509Error, readAnchors, stateCode, countryCode } from "./x509.js";
 import { CborError } from "./cbor.js";
 
 export class MdocError extends Error {
@@ -48,13 +48,6 @@ const dateOf = (t) => {
   if (Number.isNaN(d.getTime())) fail("bad_mso", "The document's validity dates can't be read.");
   return d;
 };
-
-/** Roots: IACA certificates as DER bytes, PEM text, or already parsed. */
-const asCerts = (roots) => (roots || []).flatMap((r) => {
-  if (r && r.tbs) return [r];
-  if (typeof r === "string") return (r.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || []).map((p) => parseCertificate(p));
-  return [parseCertificate(r)];
-});
 
 /**
  * Issuer data authentication of one document's IssuerSigned.
@@ -121,36 +114,60 @@ function verifyIssuerSignedInner(issuerSigned, { docType, roots, now = new Date(
     }
   }
 
-  // The issuing authority's root.
-  let trust = { chain: "unchecked", root: null };
-  const iacas = asCerts(roots);
+  // The issuing authority's root, and who it is allowed to speak for.
+  //
+  // The issuer's country and state are taken from the trust anchor (the VICAL
+  // entry that vouched for the root, else the root certificate's own C and ST),
+  // never from the document's data. The document's issuing_country and
+  // issuing_jurisdiction, when shared, must agree with them, and so must the
+  // Document Signer's subject. Otherwise one trusted state's root could vouch
+  // for a license that claims to be another state's (precert finding CRD-01).
+  let trust = { chain: "unchecked", root: null, country: null, state: null };
   if (roots) {
-    if (!iacas.length) fail("no_trust", "No issuing-authority certificates are configured, so mobile IDs can't be checked yet.");
+    let anchors;
+    try { anchors = readAnchors(roots); } catch { fail("no_trust", "A configured issuing-authority certificate can't be read."); }
+    if (!anchors.length) fail("no_trust", "No issuing-authority certificates are configured, so mobile IDs can't be checked yet.");
     // Intermediate certificates in x5chain (rare) are tried too.
     const path = chain.slice(1).map((c) => { try { return parseCertificate(c); } catch { return null; } }).filter(Boolean);
     const anchorFor = (cert, depth = 0) => {
-      for (const r of iacas) if (issuedBy(cert, r)) return r;
+      for (const a of anchors) if (issuedBy(cert, a.cert)) return a;
       if (depth > 2) return null;
       for (const mid of path) {
         if (!mid.isCa || mid.keyCertSign === false || now < mid.notBefore || now > mid.notAfter || !issuedBy(cert, mid)) continue;
-        const r = anchorFor(mid, depth + 1); if (r) return r;
+        const a = anchorFor(mid, depth + 1); if (a) return a;
       }
       return null;
     };
-    const root = anchorFor(ds);
-    if (!root) fail("untrusted_issuer", "This document's issuer isn't in HumID's trusted list.");
+    const anchor = anchorFor(ds);
+    if (!anchor) fail("untrusted_issuer", "This document's issuer isn't in HumID's trusted list.");
+    const root = anchor.cert;
     if (!root.isCa || root.keyCertSign === false) fail("untrusted_issuer", "The issuer's root certificate isn't a certificate authority.");
     if (now < ds.notBefore || now > ds.notAfter) fail("untrusted_issuer", "The issuer's signing certificate isn't valid now.");
     if (now < root.notBefore || now > root.notAfter) fail("untrusted_issuer", "The issuing authority's root certificate isn't valid now.");
-    // The country the document claims must be its issuing authority's, in the document type's own namespace.
-    const own = values[COUNTRY_NS[msoDocType]] || {};
-    const country = own.issuing_country;
-    if (country != null && root.subject.C && String(country).toUpperCase() !== root.subject.C.toUpperCase()) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
-    // The state, when both sides name it as a code ("US-IL" / "IL"); free-text names aren't compared.
-    const code = (v) => { const m = /^(?:[A-Z]{2}-)?([A-Z0-9]{1,3})$/.exec(String(v || "").toUpperCase().trim()); return m ? m[1] : null; };
-    const juris = code(own.issuing_jurisdiction), st = code(root.subject.ST);
-    if (juris && st && juris !== st) fail("untrusted_issuer", "The document's state doesn't match its issuing authority.");
-    trust = { chain: "trusted", root: { subject: root.subject, notAfter: root.notAfter.toISOString(), fingerprint: root.fingerprint }, issuerCountry: root.subject.C ? root.subject.C.toUpperCase() : null };
+    if (anchor.docTypes.length && !anchor.docTypes.includes(msoDocType)) fail("untrusted_issuer", "This issuing authority isn't trusted for this kind of document.");
+
+    const rootC = countryCode(root.subject.C), rootST = stateCode(root.subject.ST);
+    if (anchor.country && rootC && anchor.country !== rootC) fail("untrusted_issuer", "The trusted list and the root certificate disagree on the issuing country.");
+    if (anchor.state && rootST && anchor.state !== rootST) fail("untrusted_issuer", "The trusted list and the root certificate disagree on the issuing state.");
+    const country = anchor.country || rootC;
+    const state = anchor.state || rootST;
+    if (!country) fail("untrusted_issuer", "The issuing authority's root doesn't name a country, so the document's country can't be confirmed.");
+    const dsC = countryCode(ds.subject.C), dsST = stateCode(ds.subject.ST);
+    if (dsC && dsC !== country) fail("untrusted_issuer", "The document signer belongs to a different country than its issuing authority.");
+    if (state && dsST && dsST !== state) fail("untrusted_issuer", "The document signer belongs to a different state than its issuing authority.");
+
+    // Every namespace is checked, not just the document type's own (F9) or the first
+    // one present: an issuer could otherwise put a decoy country in a namespace the
+    // reader also looks at (CRD-01).
+    const plainText = (v) => (v instanceof Tagged ? v.value : v);
+    for (const ns of Object.values(values)) {
+      if (ns.issuing_country != null && countryCode(plainText(ns.issuing_country)) !== country) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
+      if (ns.issuing_jurisdiction != null) {
+        // A state claim is accepted only when the trust anchor says which state it speaks for.
+        if (!state || stateCode(plainText(ns.issuing_jurisdiction)) !== state) fail("untrusted_issuer", state ? "The document's state doesn't match its issuing authority." : "The issuing authority's root doesn't say which state it speaks for, so the document's state can't be confirmed.");
+      }
+    }
+    trust = { chain: "trusted", root: { subject: root.subject, notAfter: root.notAfter.toISOString(), fingerprint: root.fingerprint, source: anchor.source }, country, state, issuerCountry: country };
   }
 
   const dki = get(mso, "deviceKeyInfo");

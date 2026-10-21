@@ -15,7 +15,7 @@ import { p256, p384, p521 } from "@noble/curves/nist.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256, sha384, sha512 } from "@noble/hashes/sha2.js";
 import { gcm } from "@noble/ciphers/aes.js";
-import { parseCertificate, issuedBy } from "@humid/mdoc";
+import { parseCertificate, issuedBy, readAnchors, countryCode, stateCode } from "@humid/mdoc";
 
 export class JoseError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -129,7 +129,10 @@ export function chainKey(ders, { roots, now = new Date() }) {
   if (!Array.isArray(ders) || !ders.length || ders.length > 5) fail("bad_chain", "The certificate chain is missing or too long.");
   let chain;
   try { chain = ders.map((d) => parseCertificate(d)); } catch { fail("bad_chain", "A certificate in the chain can't be read."); }
-  const anchors = parseRoots(roots);
+  // Trusted roots, each with what its trust list says it speaks for (CRD-01).
+  let found;
+  try { found = readAnchors(roots); } catch { fail("no_trust", "A configured issuer certificate can't be read."); }
+  const anchors = found.map((a) => a.cert);
   if (!anchors.length) fail("no_trust", "No trusted issuer roots are configured for this kind of credential.");
   const valid = (c) => now >= c.notBefore && now <= c.notAfter;
   for (const c of chain) if (!valid(c)) fail("bad_chain", "A certificate in the issuer's chain isn't valid now.");
@@ -142,20 +145,26 @@ export function chainKey(ders, { roots, now = new Date() }) {
   if (leaf.digitalSignature === false) fail("bad_chain", "The issuer's certificate isn't allowed to sign.");
   const top = chain[chain.length - 1];
   const sameDer = (a, b) => a.der.length === b.der.length && a.der.every((x, i) => x === b.der[i]);
-  const root = anchors.find((r) => sameDer(r, top) && chain.length > 1 && r.isCa) || anchors.find((r) => r.isCa && r.keyCertSign !== false && issuedBy(top, r));
-  if (!root) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  let idx = found.findIndex((a) => sameDer(a.cert, top) && chain.length > 1 && a.cert.isCa);
+  if (idx < 0) idx = found.findIndex((a) => a.cert.isCa && a.cert.keyCertSign !== false && issuedBy(top, a.cert));
+  if (idx < 0) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  const anchor = found[idx], root = anchor.cert;
   if (!valid(root)) fail("untrusted_issuer", "The trusted root for this issuer isn't valid now.");
+  // Who the root speaks for: the trust list's word first, then the certificate's own C and ST.
+  const country = anchor.country || countryCode(root.subject.C), state = anchor.state || stateCode(root.subject.ST);
   return {
     key: certKey(leaf),
     leaf: { subject: leaf.subject, notAfter: leaf.notAfter.toISOString(), san: leaf.san },
-    root: { subject: root.subject, fingerprint: root.fingerprint },
+    root: { subject: root.subject, fingerprint: root.fingerprint, country, state, source: anchor.source },
   };
 }
 
 /** A JWS header's x5c (base64 DER, leaf first) through chainKey. */
 export function x5cKey(x5c, { roots, now = new Date() }) {
   if (!Array.isArray(x5c) || x5c.some((c) => typeof c !== "string")) fail("bad_chain", "The token's certificate chain is malformed.");
-  return chainKey(x5c.map(unb64), { roots, now });
+  let ders;
+  try { ders = x5c.map(unb64); } catch (e) { if (e instanceof JoseError) throw e; fail("bad_chain", "A certificate in the token's chain can't be read."); }
+  return chainKey(ders, { roots, now });
 }
 
 /* ---------------- JWE (decrypt) ---------------- */

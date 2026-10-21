@@ -23,16 +23,23 @@ export { credentialRequest, claimsFor, mdocElements, CredsError, REQUEST_TTL_MS 
 export { verifyCredentialResponse, checkStatus, fromLicenseBarcode } from "./verify.js";
 export { minimise, commit, checkCommitment, canonical, ageOn, FACTS, CLAIM_SCHEMA } from "./attest.js";
 export { checkSsnFormat, ecbsvVerifier } from "./ssn.js";
+export { recheckMdocRecord } from "./record.js";
+export { createTrustStore, loadTrustStore, TRUST_VERSION } from "./trust.js";
 
 /**
  * IACA roots for mobile IDs from a VICAL (e.g. AAMVA's Digital Trust Service),
- * whose own signature must chain to `providerRoots`, made by a VICAL signing certificate, and
- * not stale (pass the last `minIssueId` seen to refuse a rollback). docType filters by what
- * each issuer may sign. Returns DER certificates to pass as trust.iaca.
+ * whose own signature must chain to `providerRoots` or a `providerPins`
+ * fingerprint, made by a VICAL signing certificate, and not stale (pass the last
+ * `minIssueId` seen to refuse a rollback). docType filters by what each issuer
+ * may sign. Returns trust anchors that keep each root's country, state and
+ * document types, to pass as trust.iaca. For a store that refreshes and
+ * refuses rollbacks, use createTrustStore().applyVical.
  */
-export function iacaFromVical(bytes, { providerRoots, docType, now, minIssueId } = {}) {
+export function iacaFromVical(bytes, { providerRoots, providerPins, docType, now, minIssueId } = {}) {
   let v;
-  try { v = readVical(bytes, { providerRoots, now, minIssueId }); }
+  try { v = readVical(bytes, { providerRoots, providerPins, now, minIssueId }); }
   catch (e) { if (e instanceof MdocError) throw new CredsError(e.code, e.message); throw e; }
-  return v.certificates.filter((c) => !docType || !c.docTypes.length || c.docTypes.includes(docType)).map((c) => c.der);
+  return v.certificates
+    .filter((c) => !docType || !c.docTypes.length || c.docTypes.includes(docType))
+    .map((c) => ({ cert: c.der, country: c.country, state: c.state, docTypes: c.docTypes, source: "vical" }));
 }

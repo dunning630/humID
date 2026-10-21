@@ -42,13 +42,13 @@ const u8 = (b) => new Uint8Array(b);
 const sha256 = (b) => createHash("sha256").update(b).digest();
 
 /** An issuing authority: IACA root + Document Signer. */
-export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity, dsSan, dsKu, dsC } = {}) {
+export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity, dsSan, dsKu, dsC, dsSubject } = {}) {
   const root = ec(), ds = ec();
   const now = Date.now();
   const rootSubject = { C, ST, CN: `${name} IACA Root (TEST)` };
   const rootDer = cert({ subject: rootSubject, issuer: rootSubject, publicKey: root.publicKey, signingKey: root.privateKey, ca: true, notBefore: new Date(now - 30 * day), notAfter: new Date(now + 3650 * day) });
   const dsDer = cert({
-    subject: { C: dsC ?? C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku, san: dsSan, ku: dsKu,
+    subject: dsSubject || { C: dsC ?? C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku, san: dsSan, ku: dsKu,
     notBefore: dsValidity?.from || new Date(now - 10 * day), notAfter: dsValidity?.until || new Date(now + 365 * day),
   });
   return { root, ds, rootDer: u8(rootDer), dsDer: u8(dsDer), rootPem: pem(rootDer), C, ST };
@@ -195,3 +195,25 @@ export function wallet({ authority = issuingAuthority(), data, docType = "org.is
 
   return { device, issuerSigned, engagement, respond, authority, point: point(device.publicKey) };
 }
+
+/**
+ * A VICAL signed by `provider` (an issuingAuthority acting as the list's provider:
+ * its Document Signer key signs, its DS and, with includeRoot, its root go in x5chain).
+ * entries: [{ authority | der, country, state, docTypes }].
+ */
+export function signVical(provider, entries, { issueId = 1, date = new Date(Date.now() - day), nextUpdate = new Date(Date.now() + 30 * day), includeRoot = true, name = "Test DTS" } = {}) {
+  const vical = new Map([
+    ["version", "1.0"], ["vicalProvider", name], ["date", tdate(date)], ...(issueId === null ? [] : [["vicalIssueID", issueId]]),
+    ...(nextUpdate ? [["nextUpdate", tdate(nextUpdate)]] : []),
+    ["certificateInfos", entries.map((e) => new Map([
+      ["certificate", e.der || e.authority.rootDer], ["docType", e.docTypes || ["org.iso.18013.5.1.mDL"]],
+      ...(e.country !== undefined ? [["issuingCountry", e.country]] : []), ...(e.state ? [["stateOrProvinceName", e.state]] : []),
+    ]))],
+  ]);
+  const payload = encode(vical);
+  const prot = encode(new Map([[1, -7]]));
+  const sig = sign("sha256", encode(["Signature1", prot, new Uint8Array(0), payload]), { key: provider.ds.privateKey, dsaEncoding: "ieee-p1363" });
+  const x5 = includeRoot ? [provider.dsDer, provider.rootDer] : provider.dsDer;
+  return encode([prot, new Map([[33, x5]]), payload, u8(sig)]);
+}
+export const fingerprint = (der) => createHash("sha256").update(der).digest("hex");

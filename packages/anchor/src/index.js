@@ -219,6 +219,25 @@ export function loadCscas(dir) {
   return out;
 }
 
+/**
+ * CSCAs from a HumID trust store snapshot (written by @humid/creds'
+ * createTrustStore().toJSON(), usually by tools/trust.mjs). Expired ones are
+ * left out. A missing file gives []; a damaged one throws.
+ */
+export function loadCscasFromTrustFile(path, { now = new Date(), minRev = 0 } = {}) {
+  if (!path || !existsSync(path)) return [];
+  const s = JSON.parse(readFileSync(path, "utf8"));
+  if (s?.v !== 1 || !Array.isArray(s.csca)) throw new Error("The trust store file is damaged or from another version.");
+  if (!Number.isSafeInteger(s.rev) || s.rev < minRev) throw new Error("The trust store file is older than one already used.");
+  const out = [];
+  for (const e of s.csca) {
+    if (e.notAfter && new Date(e.notAfter) < now) continue;
+    try { out.push(new X509Certificate(Buffer.from(e.der, "base64"))); } catch { /* skip unreadable */ }
+  }
+  out.rev = s.rev;
+  return out;
+}
+
 const asCert = (c) => (c instanceof X509Certificate ? c : new X509Certificate(c));
 
 /* ---------------- passive authentication ---------------- */

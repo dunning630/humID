@@ -1,0 +1,27 @@
+{
+  "_read_me": "Copy to trust-config.json. Fill every pin only after confirming the fingerprint with the provider itself (run: node tools/trust.mjs inspect <downloaded file>). An empty pin list means that source is refused, never trusted blindly. See docs/CREDENTIALS-TRUST.md.",
+  "vical": {
+    "id": "aamva",
+    "_source": "AAMVA mDL Digital Trust Service. Free for relying parties; downloading means accepting AAMVA's DTS terms. Landing page: https://vical.dts.aamva.org/ . Put the direct VICAL file URL here once confirmed, or download it and use \"file\".",
+    "url": "",
+    "file": "",
+    "providerPins": []
+  },
+  "masterLists": [
+    {
+      "source": "icao",
+      "_source": "ICAO Master List (https://www.icao.int/icao-pkd/icao-master-list). Signed by ICAO's Master List Signer under the UN CSCA; ICAO provides the UN CSCA certificate on request. Download after accepting ICAO's terms, then point \"file\" at it.",
+      "file": "",
+      "publisherCerts": ["un-csca.pem"],
+      "publisherPins": []
+    },
+    {
+      "source": "bsi",
+      "_source": "German Master List from the BSI (https://www.bsi.bund.de/SharedDocs/Downloads/DE/BSI/ElekAusweise/CSCA/GermanMasterList.html), signed under Germany's CSCA.",
+      "file": "",
+      "publisherCerts": ["de-csca.pem"],
+      "publisherPins": []
+    }
+  ],
+  "allowHosts": ["vical.dts.aamva.org"]
+}

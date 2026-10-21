@@ -58,6 +58,9 @@ export function proofTier(level) {
   if (level === "mrz") return { icon: "scan", text: "Read from the document's lines", tone: "mint" };
   if (level === "mrz-partial" || level === "mrz-unverified") return { icon: "scan", text: "Read from the lines, partly", tone: "amber" };
   if (level?.startsWith("chip")) return { icon: "nfc", text: "Chip read, not verified", tone: "amber" };
+  if (level === "mdoc") return { icon: "phone", text: "Mobile ID, issuer checked", tone: "mint" };
+  if (level === "mdoc-edited") return { icon: "phone", text: "Mobile ID, then edited", tone: "" };
+  if (level?.startsWith("mdoc")) return { icon: "phone", text: "Mobile ID, not verified", tone: "amber" };
   return { icon: "pencil", text: "Typed by you", tone: "" };
 }
 

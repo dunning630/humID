@@ -21,7 +21,7 @@
 // opens nothing. See docs/RECOVERY.md and docs/CONTINUITY.md.
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
@@ -30,7 +30,7 @@ import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
   QUORUM, decodeQuorumPart, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES,
 } from "@humid/recovery";
-import { passiveAuth, activeAuth, anchorOf, anchorSummary, stableIdentity, loadCscas, AnchorError } from "@humid/anchor";
+import { passiveAuth, activeAuth, anchorOf, anchorSummary, stableIdentity, loadCscas, loadCscasFromTrustFile, AnchorError } from "@humid/anchor";
 
 const HOUR = 3600_000;
 const SIZES = { kemPk: 1568, xPk: 32, dsaPk: 2592 };
@@ -48,6 +48,7 @@ export function createRecovery({
   internalPk = env("HUMID_INTERNAL_PK"),
   delayMs = Number(env("RECOVERY_DELAY_MS", String(72 * HOUR))),
   cscaDir = env("HUMID_CSCA_DIR", ""),
+  trustFile = env("HUMID_TRUST_STORE", ""),   // trust.json from tools/trust.mjs (ICAO / BSI master lists)
   cscas: extraCscas = [],
   stations = list(env("HUMID_STATION_ACCOUNTS", "")),
   linkTtlMs = 10 * 60_000,
@@ -102,9 +103,24 @@ export function createRecovery({
   // Sealed at rest when the server has a seal key (a plain one is sealed in place: the same secret).
   const anchorSecret = secretFile(`${dataDir}/anchor-secret.bin`, { seal, name: "recovery/anchor-secret", make: () => randomBytes(32), log });
   const hmacKey = Buffer.from(hkdfSync("sha3-256", anchorSecret, Buffer.alloc(0), "HUMID-ANCHOR-v1 hmac", 32));
-  const cscas = [...loadCscas(cscaDir), ...extraCscas];
+  // Country signing certificates: a folder of files, plus the trust store's
+  // master-list CSCAs, re-read when the trust store file changes, so a
+  // refreshed master list takes effect without a restart. A damaged trust
+  // store keeps the last good set.
+  const fixedCscas = [...loadCscas(cscaDir), ...extraCscas];
+  let cscas = fixedCscas, trustMtime = -1, trustRev = 0; // the highest store revision seen: an older file put back is refused
+  const currentCscas = () => {
+    if (!trustFile) return cscas;
+    let m = 0;
+    try { m = statSync(trustFile).mtimeMs; } catch { m = 0; }
+    if (m !== trustMtime) {
+      try { const t = loadCscasFromTrustFile(trustFile, { minRev: trustRev }); cscas = [...fixedCscas, ...t]; trustRev = t.rev ?? trustRev; trustMtime = m; log.info("trust store loaded", { cscas: cscas.length, rev: trustRev }); }
+      catch (e) { log.warn("trust store unreadable, keeping the last good set", { error: String(e?.message || e) }); trustMtime = m; }
+    }
+    return cscas;
+  };
   const stationSet = new Set(stations);
-  log.info("identity anchors", { countries: cscas.length, stations: stationSet.size });
+  log.info("identity anchors", { countries: currentCscas().length, stations: stationSet.size });
 
   /** AES-256-GCM under a key from the server secret and `context` (identity fields, or a request id). */
   function wrap(context, salt, plain) {
@@ -174,7 +190,7 @@ export function createRecovery({
   }
   /** Passive authentication, as an HTTP error on failure. */
   function checkChip(chip) {
-    try { return passiveAuth(chip, { cscas }); }
+    try { return passiveAuth(chip, { cscas: currentCscas() }); }
     catch (e) {
       if (e instanceof AnchorError) throw new HttpError(e.code === "no_trust" ? 501 : 422, e.code, e.message);
       throw e;
@@ -336,7 +352,7 @@ export function createRecovery({
   const anchor = [
     ["GET", "/anchor", ({ claims }) => {
       const a = db.prepare("SELECT document, country, created_at FROM anchors WHERE account = ?").get(needUser(claims));
-      return json(200, { available: cscas.length > 0, exists: !!a, ...(a ? { document: a.document, country: a.country, createdAt: a.created_at } : {}) });
+      return json(200, { available: currentCscas().length > 0, exists: !!a, ...(a ? { document: a.document, country: a.country, createdAt: a.created_at } : {}) });
     }],
     // The owner binds their passport or ID chip. The anchor part arrives over the encrypted channel
     // and is stored only encrypted under the identity fields, which aren't stored.
@@ -690,7 +706,7 @@ export function createRecovery({
   };
 
   const station = [
-    ["GET", "/station", ({ claims }) => json(200, { station: isStation(needUser(claims)), countries: cscas.length })],
+    ["GET", "/station", ({ claims }) => json(200, { station: isStation(needUser(claims)), countries: currentCscas().length })],
     ["GET", "/station/requests/:code", ({ params, claims }) => {
       needStation(claims);
       const q = stationRequest(params.code);
