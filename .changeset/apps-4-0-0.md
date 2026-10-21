@@ -1,0 +1,5 @@
+---
+"@humid/mobile": major
+---
+
+4.0.0 brings every line of work onto one code base: the 3.x apps (the rebuilt document camera, payment cards, wallet passes, Check-in, the admin console) with all of the 4.0 track and every security fix to date. In it: person-to-person messaging with per-contact IDs and live stamps, delete for both and disappearing messages, "Proving it's you" (challenges, stamped media, an evidence locker), public credentials (mobile driver's licenses and EU digital IDs, with a trust store whose issuers' country and state come from the trusted list, never the document), a FIDO2 security key as a fourth recovery proof, and HumID Server for Windows 3.1 (updates signed by the HumID release key, backups encrypted to a key you keep offline, the keyshare kept apart). Security: PC-01 to PC-11 from the pre-certification assessment, plus CRD-01, CRD-02 and APP-05: an opened document must be the one your vault's own index names, and an ID's chip photo is re-made from the chip every time it opens. Messaging, credentials and the security key have their protocol code and tests in this release; their app screens come next.

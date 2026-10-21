@@ -332,6 +332,21 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: npm run tauri -- ios build --export-method app-store-connect
+      # Off unless the repository variable HUMID_TESTFLIGHT is "on" and this is a publishing run:
+      # the signed .ipa goes to App Store Connect, where it appears in TestFlight once Apple has
+      # processed it. Needs the app record (bundle id app.humid.vault) created in App Store Connect
+      # first, and the API key (APPLE_API_KEY / APPLE_API_ISSUER) to have App Manager access.
+      - name: iOS · upload to TestFlight (App Store Connect)
+        if: matrix.platform == 'ios' && env.HAS_APPLE == 'true' && vars.HUMID_TESTFLIGHT == 'on' && (startsWith(github.ref, 'refs/tags/app-v') || inputs.publish_apps == true) && env.HUMID_SIMULATE != '1'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          IPA=$(find apps/mobile/src-tauri/gen/apple/build -name '*.ipa' | head -1)
+          [ -n "$IPA" ] || { echo "::error::no .ipa to upload"; exit 1; }
+          # altool looks for AuthKey_<id>.p8 in ~/private_keys, where the API key step put it.
+          xcrun altool --upload-app --type ios --file "$IPA" --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
+          echo "::notice title=TestFlight::Uploaded $(basename "$IPA"); it shows in TestFlight after Apple processes it."
       # `tauri ios build` runs beforeBuildCommand; the bare cargo check below doesn't, and
       # generate_context!() refuses a missing frontendDist. Build the web app it embeds first.
       - name: iOS · build the web app (what the compile check embeds)
