@@ -1,7 +1,7 @@
 # Person to person (HumID 4.0, provisional)
 
 > **Status:** 4.0 track (`v4/p2p-comms`, with "Proving it's you" from
-> `v4/prove-its-me`), shipping in apps 3.2.1. The protocol, formats,
+> `v4/prove-its-me`), in the apps 3.2.1 code base (no app screens yet). The protocol, formats,
 > delete and relay rules are built and tested (`packages/msg`, `tests/msg.test.js`,
 > `tools/timing-msg.mjs`); the relay service, the gateway's stamp route and the
 > app screens are not. Like the rest of HumID, it needs an independent
