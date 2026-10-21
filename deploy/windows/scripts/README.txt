@@ -21,8 +21,8 @@ through a secure tunnel, so you don't open anything on your router.
   phones.
 
   At the end it prints the server's fingerprint and key id. You can see them
-  again any time with "humid status". A new install also prints its backup
-  key once: write it down (see BACKUPS ARE ENCRYPTED below).
+  again any time with "humid status". Then make the backup key, onto a USB
+  drive (see BACKUPS ARE ENCRYPTED below):  humid backup-key new -Path E:\humid-backup.key
 
 
 2. GIVE IT A PUBLIC HTTPS ADDRESS  (Tailscale Funnel, free)
@@ -71,9 +71,13 @@ EVERYDAY COMMANDS  (Terminal (Admin))
   humid restart           restart the background task
   humid show              settings (the secret key is hidden)
   humid set KEY=VALUE     change a setting and restart
-  humid backup            stop, write two encrypted files to C:\ProgramData\HumID\backups, start
-  humid restore -Path <main file>,<keys file>
-  humid backup-key        the backup key, to write down and keep offline
+  humid backup-key new -Path E:\humid-backup.key
+                          once: make the backup key. Its private key goes to that
+                          file (a USB drive): keep it off this computer. Without
+                          it, no backup can be restored.
+  humid backup            stop, write two encrypted files to Documents (the backup,
+                          and keyshare's half: put that one on another disk), start
+  humid restore -Path <backup> -KeysharePath <keyshare file> -Key E:\humid-backup.key
   humid selftest          run the end-to-end self-test against this server
   humid console           open the admin console (see below)
 
@@ -106,28 +110,36 @@ THE ADMIN CONSOLE
   Lost your phone?   humid admin reset   then add a new one.
 
 
-BACKUPS ARE ENCRYPTED
----------------------
+BACKUPS ARE ENCRYPTED, AND KEYSHARE'S HALF IS KEPT APART
+---------------------------------------------------------
+  Once, make the backup key, onto a USB drive:
+       humid backup-key new -Path E:\humid-backup.key
+  Its private key goes only to that file; this computer keeps only the
+  public key, so it can encrypt backups but never open them. Keep the file
+  (and a second copy) off this computer. Without it, no backup can be
+  restored; anyone with it and a backup can read the backup. Until there is
+  a backup key, backups wait.
+
   "humid backup" stops the server for a moment and writes two files, both
-  encrypted with this server's backup key:
-       HumID-backup-<date>-main.humidbak   settings, accounts, sealed documents
-       HumID-backup-<date>-keys.humidbak   the key-share data (the second half
-                                           of every document key)
-  to C:\ProgramData\HumID\backups (or: humid backup -Path D:\some\folder).
-  Keep the -keys file somewhere other than the -main file (a different
-  drive, or offline): together they open documents, apart they don't.
+  encrypted to the backup key:
+       HumID-backup-<date>.humidbak     settings, accounts, sealed documents
+       HumID-keyshare-<date>.humidbak   keyshare's half (the second half of
+                                        every document key)
+  to Documents (or: humid backup -Path D:\some\folder -KeysharePath
+  G:\HumID-keyshare.humidbak). Keep them on different disks: together they
+  open documents, apart they don't. The console's backups go to
+  C:\ProgramData\HumID\backups, keyshare's half to backups\keyshare unless
+  you choose another disk:  humid backup-key keyshare D:\HumID-keyshare
 
-  The backup key:   humid backup-key
-  Write it down and keep it offline, apart from the backups. Anyone with the
-  key AND a backup file can read the backup.
-
-  Restore on this server:
-       humid restore -Path <main file>,<keys file>
-  Restore on a new or rebuilt computer (install first, then):
-       humid restore -Path <main file>,<keys file> -BackupKey HBK-XXXX-...
-  The current data moves aside to C:\ProgramData\HumID\before-restore-<date>,
-  and nothing changes if the key is wrong or a file is damaged. A backup
-  .zip from HumID 2.x still restores: humid restore -Path <backup.zip>
+  Restore (on this server, or on a new or rebuilt computer after installing):
+       humid restore -Path <HumID-backup file> -KeysharePath <HumID-keyshare file> -Key E:\humid-backup.key
+  The server's identity and its sealed secrets come back with it (the seal
+  key travels inside the encrypted backup and is sealed again with this
+  computer's DPAPI). The current data moves aside to
+  C:\ProgramData\HumID\before-restore-<date>, and nothing changes if the key
+  is wrong, the two files don't belong together, or a file was changed or
+  cut short. A backup .zip from HumID 2.x still restores:
+       humid restore -Path <backup.zip>
 
 
 SEALED SECRETS
@@ -173,8 +185,9 @@ RUNNING ROLES ON SEPARATE MACHINES
 
 UPDATING
 --------
-  From the admin console: Updates > Update (approved on your phone). It backs
-  up first and goes back to the old version by itself if the new one fails.
+  From the admin console: Updates > Update (approved on your phone). It keeps
+  a copy of the data first and goes back to the old version by itself if the
+  new one fails. It installs only updates signed with the HumID release key.
   Or by hand: unzip the new version and run "Install HumID Server.cmd" again.
   Settings, accounts, documents and the server's identity are kept.
 
@@ -189,10 +202,10 @@ GOOD TO KNOW
 ------------
   * The laptop must be on, awake and online for phones to reach the vault.
     After a Windows update restarts it, the server starts again by itself.
-  * Back up C:\ProgramData\HumID (humid backup). It holds the server's
-    identity: lose it and every app pinned to this server refuses to
-    connect. Copy the backup files off this computer, and keep the backup
-    key offline.
+  * Back up (humid backup). It holds the server's identity: lose it and
+    every app pinned to this server refuses to connect. Backups are
+    encrypted to your backup key; keep the key file, the backup and
+    keyshare's half in three different places.
   * Only administrators and the server itself (LOCAL SERVICE account) can
     read C:\ProgramData\HumID.
   * This is a proof of concept. Don't put real customer data in it before

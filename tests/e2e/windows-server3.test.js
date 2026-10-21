@@ -1,11 +1,12 @@
-// End to end, server 3.0 on the Windows host program (any OS; CI also runs it on real Windows
-// with DPAPI): secrets sealed at rest, encrypted backups that restore elsewhere, and the roles
+// End to end, server 3.x on the Windows host program (any OS; CI also runs it on real Windows
+// with DPAPI): secrets sealed at rest, encrypted backups (server 3.1: to a backup key kept off
+// the server, keyshare's half apart) that restore elsewhere, and the roles
 // split across two "machines" (two data roots) talking mutual TLS, with the deployment smoke
 // test passing through all of it.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, cpSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ import net from "node:net";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const program = join(repo, "deploy", "windows", "src", "server.mjs");
+const adminProgram = join(repo, "deploy", "windows", "admin", "admin.mjs");
 const work = mkdtempSync(join(tmpdir(), "humid-s3win-"));
 const children = [];
 after(async () => {
@@ -29,10 +31,10 @@ function machine(name) {
   const root = join(work, name);
   const keyFile = join(work, `${name}.seal`);
   writeFileSync(keyFile, randomBytes(32).toString("hex"));
-  const env = { ...process.env, HUMID_SEAL: "file", HUMID_SEAL_KEY_FILE: keyFile, HUMID_BACKUP_KEY_FILE: "" };
-  delete env.HUMID_BACKUP_KEY_FILE;
+  const env = { ...process.env, HUMID_SEAL: "file", HUMID_SEAL_KEY_FILE: keyFile };
   const run = (...args) => execFileSync(process.execPath, ["--no-warnings", program, ...args, "--root", root], { encoding: "utf8", env });
-  return { name, root, keyFile, env, run };
+  const admin = (...args) => execFileSync(process.execPath, ["--no-warnings", adminProgram, ...args, "--root", root], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
+  return { name, root, keyFile, env, run, admin };
 }
 async function start(m) {
   const child = spawn(process.execPath, ["--no-warnings", program, "run", "--service", "--root", m.root], { stdio: "ignore", env: m.env });
@@ -94,37 +96,53 @@ test("an older install's plain secrets are sealed in place on first start; the s
   await stop(r.child);
 });
 
-test("encrypted backups: two files, restore elsewhere with the backup key, wrong key and tampering refused", async () => {
-  const dir = join(work, "backups");
-  const main = json(A.run("backup", "--out", join(dir, "b-main.humidbak"), "--part", "main"));
-  const keys = json(A.run("backup", "--out", join(dir, "b-keys.humidbak"), "--part", "keys"));
-  assert.ok(main.files > 5 && keys.files >= 2, `main ${main.files} files, keys ${keys.files}`);
-  const raw = readFileSync(join(dir, "b-main.humidbak"));
+test("encrypted backups: to a key kept off the server, keyshare apart; restore elsewhere with the key file; the server can't open its own", async () => {
+  const dir = join(work, "backups"), usb = join(work, "usb");
+  // no backup key yet: nothing is written
+  assert.throws(() => A.admin("backup", "--out", join(dir, "early.humidbak"), "--keyshare-out", join(dir, "early-ks.humidbak")), (e) => /No backup key is set/.test(e.stdout));
+  assert.ok(!existsSync(join(dir, "early.humidbak")));
+  mkdirSync(usb, { recursive: true });
+  const made = A.admin("backup-key-new", "--out", join(usb, "humid-backup.key"));
+  assert.match(made, /Backup key [0-9A-F-]{19} is set/);
+  const keyText = readFileSync(join(usb, "humid-backup.key"), "utf8");
+  // the server keeps only the public half
+  for (const f of [join(A.root, "humid.env"), join(A.root, "admin", "admin.env")]) assert.ok(!readFileSync(f, "utf8").includes(JSON.parse(keyText).seed));
+  const main = join(dir, "HumID-backup-x.humidbak"), ks = join(dir, "HumID-keyshare-x.humidbak");
+  A.admin("backup", "--out", main, "--keyshare-out", ks);
+  const raw = readFileSync(main);
   assert.ok(!raw.includes(Buffer.from("HUMID_INTERNAL_PK")), "nothing readable inside");
-  const hbk = A.run("backup-key").trim();
-  assert.match(hbk, /^HBK-[A-Z2-9-]+$/);
-  // on another machine: its own (different) backup key; the typed one opens the backup
+  for (const f of [main, ks]) assert.ok(!readFileSync(f).includes(Buffer.from(readFileSync(A.keyFile, "utf8").trim(), "hex")), "no seal key in the clear");
+  // the server itself can't open it: restoring needs the key file
+  assert.throws(() => A.admin("restore", "--into", join(work, "self"), "--in", main, "--keyshare", ks), (e) => /needs that key file/.test(e.stdout));
+  assert.ok(!existsSync(join(work, "self")));
+  // and keyshare's half: refused without it
+  writeFileSync(join(usb, "k.key"), keyText);
+  assert.throws(() => A.admin("restore", "--into", join(work, "noks"), "--in", main, "--key", join(usb, "k.key")), (e) => /also needs keyshare's half/.test(e.stdout));
+  // on another machine, with the key file: the same server comes back, its sealed secrets open
   const C = machine("c");
-  const to = join(C.root);
-  assert.throws(() => C.run("restore", "--in", `${join(dir, "b-main.humidbak")},${join(dir, "b-keys.humidbak")}`, "--to", to), /another server's backup key|no backup key/);
-  assert.throws(() => C.run("restore", "--in", join(dir, "b-main.humidbak"), "--to", to, "--backup-key", "HBK-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAA"), /typo|doesn't open/);
-  const r = json(C.run("restore", "--in", `${join(dir, "b-main.humidbak")},${join(dir, "b-keys.humidbak")}`, "--to", to, "--backup-key", hbk));
-  assert.equal(r.files, main.files + keys.files);
-  assert.ok(r.sealKey, "the seal key travelled inside the backup");
-  // the restored server opens the sealed secrets (here with A's seal key file; on Windows it is re-sealed under the new machine's DPAPI)
+  const to = join(work, "c-restored");
+  const out = C.admin("restore", "--into", to, "--in", main, "--keyshare", ks, "--key", join(usb, "k.key"));
+  const r = JSON.parse(out.trim().split("\n").pop());
+  assert.equal(r.kind, "data");
+  assert.ok(r.sealKey, "the seal key travelled inside the encrypted backup");
+  assert.ok(existsSync(join(to, "data", "keyshare", "share-key.bin")));
+  rmSync(C.root, { recursive: true, force: true });
+  cpSync(to, C.root, { recursive: true });
   const port = await freePort();
   C.run("set", `HUMID_PORT=${port}`, `HUMID_ADMIN_PORT=${port + 1}`);
+  // (here the seal key is A's key file, which the restore can't move; on Windows it is sealed again under the new machine's DPAPI)
   const restored = await start({ ...C, env: { ...C.env, HUMID_SEAL_KEY_FILE: A.keyFile } });
   assert.equal(restored.info.kid, kidA, "the restored server is the same server");
   await stop(restored.child);
   // a changed byte: refused, nothing written
   const bad = Buffer.from(raw); bad[bad.length - 40] ^= 1;
   writeFileSync(join(dir, "bad.humidbak"), bad);
-  assert.throws(() => A.run("restore", "--in", join(dir, "bad.humidbak"), "--to", join(work, "nope")), /damaged|changed/);
-  assert.ok(!existsSync(join(work, "nope")) || readdirSync(join(work, "nope")).length === 0);
+  assert.throws(() => A.admin("restore", "--into", join(work, "nope"), "--in", join(dir, "bad.humidbak"), "--keyshare", ks, "--key", join(usb, "k.key")), (e) => /damaged|changed/.test(e.stdout));
+  assert.ok(!existsSync(join(work, "nope")));
   // a cut file: refused
   writeFileSync(join(dir, "cut.humidbak"), raw.subarray(0, raw.length - 100));
-  assert.throws(() => A.run("restore", "--in", join(dir, "cut.humidbak"), "--to", join(work, "nope2")), /cut short|damaged|incomplete/);
+  assert.throws(() => A.admin("restore", "--into", join(work, "nope2"), "--in", join(dir, "cut.humidbak"), "--keyshare", ks, "--key", join(usb, "k.key")), (e) => /cut short|damaged/.test(e.stdout));
+  assert.ok(!existsSync(join(work, "nope2")));
 });
 
 test("split roles: front+core on one machine, keys on another, mutual TLS between them; the full flow passes", async () => {

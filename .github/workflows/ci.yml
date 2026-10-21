@@ -390,7 +390,7 @@ jobs:
           if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed on restart" }
-      - name: Secrets are sealed (DPAPI); the backup key is closed to the server's account
+      - name: Secrets are sealed (DPAPI); the server keeps no key that opens a backup
         shell: pwsh
         run: |
           $j = & "C:\Program Files\HumID Server\node\node.exe" --no-warnings "C:\Program Files\HumID Server\humid-server.mjs" seal-status --root C:\ProgramData\HumID
@@ -401,45 +401,62 @@ jobs:
           if (@($s.plain).Count) { throw "secrets still in plain files: $($s.plain -join ', ')" }
           if ($s.internalKey -ne 'sealed') { throw "the internal key in humid.env is $($s.internalKey)" }
           if (-not @($s.sealed).Count) { throw 'no sealed secrets reported' }
-          foreach ($p in 'C:\ProgramData\HumID\backup-key', 'C:\ProgramData\HumID\backup-key\backup.dpapi') {
-            $acl = (Get-Acl $p).Access | ForEach-Object { $_.IdentityReference.Value }
-            if ($acl -match 'LOCAL SERVICE|Users|Everyone') { throw "$p is open to: $($acl -join ', ')" }
-          }
+          if (Test-Path 'C:\ProgramData\HumID\backup-key') { throw 'a backup key folder is on the server (3.0 kept one there; since 3.1 its private key is kept off the computer)' }
           $out = powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID status | Out-String
           if ($out -notmatch 'Secrets\s+sealed \(DPAPI\)') { throw "humid status doesn't show sealed secrets: $out" }
-          $key = powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup-key | Out-String
-          if ($key -notmatch 'HBK-[A-Z0-9-]+') { throw "humid backup-key printed no key: $key" }
-      - name: Encrypted backup (two files), restore, and update in place keep the server's identity
+          $bk = powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup-key | Out-String
+          if ($bk -notmatch 'none yet') { throw "a fresh install already has a backup key: $bk" }
+      - name: Encrypted backup (keyshare apart), restore with the key file, and update in place keep the server's identity
         shell: pwsh
         run: |
+          # On failure: say which check and what humid printed last, as an annotation (readable without the log).
+          $script:last = ''
+          trap {
+            $m = ($script:last -replace "`r?`n", ' | ')
+            if ($m.Length -gt 1500) { $m = '...' + $m.Substring($m.Length - 1500) }
+            Write-Host "::error title=Encrypted backup step::$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber)). Last humid output: $m"
+            exit 1
+          }
+          # (not H: in PowerShell that's the Get-History alias, and aliases beat functions)
+          function Invoke-Humid { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args 2>&1 | Out-String; $code = $LASTEXITCODE; $script:last = $o; Write-Host $o; return $code }
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
-          $bk = "$env:RUNNER_TEMP\backups"
-          New-Item -ItemType Directory -Force -Path $bk | Out-Null
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path $bk
-          if ($LASTEXITCODE) { throw 'backup failed' }
-          $main = Get-ChildItem $bk -Filter 'HumID-backup-*-main.humidbak' | Select-Object -First 1
-          $keys = Get-ChildItem $bk -Filter 'HumID-backup-*-keys.humidbak' | Select-Object -First 1
-          if (-not $main -or -not $keys) { throw "backup didn't write a -main and a -keys file: $((Get-ChildItem $bk).Name -join ', ')" }
-          if (Select-String -LiteralPath $main.FullName -Pattern 'HUMID_INTERNAL_PK' -SimpleMatch -Quiet) { throw 'the backup is not encrypted' }
-          # a wrong backup key is refused, and nothing changes
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$($main.FullName),$($keys.FullName)" -BackupKey HBK-AAAA-AAAA-AAAA -Quiet
-          if (-not $LASTEXITCODE) { throw 'a restore with a wrong backup key went ahead' }
+          $usb = Join-Path $env:RUNNER_TEMP 'usb'
+          New-Item -ItemType Directory -Force -Path $usb | Out-Null
+          $b = "$env:RUNNER_TEMP\b.humidbak"; $k = "$usb\keyshare.humidbak"; $key = "$usb\humid-backup.key"
+          if ((Invoke-Humid backup -Path "$env:RUNNER_TEMP\early.humidbak") -eq 0) { throw 'a backup ran without a backup key' }
+          if (Test-Path "$env:RUNNER_TEMP\early.humidbak") { throw 'a plain backup was written' }
+          if ((Invoke-Humid backup-key new -Path 'C:\ProgramData\HumID\data\k.key') -eq 0 -or (Test-Path 'C:\ProgramData\HumID\data\k.key')) { throw 'the backup key went inside the data folder' }
+          if (Invoke-Humid backup-key new -Path $key) { throw 'backup-key new failed' }
+          if (Select-String -LiteralPath 'C:\ProgramData\HumID\admin\admin.env' -Pattern '"seed"' -SimpleMatch -Quiet) { throw 'the private key is on the server' }
+          if (Invoke-Humid backup -Path $b -KeysharePath $k) { throw 'backup failed' }
+          if (-not (Test-Path $b) -or -not (Test-Path $k)) { throw 'backup files missing' }
+          foreach ($f in $b, $k) { if (Select-String -LiteralPath $f -Pattern 'HUMID_INTERNAL_PK' -SimpleMatch -Quiet) { throw "$f holds the settings in the clear" } }
+          # refused restores change nothing: the server keeps running, and no opened backup is left behind
+          $wrong = "$usb\wrong.key"   # another backup key, made apart from this server
+          node --input-type=module -e "import { newBackupKey } from './deploy/windows/admin/backups.mjs'; process.stdout.write(newBackupKey().file)" | Set-Content -LiteralPath $wrong -Encoding ascii
+          if ((Invoke-Humid restore -Path $b -KeysharePath $k -Key $wrong -Quiet) -eq 0) { throw 'restored with another backup key' }
+          if ((Invoke-Humid restore -Path $b -KeysharePath $k -Quiet) -eq 0) { throw 'restored without the backup key file' }
+          if ((Invoke-Humid restore -Path $b -Key $key -Quiet) -eq 0) { throw 'restored without keyshare''s half' }
           if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8480/healthz -TimeoutSec 5).StatusCode -ne 200) { throw 'the server stopped after a refused restore' }
-          if (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'restore-staging-*') { throw 'a refused restore left its staging folder' }
-          # both files, with this server's own key
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$($main.FullName),$($keys.FullName)" -Quiet
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'before-restore-*') { throw 'a refused restore moved the data' }
+          if (Get-ChildItem C:\ProgramData\HumID\admin\work -Directory -Filter 'restore-*' -ErrorAction SilentlyContinue) { throw 'a refused restore left the opened backup behind' }
+          # both files and the key file: the server comes back as itself, its secrets sealed under this machine's DPAPI
+          if (Invoke-Humid restore -Path $b -KeysharePath $k -Key $key -Quiet) { throw 'restore failed' }
+          if (-not (Test-Path 'C:\ProgramData\HumID\data\keyshare\share-key.bin')) { throw 'keyshare''s data not restored' }
           if (-not (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'before-restore-*')) { throw 'the restore kept no copy of the previous data' }
-          if (Get-ChildItem C:\ProgramData\HumID -Directory -Filter 'restore-staging-*') { throw 'the restore left its staging folder' }
-          $mid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
-          if ($mid -ne $kid) { throw "server identity changed on restore" }
+          if (Get-ChildItem C:\ProgramData\HumID\admin\work -Directory -Filter 'restore-*' -ErrorAction SilentlyContinue) { throw 'the restore left the opened backup behind' }
+          if ((Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid -ne $kid) { throw 'server identity changed on restore' }
           if ((Invoke-RestMethod http://127.0.0.1:8480/htp/v1/keys -TimeoutSec 10).kid -ne $kid) { throw 'the restored server serves a different key' }
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $st = & "C:\Program Files\HumID Server\node\node.exe" --no-warnings "C:\Program Files\HumID Server\humid-server.mjs" seal-status --root C:\ProgramData\HumID | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1 | ConvertFrom-Json
+          if ($st.mode -ne 'dpapi' -or @($st.plain).Count -or $st.internalKey -ne 'sealed') { throw "after the restore, secrets aren't all sealed: $($st | ConvertTo-Json -Compress)" }
+          $script:last = & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet 2>&1 | Out-String
+          $code = $LASTEXITCODE; Write-Host $script:last
+          if ($code) { throw "reinstall failed (exit $code)" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed" }
-          node tests/smoke.mjs http://127.0.0.1:8480
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $script:last = node tests/smoke.mjs http://127.0.0.1:8480 2>&1 | Out-String
+          $code = $LASTEXITCODE; Write-Host $script:last
+          if ($code) { throw "smoke test failed after restore (exit $code)" }
       - name: Check-in guard (with vaults armed, humid commands that stop the server wait for a typed ERASE)
         shell: pwsh
         run: |
@@ -593,7 +610,7 @@ jobs:
           Get-ScheduledTaskInfo -TaskName 'HumID Admin' -ErrorAction SilentlyContinue | Format-List
           Get-ScheduledTaskInfo -TaskName 'HumID Admin Job' -ErrorAction SilentlyContinue | Format-List
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
-          Get-Content C:\ProgramData\HumID\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\HumID\admin\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
           foreach ($i in 'test', 'keys') { Get-Content "C:\ProgramData\HumID-$i\logs\humid-server.log" -Tail 60 -ErrorAction SilentlyContinue }
           Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

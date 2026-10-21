@@ -149,18 +149,55 @@ cd deploy && docker compose pull && docker compose up -d
 Pin a version with `HUMID_VERSION=<commit>` in `deploy/.env` to roll back.
 
 **HumID Server for Windows** (`deploy/windows/`) ships as a zip on the
-repository's Releases page, one release per version:
+repository's Releases page, one release per version. The admin console installs
+an update as SYSTEM, so it takes only a zip signed with **the HumID release key**:
+an ML-DSA-87 key the maintainer keeps offline, whose public key is pinned in
+[`deploy/windows/admin/release-keys.mjs`](deploy/windows/admin/release-keys.mjs).
+CI never holds it, so CI makes a draft and the maintainer signs and publishes it.
+
+**Once, before the first signed release** (and again only to rotate the key):
+
+1. On a computer that's offline, with a checkout of this repository:
+   `node tools/release-key.mjs keygen --out E:\humid-release.key` (a USB drive).
+   It refuses to overwrite a file, writes the secret key readable only by you,
+   and prints the public key and its fingerprint.
+2. Paste the public key into `RELEASE_KEYS` in `release-keys.mjs` (with the
+   fingerprint and date in a comment) and commit it. A console only trusts keys
+   its installed version pins, so servers learn the key from the first release
+   that pins it. Consoles of 2.1.0 and earlier still check only GitHub's digest,
+   so that release reaches them as updates did before (from the console, or by
+   hand); from then on every update must be signed.
+3. Keep the key file offline, with a second copy somewhere safe. Never put it in
+   the repository, a GitHub secret or a server. Losing it means servers must be
+   updated by hand to a release that pins a new key.
+
+To rotate: add the new public key beside the old one (at most two), release that
+signed with the old key, then sign with the new key and drop the old one later.
+
+**Every release:**
 
 1. Bump `deploy/windows/package.json` and add an entry to
    `deploy/windows/CHANGELOG.md`.
 2. Either click **Actions → Release apps → Run workflow** on `main`,
    set platforms to `server-windows` and tick the publish box, or tag the
    commit yourself (once it's on `main`): `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
+3. *Release HumID Server for Windows* refuses to start while `release-keys.mjs`
+   pins no key. It builds the zip on Windows, installs it and runs the smoke
+   test there, then creates a **draft** release with the zip and the changelog
+   entry. The tag must match the version.
+4. Download `HumID-Server-Windows-<version>.zip` from the draft to the offline
+   computer and run
+   `node tools/release-key.mjs sign HumID-Server-Windows-<version>.zip --key E:\humid-release.key`.
+   It writes `HumID-Server-Windows-<version>.zip.sig` and warns if that key isn't
+   the one pinned in your checkout.
+5. Upload the `.sig` to the draft beside the zip, then **Publish release**
+   (leave "pre-release" unticked: consoles skip pre-releases unless
+   `HUMID_UPDATE_PRERELEASES=on`). Check it with
+   `node tools/release-key.mjs verify HumID-Server-Windows-<version>.zip`.
 
-*Release HumID Server for Windows* builds the zip on Windows, installs it and
-runs the smoke test there, then creates the release with the zip and the
-changelog entry. The tag must match the version. To update a laptop,
-download the new zip and run its installer; settings and data are kept.
+Consoles never see drafts, and refuse a zip without a valid `.sig`. To update a
+laptop by hand, download the new zip and run its installer; settings and data are
+kept.
 
 ## 5. Breaking changes, safely
 
