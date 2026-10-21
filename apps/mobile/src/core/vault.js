@@ -265,7 +265,9 @@ async function fetchPlain(item, purpose, label) {
     showInterrupt({ progress: 0.65, message: "Fetching the sealed copy from your vault…" });
     const { envelope, share } = await R.api.downloadWithShare(item.id, proof);
     showInterrupt({ progress: 0.85, message: share ? "Checking, then opening with both keys…" : "Checking it's untouched, then opening…" });
-    const out = await Suite.open(envelope, keys);
+    // Only this account seals documents into its vault, so anything signed by another key
+    // is a forgery from whoever served it (PC-03): refused before it's decrypted or shown.
+    const out = await Suite.open(envelope, keys, { signer: keys.dsaPk });
     if (!isSplit(out.meta)) { wipe(share); return out; }
     try { return await splitUnwrap(out.bytes, share); }
     finally { wipe(out.bytes, share); }

@@ -138,10 +138,30 @@ export function verify(envelope) {
   return { ok: sigOk && ctOk, sigOk, ctOk, manifest };
 }
 
-/** Verify, then decrypt with the holder's keys. */
-export async function open(envelope, keys) {
+const sameBytes = (a, b) => {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
+  return d === 0;
+};
+
+/**
+ * Verify, then decrypt with the holder's keys.
+ *
+ * The signature alone only proves that whoever made the envelope signed it: the key it
+ * is checked against travels inside the envelope. Anyone holding the recipient's public
+ * keys (every server, every recovery contact) can seal and sign one. So when the caller
+ * knows who must have sealed it, it passes `signer` (that ML-DSA-87 public key) and an
+ * envelope signed by anyone else is refused before anything is decrypted. A holder's own
+ * documents are always sealed by the holder's account key, so the vault's read path
+ * passes the account key here.
+ */
+export async function open(envelope, keys, { signer } = {}) {
   const v = verify(envelope);
   if (!v.ok) throw new Error(v.sigOk ? "Ciphertext does not match its signed hash." : "ML-DSA-87 signature is invalid.");
+  if (signer && !sameBytes(fromB64(v.manifest.signer.mldsa87Pk), signer)) {
+    throw Object.assign(new Error("This document wasn't sealed by your HumID, so it wasn't opened."), { code: "wrong_signer" });
+  }
   const { manifest, ciphertext } = unpack(envelope);
   const kemCt = fromB64(manifest.kem.mlkem1024Ct);
   const xEph = fromB64(manifest.kem.x25519Eph);

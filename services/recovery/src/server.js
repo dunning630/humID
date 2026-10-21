@@ -91,6 +91,9 @@ export function createRecovery({
      CREATE TABLE challenges (request_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL);
      CREATE TABLE duress (account TEXT PRIMARY KEY, last_at INTEGER NOT NULL, count INTEGER NOT NULL);
      CREATE TABLE settings (account TEXT PRIMARY KEY, duress_alert INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`,
+    // A link names the device key that will join with it, and is spent by that one enrolment (PC-02).
+    `ALTER TABLE links ADD COLUMN device_pk BLOB;
+     ALTER TABLE links ADD COLUMN used_at INTEGER`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -241,12 +244,15 @@ export function createRecovery({
     ["POST", "/links", ({ body }) => {
       const r = parseObject(body);
       const kemPk = key(r.kemPk, "kemPk"), xPk = key(r.xPk, "xPk");
+      // The device key that will join with this link. Only that key can enrol with it.
+      if (r.devicePk == null) throw new HttpError(400, "update_required", "Update HumID on the new device to add it.");
+      const devicePk = key(r.devicePk, "dsaPk");
       const code = keyCode(LINK_LABEL, kemPk, xPk);
       sweep();
       if (db.prepare("SELECT 1 FROM links WHERE code = ?").get(code)) throw new HttpError(409, "code_in_use", "Start again on the new device.");
       const t = now();
-      db.prepare("INSERT INTO links (code, kem_pk, x_pk, platform, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, 'waiting')")
-        .run(code, kemPk, xPk, platformOf(r.platform), t, t + linkTtlMs);
+      db.prepare("INSERT INTO links (code, kem_pk, x_pk, platform, created_at, expires_at, status, device_pk) VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?)")
+        .run(code, kemPk, xPk, platformOf(r.platform), t, t + linkTtlMs, devicePk);
       return json(201, { code, expiresAt: t + linkTtlMs });
     }],
     ["GET", "/links/:code", ({ params, claims }) => {
@@ -262,9 +268,30 @@ export function createRecovery({
       if (!l) throw new HttpError(404, "unknown_code", "That code expired. Start again on the new device.");
       if (l.status !== "waiting") throw new HttpError(409, "already_used", "That code was already used.");
       checkEnvelope(body, { signerFp: claims.dsaFp, recipientKemPk: new Uint8Array(l.kem_pk) });
-      db.prepare("UPDATE links SET status = 'approved', account = ?, envelope = ? WHERE code = ?").run(claims.sub, body, l.code);
+      // From approval, the new device has a full link lifetime to compare the check and join.
+      db.prepare("UPDATE links SET status = 'approved', account = ?, envelope = ?, expires_at = ? WHERE code = ?").run(claims.sub, body, now() + linkTtlMs, l.code);
       return json(200, { approved: true, platform: l.platform });
     }, { bodyLimit: ENVELOPE_MAX }],
+    // Gateway only (PC-02): a device may join an account through a link only if one of the
+    // account's devices approved that link, with a live check, for exactly this device key.
+    // Spent by that enrolment; given back if the enrolment itself then fails.
+    ["POST", "/internal/links/:code/consume", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      const devicePk = key(r.devicePk, "dsaPk");
+      const l = db.prepare("SELECT * FROM links WHERE code = ? AND expires_at > ?").get(codeParam(params.code), now());
+      const ok = l && l.status === "approved" && l.account === String(r.account) && l.device_pk && Buffer.from(l.device_pk).equals(Buffer.from(devicePk));
+      if (!ok || db.prepare("UPDATE links SET status = 'used', used_at = ? WHERE code = ? AND status = 'approved'").run(now(), l.code).changes !== 1) {
+        throw new HttpError(403, "not_approved", "None of your devices approved this one. Approve it from a device you already use.");
+      }
+      return json(200, { consumed: true });
+    }],
+    ["POST", "/internal/links/:code/restore", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      db.prepare("UPDATE links SET status = 'approved', used_at = NULL WHERE code = ? AND status = 'used' AND account = ?").run(codeParam(params.code), String(r.account));
+      return json(200, { restored: true });
+    }],
     // Polled by the new device. The code is what it showed; the envelope inside is sealed to its own keys.
     ["GET", "/links/:code/result", ({ params }) => {
       const l = db.prepare("SELECT * FROM links WHERE code = ?").get(codeParam(params.code));
@@ -561,6 +588,19 @@ export function createRecovery({
       const e = evaluate(q.id);
       return json(200, { ...requestView(e), account: e.account, first });
     }, { bodyLimit: 3 * CHIP_MAX }],
+
+    // Gateway only (PC-02): may a device join this account on the strength of this recovery?
+    // Only once it's released (its proofs in, its wait over, not cancelled), for that account,
+    // by the route it was started with. Checked before the device is added; spent after.
+    ["POST", "/internal/requests/:id/check", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const q = getRequest.get(params.id);
+      const r = parseObject(body);
+      if (!q || q.account !== String(r.account) || q.method !== String(r.method) || q.status !== "waiting" || !q.release_at || now() < q.release_at) {
+        throw new HttpError(403, "not_released", "That recovery isn't released yet, so this device can't join.");
+      }
+      return json(200, { released: true });
+    }],
 
     // Gateway only: the recovered device has joined the account.
     ["POST", "/requests/:id/complete", ({ params, claims, body }) => {

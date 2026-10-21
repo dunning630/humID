@@ -260,14 +260,16 @@ export async function unlock(used = false) {
       id: id.server.id,
       device: id.device?.id || "dev_" + "0".repeat(24),
       // The secure chip signs the server's sign-in challenge during the live check.
-      sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
+      // The duress decision is made inside the check and signed into the sign-in itself
+      // (PC-01), so it can't be sent, or forged, by anything that only holds a session.
+      sign: (message, { presence }) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         sessionKeys(Suite, seed);
         duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: R.duressUnreadable });
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
-        return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
+        const d = duress ? 1 : 0;
+        return { sig: ml_dsa87.sign(presence(d), dkeys.dsaSk), d, interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
-    await reportPresence(duress);
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
     if (!S.server.value) await connectServer(); // its policy says whether it offers Heartbeat
     await loadCheckin(); // before anything is saved on this device: while Heartbeat is armed, nothing is
@@ -381,12 +383,6 @@ export function reloadTab() {
   if (S.tab.value === "you") { loadRecovery(); loadDuress(); }
   loadDevices();
   if (S.tab.value === "vault" && !S.decoy.value) loadRecovery();
-}
-
-async function reportPresence(duress) {
-  for (let i = 0; i < 2; i++) {
-    try { await R.api.presence(duress); return; } catch { /* try once more; never block the unlock */ }
-  }
 }
 
 /**
