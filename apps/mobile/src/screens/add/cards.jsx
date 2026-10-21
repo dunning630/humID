@@ -7,7 +7,7 @@ import { Toggle, Row } from "../../ui/kit.jsx";
 import { openExternal } from "../../core/external.js";
 import * as S from "../../core/state.js";
 import { addCardRecord, readCardTap, readCardPhoto, chipReader, setPref, toast } from "../../core/index.js";
-import { jpeg, imageUrl, releaseReaders, rotateCanvas, warmScan } from "../../core/scan.js";
+import { jpeg, imageUrl, releaseReaders, rotateCanvas, warmScan, grab, canvas as newCanvas } from "../../core/scan.js";
 import { PLATFORM } from "../../core/config.js";
 import { DocCamera, turnedImage } from "./camera.jsx";
 import { Review, Step, Note } from "./review.jsx";
@@ -27,6 +27,25 @@ export async function readFrontEitherWay(shot, pan = null) {
   const turned = rotateCanvas(shot, 180);
   const r2 = await readCardPhoto(turned, { side: "front", pan });
   return r2?.pan ? { r: r2, canvas: turned } : { r, canvas: shot };
+}
+
+/**
+ * The back of a card, read for its security code (and the bank's phone): the whole back, and if the code
+ * isn't in that, the signature strip's band, enlarged (the code is small print beside the strip).
+ */
+async function readBack(canvas, pan) {
+  let r = await readCardPhoto(canvas, { side: "back", pan });
+  if (r?.cvv) return r;
+  try {
+    const band = grab(canvas, { x: 0, y: canvas.height * 0.28, w: canvas.width, h: canvas.height * 0.44 });
+    const big = newCanvas(band.width * 2, band.height * 2);
+    const g = big.getContext("2d");
+    g.imageSmoothingQuality = "high";
+    g.drawImage(band, 0, 0, big.width, big.height);
+    const r2 = await readCardPhoto(big, { side: "back", pan });
+    if (r2?.cvv) return { ...r2, phone: r?.phone || r2.phone };
+  } catch { /* the whole back's reading stands */ }
+  return r;
 }
 
 /** What the camera says back about a card front it read (screens/add/camera.jsx shows it before moving on). */
@@ -56,6 +75,7 @@ export function CardFlow({ start, onExit, onDraft }) {
   const pendingCvv = useRef(null);
   const [, redraw] = useReducer((n) => n + 1, 0);
   const [cam, setCam] = useState(null);
+  const [saved, setSaved] = useState(null);         // what the step before kept, shown on the camera for a moment
   const [note, setNote] = useState(null);
   const [tapping, setTapping] = useState(false);
   const started = useRef(false);
@@ -69,6 +89,17 @@ export function CardFlow({ start, onExit, onDraft }) {
     return () => { releaseReaders(); };
   }, []);
 
+  /**
+   * The security code is printed on the back (on the front of an American Express card, read with the number).
+   * A card's chip never gives it out, by design, so after the number is in, from the front or a tap, the back's
+   * camera opens by itself for it (3.1.1). Skip leaves it to be typed, or left out.
+   */
+  function askForBack(text, img = null) {
+    if (rec.current.fields.cvv || brandOf(rec.current.fields.pan).id === "amex") return;
+    setSaved({ text, img });
+    setCam("back");
+  }
+
   async function applyFront(r, canvas) {
     const img = await jpeg(canvas, { maxW: 1200 });
     setImage(rec.current, "front", img);
@@ -77,6 +108,7 @@ export function CardFlow({ start, onExit, onDraft }) {
         applyRead(rec.current, { ...r, cvv: null }, "camera");
         pendingCvv.current = r.cvv || null;
         setNote(readNote(r));
+        askForBack("Front read. Now turn it over for the security code.", img);
       } catch { setNote({ tone: "warn", text: "Couldn't read the number clearly. Type it below." }); }
     } else setNote({ tone: "warn", text: "Couldn't read the number from the photo. Type it below, or try again in better light." });
     redraw();
@@ -101,12 +133,13 @@ export function CardFlow({ start, onExit, onDraft }) {
 
   // The back: read the security code and the bank's phone number. The photo isn't kept.
   async function back({ canvas }) {
+    const pan = rec.current.fields.pan;
+    let r = await readBack(canvas, pan);
+    if (!r?.cvv) { const r2 = await readBack(rotateCanvas(canvas, 180), pan); if (r2?.cvv || (!r?.phone && r2?.phone)) r = { ...r, ...r2, phone: r2?.phone || r?.phone }; }
     const found = (x) => !!(x?.cvv || x?.phone);
-    let r = await readCardPhoto(canvas, { side: "back", pan: rec.current.fields.pan });
-    if (!found(r)) { const r2 = await readCardPhoto(rotateCanvas(canvas, 180), { side: "back", pan: rec.current.fields.pan }); if (found(r2)) r = r2; }
-    const said = found(r)
-      ? { ok: true, title: "Got it", detail: "The photo of the back isn't kept.", fields: [r.cvv && { label: "Security code", value: "•".repeat(r.cvv.length) }, r.phone && { label: "Bank's phone", value: r.phone }].filter(Boolean) }
-      : { ok: false, title: "Couldn't read the back", detail: "Try again in better light, or keep going and type the security code yourself." };
+    const said = r?.cvv
+      ? { ok: true, title: "Got it", detail: "Sealed with the card, hidden until you reveal it. The photo of the back isn't kept.", fields: [{ label: "Security code", value: "•".repeat(r.cvv.length) }, r.phone && { label: "Bank's phone", value: r.phone }].filter(Boolean) }
+      : { ok: false, title: "Couldn't read the security code", detail: "Hold the back closer, with the signature strip in good light. Or keep going and type it.", fields: r?.phone ? [{ label: "Bank's phone", value: r.phone }] : [] };
     return { result: said, next: () => {
       setCam(null);
       if (r?.cvv) setStoreCvv(rec.current, true);
@@ -126,8 +159,9 @@ export function CardFlow({ start, onExit, onDraft }) {
     if (!r) { setNote({ tone: "warn", text: "No card read. Type it below, or scan it." }); redraw(); return; }
     try {
       applyRead(rec.current, r, "nfc");
-      setNote({ tone: "ok", text: `Read ${r.network || brandOf(r.pan).name} ending ${r.pan.slice(-4)} from the chip. No payment was made. The chip doesn't hold the security code: scan the back or type it.` });
+      setNote({ tone: "ok", text: `Read ${r.network || brandOf(r.pan).name} ending ${r.pan.slice(-4)} from the chip. No payment was made. Card chips never give out the security code, so it's read from the back.` });
       redraw();
+      askForBack(`Chip read: ${brandOf(r.pan).name} ending ${r.pan.slice(-4)}. Now the back, for the security code.`);
     } catch (e) { setNote({ tone: "warn", text: e.message }); redraw(); }
   }
 
@@ -137,7 +171,8 @@ export function CardFlow({ start, onExit, onDraft }) {
         <CardForm rec={rec.current} note={note} pending={pendingCvv} resume={start.rec ? start : null} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} onDraft={onDraft} />
       </Step>
       {cam === "front" && <DocCamera kind="card" side="front" shape="id1" expect="card" eyebrow="Card · front" title="The front of the card" hint="Number side up, filling the frame. Never the PIN." onCancel={() => setCam(null)} onDone={front} />}
-      {cam === "back" && <DocCamera kind="card" side="back" shape="id1" expect="card" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip, filling the frame. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
+      {cam === "back" && <DocCamera kind="card" side="back" shape="id1" expect="cvv" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip and the 3-digit code, filling the frame. The photo isn't kept." saved={saved}
+        onCancel={() => { setSaved(null); setCam(null); }} onSkip={() => { setSaved(null); setCam(null); }} onDone={back} />}
     </>
   );
 }

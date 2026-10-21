@@ -94,6 +94,24 @@ export function liveConstraints(template, { portrait = true, exact = false } = {
   return { facingMode: { ideal: "environment" }, width: { ideal: portrait ? short : long }, height: { ideal: portrait ? long : short }, frameRate: { ideal: 30, max: 30 } };
 }
 
+/**
+ * How far to zoom in, so the phone is held far enough away to focus (3.1.1). A phone's main camera
+ * can't focus closer than about 10-20 cm, and a card that fills the outline at 1x sits about 12 cm
+ * away: too close for many phones, so they never focus. Zoomed in, the same card fills the outline
+ * from about twice as far. A passport page is bigger (it is held farther already), a sheet of paper
+ * farther still. `caps` is the track's getCapabilities(): no zoom offered, no zoom (1).
+ */
+export const ZOOM = { id1: 2, td3: 1.5, page: 1 };
+export function zoomFor(template, caps = {}) {
+  const z = caps?.zoom;
+  if (!z || !(z.max > 1)) return 1;
+  const want = ZOOM[template?.shape] ?? 1;
+  if (want <= 1) return 1;
+  const step = z.step > 0 ? z.step : 0.1;
+  const v = Math.min(z.max, Math.max(z.min ?? 1, want));
+  return Math.round(v / step) * step;
+}
+
 /** The preview came back turned the other way round from the screen (landscape on a portrait screen, or the reverse). */
 export const previewTurned = (vw, vh, portraitScreen) => vw > 0 && vh > 0 && vw !== vh ? (vh > vw) !== portraitScreen : vw === vh && portraitScreen;
 
@@ -119,10 +137,15 @@ export const TH = {
   dark: { p95: 85, mean: 30, empty: { p95: 50, mean: 28 } }, // Too dark: nothing bright on the document, or (with no document in view) a view that is dark all over
   glare: { sat: 253, share: 0.025, cell: 0.5, cells: 1, paper: 228, paperShare: 0.1, paperCells: 2 }, // saturated pixels: this share of the outline, in patches that are at least half white (a white card needs more of both)
   sharp: 0.55,             // focus measure (Laplacian variance relative to gradient energy) below this: blurry
-  sharpRel: 0.6,           // …or below this share of the best focus seen on this document (the camera is still hunting)
-  steady: 0.004,           // frame-to-frame movement, in outline widths: above this it is moving
-  holdMs: 600,             // lined up, steady and sharp for this long takes the photo
-  graceMs: 220,            // one bad look this short doesn't restart the hold
+  sharpRel: 0.7,           // …or below this share of the sharpest look of the last moment (extra.bestFocus): the focus is
+                           // still settling, or this frame is the shaky one; the photo waits for a frame near the peak
+  // 3.1.1: movement between two looks (about 0.1-0.25 s apart), in outline widths. A hand is never still; what spoils a
+  // photo is blur within one frame, and the sharpness measure sees that directly. So only clear movement (re-aiming,
+  // a real shake: more than about 1.5% of the document between looks) holds the photo back. 2.2.0's 0.004 (about
+  // 0.3%, two or three pixels) meant a held phone was almost never "steady". The measure saturates near 0.01.
+  steady: 0.0075,
+  holdMs: 300,             // lined up, sharp and not moving for this long takes the photo
+  graceMs: 300,            // one bad look this short doesn't restart the hold
   aspect: 0.07,            // the document's width and height (as shares of the outline's) differ by more than this even after looking again: the edges can't be told
   barAcross: 0.5,          // a license barcode's width as a share of the outline's, when the card fills it
 };
@@ -422,6 +445,38 @@ export function fitOf(edges) {
   return { sides, scale, dx, dy, rot, flatH, flatV, rotSpread: spread, aspect };
 }
 
+/**
+ * The document's four corners, from the four edges measure() found (a missing one mirrored from its
+ * opposite), in the picture's pixels: [tl, tr, br, bl]. null with fewer than three sides, or a
+ * shape that isn't a convex four-sided one. Each edge is a straight line (its offset from the
+ * outline's side at the middle, and its slope), so the corners are where the lines cross.
+ */
+export function quadFromEdges(edges, guide) {
+  const f = (k) => (edges?.[k]?.found ? edges[k] : null);
+  let T = f("top"), B = f("bottom"), L = f("left"), R = f("right");
+  if ([T, B, L, R].filter(Boolean).length < 3) return null;
+  T ||= B; B ||= T; L ||= R; R ||= L;
+  const cx = guide.x + guide.w / 2, cy = guide.y + guide.h / 2;
+  // horizontal sides: y = y0 + k·(x − cx); vertical sides: x = x0 + k·(y − cy)
+  const top = { p: guide.y - T.off * guide.h, k: Math.tan(T.slope) }, bot = { p: guide.y + guide.h + B.off * guide.h, k: Math.tan(B.slope) };
+  const left = { p: guide.x - L.off * guide.w, k: Math.tan(L.slope) }, right = { p: guide.x + guide.w + R.off * guide.w, k: Math.tan(R.slope) };
+  const cross = (hz, vt) => {
+    // y = hz.p + hz.k (x − cx); x = vt.p + vt.k (y − cy)
+    const d = 1 - hz.k * vt.k;
+    if (Math.abs(d) < 1e-6) return null;
+    const y = (hz.p + hz.k * (vt.p - vt.k * cy - cx)) / d;
+    return { x: vt.p + vt.k * (y - cy), y };
+  };
+  const q = [cross(top, left), cross(top, right), cross(bot, right), cross(bot, left)];
+  if (q.some((p) => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y))) return null;
+  // convex, clockwise
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    if ((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) <= 0) return null;
+  }
+  return q;
+}
+
 /* ---------------- the verdict ---------------- */
 
 /** What can be said, and the words. `detail` may be replaced by a direction by judge(). */
@@ -509,11 +564,13 @@ export function judge(m, template, extra = {}) {
   // the picture's own quality
   out.aligned = true;
   out.steady = m.motion == null ? true : m.motion <= TH.steady;
-  out.sharp = m.focus == null ? true : m.focus >= TH.sharp && !(extra.bestFocus > 1.2 && m.focus < TH.sharpRel * extra.bestFocus);
+  // sharp: sharp enough to read, and near the sharpest of the last moment (so the photo is the peak, not the frame before it)
+  out.sharp = m.focus == null ? true : m.focus >= TH.sharp && !(extra.bestFocus > TH.sharp && m.focus < TH.sharpRel * extra.bestFocus);
   // the wrong side, said once it has held (SAY_AFTER); and ready is withheld while it is wrong
   const wrong = wrongSide(template, extra, out);
   if (wrong && out.steady && out.sharp) { out.key = wrong; out.detail = MESSAGES[wrong].detail; out.aligned = true; return out; }
   if (!out.sharp && out.steady) { out.key = "blur"; out.detail = MESSAGES.blur.detail; return out; }
+  // moving clearly: nothing to fix but holding it (said by the camera's own words, "Hold still")
   out.ready = out.steady && out.sharp;
   return out;
 }

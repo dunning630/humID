@@ -185,5 +185,12 @@ for name, s in specs.items():
     card, g = kw.pop("card"), kw.pop("g")
     cam = {k: kw.pop(k) for k in ("blur", "glare", "dark") if k in kw}
     save(name, [camera(place(card, g, bg=bg, **kw), **cam)])
+def tremor(card, guide, n=24, amp=5):
+    """A hand that trembles a little (3.1.1): small drifts of a few pixels and a fraction of a degree, every frame sharp."""
+    rnd = random.Random(23)
+    bg = table()
+    return [camera(place(card, guide, 0.95, dx=(rnd.uniform(-amp, amp) + 3 * math.sin(i / 3)) / guide[2], dy=(rnd.uniform(-amp, amp) + 3 * math.cos(i / 4)) / guide[3], deg=rnd.uniform(-0.6, 0.6), bg=bg), seed=i) for i in range(n)]
+
+if not only or "lic-back-tremor" in only: save("lic-back-tremor", tremor(back, G1))
 if not only or "lic-back-shaky" in only: save("lic-back-shaky", shaky(back, G1, n=16))  # many different views: a few repeated ones let a sampler see two equal frames in a row, which a real shake never does
 print("wrote", len(specs) + (0 if only and "lic-back-shaky" not in only else 1), "fixtures to", out)
