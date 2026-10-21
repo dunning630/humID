@@ -114,9 +114,11 @@ CI never holds it, so CI makes a draft and the maintainer signs and publishes it
    It refuses to overwrite a file, writes the secret key readable only by you,
    and prints the public key and its fingerprint.
 2. Paste the public key into `RELEASE_KEYS` in `release-keys.mjs` (with the
-   fingerprint and date in a comment) and commit it. Servers learn it by
-   installing that release **by hand** (unzip, run the installer): a server only
-   trusts keys its installed console already pins.
+   fingerprint and date in a comment) and commit it. A console only trusts keys
+   its installed version pins, so servers learn the key from the first release
+   that pins it. Consoles of 2.1.0 and earlier still check only GitHub's digest,
+   so that release reaches them as updates did before (from the console, or by
+   hand); from then on every update must be signed.
 3. Keep the key file offline, with a second copy somewhere safe. Never put it in
    the repository, a GitHub secret or a server. Losing it means servers must be
    updated by hand to a release that pins a new key.

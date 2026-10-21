@@ -388,7 +388,8 @@ function Set-DataAcl {
     Invoke-Icacls @($d, '/grant:r', "$($ls):(OI)(CI)M")
   }
   Invoke-Icacls @($approvals, '/grant', "$($ls):(WD)", "$($creator):(OI)(NP)(IO)M")
-  foreach ($n in @('server.json', 'server-status.json')) {
+  # The server rewrites these through a .tmp file (a leftover .tmp too, or it couldn't start).
+  foreach ($n in @('server.json', 'server-status.json', 'server.json.tmp', 'server-status.json.tmp')) {
     $f = Join-Path $DataRoot $n
     if (Test-Path -LiteralPath $f) { Invoke-Icacls @($f, '/grant', "$($ls):M") }
   }
