@@ -372,8 +372,21 @@ jobs:
         with: { path: artifacts }
       - name: One folder per app
         id: bundle
-        run: node tools/bundle-release.mjs artifacts bundle
+        # A run that only compile-checks the iPhone app (no Apple signing) makes no
+        # installer: that's a notice, not a failure, unless the run was meant to publish.
+        run: |
+          set +e
+          node tools/bundle-release.mjs artifacts bundle 2> bundle.err; code=$?
+          cat bundle.err >&2
+          if [ $code -eq 0 ]; then exit 0; fi
+          if grep -q "No app builds found" bundle.err && [ "${{ inputs.publish_apps }}" != "true" ] && [[ "${{ github.ref }}" != refs/tags/app-v* ]]; then
+            echo "::notice title=Nothing to bundle::No installable app was built (an unsigned iPhone compile check makes none)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit $code
       - uses: actions/upload-artifact@v4
+        if: steps.bundle.outputs.skip != 'true'
         with:
           name: ${{ steps.bundle.outputs.name }}
           path: bundle/
