@@ -57,3 +57,5 @@ export function cscasFromMasterList(bytes, { publisherCscas, now } = {}) {
 }
 
 export { loadCscas };
+
+export { safeFetch, statusListFetcher, publicAddress, checkUrl, strictBlockList } from "./fetch.js";
