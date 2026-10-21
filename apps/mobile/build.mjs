@@ -59,6 +59,10 @@ if (problems.length) { console.error("Module contract mismatch:\n  " + problems.
 const server = process.env.HUMID_SERVER_URL || "";
 const kid = (process.env.HUMID_SERVER_KID || "").toLowerCase();
 if (kid && !/^[0-9a-f]{64}$/.test(kid)) { console.error("HUMID_SERVER_KID must be 64 hex characters"); process.exit(1); }
+// Independent cosigners of the server's public log, the same "name=key,…" as the server's
+// HUMID_TLOG_COSIGNERS. Built in, so the server can't name cosigners of its own choosing.
+const cosigners = (process.env.HUMID_TLOG_COSIGNERS || "").trim();
+if (cosigners && !cosigners.split(",").every((p) => /^[A-Za-z0-9._-]{1,40}=[A-Za-z0-9_-]{100,}$/.test(p.trim()))) { console.error("HUMID_TLOG_COSIGNERS must be name=base64url-key,…"); process.exit(1); }
 
 await rm(out, { recursive: true, force: true });
 await mkdir(`${out}assets`, { recursive: true });
@@ -99,6 +103,7 @@ const ctx = await esbuild.context({
   define: {
     __HUMID_SERVER__: JSON.stringify(server),
     __HUMID_KID__: JSON.stringify(kid),
+    __HUMID_TLOG_COSIGNERS__: JSON.stringify(cosigners),
     __HUMID_VERSION__: JSON.stringify(app.version),
     __HUMID_MODULES__: JSON.stringify(versions),
     // Demo mode (no sensor) exists only in local development builds: HUMID_ALLOW_DEMO=1.

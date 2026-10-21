@@ -34,6 +34,17 @@ export const loginMessage = (th, id, challenge) =>
   concat(utf8("HTP/1 login"), lp(th, utf8(id), challenge));
 
 /**
+ * Sign-in that carries the duress report (PC-01). Which gesture means duress is sealed on
+ * the device and opens only inside the live check, so the hardware liveness key (whose
+ * challenge is fixed before the prompt) signs loginMessage, and the device key, which
+ * only that same check releases, signs this: the same sign-in, plus d (0 ordinary,
+ * 1 duress). A duress signal therefore exists only as part of a live sign-in, never as a
+ * request any session could send later. Same size either way.
+ */
+export const loginPresenceMessage = (th, id, challenge, d) =>
+  concat(utf8("HTP/1 login+presence"), lp(th, utf8(id), challenge, new Uint8Array([d === 1 ? 1 : 0])));
+
+/**
  * The action being approved, as the server issued it (POST /auth/step-up), in one
  * canonical encoding: what it does (method), to what (the path carries the target
  * ids: document, device, recovery request…), from which device, the server's

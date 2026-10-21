@@ -25,7 +25,7 @@
 
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import {
-  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage,
+  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage,
   identityId, deviceId, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS,
   ml_dsa87, sha3_256, toHex, fromHex, b64u, unb64u, utf8, fromUtf8, random,
 } from "@humid/htp";
@@ -305,7 +305,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     const d = st.devices[r.device];
     if (!d || d.account !== a.id) throw fail(404, "unknown_device", "This device is not part of the identity.");
     if (d.revokedAt) { record(a.id, "access.denied", { reason: "device_removed", device: d.id }); throw fail(403, "device_removed", "This device was removed from your HumID."); }
-    const message = loginMessage(s.th, `${r.id}/${r.device}`, c.nonce);
+    // As the real gateway: the liveness key signs the challenge, the device key signs it with the duress flag.
+    const reported = r.d === 0 || r.d === 1;
+    const liveMsg = loginMessage(s.th, `${r.id}/${r.device}`, c.nonce);
+    const message = reported ? loginPresenceMessage(s.th, `${r.id}/${r.device}`, c.nonce, r.d) : liveMsg;
     const checks = [pass("Fresh one-time challenge from the server", "32 random bytes, valid for 2 minutes, bound to this encrypted session")];
     if (!verify(unb64u(String(r.sig || "")), message, unb64u(d.dsaPk))) {
       record(a.id, "access.denied", { reason: "bad_login_proof", device: d.id });
@@ -314,7 +317,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     }
     checks.push(pass("Signed by this device's key", "ML-DSA-87 (post-quantum), released only by your biometric"));
     if (d.livePub) {
-      if (!liveOk(unb64u(d.livePub), message, r.live ? unb64u(String(r.live)) : null)) {
+      if (!liveOk(unb64u(d.livePub), liveMsg, r.live ? unb64u(String(r.live)) : null)) {
         record(a.id, "access.denied", { reason: "no_live_biometric", device: d.id });
         report("Sign-in refused", [...checks, { ok: false, label: "No live biometric signature from the secure chip" }], { kind: "denied" });
         throw fail(401, "bad_live_proof", "Sign-in needs a live face or fingerprint check on this device.");
@@ -326,8 +329,18 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     s.gateMethod = String(r.interrupt?.method || d.gateMethod).slice(0, 64);
     record(a.id, "session.opened", { device: d.id, platform: d.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)), checks: checks.length });
     report("Signed in", checks, { kind: "login" });
+    if (reported && r.d === 1) duressSignal(s);
     return [200, sessionView(s)];
   });
+
+  function duressSignal(s) {
+    if (s.duress) return;
+    s.duress = true;
+    const a = account(s);
+    a.lockdownAt ||= iso(); a.lastDuressAt = iso();
+    record(a.id, "duress.signaled", { device: s.deviceId, platform: s.platform });
+    report("Duress signal received", [pass("Account locked down", "devices, recovery and closing your HumID now fail like a busy server"), pass("This session shows only decoy documents")], { kind: "duress", quiet: true });
+  }
 
   route("POST", "/auth/logout", (s) => {
     if (s.subject) record(s.subject, "session.closed", { device: s.deviceId });
@@ -346,16 +359,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     return [200, { nonce: b64u(nonce), exp, device: s.deviceId }];
   }, { auth: true });
 
-  route("POST", "/auth/presence", (s, r) => {
-    if (r.d === 1 && !s.duress) {
-      s.duress = true;
-      const a = account(s);
-      a.lockdownAt ||= iso(); a.lastDuressAt = iso();
-      record(a.id, "duress.signaled", { device: s.deviceId, platform: s.platform });
-      report("Duress signal received", [pass("Account locked down", "devices, recovery and closing your HumID now fail like a busy server"), pass("This session shows only decoy documents")], { kind: "duress", quiet: true });
-    }
-    return [200, { ok: true }];
-  }, { auth: true });
+  // Older apps' after-the-fact presence report: the flag is ignored, as by the real gateway.
+  route("POST", "/auth/presence", () => [200, { ok: true }], { auth: true });
 
   route("GET", "/auth/duress", (s) => {
     if (s.duress) return [200, { lockdown: false }];

@@ -69,7 +69,9 @@ function deviceOf(S, keys, kind) {
     // register: account key signs both statements, device key proves possession, liveness key proves a live check
     registerSign: async ({ register, device, th }) => ({ registerSig: sign(register, keys), sigAccount: sign(device, keys), sigDevice: sign(device, dkeys), live: live(device, th) }),
     enrollSign: async (m, th) => ({ sigAccount: sign(m, keys), sigDevice: sign(m, dkeys), live: live(m, th) }),
-    sign: async (m) => ({ sig: sign(m, dkeys), interrupt, live: lk?.sign(m) }),                      // sign-in
+    sign: async (m) => ({ sig: sign(m, dkeys), interrupt, live: lk?.sign(m) }),                      // sign-in (no presence report: older apps)
+    // sign-in as current apps do it: the device key signs the challenge with the duress flag d (0 or 1)
+    unlockSign: (d = 0) => async (m, { presence }) => ({ sig: sign(presence(d), dkeys), d, interrupt, live: lk?.sign(m) }),
     stepUp: async ({ message, live: lm }) => ({ sig: sign(message, dkeys), interrupt, live: lk?.sign(lm) }),
     sealInterrupt: (ciphertextHash) => ({ ...interrupt, purpose: "seal", at: new Date().toISOString(), ...(lk ? { live: b64u(lk.sign(sealLiveMessage(ciphertextHash))) } : {}) }),
   };

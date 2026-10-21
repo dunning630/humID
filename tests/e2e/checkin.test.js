@@ -15,7 +15,7 @@ import { HumidApi } from "@humid/api";
 import { splitUnwrap } from "@humid/crypto";
 import { makeHolder, sealFor, sealSplitFor } from "./holder.js";
 import { createLedger } from "../../services/ledger/src/server.js";
-import { signAssertion } from "@humid/svc";
+import { signRequestAssertion } from "@humid/svc";
 import { CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS } from "../../services/keyshare/src/server.js";
 
 const H = 3_600_000, MIN = 60_000;
@@ -33,14 +33,12 @@ async function holder(label) {
   const h = makeHolder(label);
   const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
   await api.register({ pub: h.pub, commit: h.commit, device: h.device, sign: h.registerSign });
-  await api.presence(false);
   return { h, api };
 }
-/** Another session for the same holder: an unlock, ordinary or with the duress gesture. */
+/** Another session for the same holder: an unlock, ordinary or with the duress gesture (signed into the sign-in). */
 async function unlock(h, { duress = false } = {}) {
   const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
-  await api.login({ id: h.id, device: h.deviceId, sign: h.sign });
-  await api.presence(duress);
+  await api.login({ id: h.id, device: h.deviceId, sign: h.unlockSign(duress ? 1 : 0) });
   return api;
 }
 const split = async ({ h, api }, name, text) => {
@@ -199,6 +197,32 @@ test("a duress unlock while armed erases at once, and the duress session still l
   assert.ok(types.includes("checkin.erased") && types.includes("duress.signaled"));
 });
 
+test("PC-01: a bare presence request from a signed-in session can't erase or lock down an armed vault", async () => {
+  const a = await holder("checkin-mallory-target");
+  const doc = await split(a, "will.txt", "the real will");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  // Malware riding a live session (no biometric) sends the old duress report.
+  const riding = await unlock(a.h);
+  assert.deepEqual(await riding.presence(true), { ok: true }, "same answer as ever");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(rows(a.h.id).length, 1, "the fuse key is still there");
+  assert.equal(await openText(a, doc), "the real will");
+  assert.equal((await a.api.duressStatus()).lockdown, false, "no lockdown either");
+  assert.ok(!(await events(a.api)).includes("duress.signaled"));
+});
+
+test("PC-01: a duress flag the device key didn't sign is refused like any bad sign-in", async () => {
+  const a = await holder("checkin-forged-flag");
+  await a.api.armCheckin(SETTINGS, a.h.stepUp);
+  const api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
+  // The device key signed d = 0; the request claims d = 1.
+  const lying = async (m, ctx) => ({ ...(await a.h.unlockSign(0)(m, ctx)), d: 1 });
+  await assert.rejects(api.login({ id: a.h.id, device: a.h.deviceId, sign: lying }), (e) => e.code === "bad_proof");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(rows(a.h.id).length, 0, "nothing was split yet, and nothing was erased");
+  assert.equal((await a.api.checkin()).state, "armed");
+});
+
 test("turning it off puts every key back; a later restart erases nothing", async () => {
   const a = await holder("checkin-erin");
   const doc = await split(a, "keys.txt", "spare key under the planter");
@@ -265,8 +289,9 @@ test("a sweep never takes a document uploaded after the erase", async () => {
   const erasedAt = (await a.api.checkin()).erasedAt;
   const fresh = await split(a, "after.txt", "sealed after the erase");
   // the race: a sweep that listed what to keep before this upload's key reached keyshare
-  const assertion = signAssertion(stack.internalSk, { iss: "gateway", aud: "vault", sub: a.h.id });
-  const res = await fetch(`${stack.upstreams.vault}/internal/objects`, { method: "DELETE", headers: { "x-humid-assertion": assertion, "content-type": "application/json" }, body: JSON.stringify({ keep: [], before: erasedAt }) });
+  const body = JSON.stringify({ keep: [], before: erasedAt });
+  const assertion = signRequestAssertion(stack.internalSk, { iss: "gateway", aud: "vault", rid: crypto.randomUUID(), sub: a.h.id }, { method: "DELETE", path: "/internal/objects", body: Buffer.from(body) });
+  const res = await fetch(`${stack.upstreams.vault}/internal/objects`, { method: "DELETE", headers: { "x-humid-assertion": assertion, "content-type": "application/json" }, body });
   assert.equal(res.status, 200);
   assert.deepEqual(await vaultIds(a.api), [fresh], "the erased envelope went; the new one stayed");
   assert.ok(!(await vaultIds(a.api)).includes(old));
