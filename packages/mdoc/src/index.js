@@ -20,6 +20,7 @@
 import { encode, decode, get, Encoded, Tagged, plain } from "./cbor.js";
 import { parse1, verifySign1, x5chain } from "./cose.js";
 import { parseCertificate, issuedBy, curveOf } from "./x509.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 export { encode, decode, get, plain, Encoded, Tagged, CborError } from "./cbor.js";
 export { coseKey, ecCoseKey, parse1, verifySign1, verifyMac0, signSign1, macMac0, x5chain, ALG, CoseError } from "./cose.js";
@@ -81,31 +82,61 @@ export function deviceRequest(docTypes = [MDL_DOCTYPE], { intentToRetain = true,
 
 /**
  * A VICAL (ISO 18013-5 Annex C): a signed list of issuing-authority roots.
- * Its own signature is checked under the provider certificate in its x5chain,
- * and, when `providerRoots` are given, that certificate must chain to one of them.
- * Returns { provider, date, nextUpdate, certificates: [{ der, docTypes, country, state, authority }] }.
+ *
+ * Its signature is checked under the signer certificate in its x5chain, every
+ * link in that chain must verify, and the chain must reach the provider HumID
+ * trusts: `providerRoots` (certificates), or `providerPins` (SHA-256
+ * fingerprints, hex, of the provider's root or signer certificate, pinned
+ * after confirming them with the provider out of band). With `now`, every
+ * certificate in the chain must be valid then. With neither roots nor pins,
+ * the list is read but `trusted` is false.
+ *
+ * Returns { provider, date, nextUpdate, issueId, trusted, signer, chain,
+ *           certificates: [{ der, docTypes, country, state, authority }] }.
  */
-export function readVical(bytes, { providerRoots } = {}) {
+export function readVical(bytes, { providerRoots, providerPins, now } = {}) {
   const sign1 = parse1(bytes instanceof Uint8Array ? decode(bytes) : bytes);
-  const chain = x5chain(sign1);
-  if (!chain.length) throw new Error("The VICAL has no signer certificate.");
-  const signer = parseCertificate(chain[0]);
-  if (!verifySign1(sign1, { curve: curveOf(signer), publicKey: signer.publicKey })) throw new Error("The VICAL's signature doesn't verify.");
-  if (providerRoots) {
+  const raw = x5chain(sign1);
+  if (!raw.length) throw new Error("The VICAL has no signer certificate.");
+  if (raw.length > 4) throw new Error("The VICAL's certificate chain is too long.");
+  let chain;
+  try { chain = raw.map((c) => parseCertificate(c)); } catch { throw new Error("A certificate in the VICAL's chain can't be read."); }
+  const signer = chain[0];
+  if (!signer._curve || !verifySign1(sign1, { curve: curveOf(signer), publicKey: signer.publicKey })) throw new Error("The VICAL's signature doesn't verify.");
+  for (let i = 0; i < chain.length - 1; i++) if (!chain[i + 1].isCa || !issuedBy(chain[i], chain[i + 1])) throw new Error("The VICAL's certificate chain is broken.");
+  if (now) for (const c of chain) if (now < c.notBefore || now > c.notAfter) throw new Error("A certificate in the VICAL's chain isn't valid now.");
+  const fp = (c) => toHexStr(sha256(c.der));
+  const top = chain[chain.length - 1];
+  let trusted = false;
+  if (providerRoots?.length) {
     const roots = providerRoots.map((r) => (r?.tbs ? r : parseCertificate(r)));
-    if (!roots.some((r) => issuedBy(signer, r) || (r.der.length === signer.der.length && r.der.every((x, i) => x === signer.der[i])))) throw new Error("The VICAL isn't signed by a trusted provider.");
+    const same = (a, b) => a.der.length === b.der.length && a.der.every((x, i) => x === b.der[i]);
+    const root = roots.find((r) => same(r, top)) || roots.find((r) => r.isCa && issuedBy(top, r));
+    if (!root) throw new Error("The VICAL isn't signed by a trusted provider.");
+    if (now && (now < root.notBefore || now > root.notAfter)) throw new Error("The VICAL provider's root isn't valid now.");
+    trusted = true;
+  }
+  if (providerPins?.length) {
+    const pins = providerPins.map((p) => String(p).toLowerCase().replace(/[^0-9a-f]/g, ""));
+    if (!chain.some((c) => pins.includes(fp(c)))) throw new Error("The VICAL isn't signed by a trusted provider.");
+    trusted = true;
   }
   let v = decode(sign1.payload);
   if (v instanceof Encoded) v = v.value;
   const date = (x) => (x instanceof Tagged ? String(x.value) : x ? String(x) : null);
   return {
     provider: get(v, "vicalProvider"), date: date(get(v, "date")), nextUpdate: date(get(v, "nextUpdate")), issueId: get(v, "vicalIssueID") ?? null,
+    trusted,
+    signer: { subject: signer.subject, notAfter: signer.notAfter.toISOString(), fingerprint: fp(signer) },
+    chain: chain.map((c) => ({ subject: c.subject, issuer: c.issuer, notAfter: c.notAfter.toISOString(), fingerprint: fp(c), ca: c.isCa })),
     certificates: (get(v, "certificateInfos") || []).map((c) => ({
       der: get(c, "certificate"), docTypes: get(c, "docType") || [], country: get(c, "issuingCountry") || null,
       state: get(c, "stateOrProvinceName") || null, authority: get(c, "issuingAuthority") || null,
     })),
   };
 }
+
+const toHexStr = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 
 /** Element value → display string for dates (full-date tag 1004, tdate tag 0) and plain values. */
 export const text = (v) => (v instanceof Tagged ? String(v.value) : v instanceof Uint8Array ? null : v == null ? null : typeof v === "object" ? plain(v) : v);

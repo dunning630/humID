@@ -3,6 +3,7 @@
 // ID card chips into the same result shape as wallet credentials, and ICAO
 // master lists as a source of trusted country signing CAs.
 
+import { X509Certificate, createHash } from "node:crypto";
 import { passiveAuth, activeAuth, readMasterList, loadCscas, alpha2Of, AnchorError } from "@humid/anchor";
 import { CredsError, fail } from "./request.js";
 
@@ -59,3 +60,30 @@ export function cscasFromMasterList(bytes, { publisherCscas, now } = {}) {
 export { loadCscas };
 
 export { safeFetch, statusListFetcher, publicAddress, checkUrl, strictBlockList } from "./fetch.js";
+
+/**
+ * Check an ICAO master list (or a country's own, such as Germany's from the BSI)
+ * and put its CSCAs into the trust store under `source`.
+ *   publisherCscas: the publisher's CSCA certificate(s) (PEM, DER or X509Certificate):
+ *                   the UN CSCA for ICAO's list, Germany's CSCA for the BSI list
+ *   publisherPins:  their SHA-256 fingerprints, confirmed out of band (required)
+ * Returns { added, countries }.
+ */
+export function applyMasterList(store, bytes, { source, publisherCscas = [], publisherPins = [], now = new Date() } = {}) {
+  if (!publisherPins.length) fail("no_trust", "Pin the master list publisher's certificate fingerprint first.");
+  const certs = publisherCscas.map((c) => (c instanceof X509Certificate ? c : new X509Certificate(c)));
+  const pins = publisherPins.map((p) => String(p).toLowerCase().replace(/[^0-9a-f]/g, ""));
+  const pinned = certs.filter((c) => pins.includes(createHash("sha256").update(c.raw).digest("hex")));
+  if (!pinned.length) fail("no_trust", "None of the publisher certificates given matches a pinned fingerprint.");
+  const cscas = cscasFromMasterList(bytes, { publisherCscas: pinned, now });
+  const entries = cscas
+    .filter((c) => now <= new Date(c.validTo))
+    .map((c) => ({ der: new Uint8Array(c.raw), country: /(?:^|\n)C=([A-Z]{2})(?:\n|$)/.exec(c.subject)?.[1] || null, notAfter: new Date(c.validTo).toISOString() }))
+    .filter((e) => e.country);
+  store.setCscas(source, entries, { appliedAt: now.toISOString(), sha256: createHash("sha256").update(bytes).digest("hex") });
+  return { added: entries.length, countries: [...new Set(entries.map((e) => e.country))].sort() };
+}
+
+/** The store's CSCAs as X509Certificates, for verifyPassportChip({ cscas }). */
+export const cscasFromStore = (store, { now } = {}) => store.cscaDers({ now }).map((d) => new X509Certificate(Buffer.from(d)));
+export { refreshTrust, startTrustRefresh, readTrustStoreFile, saveTrustStoreFile, unzipMasterList } from "./trustsync.js";

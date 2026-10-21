@@ -23,14 +23,19 @@ export { verifyCredentialResponse, checkStatus, fromLicenseBarcode } from "./ver
 export { minimise, commit, checkCommitment, canonical, ageOn, FACTS, CLAIM_SCHEMA } from "./attest.js";
 export { checkSsnFormat, ecbsvVerifier } from "./ssn.js";
 export { recheckMdocRecord } from "./record.js";
+export { createTrustStore, loadTrustStore, TRUST_VERSION } from "./trust.js";
 
 /**
  * IACA roots for mobile IDs from a VICAL (e.g. AAMVA's Digital Trust Service),
- * whose own signature must chain to `providerRoots`. docType filters by what
- * each issuer may sign. Returns DER certificates to pass as trust.iaca.
+ * whose own signature must chain to `providerRoots` or a `providerPins`
+ * fingerprint. Returns trust anchors that keep each root's country, state and
+ * document types, to pass as trust.iaca. For a store that refreshes and
+ * refuses rollbacks, use createTrustStore().applyVical.
  */
-export function iacaFromVical(bytes, { providerRoots, docType } = {}) {
-  if (!providerRoots?.length) throw new Error("A VICAL is only as good as its provider: pass the provider's root.");
-  const v = readVical(bytes, { providerRoots });
-  return v.certificates.filter((c) => !docType || !c.docTypes.length || c.docTypes.includes(docType)).map((c) => c.der);
+export function iacaFromVical(bytes, { providerRoots, providerPins, docType, now } = {}) {
+  if (!providerRoots?.length && !providerPins?.length) throw new Error("A VICAL is only as good as its provider: pass the provider's root or its pinned fingerprint.");
+  const v = readVical(bytes, { providerRoots, providerPins, now });
+  return v.certificates
+    .filter((c) => !docType || !c.docTypes.length || c.docTypes.includes(docType))
+    .map((c) => ({ cert: c.der, country: c.country, state: c.state, docTypes: c.docTypes, source: "vical" }));
 }

@@ -194,3 +194,25 @@ export function wallet({ authority = issuingAuthority(), data, docType = "org.is
 
   return { device, issuerSigned, engagement, respond, authority, point: point(device.publicKey) };
 }
+
+/**
+ * A VICAL signed by `provider` (an issuingAuthority acting as the list's provider:
+ * its Document Signer key signs, its DS and, with includeRoot, its root go in x5chain).
+ * entries: [{ authority | der, country, state, docTypes }].
+ */
+export function signVical(provider, entries, { issueId = 1, date = new Date(Date.now() - day), nextUpdate = new Date(Date.now() + 30 * day), includeRoot = true, name = "Test DTS" } = {}) {
+  const vical = new Map([
+    ["version", "1.0"], ["vicalProvider", name], ["date", tdate(date)], ["vicalIssueID", issueId],
+    ...(nextUpdate ? [["nextUpdate", tdate(nextUpdate)]] : []),
+    ["certificateInfos", entries.map((e) => new Map([
+      ["certificate", e.der || e.authority.rootDer], ["docType", e.docTypes || ["org.iso.18013.5.1.mDL"]],
+      ...(e.country !== undefined ? [["issuingCountry", e.country]] : []), ...(e.state ? [["stateOrProvinceName", e.state]] : []),
+    ]))],
+  ]);
+  const payload = encode(vical);
+  const prot = encode(new Map([[1, -7]]));
+  const sig = sign("sha256", encode(["Signature1", prot, new Uint8Array(0), payload]), { key: provider.ds.privateKey, dsaEncoding: "ieee-p1363" });
+  const x5 = includeRoot ? [provider.dsDer, provider.rootDer] : provider.dsDer;
+  return encode([prot, new Map([[33, x5]]), payload, u8(sig)]);
+}
+export const fingerprint = (der) => createHash("sha256").update(der).digest("hex");
