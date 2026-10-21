@@ -22,7 +22,7 @@ import { MsgError, utf8, random, concat, u32, readU32, label, encodeJSON, decode
 import { MessageStore } from "./history.js";
 import { Session, deleteBody, MAX_DELETE } from "./session.js";
 
-const SHOWN = new Set(["text", "file-key"]);
+const SHOWN = new Set(["text", "file-key", "media"]); // kept and shown; every other kind is protocol
 
 export class Conversation {
   /**
@@ -62,11 +62,23 @@ export class Conversation {
   }
 
   /** Send text. Returns { box, wire, retractTag, id }: post wire to box with the tag. */
-  send(text, { now = Date.now(), stamper = null, duress = false, ttlMs } = {}) {
+  send(text, opts = {}) { return this.#sendShown("text", text, utf8(text), opts); }
+
+  /**
+   * Send a voice note, photo or clip (body from encodeMedia in media.js). Kept like a text, so
+   * delete for both, unsend and disappearing messages cover it too. Pass a stamper so it
+   * arrives stamped.
+   */
+  sendMedia(body, opts = {}) {
+    if (!(body instanceof Uint8Array)) throw new MsgError("bad_media", "Media body must be bytes from encodeMedia");
+    return this.#sendShown("media", body, body, opts);
+  }
+
+  #sendShown(kind, content, stored, { now = Date.now(), stamper = null, duress = false, ttlMs } = {}) {
     return this.#serial(async () => {
-      const r = await this.session.encrypt("text", text, { now, stamper, duress, ttlMs });
+      const r = await this.session.encrypt(kind, content, { now, stamper, duress, ttlMs });
       this.store.add({
-        id: r.id, dir: "out", kind: "text", body: utf8(text), at: now, expiresAt: r.ttlMs ? now + r.ttlMs : null,
+        id: r.id, dir: "out", kind, body: stored, at: now, expiresAt: r.ttlMs ? now + r.ttlMs : null,
         stamped: !!stamper, duress, pos: r.pos, box: r.box, retract: r.retract,
       }, now);
       return this.#saved(post(r), now);
