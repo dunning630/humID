@@ -3,7 +3,7 @@
 // seals into the vault (media type application/vnd.humid.id+json), so it's
 // plain JSON with a schema tag, and every field says where it came from.
 import { countryName, regionName } from "./places.js";
-import { chipIntegrityOk } from "./chip.js";
+import { chipIntegrityOk, safeCheckIntegrity, readDg1 } from "./chip.js";
 import { mdocFields, imageType } from "./mdoc.js";
 
 export const SCHEMA = "humid.id/1";
@@ -192,15 +192,29 @@ export const summary = (rec) => ({ kind: rec.kind, issuer: rec.fields.issuer || 
 // The phone checks the chip's files against the chip's own list of hashes, but not
 // the issuing country's signature on that list (only the server does that, when an
 // ID is used to recover). So this never says "verified by the country".
-export function provenance(rec) {
+//
+// The stored `verified` flags are never trusted on their own: a record is just
+// JSON, so anyone who can hand the app a record could set them (precert
+// finding APP-05). The chip check is re-run here from the chip's own files
+// every time, and the fields the record says came from the chip must still
+// match the chip's DG1. A mobile ID's labels need a fresh check from the
+// caller (opts.mdoc, from recheckMdoc in the app); without one they say so.
+export function provenance(rec, { mdoc } = {}) {
   const v = rec.verified || {};
   const typed = Object.values(rec.source || {}).includes("typed");
-  if (v.chip && typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
-  if (v.chip?.integrity) return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
+  if (v.chip) {
+    const c = recheckChip(rec);
+    if (!c.ok) return { level: "chip-mismatch", text: `Not verified: ${c.reason}` };
+    if (typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
+    return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
+  }
   if (v.mdoc && typed) return { level: "mdoc-edited", text: "Shared from a mobile ID, then changed by hand" };
-  if (v.mdoc?.chain === "trusted" && v.mdoc.deviceOk) return { level: "mdoc", text: "Shared from the mobile ID; signed by its issuer, checked against the issuer's root, and the wallet proved it holds the original" };
-  if (v.mdoc?.deviceOk) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches, but its root isn't in HumID's trusted list yet" };
-  if (v.mdoc) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches" };
+  if (v.mdoc) {
+    if (!mdoc) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; open it to re-check the issuer's signature" };
+    if (!mdoc.ok) return { level: "mdoc-mismatch", text: `Not verified: ${mdoc.reason || "the issuer's signature no longer checks out"}` };
+    if (mdoc.chain === "trusted" && v.mdoc.deviceOk) return { level: "mdoc", text: "Shared from the mobile ID; signed by its issuer, checked against the issuer's root, and the wallet proved it holds the original" };
+    return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches, but its root isn't in HumID's trusted list yet" };
+  }
   if (v.chip) return { level: "chip-unchecked", text: "Not verified: read from the chip, but its files weren't checked" };
   if (v.chipFailed && !v.barcode && !v.mrz) return { level: "chip-failed", text: "Not verified: the chip couldn't be verified, so its data was not used" };
   if (v.barcode) return { level: "barcode", text: `Read from the barcode (AAMVA v${v.barcode.version})` };
@@ -218,4 +232,34 @@ export function decodeRecord(bytes) {
   const j = JSON.parse(typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes));
   if (j?.schema !== SCHEMA) throw new Error("not a HumID ID record");
   return { fields: {}, source: {}, verified: {}, images: {}, raw: {}, edited: [], ...j };
+}
+
+/* ---------------- re-checking what a record claims ---------------- */
+
+const unb64 = (s) => { const t = atob(String(s)); const o = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) o[i] = t.charCodeAt(i); return o; };
+// Record field ← MRZ field, for what applyChip copies from DG1.
+const CHIP_FIELDS = { surname: "surname", given: "given", number: "number", issuer: "issuer", nationality: "nationality", birth: "birth", expiry: "expiry", sex: "sex", optional: "optional" };
+
+/**
+ * Re-run the chip check from the files kept in the record, never from its flags:
+ * the data groups must match the SOD's hash list, and every field the record says
+ * came from the chip must equal what DG1 holds. Returns { ok, reason? }.
+ * Still a hash check, not the issuing country's signature (that's passive
+ * authentication, on the server: @humid/creds/server).
+ */
+export function recheckChip(rec) {
+  const raw = rec?.raw?.chip;
+  if (!raw?.dg1 || !raw?.sod) return { ok: false, reason: "the chip's files aren't in this record, so it can't be re-checked" };
+  let files;
+  try { files = Object.fromEntries(Object.entries(raw).map(([k, x]) => [k, unb64(x)])); }
+  catch { return { ok: false, reason: "the chip's files in this record can't be read" }; }
+  const groups = { 1: files.dg1, ...(files.dg2 ? { 2: files.dg2 } : {}), ...(files.dg15 ? { 15: files.dg15 } : {}) };
+  if (!chipIntegrityOk(safeCheckIntegrity(files.sod, groups))) return { ok: false, reason: "the chip's files don't match its own list of hashes" };
+  let mrz;
+  try { mrz = readDg1(files.dg1).mrz; } catch { return { ok: false, reason: "the chip's personal data can't be read" }; }
+  for (const [field, m] of Object.entries(CHIP_FIELDS)) {
+    if (rec.source?.[field] !== "chip") continue;
+    if ((mrz?.[m] ?? "") !== (rec.fields?.[field] ?? "")) return { ok: false, reason: "details marked as read from the chip don't match the chip" };
+  }
+  return { ok: true };
 }

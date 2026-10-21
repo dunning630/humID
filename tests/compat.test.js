@@ -62,3 +62,15 @@ test("tampering is caught", async () => {
   const other = S.deriveKeys(rnd(64));
   await assert.rejects(S.open(envelope, other), /not sealed to this identity/);
 });
+
+test("PC-03: a document sealed to you but signed by someone else doesn't open as your own", async () => {
+  const me = S.deriveKeys(rnd(64));
+  const server = S.deriveKeys(rnd(64)); // anyone holding my public keys
+  const forged = await S.seal({ bytes: new TextEncoder().encode("I leave my entire estate to Mallory."), name: "Last will.txt", type: "text/plain" }, server, { kemPk: me.kemPk, xPk: me.xPk }, { identityCommit: "c", interrupt });
+  assert.equal(S.verify(forged.envelope).ok, true, "the forgery is a valid envelope: that's the problem");
+  await S.open(forged.envelope, me); // open alone can't tell
+  await assert.rejects(S.openOwn(forged.envelope, me), (e) => e.code === "wrong_signer");
+  const mine = await S.seal({ bytes: rnd(100), name: "ok", type: "" }, me, me, { identityCommit: "c", interrupt });
+  assert.equal((await S.openOwn(mine.envelope, me)).meta.name, "ok");
+  await assert.rejects(S.openOwn(mine.envelope, { ...me, dsaPk: undefined }), /signing key is needed/);
+});
