@@ -22,7 +22,8 @@ $jobs = Join-Path $data 'admin\jobs'
 $base = 'http://127.0.0.1:8490'
 
 function Say($m) { Write-Host "-> $m" -ForegroundColor Cyan }
-function H { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $humid @args; if ($LASTEXITCODE) { throw "humid $($args -join ' ') failed ($LASTEXITCODE)" } }
+# (not H: in PowerShell that's the Get-History alias, and aliases beat functions)
+function Invoke-Humid { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $humid @args; if ($LASTEXITCODE) { throw "humid $($args -join ' ') failed ($LASTEXITCODE)" } }
 function Info { Get-Content (Join-Path $data 'server.json') -Raw | ConvertFrom-Json }
 
 # No automatic Windows Update scans while this runs (keeping the backup key the job before set, if any).
@@ -84,7 +85,7 @@ function Run-Job([string]$Type, $JobArgs = @{}, [int]$Minutes = 10) {
 Say 'Job: backup, encrypted to the backup key, keyshare''s half in its own file'
 $usb = Join-Path $env:RUNNER_TEMP 'console-usb'
 New-Item -ItemType Directory -Force -Path $usb | Out-Null
-H backup-key new -Path (Join-Path $usb 'humid-backup.key') -Replace
+Invoke-Humid backup-key new -Path (Join-Path $usb 'humid-backup.key') -Replace
 $j = Run-Job 'backup'
 if ($j.state -ne 'done' -or -not (Test-Path (Join-Path $data "backups\$($j.result.file)"))) { throw 'backup job failed' }
 if ($j.result.file -notlike '*.humidbak' -or -not (Test-Path $j.result.keyshare)) { throw "expected an encrypted backup and keyshare's half: $($j.result | ConvertTo-Json -Compress)" }
@@ -145,7 +146,7 @@ if ($j.state -ne 'failed' -or $j.error -notmatch 'is a link') { throw "expected 
 
 Say 'Installing again removes planted junctions, and nothing they point to'
 New-Item -ItemType Junction -Path (Join-Path $data 'data\admin\requests\planted') -Target $elsewhere | Out-Null
-H install -Quiet
+Invoke-Humid install -Quiet
 foreach ($p in $planted, (Join-Path $data 'data\admin\requests\planted')) { if (Test-Path -LiteralPath $p) { throw "$p is still there" } }
 if (-not (Test-Path (Join-Path $elsewhere 'keep.txt'))) { throw 'removing a junction touched what it pointed to' }
 for ($i = 0; $i -lt 30; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "$base/healthz" -TimeoutSec 3).StatusCode -eq 200) { break } } catch { Start-Sleep 2 } }
