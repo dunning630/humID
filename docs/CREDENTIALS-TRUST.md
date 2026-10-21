@@ -47,15 +47,21 @@ To pin a provider:
   `issuing_country`, `issuing_jurisdiction` or Document Signer names someone
   else. An Illinois root can't vouch for a Wisconsin license. A root that
   names no state can't vouch for any state claim (precert finding CRD-01).
+- **Every namespace is checked.** A country or state claim anywhere in the
+  signed data (mDL, AAMVA, PID, ISO 23220) must match the anchor, and the
+  result reports the anchor's country and state, not the document's.
 - **Entries that aren't usable roots are dropped with a reason**: not a CA,
-  expired, unreadable, or the list and the certificate disagree on country or
-  state.
+  expired, unreadable, no document types, or the list and the certificate
+  disagree on country or state. A root vouches only for the document types
+  its list names; hand-pinned roots default to mobile driver's licenses.
 - **Lists only move forward.** A VICAL with a lower issue ID (or an earlier
   date) than the one applied is refused, so replaying an old list can't bring
   back a root that was removed. A list over 120 days old, more than 30 days
   past its own `nextUpdate`, or dated in the future is refused.
 - **The store has a revision** that rises with every change.
-  `loadTrustStore(snapshot, { minRev })` refuses an older copy.
+  `loadTrustStore(snapshot, { minRev })` refuses an older copy; the refresher
+  keeps the highest revision in `trust.json.rev`, and the recovery service
+  refuses a file older than one it has already used.
 - **SD-JWT roots are separate.** A DMV's mDL root is never accepted as an
   SD-JWT issuer just because it's in the VICAL. Keys from an issuer's own
   metadata count only for issuers named in the store.

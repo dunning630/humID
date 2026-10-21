@@ -288,7 +288,17 @@ test("APP-05: the chip label is re-checked from the chip's files, never taken fr
   // The files are genuine, but a "chip" field was rewritten while keeping its chip source.
   const relabelled = make(); relabelled.fields.surname = "MALLORY";
   assert.equal(provenance(relabelled).level, "chip-mismatch");
-  assert.match(provenance(relabelled).text, /^Not verified: details marked as read from the chip/);
+  assert.match(provenance(relabelled).text, /^Not verified: details on this card don't match the chip/);
+  // ... or rewritten and relabelled as if it came from the printed lines (review finding).
+  const relabelledSource = make(); relabelledSource.fields.surname = "MALLORY"; relabelledSource.source.surname = "mrz";
+  relabelledSource.fields.birth = "1999-01-01"; relabelledSource.source.birth = "barcode";
+  assert.equal(provenance(relabelledSource).level, "chip-mismatch");
+  // The chip photo (JPEG) must be the chip's own bytes.
+  const photo = make(); photo.images.portrait = { type: "image/jpeg", data: b64(Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3])), size: 6 };
+  assert.equal(provenance(photo).level, "chip-mismatch");
+  const realPhoto = make(); realPhoto.images.portrait = { type: "image/jpeg", data: b64(readDg2(passport.dg2).bytes), size: 1 };
+  assert.equal(provenance(realPhoto).level, "chip");
+  assert.equal(recheckChip(realPhoto).portrait, "matches");
   // A flag set on a record with no chip read at all is caught too.
   const flagOnly = applyMrz(newRecord("passport"), parseMrz(td3(MRZ), { now: NOW }));
   flagOnly.verified.chip = { integrity: true };

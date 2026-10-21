@@ -102,13 +102,13 @@ export function createRecovery({
   // refreshed master list takes effect without a restart. A damaged trust
   // store keeps the last good set.
   const fixedCscas = [...loadCscas(cscaDir), ...extraCscas];
-  let cscas = fixedCscas, trustMtime = -1;
+  let cscas = fixedCscas, trustMtime = -1, trustRev = 0; // the highest store revision seen: an older file put back is refused
   const currentCscas = () => {
     if (!trustFile) return cscas;
     let m = 0;
     try { m = statSync(trustFile).mtimeMs; } catch { m = 0; }
     if (m !== trustMtime) {
-      try { cscas = [...fixedCscas, ...loadCscasFromTrustFile(trustFile)]; trustMtime = m; log.info("trust store loaded", { cscas: cscas.length }); }
+      try { const t = loadCscasFromTrustFile(trustFile, { minRev: trustRev }); cscas = [...fixedCscas, ...t]; trustRev = t.rev ?? trustRev; trustMtime = m; log.info("trust store loaded", { cscas: cscas.length, rev: trustRev }); }
       catch (e) { log.warn("trust store unreadable, keeping the last good set", { error: String(e?.message || e) }); trustMtime = m; }
     }
     return cscas;

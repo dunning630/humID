@@ -114,11 +114,16 @@ export async function refreshTrust(store, config, { now = new Date(), fetch, bas
  */
 export function startTrustRefresh({ path, config, everyMs = 6 * 3600_000, onReport = () => {}, baseDir } = {}) {
   if (!path || !config) throw new CredsError("bad_config", "Say where the trust store lives and what to refresh it from.");
-  let lastRev = 0;
+  // The highest revision ever saved is kept beside the store, so a restart doesn't
+  // accept an older trust.json put back in its place. (Someone who can rewrite both
+  // files on this disk already controls the server.)
+  const revFile = `${path}.rev`;
+  const readRev = () => { try { return Number(readFileSync(revFile, "utf8")) || 0; } catch { return 0; } };
+  let lastRev = readRev();
   const runOnce = async () => {
-    const store = readTrustStoreFile(path, { minRev: lastRev });
+    const store = readTrustStoreFile(path, { minRev: Math.max(lastRev, readRev()) });
     const report = await refreshTrust(store, config, { baseDir });
-    if (report.changed) saveTrustStoreFile(path, store);
+    if (report.changed) { saveTrustStoreFile(path, store); writeFileSync(revFile, String(store.rev), { mode: 0o600 }); }
     lastRev = store.rev;
     onReport(report);
     return report;

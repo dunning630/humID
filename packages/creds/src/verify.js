@@ -57,6 +57,11 @@ function fromMdoc(doc, protocol) {
     address: street || v.resident_city ? { street, city: text(pick("resident_city", "resident_city_unicode")), region: text(v.resident_state), postal_code: text(v.resident_postal_code), country: text(v.resident_country) } : null,
   };
   const trusted = doc.chain === "trusted", holder = !!doc.device?.ok;
+  if (trusted) {
+    // Reported from the anchor the document was held to, in every case.
+    claims.issuing_country = doc.country;
+    claims.issuing_jurisdiction = doc.state ? `${doc.country}-${doc.state}` : null;
+  }
   // Who issued it comes from the trust anchor (doc.country / doc.state), which
   // verifyIssuerSigned has already required the document's own claims to match.
   // Untrusted (signature-only): the document's word, said to be unconfirmed.

@@ -181,3 +181,25 @@ function zipOf(name, data) {
   h.writeUInt32LE(0, 14); h.writeUInt32LE(comp.length, 18); h.writeUInt32LE(data.length, 22); h.writeUInt16LE(n.length, 26); h.writeUInt16LE(0, 28);
   return Buffer.concat([h, n, comp]);
 }
+
+test("review fixes: roots need document types; same-date relists and older files are refused", () => {
+  const pins = { providerPins: [PIN] };
+  const r = createTrustStore().applyVical(signVical(provider, [{ authority: il, country: "US", state: "IL", docTypes: [] }]), pins);
+  assert.deepEqual(r.dropped.map((d) => d.reason), ["no document types"]);
+  assert.throws(() => createTrustStore().pinIaca(il.rootPem, { country: "US", docTypes: [] }), code("bad_certificate"));
+  const date = new Date(Date.now() - DAY);
+  const noId = (entries) => { const v = signVical(provider, entries, { date, issueId: null }); return v; };
+  const store = createTrustStore();
+  store.applyVical(noId([{ authority: il, country: "US", state: "IL" }]), pins);
+  assert.throws(() => store.applyVical(noId([{ authority: ut, country: "US", state: "UT" }]), pins), code("rollback"));
+  // The recovery service's loader refuses a trust file older than one it already used.
+  const publisher = testCsca("Test Publisher CSCA", "DE");
+  const pin = fingerprint(Buffer.from(publisher.pem.replace(/-----[^-]+-----|\s/g, ""), "base64"));
+  const s2 = createTrustStore();
+  applyMasterList(s2, masterList({ publisher, cscas: [testCsca("Utopia CSCA", "UT")] }), { source: "icao", publisherCscas: [publisher.pem], publisherPins: [pin] });
+  const dir = mkdtempSync(join(tmpdir(), "humid-trust-"));
+  const path = join(dir, "trust.json");
+  saveTrustStoreFile(path, s2);
+  assert.equal(loadCscasFromTrustFile(path).rev, s2.rev);
+  assert.throws(() => loadCscasFromTrustFile(path, { minRev: s2.rev + 1 }), /older/);
+});

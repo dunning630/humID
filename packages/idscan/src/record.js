@@ -3,8 +3,8 @@
 // seals into the vault (media type application/vnd.humid.id+json), so it's
 // plain JSON with a schema tag, and every field says where it came from.
 import { countryName, regionName } from "./places.js";
-import { chipIntegrityOk, safeCheckIntegrity, readDg1 } from "./chip.js";
-import { mdocFields, imageType } from "./mdoc.js";
+import { chipIntegrityOk, safeCheckIntegrity, readDg1, readDg2 } from "./chip.js";
+import { mdocFields, imageType, alpha3 } from "./mdoc.js";
 
 export const SCHEMA = "humid.id/1";
 export const MEDIA_TYPE = "application/vnd.humid.id+json";
@@ -134,6 +134,11 @@ export function applyChip(rec, chip, { mrz, integrity, b64 }) {
  */
 export function applyMdoc(rec, doc, { b64, keep } = {}) {
   const m = mdocFields(doc.docType, doc.values);
+  // Issuer and state from the trust anchor the document was held to, not from its data.
+  if (doc.chain === "trusted" && doc.country) {
+    m.fields.issuer = alpha3(doc.country);
+    m.fields.region = doc.state || "";
+  }
   // The mobile ID knows whether it is a license or an ID card; a passport or permit the holder picked stays as picked.
   if (!rec.kind || ["other", "driver_license", "id_card"].includes(rec.kind)) rec.kind = m.kind;
   put(rec, "mdoc", m.fields);
@@ -205,13 +210,13 @@ export function provenance(rec, { mdoc } = {}) {
   if (v.chip) {
     const c = recheckChip(rec);
     if (!c.ok) return { level: "chip-mismatch", text: `Not verified: ${c.reason}` };
-    if (typed) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
+    if (typed || c.edited) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
     return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
   }
-  if (v.mdoc && typed) return { level: "mdoc-edited", text: "Shared from a mobile ID, then changed by hand" };
   if (v.mdoc) {
+    if (mdoc && !mdoc.ok) return { level: "mdoc-mismatch", text: `Not verified: ${mdoc.reason || "the issuer's signature no longer checks out"}` };
+    if (mdoc && typed) return { level: "mdoc-edited", text: "Shared from a mobile ID, then changed by hand" };
     if (!mdoc) return { level: "mdoc-unchecked", text: "Shared from the mobile ID; open it to re-check the issuer's signature" };
-    if (!mdoc.ok) return { level: "mdoc-mismatch", text: `Not verified: ${mdoc.reason || "the issuer's signature no longer checks out"}` };
     if (mdoc.chain === "trusted" && v.mdoc.deviceOk) return { level: "mdoc", text: "Shared from the mobile ID; signed by its issuer, checked against the issuer's root, and the wallet proved it holds the original" };
     return { level: "mdoc-unchecked", text: "Shared from the mobile ID; the issuer's signature matches, but its root isn't in HumID's trusted list yet" };
   }
@@ -257,9 +262,30 @@ export function recheckChip(rec) {
   if (!chipIntegrityOk(safeCheckIntegrity(files.sod, groups))) return { ok: false, reason: "the chip's files don't match its own list of hashes" };
   let mrz;
   try { mrz = readDg1(files.dg1).mrz; } catch { return { ok: false, reason: "the chip's personal data can't be read" }; }
+  // Every field the chip holds is compared, whatever source the record claims for
+  // it: relabelling a changed field as "mrz" mustn't keep the chip label. Only a
+  // correction marked as typed by hand may differ (and the label then says "edited").
+  let edited = false;
   for (const [field, m] of Object.entries(CHIP_FIELDS)) {
-    if (rec.source?.[field] !== "chip") continue;
-    if ((mrz?.[m] ?? "") !== (rec.fields?.[field] ?? "")) return { ok: false, reason: "details marked as read from the chip don't match the chip" };
+    const fromChip = mrz?.[m] ?? "";
+    if (fromChip === "") continue;
+    if (fromChip === (rec.fields?.[field] ?? "")) continue;
+    if (rec.source?.[field] === "typed") { edited = true; continue; }
+    return { ok: false, reason: "details on this card don't match the chip" };
   }
-  return { ok: true };
+  // The photo: a JPEG on the chip is kept byte for byte, so it must match. A JPEG
+  // 2000 photo is converted when read, so the app re-makes it from DG2 on open
+  // (portraitFromChip) instead of showing the stored copy.
+  let portrait = null;
+  if (files.dg2 && rec.images?.portrait) {
+    let img = null;
+    try { img = readDg2(files.dg2); } catch { return { ok: false, reason: "the chip's photo can't be read" }; }
+    if (img.type === "image/jpeg") {
+      let stored = null;
+      try { stored = unb64(rec.images.portrait.data); } catch { /* compared below */ }
+      if (!stored || stored.length !== img.bytes.length || stored.some((x, i) => x !== img.bytes[i])) return { ok: false, reason: "the photo doesn't match the chip" };
+      portrait = "matches";
+    } else portrait = "rederive";
+  }
+  return { ok: true, edited, portrait };
 }

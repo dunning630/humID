@@ -32,7 +32,8 @@ async function server(handler) {
 
 test("addresses: private, loopback, link-local, CGNAT, reserved and IPv4-in-IPv6 are refused", () => {
   for (const a of ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-    "::1", "::", "fe80::1", "fd00::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "64:ff9b::a9fe:a9fe", "2002:7f00:1::", "2001:db8::1"]) {
+    "::1", "::", "fe80::1", "fd00::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "64:ff9b::a9fe:a9fe", "2002:7f00:1::", "2001:db8::1",
+    "::ffff:0:7f00:1", "64:ff9b:1::808:808", "4000::1", "100::1"]) {
     assert.equal(publicAddress(a), false, a);
   }
   for (const a of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(publicAddress(a), true, a);
@@ -115,4 +116,23 @@ test("status lists are cached and concurrent requests share one fetch", async ()
     await noCache("https://status.example/l"); await noCache("https://status.example/l");
     assert.equal(hits, 3);
   } finally { await close(); }
+});
+
+test("a finished fetch closes its connection: error bodies aren't drained, late DNS sends nothing", async () => {
+  let open = 0, pushed = 0;
+  const { s, opts, close } = await server((q, r) => {
+    r.writeHead(q.url === "/err" ? 500 : 200);
+    const pump = () => { if (r.destroyed || r.writableEnded) return; pushed += 65536; r.write(Buffer.alloc(65536)) ? setImmediate(pump) : r.once("drain", pump); };
+    pump();
+  });
+  s.on("connection", (c) => { open++; c.on("close", () => open--); });
+  try {
+    await assert.rejects(safeFetch("https://status.example/err", opts), code("http_error"));
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(open, 0, "the error response's connection is closed");
+    await assert.rejects(safeFetch("https://status.example/ok", { ...opts, timeoutMs: 100, resolve: () => new Promise((r) => setTimeout(() => r(["127.0.0.1"]), 300)) }), code("timeout"));
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(open, 0, "no request went out after the deadline");
+  } finally { await close(); }
+  void pushed;
 });

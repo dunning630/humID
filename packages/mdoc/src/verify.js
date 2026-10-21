@@ -129,13 +129,15 @@ export function verifyIssuerSigned(issuerSigned, { docType, roots, now = new Dat
     if (dsC && dsC !== country) fail("untrusted_issuer", "The document signer belongs to a different country than its issuing authority.");
     if (state && dsST && dsST !== state) fail("untrusted_issuer", "The document signer belongs to a different state than its issuing authority.");
 
-    const ns = values["org.iso.18013.5.1"] || values["eu.europa.ec.eudi.pid.1"] || values["org.iso.23220.1"] || {};
-    const claimedC = ns.issuing_country == null ? null : countryCode(ns.issuing_country);
-    if (ns.issuing_country != null && claimedC !== country) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
-    if (ns.issuing_jurisdiction != null) {
-      const claimedST = stateCode(ns.issuing_jurisdiction);
-      // A state claim is accepted only when the trust anchor says which state it speaks for.
-      if (!state || claimedST !== state) fail("untrusted_issuer", state ? "The document's state doesn't match its issuing authority." : "The issuing authority's root doesn't say which state it speaks for, so the document's state can't be confirmed.");
+    // Every namespace is checked, not just the first one present: an issuer could
+    // otherwise put a decoy country in a namespace the reader also looks at.
+    const plainText = (v) => (v instanceof Tagged ? v.value : v);
+    for (const ns of Object.values(values)) {
+      if (ns.issuing_country != null && countryCode(plainText(ns.issuing_country)) !== country) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
+      if (ns.issuing_jurisdiction != null) {
+        // A state claim is accepted only when the trust anchor says which state it speaks for.
+        if (!state || stateCode(plainText(ns.issuing_jurisdiction)) !== state) fail("untrusted_issuer", state ? "The document's state doesn't match its issuing authority." : "The issuing authority's root doesn't say which state it speaks for, so the document's state can't be confirmed.");
+      }
     }
     trust = { chain: "trusted", root: { subject: root.subject, notAfter: root.notAfter.toISOString(), source: anchor.source }, country, state };
   }

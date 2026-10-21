@@ -17,7 +17,9 @@
 // SHA-256 fingerprints confirmed with AAMVA, ICAO or the publishing country
 // out of band). The server fetches and relays the signed lists; each device
 // re-checks the signature against pins built into the app, so a server can
-// relay trust lists but can't add a root of its own to anyone's phone.
+// relay trust lists but can't add a root of its own to anyone's phone. That
+// holds only if devices re-apply the signed lists: a toJSON() snapshot carries
+// no signatures and must never be what a server hands a phone.
 //
 // Lists only move forward: a VICAL older than the one applied (by issue ID,
 // then date) is refused, so an attacker who can replay an old list can't
@@ -82,6 +84,7 @@ export function createTrustStore(state) {
           if (issue < prev.issueId) fail("rollback", "This VICAL is older than the one already applied.");
           if (issue === prev.issueId && digest !== prev.sha256) fail("rollback", "This VICAL has the same issue number as the one applied, but different contents.");
         } else if (prevDate && date < prevDate) fail("rollback", "This VICAL is older than the one already applied.");
+        else if (prevDate && +date === +prevDate && digest !== prev.sha256) fail("rollback", "This VICAL has the same date as the one applied, but different contents.");
         if (digest === prev.sha256) return { added: 0, dropped: [], unchanged: true, issueId: list.issueId, date: list.date, nextUpdate: list.nextUpdate };
       }
 
@@ -98,9 +101,12 @@ export function createTrustStore(state) {
         if (listST && certST && listST !== certST) { dropped.push({ subject, reason: "the list and the certificate name different states" }); continue; }
         const country = listC || certC;
         if (!country) { dropped.push({ subject, reason: "no country" }); continue; }
+        // A root vouches only for the document types its list names; none named, none trusted.
+        const docTypes = Array.isArray(c.docTypes) ? c.docTypes.filter((t) => typeof t === "string") : [];
+        if (!docTypes.length) { dropped.push({ subject, reason: "no document types" }); continue; }
         added.push({
           der: b64(cert.der), fingerprint: fpOf(cert.der), country, state: listST || certST || null,
-          docTypes: Array.isArray(c.docTypes) ? c.docTypes.filter((t) => typeof t === "string") : [],
+          docTypes,
           authority: typeof c.authority === "string" ? c.authority : null, subject, notAfter: cert.notAfter.toISOString(),
           source: `vical:${id}`,
         });
@@ -120,7 +126,8 @@ export function createTrustStore(state) {
      * VICAL). country is required; state is required for US and Canadian roots
      * that will vouch for a jurisdiction.
      */
-    pinIaca(certInput, { country, state, docTypes = [], note } = {}) {
+    pinIaca(certInput, { country, state, docTypes = ["org.iso.18013.5.1.mDL"], note } = {}) {
+      if (!Array.isArray(docTypes) || !docTypes.length) fail("bad_certificate", "Say which document types this root may vouch for.");
       let cert;
       try { cert = parseCertificate(asBytes(certInput)); } catch { fail("bad_certificate", "That certificate can't be read."); }
       if (!cert.isCa) fail("bad_certificate", "Only a certificate authority's root can be pinned.");
@@ -182,7 +189,9 @@ export function createTrustStore(state) {
         iaca,
         // x5c roots for SD-JWT VCs: only roots trusted for that format by name, never a
         // state DMV's mDL root just because it's in the VICAL.
-        sdjwt: { roots: iaca.filter((e) => e.docTypes.includes("dc+sd-jwt")), issuers: s.sdjwt.map((e) => ({ iss: e.iss, country: e.country, state: e.state })), ...(resolveKey ? { resolveKey } : {}) },
+        // issuers is left out when none are named, so x5c-signed credentials under a
+        // trusted SD-JWT root still verify (an empty list would refuse them all).
+        sdjwt: { roots: iaca.filter((e) => e.docTypes.includes("dc+sd-jwt")), ...(s.sdjwt.length ? { issuers: s.sdjwt.map((e) => ({ iss: e.iss, country: e.country, state: e.state })) } : {}), ...(resolveKey ? { resolveKey } : {}) },
       };
     },
 

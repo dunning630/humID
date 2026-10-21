@@ -202,7 +202,7 @@ export function wallet({ authority = issuingAuthority(), data, docType = "org.is
  */
 export function signVical(provider, entries, { issueId = 1, date = new Date(Date.now() - day), nextUpdate = new Date(Date.now() + 30 * day), includeRoot = true, name = "Test DTS" } = {}) {
   const vical = new Map([
-    ["version", "1.0"], ["vicalProvider", name], ["date", tdate(date)], ["vicalIssueID", issueId],
+    ["version", "1.0"], ["vicalProvider", name], ["date", tdate(date)], ...(issueId === null ? [] : [["vicalIssueID", issueId]]),
     ...(nextUpdate ? [["nextUpdate", tdate(nextUpdate)]] : []),
     ["certificateInfos", entries.map((e) => new Map([
       ["certificate", e.der || e.authority.rootDer], ["docType", e.docTypes || ["org.iso.18013.5.1.mDL"]],
