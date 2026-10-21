@@ -48,7 +48,9 @@ test("Safari-style: Annex C answer → verified on the phone → ID record with 
   assert.equal(rec.fields.region, "IL");
   assert.equal(rec.source.surname, "mdoc");
   assert.ok(rec.raw.mdoc.issuerSigned.length > 100, "issuer-signed bytes kept for a later re-check");
-  assert.equal(provenance(rec).level, "mdoc");
+  // APP-05: the stored flag alone is never trusted; the label needs a fresh issuer re-check.
+  assert.equal(provenance(rec).level, "mdoc-unchecked");
+  assert.equal(provenance(rec, { mdoc: { ok: true, chain: "trusted" } }).level, "mdoc");
 });
 
 test("Chrome-style: OpenID4VP answer without trusted roots on the phone → kept as 'root not trusted yet', device still proven", async () => {

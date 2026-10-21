@@ -268,9 +268,17 @@ async function fetchPlain(item, purpose, label) {
     // Only this account seals documents into its vault, so anything signed by another key
     // is a forgery from whoever served it (PC-03): refused before it's decrypted or shown.
     const out = await Suite.open(envelope, keys, { signer: keys.dsaPk });
-    if (!isSplit(out.meta)) { wipe(share); return out; }
-    try { return await splitUnwrap(out.bytes, share); }
-    finally { wipe(out.bytes, share); }
+    let result;
+    if (!isSplit(out.meta)) { wipe(share); result = out; }
+    else { try { result = await splitUnwrap(out.bytes, share); } finally { wipe(out.bytes, share); } }
+    // The envelope must be the document this vault entry names, not another one the
+    // holder once sealed (a deleted file, an older version): the index entry, sealed
+    // under a key only the holder has, records the document's hash (PC-03 follow-up).
+    if (item.plainHash && toHex(Suite.sha3_512(result.bytes)) !== item.plainHash) {
+      wipe(result.bytes);
+      throw new Error("The server sent a different document than the one in your vault. It wasn't opened.");
+    }
+    return result;
   });
 }
 
@@ -283,8 +291,15 @@ export async function openItem(item) {
     const type = meta.type || item.type || "application/octet-stream";
     let url = null, text = null, idRecord = null, cardRecord = null, pass = null, passError = null;
     if (type === ID_TYPE) {
-      const { decodeRecord } = await idscan();
+      const { decodeRecord, recheckChip, readDg2 } = await idscan();
       try { idRecord = decodeRecord(bytes); } catch { text = new TextDecoder().decode(bytes); }
+      // The chip photo shown is re-made from the chip's own DG2 every time, never
+      // taken from the stored copy (precert APP-05): a JPEG 2000 photo can't be
+      // compared byte for byte after conversion.
+      if (idRecord?.raw?.chip?.dg2 && recheckChip(idRecord).ok) {
+        try { const { portraitImage } = await import("./scan.js"); idRecord.images = idRecord.images || {}; idRecord.images.portrait = await portraitImage(readDg2(fromB64(idRecord.raw.chip.dg2))); }
+        catch { if (idRecord.images) delete idRecord.images.portrait; }
+      }
     } else if (type === CARD_TYPE) {
       const { decodeCard } = await cards();
       try { cardRecord = decodeCard(bytes); } catch { text = "This card record can't be read."; }

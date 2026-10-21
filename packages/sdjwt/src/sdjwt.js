@@ -105,15 +105,37 @@ export function resolveDisclosures(payload, disclosures) {
   return { claims, disclosed: [...byDigest.values()].filter((d) => d.arr.length === 3).map((d) => d.arr[1]) };
 }
 
+/** Find an issuer in trust.issuers (map or list form); null when absent. */
+function listedIssuer(issuers, iss) {
+  if (!issuers) return null;
+  if (typeof iss !== "string") return null;
+  const types = (v) => (v == null ? null : Array.isArray(v) && v.every((x) => typeof x === "string") ? v : fail("bad_request", "An issuer's credential types must be a list of vct strings."));
+  if (Array.isArray(issuers)) {
+    const e = issuers.map((x) => (typeof x === "string" ? { iss: x } : x)).find((x) => x?.iss === iss);
+    return e ? { iss, vct: types(e.vct ?? e.types), country: e.country ?? null, state: e.state ?? null } : null;
+  }
+  if (typeof issuers !== "object") fail("bad_request", "trust.issuers must list issuers or map each to the credential types it may issue.");
+  if (!Object.hasOwn(issuers, iss)) return null;
+  const v = issuers[iss];
+  if (Array.isArray(v)) return { iss, vct: types(v), country: null, state: null };
+  if (v && typeof v === "object") return { iss, vct: types(v.vct ?? v.types), country: v.country ?? null, state: v.state ?? null };
+  fail("bad_request", "trust.issuers must map each issuer to the credential types it may issue.");
+}
+
 /**
  * Verify an SD-JWT VC presentation.
  *
- *   trust:   { roots:      [CA certificates for x5c chains],
- *              issuers:    { [iss]: [allowed vct, …] }   (required for resolveKey;
- *                          optional for x5c, where it further restricts),
+ *   trust:   { roots:      [CA certificates or trust anchors for x5c chains],
+ *              issuers:    the issuers HumID accepts, either
+ *                            { [iss]: [allowed vct, …] }, or
+ *                            [iss | { iss, vct?: [allowed vct, …], country?, state? }]
+ *                          (required for resolveKey, and then each issuer must
+ *                          list its vct types; optional for x5c, where it further restricts),
  *              resolveKey: ({ iss, header }) => JWK }    (pinned keys or issuer metadata)
  *   A key from resolveKey is only ever used for an issuer and type listed in
  *   `issuers`: anyone can publish metadata, so fetched metadata alone is never trust.
+ *   The country and state a credential speaks for come from `issuers` or from its
+ *   x5c root, never from the credential's own claims (precert finding CRD-01).
  *   binding: { nonce, aud } — required unless requireKeyBinding is false
  *
  * Returns { iss, vct, claims, disclosed, issuer, cnf, status, validity, keyBinding }.
@@ -126,14 +148,11 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
   if (typeof payload.vct !== "string" || !payload.vct) fail("bad_type", "The credential has no type (vct).");
   if (vcts && !vcts.includes(payload.vct)) fail("bad_type", `A ${payload.vct} credential wasn't asked for.`);
   if (payload.iss !== undefined && typeof payload.iss !== "string") fail("malformed", "The issuer isn't text.");
-  // An explicit allowlist: issuer → the credential types it may issue.
-  const allowed = trust.issuers && !Array.isArray(trust.issuers) && typeof trust.issuers === "object" ? trust.issuers : null;
-  if (trust.issuers && !allowed) fail("bad_request", "trust.issuers must map each issuer to the credential types it may issue.");
-  if (allowed) {
-    const list = Object.hasOwn(allowed, payload.iss ?? "") ? allowed[payload.iss] : null;
-    if (!Array.isArray(list)) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
-    if (!list.includes(payload.vct)) fail("untrusted_issuer", "This issuer isn't trusted to issue this kind of credential.");
-  }
+  // trust.issuers: an explicit allowlist (issuer → the credential types it may issue,
+  // and optionally the country and state it speaks for).
+  const listed = listedIssuer(trust.issuers, payload.iss);
+  if (trust.issuers && !listed) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  if (listed?.vct && !listed.vct.includes(payload.vct)) fail("untrusted_issuer", "This issuer isn't trusted to issue this kind of credential.");
 
   // 1. The issuer's key, then its signature.
   let issuer;
@@ -147,12 +166,18 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
     try { const u = new URL(payload.iss); if (u.protocol === "https:") host = u.hostname.toLowerCase(); } catch { /* not a URL */ }
     if (!san.uri.includes(payload.iss) && !(host && san.dns.includes(host))) fail("untrusted_issuer", "The credential's issuer isn't the one its certificate was issued to.");
   } else if (trust.resolveKey) {
-    if (!allowed) fail("untrusted_issuer", "A key without a certificate is only trusted for issuers listed explicitly.");
+    // A key from the issuer's own metadata proves only that someone controls that
+    // https host. It counts only for an issuer HumID lists by name, with its types.
+    if (!listed || !listed.vct) fail("untrusted_issuer", "A key without a certificate is only trusted for issuers listed explicitly, with the credential types they may issue.");
     const jwk = trust.resolveKey({ iss: payload.iss, header });
     if (!jwk) fail("untrusted_issuer", "No trusted key for this credential's issuer.");
     issuer = { key: jose(() => jwkKey(jwk)), leaf: null, root: null, keySource: "pinned" };
   } else fail("untrusted_issuer", "The credential doesn't say how to find its issuer's key, and none is pinned.");
   jose(() => verifyJwsWith(jws, issuer.key));
+  const cc = (v) => { const x = String(v ?? "").toUpperCase().trim(); return /^[A-Z]{2}$/.test(x) ? x : null; };
+  const listedC = cc(listed?.country), rootC = issuer.root?.country || null;
+  if (listedC && rootC && listedC !== rootC) fail("untrusted_issuer", "The trusted list and the issuer's root disagree on the issuing country.");
+  const boundCountry = listedC || rootC;
 
   // 2. Validity window.
   const t = Math.floor(now.getTime() / 1000);
@@ -164,6 +189,7 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
 
   // 3. Disclosures.
   const { claims, disclosed } = resolveDisclosures(payload, parts.disclosures);
+  if (claims.issuing_country != null && boundCountry && cc(claims.issuing_country) !== boundCountry) fail("untrusted_issuer", "The credential's country doesn't match its issuer.");
   // (Registered claims can't be disclosed and disclosed names can't shadow signed ones: resolveDisclosures refuses both.)
 
   // The country a certificate-backed credential claims must be its certificate's.
@@ -190,7 +216,7 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
 
   return {
     iss: payload.iss ?? null, vct: payload.vct, typ: header.typ, claims, disclosed,
-    issuer: { leaf: issuer.leaf, root: issuer.root, keySource: issuer.keySource, pinned: issuer.keySource === "pinned", country: certCountry },
+    issuer: { leaf: issuer.leaf, root: issuer.root, keySource: issuer.keySource, pinned: issuer.keySource === "pinned", country: boundCountry || certCountry, state: listed?.state ?? issuer.root?.state ?? null },
     cnf: payload.cnf ?? null, status: payload.status ?? null,
     validity: { iat: iat ?? null, nbf: nbf ?? null, exp: exp ?? null },
     keyBinding,

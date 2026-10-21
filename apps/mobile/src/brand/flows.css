@@ -250,8 +250,8 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .linklike { display: inline-flex; align-items: center; min-height: 44px; border: 0; background: none; padding: 0 6px; margin: -12px -6px; color: var(--amber-hi); font-size: var(--t-sm); text-decoration: underline; text-underline-offset: 3px; vertical-align: middle; }
 .id-proof { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; font-size: var(--t-sm); color: var(--text-2); background: var(--surface); border: 1px solid var(--line); }
 .id-proof svg { width: 18px; height: 18px; flex: none; }
-.id-proof.lvl-chip, .id-proof.lvl-barcode, .id-proof.lvl-mrz { color: var(--mint); border-color: rgba(111,227,180,.35); background: var(--mint-wash); }
-.id-proof.lvl-mrz-partial { color: var(--amber-hi); border-color: rgba(245,166,35,.35); background: var(--amber-wash); }
+.id-proof.lvl-chip, .id-proof.lvl-mdoc, .id-proof.lvl-barcode, .id-proof.lvl-mrz { color: var(--mint); border-color: rgba(111,227,180,.35); background: var(--mint-wash); }
+.id-proof.lvl-mrz-partial, .id-proof.lvl-chip-mismatch, .id-proof.lvl-mdoc-mismatch { color: var(--amber-hi); border-color: rgba(245,166,35,.35); background: var(--amber-wash); }
 .id-form { margin-top: 4px; }
 .id-field label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .id-field .src { font-size: 11px; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }

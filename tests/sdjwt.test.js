@@ -86,7 +86,9 @@ test("issuer trust: untrusted root, broken chain, tampered payload, alg none and
   assert.equal(verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://pid.example.eu": ["urn:eudi:pid:1"] } }, nonce: NONCE, aud: AUD }).issuer.keySource, "certificate");
   assert.throws(() => verifySdJwtVc(p, { trust: { roots: [] }, nonce: NONCE, aud: AUD }), code("no_trust"));
   assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://someone-else.example": ["urn:eudi:pid:1"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
-  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: ["https://pid.example.eu"] }, nonce: NONCE, aud: AUD }), code("bad_request"));
+  // The list form (CRD-01 trust store) is accepted for certificate-backed issuers; a malformed allowlist isn't.
+  assert.equal(verifySdJwtVc(p, { trust: { ...trust, issuers: ["https://pid.example.eu"] }, nonce: NONCE, aud: AUD }).issuer.keySource, "certificate");
+  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://pid.example.eu": "urn:eudi:pid:1" } }, nonce: NONCE, aud: AUD }), code("bad_request"));
   // Change the payload under the signature.
   const [h, body, sig] = cred.jwt.split(".");
   const payload = JSON.parse(Buffer.from(body, "base64url"));
@@ -118,15 +120,29 @@ test("a pinned issuer key (issuer metadata) instead of a certificate chain", asy
   assert.throws(() => issuerMetadataUrl("http://issuer.example"), code("bad_issuer"));
   const metadata = { issuer: "https://issuer.example/tenant/", jwks: { keys: [jwk] } };
   const resolveKey = ({ iss, header }) => keyFromIssuerMetadata(metadata, { iss, kid: header.kid });
-  const issuers = { "https://issuer.example/tenant/": ["urn:eudi:pid:1"] };
+  const PID = "urn:eudi:pid:1", ISS = "https://issuer.example/tenant/";
+  const issuers = { [ISS]: [PID] };
   const r = verifySdJwtVc(p, { trust: { resolveKey, issuers }, nonce: NONCE, aud: AUD });
   assert.equal(r.issuer.pinned, true);
   assert.equal(r.issuer.keySource, "pinned");
   // Review F3: metadata alone is never trust. Without an explicit issuer → type allowlist, a key from resolveKey is refused…
   assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  // …a listed issuer with no types isn't enough for a key without a certificate…
+  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey, issuers: [ISS] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
   // …and an allowed issuer can't issue a type it isn't listed for.
-  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey, issuers: { "https://issuer.example/tenant/": ["urn:other:1"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey, issuers: { [ISS]: ["urn:other:1"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
   assert.throws(() => keyFromIssuerMetadata({ issuer: metadata.issuer, jwks: { keys: [null, 5] } }, { iss: metadata.issuer }), code("untrusted_issuer"));
+  // CRD-01: the country an issuer speaks for comes from the trust list, never the credential.
+  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey, issuers: [{ iss: "https://other.example/", vct: [PID] }] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  const de = verifySdJwtVc(p, { trust: { resolveKey, issuers: [{ iss: ISS, vct: [PID], country: "DE" }] }, nonce: NONCE, aud: AUD });
+  assert.equal(de.issuer.pinned, true);
+  assert.equal(de.issuer.country, "DE", "the country comes from the trust list");
+  const plain = verifySdJwtVc(p, { trust: { resolveKey, issuers: [{ iss: ISS, vct: [PID] }] }, nonce: NONCE, aud: AUD });
+  assert.equal(plain.issuer.country, null, "listed without a country: nothing vouches for one");
+  // A credential claiming another country than its listed issuer speaks for is refused.
+  const fr = await issueSdJwt({ issuerKey: issuer.privateKey, kid: "k1", iss: ISS, claims: { given_name: "ERIKA", issuing_country: "FR" }, holderJwk: holder.publicKey.export({ format: "jwk" }) });
+  const pf = await presentSdJwt(fr, { names: ["given_name", "issuing_country"], holderKey: holder.privateKey, aud: AUD, nonce: NONCE });
+  assert.throws(() => verifySdJwtVc(pf, { trust: { resolveKey, issuers: [{ iss: ISS, vct: [PID], country: "DE" }] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
   assert.throws(() => keyFromIssuerMetadata({ ...metadata, issuer: "https://evil.example" }, { iss: metadata.issuer, kid: "k1" }), code("bad_issuer"));
   assert.throws(() => verifySdJwtVc(p, { trust: {}, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
 });
