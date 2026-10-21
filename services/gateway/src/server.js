@@ -8,9 +8,9 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, env, json, bytes, parseJson, signAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
+import { createService, env, json, bytes, parseJson, signRequestAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, loginMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
 const ID_RE = "hid_[0-9a-f]{40}";
@@ -36,6 +36,8 @@ const POLICIES = ["attested", "biometric", "demo"];
  */
 const REGISTRATION = ["pass", "open"];
 const re = (s) => new RegExp(`^${s}$`);
+/** How a device may join an existing account: an approved link, or a released recovery (never "register"). */
+const ENROL_VIA = new Set(["link", "card", "contacts", "quorum"]);
 
 /**
  * Inner routes the app may call. Anything else is a 404, so internal routes
@@ -238,7 +240,8 @@ export function createGateway({
   /* ---------- internal calls ---------- */
 
   async function internal(service, method, path, { claims = {}, body, headers = {} } = {}) {
-    const assertion = signAssertion(internalSk, { iss: "gateway", aud: service, rid: randomUUID(), ...claims });
+    // Bound to this one request: method, target and body (PC-08). The downstream service refuses it on any other.
+    const assertion = signRequestAssertion(internalSk, { iss: "gateway", aud: service, rid: randomUUID(), ...claims }, { method, path, body: body && body.length ? body : null });
     let res;
     try {
       res = await fetch(`${upstreams[service]}${path}`, {
@@ -294,6 +297,30 @@ export function createGateway({
   /* ---------- handlers (run inside the encrypted channel) ---------- */
 
   const denied = (s, path, res) => recordQuietly(s.subject, "access.denied", { path: path.replace(/[0-9a-f-]{36}/, ":id"), reason: safeJson(res.body)?.error || "forbidden" });
+
+  /**
+   * After every live sign-in. d = the duress flag the device key signed into it: this session
+   * becomes a decoy, the account is locked down, recoveries slow down, and an armed Check-in
+   * erases the vault. Every sign-in asks keyshare where Check-in stands, so a duress sign-in
+   * takes the same time, and the work happens after the reply, so the answer looks the same.
+   */
+  async function presence(s, duress) {
+    const ck = CHECKIN ? await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null) : null;
+    if (!duress || s.duress) return;
+    s.duress = true;
+    const st = ck?.status === 200 ? ck.data : null;
+    s.decoyCheckin = st && (st.state === "armed" || st.state === "locked")
+      ? decoyFrom({ ...st, deadline: st.state === "armed" ? st.deadline : Date.now() + st.windowMs })
+      : null;
+    const account = s.subject, device = s.deviceId, platform = s.platform;
+    setImmediate(async () => {
+      // Check-in first: a duress signal while it's armed erases the vault now (decoys stay).
+      if (CHECKIN) await eraseNow(account);
+      await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
+      await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
+      await recordQuietly(account, "duress.signaled", { device, platform });
+    });
+  }
 
   const handlers = {
     // Seal: the envelope goes to the vault, its document key (if split) to keyshare. If the
@@ -417,23 +444,61 @@ export function createGateway({
       return { status: reg.status, json: sessionView(s, { created: reg.status === 201, cardSet }) };
     },
 
-    // Another device joins an account it now holds the seed of (device link or recovery).
+    // Another device joins an account (device link or recovery). Holding the account seed is
+    // not enough (PC-02): a seed copied once off a phone would otherwise let anyone add a phone
+    // of their own, silently, and open everything. A link must have been approved, with a live
+    // check, by one of the account's devices, for exactly this device key; a recovery must be
+    // released: its proofs in, its wait over, not cancelled by any of the account's devices.
     async enrollDevice(s, body) {
       const r = parseJson(body) || {};
       if (!re(ID_RE).test(String(r.account))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      const add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, via: r.via, device: r.device, policy: devicePolicy } });
-      if (add.status >= 300) fail(add);
+      const via = String(r.via);
+      if (!ENROL_VIA.has(via)) throw new HttpError(400, "bad_via", "Unknown enrolment route");
+      let dsaPk;
+      try { dsaPk = unb64u(String(r.device?.dsaPk || "")); } catch { dsaPk = null; }
+      if (!dsaPk?.length) throw new HttpError(400, "bad_key", "Missing device key");
+      // A device that already joined this account (its reply was lost, say) finishes joining again.
+      const known = await internalJson("identity", "GET", `/internal/devices/${deviceId(dsaPk)}`).catch(() => ({ status: 503 }));
+      if (known.status !== 200 && known.status !== 404) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
+      const rejoin = known.status === 200 && known.data.account === r.account && !known.data.revoked;
+      // Noted in the account's ledger (once per window, like refused sign-ins), then refused.
+      const refuse = async (e) => {
+        if (loginNote.take(`enrol:${r.account}`)) await recordQuietly(r.account, "access.denied", { reason: "enrol_without_evidence", via, device: deviceId(dsaPk) });
+        throw e;
+      };
+      let linkCode = null;
+      if (!rejoin && via === "link") {
+        linkCode = String(r.linkCode || "");
+        if (!re(CODE_RE).test(linkCode)) await refuse(new HttpError(403, "not_approved", "Approve this device from a device you already use."));
+        const c = await internalJson("recovery", "POST", `/internal/links/${linkCode}/consume`, { json: { account: r.account, devicePk: b64u(dsaPk) } }).catch(() => ({ status: 503 }));
+        if (c.status === 403) await refuse(new HttpError(403, "not_approved", c.data?.message || "Approve this device from a device you already use."));
+        if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
+      } else if (!rejoin) {
+        if (!re(REQ_RE).test(String(r.recoveryId || ""))) await refuse(new HttpError(403, "not_released", "This device can join only through a released recovery."));
+        const c = await internalJson("recovery", "POST", `/internal/requests/${r.recoveryId}/check`, { json: { account: r.account, method: via } }).catch(() => ({ status: 503 }));
+        if (c.status === 403) await refuse(new HttpError(403, "not_released", c.data?.message || "That recovery isn't released yet."));
+        if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
+      }
+      const giveBack = () => linkCode && internalJson("recovery", "POST", `/internal/links/${linkCode}/restore`, { json: { account: r.account } }).catch(() => {});
+      let add;
+      try { add = await internalJson("identity", "POST", "/internal/devices", { json: { account: r.account, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, via, device: r.device, policy: devicePolicy } }); }
+      catch (e) { await giveBack(); throw e; }
+      if (add.status >= 300) { await giveBack(); fail(add); }
       bindSession(s, add.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       // Continuity: every device carries the evidence that let it in.
-      let evidence = { via: String(r.via) };
-      if (r.recoveryId && re(REQ_RE).test(String(r.recoveryId))) {
-        const done = await internalJson("recovery", "POST", `/requests/${r.recoveryId}/complete`, { json: { account: s.subject } });
-        if (done.status === 200) {
-          const d = done.data;
-          evidence = { via: String(r.via), kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs, ref: d.ref };
-          await recordQuietly(s.subject, "recovery.completed", { method: d.method, ref: d.ref, device: s.deviceId, platform: s.platform, kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs });
+      let evidence = { via };
+      if (!rejoin && via !== "link") {
+        const done = await internalJson("recovery", "POST", `/requests/${r.recoveryId}/complete`, { json: { account: s.subject } }).catch(() => ({ status: 503 }));
+        if (done.status !== 200) {
+          // Cancelled or spent between the check and now: this device doesn't stay.
+          await internalJson("identity", "POST", `/internal/devices/${s.deviceId}/revoke`, { json: { account: s.subject } }).catch((e) => log.warn("enrol rollback failed", { err: e.message }));
+          s.subject = null; s.deviceId = null; s.closeAfterReply = true;
+          throw new HttpError(409, "not_released", "That recovery was cancelled or already used. Nothing was added.");
         }
-      }
+        const d = done.data;
+        evidence = { via, kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs, ref: d.ref };
+        await recordQuietly(s.subject, "recovery.completed", { method: d.method, ref: d.ref, device: s.deviceId, platform: s.platform, kinds: d.kinds, evidence: d.evidence, anchorMode: d.anchorMode, station: d.station, waitedMs: d.waitedMs });
+      } else if (linkCode) evidence = { via, approvedLink: true };
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, ...evidence });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(String(r.device?.sigDevice || ""))) });
       return { status: 201, json: sessionView(s, { created: add.status === 201 }) };
@@ -458,8 +523,15 @@ export function createGateway({
       // ledger (the ledger write is the only cost worth protecting), but a valid proof of the real
       // holder always signs in. A lockout here can never cause a Check-in wipe: wipes come from a
       // missed deadline in keyshare, or a duress sign-in, never from a refused sign-in.
+      // Presence (PC-01): the duress flag is part of the signed sign-in, never a request of its
+      // own. The liveness key signs the plain challenge; the device key, released by the same
+      // live check, signs the challenge with the flag. Apps that send no flag sign the plain one.
+      const who = `${r.id}/${r.device}`;
+      const reported = r.d === 0 || r.d === 1;
+      const liveMsg = loginMessage(s.th, who, c.nonce);
       const v = await internalJson("identity", "POST", "/internal/verify", {
-        json: { account: r.id, device: r.device, sig: r.sig, live: r.live, policy: devicePolicy, message: b64u(loginMessage(s.th, `${r.id}/${r.device}`, c.nonce)) },
+        json: { account: r.id, device: r.device, sig: r.sig, live: r.live, policy: devicePolicy,
+          message: b64u(reported ? loginPresenceMessage(s.th, who, c.nonce, r.d) : liveMsg), liveMessage: b64u(liveMsg) },
       });
       const failed = v.status >= 400 && v.status < 500;
       const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(s.clientIp), loginFailAll.take("*")].every(Boolean);
@@ -478,6 +550,7 @@ export function createGateway({
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
+      await presence(s, reported && r.d === 1);
       return { status: 200, json: sessionView(s) };
     },
 
@@ -550,9 +623,6 @@ export function createGateway({
       return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country, chipProof: !!d.chipProof } };
     },
 
-    // Every unlock reports presence the same way. d = 1 means the owner used their duress
-    // gesture: this session becomes a decoy, the account is locked down, recoveries slow down.
-    // The work happens after the reply, so the answer looks and times the same either way.
     /**
      * Issue an approval for one request: method and path (which carry the target ids), for
      * this device, with a single-use nonce that expires in 60 s. The device's secure chip
@@ -574,26 +644,11 @@ export function createGateway({
       return json(200, { nonce: b64u(nonce), exp, device: s.deviceId });
     },
 
-    async presence(s, body) {
-      const r = parseJson(body) || {};
-      // Check-in: every unlock asks where it stands (so a duress unlock takes the same time),
-      // and a duress session keeps a copy to show, as if nothing had happened.
-      const ck = CHECKIN ? await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null) : null;
-      if (r.d === 1 && !s.duress) {
-        s.duress = true;
-        const st = ck?.status === 200 ? ck.data : null;
-        s.decoyCheckin = st && (st.state === "armed" || st.state === "locked")
-          ? decoyFrom({ ...st, deadline: st.state === "armed" ? st.deadline : Date.now() + st.windowMs })
-          : null;
-        const account = s.subject, device = s.deviceId, platform = s.platform;
-        setImmediate(async () => {
-          // Check-in first: a duress signal while it's armed erases the vault now (decoys stay).
-          if (CHECKIN) await eraseNow(account);
-          await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
-          await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
-          await recordQuietly(account, "duress.signaled", { device, platform });
-        });
-      }
+    // Older apps reported presence here, after the sign-in. The flag in this request is
+    // ignored (PC-01): it was a bare request any signed-in session could send, and a duress
+    // signal locks the account down and, with Check-in armed, erases the vault. Duress now
+    // arrives only inside a live, signed sign-in (`login`, field d). Same answer as before.
+    async presence() {
       return { status: 200, json: { ok: true } };
     },
 

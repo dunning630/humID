@@ -177,6 +177,12 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
   through memory at every check. Split keys make them worth far less; they
   don't keep them out of memory. The follow-ups below shrink what's left.
 
+**Adding a device takes more than the seed.** Copied account keys can't be used to add a
+phone of the attacker's own: a device joins only through a link that one of the account's
+devices approved, with a live check, for that exact device key, or through a released
+recovery (proofs in, wait over, not cancelled), and every surviving device is alerted to a
+recovery and can veto it.
+
 **Follow-ups:** second-device approval (an infected phone can't approve alone,
 and the second device shows what is really being approved); account-key
 rotation (stolen keys stop working; also removes the "older documents" gap);

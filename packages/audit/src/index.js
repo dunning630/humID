@@ -144,11 +144,32 @@ export function consistencyProof(get, m, n, th = (a, b) => treeHash(get, a, b)) 
 }
 
 /**
- * Check a signed checkpoint, its cosignatures and (optionally) that it extends
- * the last checkpoint this device trusted. Returns { ok, reason, size, cosigned }.
- * page: { checkpoint: { size, root, at, sig }, ledgerKey: { dsa, fp }, cosignatures: [{ name, pk, sig }] }
+ * Cosigners this device trusts, from the "name=base64url(ML-DSA-87 public key),…" form the
+ * server's HUMID_TLOG_COSIGNERS uses. Built into the app, never taken from the server.
+ * → Map(name → public key bytes)
  */
-export function verifyCheckpoint(page, { trustedKeyFp, previous, consistency, inclusion } = {}) {
+export function parseCosigners(spec) {
+  const out = new Map();
+  for (const part of String(spec || "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    const i = part.indexOf("=");
+    const name = part.slice(0, i), pk = part.slice(i + 1);
+    if (i > 0 && /^[A-Za-z0-9._-]{1,40}$/.test(name) && pk) { try { out.set(name, unb64u(pk)); } catch {} }
+  }
+  return out;
+}
+
+/**
+ * Check a signed checkpoint, its cosignatures and (optionally) that it extends
+ * the last checkpoint this device trusted. Returns { ok, reason, size, cosigned, keyFp }.
+ * page: { checkpoint: { size, root, at, sig }, ledgerKey: { dsa, fp }, cosignatures: [{ name, sig }] }
+ *
+ * `cosigners` is the Map from parseCosigners: the ONLY keys a cosignature is checked
+ * against. A cosignature counts when its name is in that map and it verifies under the
+ * key the map holds; a public key the server sends alongside is ignored, because a
+ * server could otherwise invent "independent" cosigners and sign for them itself.
+ * Without the map, nothing counts as cosigned.
+ */
+export function verifyCheckpoint(page, { trustedKeyFp, previous, consistency, inclusion, cosigners } = {}) {
   const fail = (reason) => ({ ok: false, reason });
   const cp = page?.checkpoint;
   if (!cp) return fail("No published checkpoint");
@@ -161,7 +182,9 @@ export function verifyCheckpoint(page, { trustedKeyFp, previous, consistency, in
   if (!ok) return fail("Checkpoint signature is invalid");
   const cosigned = [];
   for (const c of page.cosignatures || []) {
-    try { if (ml_dsa87.verify(unb64u(c.sig), cosignMessage(c.name, cp.size, root, cp.at), unb64u(c.pk))) cosigned.push(c.name); } catch {}
+    const pinned = cosigners instanceof Map ? cosigners.get(String(c?.name)) : null;
+    if (!pinned || cosigned.includes(c.name)) continue;
+    try { if (ml_dsa87.verify(unb64u(c.sig), cosignMessage(c.name, cp.size, root, cp.at), pinned)) cosigned.push(c.name); } catch {}
   }
   if (previous && previous.size > 0) {
     if (cp.size < previous.size) return fail("The public log got shorter");

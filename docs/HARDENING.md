@@ -159,10 +159,10 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 
 | ID | Finding | Status |
 |---|---|---|
-| H-1 | Envelope signer is not pinned to the account: a malicious vault can serve forged content signed with its own key (`pq1.js` `verify/open`, `controller.js` `fetchPlain`) | ⬜ |
-| H-2 | Transparency-log cosigner and ledger keys come from the server's own response (`audit/index.js` `verifyCheckpoint`) | ⬜ |
-| SRV-01 | Device enrolment needs only the account key, no approval from an existing device (`gateway` `enrollDevice`) | ⬜ |
-| SRV-05 | `POST /auth/presence` with `d:1` destroys an armed vault with no step-up | ⬜ |
+| H-1 | Envelope signer is not pinned to the account: a malicious vault can serve forged content signed with its own key (`pq1.js` `verify/open`, `controller.js` `fetchPlain`) | ✅ `open(envelope, keys, { signer })` refuses another signer (`wrong_signer`); `fetchPlain` passes the account key (PC-03, `tests/forgery.test.js`) |
+| H-2 | Transparency-log cosigner and ledger keys come from the server's own response (`audit/index.js` `verifyCheckpoint`) | ✅ the ledger key is pinned on the device at first verify (`ledgerKeyFp`, passed as `trustedKeyFp`); only cosigners built into the app (`HUMID_TLOG_COSIGNERS` at build time) count, under the built-in key (PC-04). ◑ a brand-new install still trusts the first ledger key it sees |
+| SRV-01 | Device enrolment needs only the account key, no approval from an existing device (`gateway` `enrollDevice`) | ✅ a device joins only with an approved link naming its device key (single use) or a released recovery of the same route; `via: register` refused (PC-02, `tests/e2e/enrol.test.js`) |
+| SRV-05 | `POST /auth/presence` with `d:1` destroys an armed vault with no step-up | ✅ the duress flag is signed into the sign-in by the device key the live check releases (`loginPresenceMessage`); the presence flag is ignored (PC-01, `tests/e2e/checkin.test.js`) |
 | SRV-04 | Windows SYSTEM console works in a directory LOCAL SERVICE controls (junction primitive) | ⬜ |
 | M-1 | `/htp/v1/keys` policy hints are unauthenticated (a proxy can turn off split keys) | ⬜ |
 | F-07 | Windows/Linux desktop gates are not OS-enforced (desktop paused) | ⬜ |
@@ -170,4 +170,5 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
 | SC-06 | Android Maven dependencies (incl. `play-services-mlkit-document-scanner`) pinned but not checksum-verified: no Gradle dependency verification | ⬜ |
 | SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
+| SEC-S-01 / PC-08 | Internal gateway→service assertions not bound to the request (replayable, a read became a delete) | ✅ each assertion signs method, target and body hash and is accepted once (`signRequestAssertion`, `createService`) |
 | Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ⬜ independent review |
