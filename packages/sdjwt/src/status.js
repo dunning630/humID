@@ -13,7 +13,7 @@
 // its subject is the uri the credential named, and that it isn't stale. The
 // app does the fetching; nothing here touches the network.
 
-import { decode, get, parse1, verifySign1, x5chain, parseCertificate, issuedBy } from "@humid/mdoc";
+import { decode, get, parse1, verifySign1, x5chain, parseCertificate, issuedBy, readAnchors } from "@humid/mdoc";
 import { parseJws, verifyJwsWith, jwkKey, x5cKey, unb64u, JoseError } from "./jose.js";
 
 export class StatusError extends Error {
@@ -111,7 +111,8 @@ export async function checkStatusCwt(bytes, ref, { roots = [], now = new Date(),
   if (typ !== "application/statuslist+cwt" && typ !== 65533) fail("bad_status_list", "This isn't a status list token.");
   const chain = x5chain(s1).map((c) => { try { return parseCertificate(c); } catch { return null; } });
   if (!chain.length || chain.some((c) => !c)) fail("bad_status_list", "The status list's signer certificate is missing or unreadable.");
-  const anchors = roots.map((r) => (r?.tbs ? r : typeof r === "string" ? parseCertificate(r) : parseCertificate(r)));
+  let anchors;
+  try { anchors = readAnchors(roots).map((a) => a.cert); } catch { fail("no_trust", "A configured issuer certificate can't be read."); }
   const leaf = chain[0];
   if (now < leaf.notBefore || now > leaf.notAfter) fail("bad_status_list", "The status list's signer certificate isn't valid now.");
   const top = chain[chain.length - 1];

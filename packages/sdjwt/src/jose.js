@@ -15,7 +15,7 @@ import { p256, p384, p521 } from "@noble/curves/nist.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256, sha384, sha512 } from "@noble/hashes/sha2.js";
 import { gcm } from "@noble/ciphers/aes.js";
-import { parseCertificate, issuedBy } from "@humid/mdoc";
+import { parseCertificate, issuedBy, readAnchors, countryCode, stateCode } from "@humid/mdoc";
 
 export class JoseError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -120,7 +120,9 @@ export function x5cKey(x5c, { roots, now = new Date() }) {
   if (!Array.isArray(x5c) || !x5c.length || x5c.length > 5) fail("bad_chain", "The token's certificate chain is missing or too long.");
   let chain;
   try { chain = x5c.map((c) => parseCertificate(unb64(c))); } catch (e) { if (e instanceof JoseError) throw e; fail("bad_chain", "A certificate in the token's chain can't be read."); }
-  const anchors = (roots || []).flatMap((r) => (r?.tbs ? [r] : typeof r === "string" ? (r.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || []).map((p) => parseCertificate(p)) : [parseCertificate(r)]));
+  let found;
+  try { found = readAnchors(roots); } catch { fail("no_trust", "A configured issuer certificate can't be read."); }
+  const anchors = found.map((a) => a.cert);
   if (!anchors.length) fail("no_trust", "No trusted issuer roots are configured for this kind of credential.");
   const valid = (c) => now >= c.notBefore && now <= c.notAfter;
   for (const c of chain) if (!valid(c)) fail("bad_chain", "A certificate in the issuer's chain isn't valid now.");
@@ -131,10 +133,14 @@ export function x5cKey(x5c, { roots, now = new Date() }) {
   if (chain[0].isCa) fail("bad_chain", "The issuer signed with a certificate authority's key, not a signing certificate.");
   const top = chain[chain.length - 1];
   const sameDer = (a, b) => a.der.length === b.der.length && a.der.every((x, i) => x === b.der[i]);
-  const root = anchors.find((r) => sameDer(r, top)) || anchors.find((r) => r.isCa && issuedBy(top, r));
-  if (!root) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  const at = found.findIndex((a) => sameDer(a.cert, top));
+  const idx = at >= 0 ? at : found.findIndex((a) => a.cert.isCa && issuedBy(top, a.cert));
+  if (idx < 0) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  const anchor = found[idx], root = anchor.cert;
   if (!valid(root)) fail("untrusted_issuer", "The trusted root for this issuer isn't valid now.");
-  return { key: certKey(chain[0]), leaf: { subject: chain[0].subject, notAfter: chain[0].notAfter.toISOString() }, root: { subject: root.subject } };
+  // Who the root speaks for: the trust list's word first, then the certificate's own C and ST.
+  const country = anchor.country || countryCode(root.subject.C), state = anchor.state || stateCode(root.subject.ST);
+  return { key: certKey(chain[0]), leaf: { subject: chain[0].subject, notAfter: chain[0].notAfter.toISOString() }, root: { subject: root.subject, country, state, source: anchor.source } };
 }
 
 /* ---------------- JWE (decrypt) ---------------- */

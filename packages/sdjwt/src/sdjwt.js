@@ -106,8 +106,10 @@ export function resolveDisclosures(payload, disclosures) {
 /**
  * Verify an SD-JWT VC presentation.
  *
- *   trust:   { roots: [IACA-style certificates for x5c], issuers?: [allowed iss],
- *              resolveKey?: ({ iss, header }) => JWK }   (pinned keys or issuer metadata)
+ *   trust:   { roots: [certificates or trust anchors for x5c],
+ *              issuers?: [iss, or { iss, country?, state? }],
+ *              resolveKey?: ({ iss, header }) => JWK }   (pinned keys or issuer metadata;
+ *              only for issuers named in `issuers`)
  *   binding: { nonce, aud } — required unless requireKeyBinding is false
  *
  * Returns { iss, vct, claims, disclosed, issuer, cnf, status, validity, keyBinding }.
@@ -120,17 +122,28 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
   if (typeof payload.vct !== "string" || !payload.vct) fail("bad_type", "The credential has no type (vct).");
   if (vcts && !vcts.includes(payload.vct)) fail("bad_type", `A ${payload.vct} credential wasn't asked for.`);
   if (payload.iss !== undefined && typeof payload.iss !== "string") fail("malformed", "The issuer isn't text.");
-  if (trust.issuers && !trust.issuers.includes(payload.iss)) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  // trust.issuers: the issuers HumID accepts, as strings or { iss, country?, state? }.
+  // The country and state a credential speaks for come from here or from its
+  // x5c root, never from the credential's own claims (precert finding CRD-01).
+  const listed = trust.issuers ? trust.issuers.map((x) => (typeof x === "string" ? { iss: x } : x)).find((x) => x?.iss === payload.iss) : null;
+  if (trust.issuers && !listed) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
 
   // 1. The issuer's key, then its signature.
   let issuer;
   if (header.x5c) issuer = jose(() => x5cKey(header.x5c, { roots: trust.roots, now }));
   else if (trust.resolveKey) {
+    // A key from the issuer's own metadata proves only that someone controls that
+    // https host. It counts only for an issuer HumID lists by name.
+    if (!listed) fail("untrusted_issuer", "Keys from an issuer's own metadata are accepted only for issuers HumID lists by name.");
     const jwk = trust.resolveKey({ iss: payload.iss, header });
     if (!jwk) fail("untrusted_issuer", "No trusted key for this credential's issuer.");
     issuer = { key: jose(() => jwkKey(jwk)), leaf: null, root: null, pinned: true };
   } else fail("untrusted_issuer", "The credential doesn't say how to find its issuer's key, and none is pinned.");
   jose(() => verifyJwsWith(jws, issuer.key));
+  const cc = (v) => { const x = String(v ?? "").toUpperCase().trim(); return /^[A-Z]{2}$/.test(x) ? x : null; };
+  const listedC = cc(listed?.country), rootC = issuer.root?.country || null;
+  if (listedC && rootC && listedC !== rootC) fail("untrusted_issuer", "The trusted list and the issuer's root disagree on the issuing country.");
+  const boundCountry = listedC || rootC;
 
   // 2. Validity window.
   const t = Math.floor(now.getTime() / 1000);
@@ -142,6 +155,7 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
 
   // 3. Disclosures.
   const { claims, disclosed } = resolveDisclosures(payload, parts.disclosures);
+  if (claims.issuing_country != null && boundCountry && cc(claims.issuing_country) !== boundCountry) fail("untrusted_issuer", "The credential's country doesn't match its issuer.");
   // (Registered claims can't be disclosed and disclosed names can't shadow signed ones: resolveDisclosures refuses both.)
 
   // 4. Key binding.
@@ -164,7 +178,7 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
 
   return {
     iss: payload.iss ?? null, vct: payload.vct, typ: header.typ, claims, disclosed,
-    issuer: { leaf: issuer.leaf, root: issuer.root, pinned: !!issuer.pinned },
+    issuer: { leaf: issuer.leaf, root: issuer.root, pinned: !!issuer.pinned, country: boundCountry, state: listed?.state ?? issuer.root?.state ?? null },
     cnf: payload.cnf ?? null, status: payload.status ?? null,
     validity: { iat: iat ?? null, nbf: nbf ?? null, exp: exp ?? null },
     keyBinding,
