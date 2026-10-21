@@ -16,3 +16,8 @@ plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
 plugins/humid-docscan/target/
 plugins/humid-docscan/android/.tauri/
+/data/
+deploy/trust/trust-config.json
+deploy/trust/*.pem
+deploy/trust/*.ml
+deploy/trust/*.vical
