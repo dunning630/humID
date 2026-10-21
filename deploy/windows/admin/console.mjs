@@ -24,6 +24,7 @@ import { STATUS_FILE } from "../src/status.mjs";
 import { openStore, readJson, writeJsonAtomic } from "./store.mjs";
 import { newCode, formatCode, requestDigest, digestCheck, verifyApproval, ApprovalError, REQUEST_TTL_MS, CODE_RE } from "./verify.mjs";
 import { latestRelease, download, compareVersions, DEFAULT_REPO } from "./updates.mjs";
+import { pinnedKeys } from "./release.mjs";
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const SESSION_IDLE_MS = 30 * MIN, SESSION_MAX_MS = 12 * HOUR;
@@ -43,7 +44,7 @@ const fmtBytes = (n) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : `${
 const DESCRIBE = {
   "restart-server": () => ({ title: "Restart the HumID server", lines: ["Phones are disconnected for about a minute and sign in again with a live check."] }),
   "backup": () => ({ title: "Back up the HumID server now", lines: ["Stops the server for a few seconds for a consistent copy.", "The backup holds the server keys and every sealed document; it stays on this computer, readable only by administrators."] }),
-  "update-humid": (a) => ({ title: `Update HumID Server ${a.from} → ${a.version}`, lines: [`File ${a.file}, SHA-256 ${a.sha256.slice(0, 16)}…`, "Backs up first, keeps the current version, and rolls back by itself if the new one doesn't come up healthy with the same server identity."] }),
+  "update-humid": (a) => ({ title: `Update HumID Server ${a.from} → ${a.version}`, lines: [`File ${a.file}, SHA-256 ${a.sha256.slice(0, 16)}…, signed by HumID release key ${a.signer}`, "Backs up first, keeps the current version, and rolls back by itself if the new one doesn't come up healthy with the same server identity."] }),
   "rollback-humid": (a) => ({ title: `Roll back HumID Server ${a.from} → ${a.to}`, lines: ["Backs up first. Phones on newer app versions may need the server they had."] }),
   "os-install": (a) => ({ title: `Install ${a.updates.length} Windows update${a.updates.length === 1 ? "" : "s"}`, lines: a.updates.slice(0, 10).map((u) => u.title).concat(a.updates.length > 10 ? [`and ${a.updates.length - 10} more`] : []) }),
   "reboot": () => ({ title: "Restart this computer", lines: ["Starts 60 seconds after approval. HumID is unavailable for a few minutes and starts again by itself."] }),
@@ -142,7 +143,8 @@ export function createConsole({
     const env = adminEnv();
     try {
       const current = installedVersion();
-      const latest = await latestRelease({ repo: env.HUMID_UPDATE_REPO || DEFAULT_REPO, token: env.HUMID_UPDATE_TOKEN || "", current, fetchImpl });
+      const allowPrerelease = settings().HUMID_UPDATE_PRERELEASES === "on";
+      const latest = await latestRelease({ repo: env.HUMID_UPDATE_REPO || DEFAULT_REPO, token: env.HUMID_UPDATE_TOKEN || "", current, allowPrerelease, fetchImpl });
       S.humid = { checkedAt: now(), latest, error: null, checking: false, current };
     } catch (e) {
       S.humid = { ...S.humid, checkedAt: now(), error: e.message, checking: false };
@@ -352,6 +354,7 @@ export function createConsole({
     if (osu?.error) add("warn", "updates", "Windows Update couldn't be checked", osu.error);
     if (S.humid.latest) add("warn", "updates", `HumID Server ${S.humid.latest.version} is available`, `Installed: ${installedVersion()}.`);
     if (S.humid.error) add("info", "updates", "Couldn't check for HumID updates", S.humid.error);
+    if (!pinnedKeys().length) add("warn", "updates", "HumID updates can't be installed from the console", "This build has no HumID release key pinned, so it can't tell who made an update and refuses them all. Install the next release by hand (unzip it and run its installer).");
     const b = backups()[0];
     if (!b) add("warn", "backups", "No backups on this computer yet", "Back up now, then copy the file somewhere safe and offline.");
     else if (now() - Date.parse(b.at) > 7 * 24 * HOUR) add("warn", "backups", "The last backup is more than a week old", b.name);
@@ -401,7 +404,7 @@ export function createConsole({
       },
       security: { defender: p?.defender || null, firewall: p?.firewall || [], bitlocker: p?.bitlocker || null, pendingReboot: !!p?.pendingReboot, pendingRebootReasons: p?.pendingRebootReasons || [], probedAt: S.probe.at, probeError: S.probe.error },
       updates: {
-        humid: { installed: installedVersion(), previous: p?.previous?.version || null, ...S.humid, tokenSet: !!adminEnv().HUMID_UPDATE_TOKEN, repo: adminEnv().HUMID_UPDATE_REPO || DEFAULT_REPO },
+        humid: { installed: installedVersion(), previous: p?.previous?.version || null, ...S.humid, tokenSet: !!adminEnv().HUMID_UPDATE_TOKEN, repo: adminEnv().HUMID_UPDATE_REPO || DEFAULT_REPO, releaseKeys: pinnedKeys().length, prereleases: settings().HUMID_UPDATE_PRERELEASES === "on" },
         os: osUpdates(),
       },
       backups: backups(),
@@ -448,7 +451,7 @@ export function createConsole({
         let got;
         try { got = await download({ repo: env.HUMID_UPDATE_REPO || DEFAULT_REPO, token: env.HUMID_UPDATE_TOKEN || "", release: latest, dir: join(store.dir, "downloads"), fetchImpl }); }
         catch (e) { throw httpError(502, "download_failed", e.message); }
-        args = { version: latest.version, from: installedVersion(), file: basename(got.file), sha256: got.sha256 };
+        args = { version: latest.version, from: installedVersion(), file: basename(got.file), sha256: got.sha256, signer: got.signer };
         break;
       }
       case "rollback-humid": {

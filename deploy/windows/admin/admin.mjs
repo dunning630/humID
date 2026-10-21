@@ -3,16 +3,22 @@
 //   node humid-admin.mjs run   [--root DIR] [--service]   run the console (the "HumID Admin" task does this)
 //   node humid-admin.mjs reset-admins [--root DIR]        forget every administrator phone (break-glass,
 //                                                         for `humid admin reset` in an admin terminal)
+//   node humid-admin.mjs verify-release --zip FILE --version X.Y.Z [--sig FILE]
+//                                                         check a release zip's signature against the
+//                                                         release keys this console pins (the update
+//                                                         job runs it right before unpacking)
 //   node humid-admin.mjs version
 //
 // DIR defaults to %ProgramData%\HumID, as for the server.
-import { join, dirname } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readEnvFile } from "../src/config.mjs";
 import { teeToFile } from "../src/logfile.mjs";
 import { createConsole } from "./console.mjs";
 import { windowsPlatform } from "./platform.mjs";
 import { openStore } from "./store.mjs";
+import { verifyRelease } from "./release.mjs";
 
 /* global __HUMID_SERVER_VERSION__ */
 const VERSION = typeof __HUMID_SERVER_VERSION__ === "string" ? __HUMID_SERVER_VERSION__ : "dev";
@@ -36,6 +42,17 @@ switch (command) {
     process.stdout.write(`Removed ${n} administrator phone${n === 1 ? "" : "s"}. Add yours again from the console.\n`);
     break;
   }
+  case "verify-release": {
+    // One line on stdout either way, for the job's step list; exit 1 when it doesn't check out.
+    const zip = flag("--zip"), version = flag("--version");
+    const sigFile = flag("--sig") || `${zip}.sig`;
+    if (!zip || !version) fail("Usage: verify-release --zip FILE --version X.Y.Z [--sig FILE]", 2);
+    try {
+      const v = verifyRelease({ bytes: readFileSync(zip), name: basename(zip), version, sig: existsSync(sigFile) ? readFileSync(sigFile) : null });
+      process.stdout.write(`Signed by HumID release key ${v.key}\n`);
+    } catch (e) { process.stdout.write(`${e.message}\n`); process.exit(1); }
+    break;
+  }
   case "run": {
     const service = has("--service");
     teeToFile(join(root, "logs", "humid-admin.log"), { quiet: service });
@@ -49,5 +66,5 @@ switch (command) {
     if (!service) process.stdout.write(`\nHumID Admin ${VERSION} at http://127.0.0.1:${port}\nOpen it with: humid console\n\n`);
     break;
   }
-  default: fail(`Unknown command "${command}". Use run, reset-admins or version.`, 2);
+  default: fail(`Unknown command "${command}". Use run, reset-admins, verify-release or version.`, 2);
 }

@@ -2,6 +2,9 @@
 #   - HumID Admin runs as SYSTEM, on 127.0.0.1 only; its folder is closed to the server's account
 #   - `humid probe` reads this computer; `humid console` makes a one-time sign-in link that works
 #   - approved jobs run through the "HumID Admin Job" task: backup, restart
+#   - an update must be signed by a release key the console pins: unsigned or wrongly signed
+#     zips are refused before they're unpacked (CI installs a test build of the same version
+#     whose console also trusts a release key made for this run only)
 #   - an update that breaks is put back by itself; a good update keeps the server's identity;
 #     rollback returns to the version before
 # Jobs are queued the way the console queues them after a phone's approval; the approval
@@ -85,21 +88,43 @@ $j = Run-Job 'restart-server'
 if ($j.state -ne 'done') { throw 'restart job failed' }
 if ((Info).kid -ne $kid) { throw 'the server identity changed on restart' }
 
-# Two builds labelled 9.9.9: one that can't start, one that's fine.
+# Release keys made for this run only: the console of a test build trusts the first.
+$releaseTool = Join-Path $Repo 'tools\release-key.mjs'
+$ciKey = Join-Path $env:RUNNER_TEMP 'ci-release.key'
+$otherKey = Join-Path $env:RUNNER_TEMP 'ci-other.key'
+foreach ($k in $ciKey, $otherKey) { & node $releaseTool keygen --out $k | Out-Null; if ($LASTEXITCODE) { throw 'release keygen failed' } }
+$ciPub = (Get-Content $ciKey -Raw | ConvertFrom-Json).pk
+
+Say "Installing a test build of $orig whose console also trusts this run's release key"
+$sameDir = Join-Path $env:RUNNER_TEMP 'humid-same-version'
+& node (Join-Path $Repo 'deploy\windows\build.mjs') --zip --as-version $orig --out $sameDir --test-release-key $ciPub | Out-Null
+if ($LASTEXITCODE) { throw 'test build failed' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $sameDir 'HumID-Server\humid.ps1') install -Quiet
+if ($LASTEXITCODE) { throw "installing the test build failed ($LASTEXITCODE)" }
+if ((Info).kid -ne $kid) { throw 'the server identity changed on reinstall' }
+for ($i = 0; $i -lt 30; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "$base/healthz" -TimeoutSec 3).StatusCode -eq 200) { break } } catch { Start-Sleep 2 } }
+
+# Two builds labelled 9.9.9: one that can't start, one that's fine. Both signed with the run's key.
 Say 'Building test packages labelled 9.9.9'
 $work = Join-Path $env:RUNNER_TEMP 'humid-update-test'
-& node (Join-Path $Repo 'deploy\windows\build.mjs') --zip --as-version 9.9.9 --out $work | Out-Null
+& node (Join-Path $Repo 'deploy\windows\build.mjs') --zip --as-version 9.9.9 --out $work --test-release-key $ciPub | Out-Null
 if ($LASTEXITCODE) { throw 'test build failed' }
 $good = Join-Path $work 'HumID-Server-Windows-9.9.9.zip'
 $brokenDir = Join-Path $env:RUNNER_TEMP 'humid-broken'
 Expand-Archive -Path $good -DestinationPath $brokenDir -Force
 Set-Content -Path (Join-Path $brokenDir 'HumID-Server\humid-server.mjs') -Value 'process.exit(3)' -Encoding ascii
-$broken = Join-Path $env:RUNNER_TEMP 'HumID-Server-Windows-9.9.9.zip'
+$brokenOut = Join-Path $env:RUNNER_TEMP 'humid-broken-zip'
+New-Item -ItemType Directory -Force -Path $brokenOut | Out-Null
+$broken = Join-Path $brokenOut 'HumID-Server-Windows-9.9.9.zip'
 Compress-Archive -Path (Join-Path $brokenDir 'HumID-Server') -DestinationPath $broken -Force
+foreach ($z in $good, $broken) { & node $releaseTool sign $z --key $ciKey | Out-Null; if ($LASTEXITCODE) { throw "signing $z failed" } }
 $downloads = Join-Path $data 'admin\downloads'
 New-Item -ItemType Directory -Force -Path $downloads | Out-Null
-function Stage([string]$Zip) {
-  Copy-Item $Zip (Join-Path $downloads 'HumID-Server-Windows-9.9.9.zip') -Force
+function Stage([string]$Zip, [switch]$NoSig) {
+  $to = Join-Path $downloads 'HumID-Server-Windows-9.9.9.zip'
+  Copy-Item $Zip $to -Force
+  Remove-Item "$to.sig" -Force -ErrorAction SilentlyContinue
+  if (-not $NoSig) { Copy-Item "$Zip.sig" "$to.sig" -Force }
   return (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLower()
 }
 
@@ -113,6 +138,23 @@ Say 'Job: a file that changed after approval is refused'
 $null = Stage $good
 $j = Run-Job 'update-humid' @{ version = '9.9.9'; from = $orig; file = 'HumID-Server-Windows-9.9.9.zip'; sha256 = $sha }
 if ($j.state -ne 'failed' -or $j.error -notmatch 'changed since it was approved') { throw "expected a refusal, got $($j.state): $($j.error)" }
+
+Say 'Job: an unsigned zip is refused before it''s unpacked'
+$sha = Stage $good -NoSig
+$j = Run-Job 'update-humid' @{ version = '9.9.9'; from = $orig; file = 'HumID-Server-Windows-9.9.9.zip'; sha256 = $sha }
+if ($j.state -ne 'failed' -or $j.error -notmatch 'no signature') { throw "expected a refusal (unsigned), got $($j.state): $($j.error)" }
+if ((Info).version -ne $orig) { throw 'an unsigned update changed the installed version' }
+
+Say 'Job: a zip signed by a key the console doesn''t pin is refused'
+$otherDir = Join-Path $env:RUNNER_TEMP 'humid-other-signer'
+New-Item -ItemType Directory -Force -Path $otherDir | Out-Null
+$otherZip = Join-Path $otherDir 'HumID-Server-Windows-9.9.9.zip'
+Copy-Item $good $otherZip -Force
+& node $releaseTool sign $otherZip --key $otherKey | Out-Null
+$sha = Stage $otherZip
+$j = Run-Job 'update-humid' @{ version = '9.9.9'; from = $orig; file = 'HumID-Server-Windows-9.9.9.zip'; sha256 = $sha }
+if ($j.state -ne 'failed' -or $j.error -notmatch 'isn.t signed by a HumID release key') { throw "expected a refusal (other key), got $($j.state): $($j.error)" }
+if ((Info).version -ne $orig) { throw 'a wrongly signed update changed the installed version' }
 
 Say 'Job: a good update keeps the server identity'
 $sha = Stage $good
