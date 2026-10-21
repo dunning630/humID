@@ -5,7 +5,7 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, renameSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,6 +153,29 @@ test("a change waits for the phone, and runs only after its signature checks out
   assert.equal(st.console.audit.broken, null, "audit chain intact");
 });
 
+test("backups wait for a backup key, and then name it in what the phone approves", async () => {
+  let st = con.state();
+  assert.ok(st.alerts.some((a) => a.level === "bad" && a.title === "Backups aren't encrypted: set up a backup key"));
+  const refused = await web("/api/requests", { body: { type: "backup" } });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "no_backup_key");
+  // humid backup-key new, as an administrator would run it: the private key goes off the server
+  const usb = mkdtempSync(join(tmpdir(), "humid-usb-"));
+  const admin_ = join(repo, "deploy", "windows", "admin", "admin.mjs");
+  const out = execFileSync(process.execPath, ["--no-warnings", admin_, "backup-key-new", "--root", root, "--out", join(usb, "humid-backup.key")], { encoding: "utf8" });
+  const fp = /Backup key ([0-9A-F-]{19}) is set/.exec(out)[1];
+  st = con.state();
+  assert.equal(st.backupKey.fingerprint, fp);
+  assert.equal(st.alerts.some((a) => a.title === "Backups aren't encrypted: set up a backup key"), false);
+  assert.ok(st.alerts.some((a) => a.title === "Both halves of every split key are backed up to the same disk"), "keyshare's half defaults to the same disk");
+  const r = await web("/api/requests", { body: { type: "backup" } });
+  assert.equal(r.status, 200);
+  const req = await admin.api.adminRequest(r.body.code);
+  assert.ok(req.lines.some((l) => l.includes(`backup key ${fp}`)), "the phone sees which key the backup is encrypted to");
+  await web(`/api/requests/${r.body.code}/cancel`, { body: {} });
+  rmSync(usb, { recursive: true, force: true });
+});
+
 test("someone who isn't an administrator can't see or approve a change", async () => {
   const other = await holder("Somebody else");
   const r = await web("/api/requests", { body: { type: "backup" } });
@@ -193,6 +216,43 @@ test("a forged approval written by a compromised server process is rejected", as
   assert.equal(st.requests.find((x) => x.code === r.body.code).state, "rejected");
   assert.equal(fake.ran.length, ranBefore, "nothing ran");
   assert.ok(st.audit.some((a) => a.type === "approval.rejected" && a.reason === "bad_signature"));
+});
+
+test("the console never reads approvals through a link the server's account could have planted", async () => {
+  const approvals = join(root, "data", "admin", "approvals");
+  // 1. A real approval, moved away and linked back: not read through the link.
+  const r = await web("/api/requests", { body: { type: "defender-update" } });
+  const req = await admin.api.adminRequest(r.body.code);
+  await admin.api.approveAdmin(r.body.code, req.digest, admin.stepUp);
+  const elsewhere = mkdtempSync(join(tmpdir(), "humid-elsewhere-"));
+  renameSync(join(approvals, `${r.body.code}.json`), join(elsewhere, "approval.json"));
+  symlinkSync(join(elsewhere, "approval.json"), join(approvals, `${r.body.code}.json`));
+  const ranBefore = fake.ran.length;
+  con.takeApprovals();
+  assert.equal(con.state().requests.find((x) => x.code === r.body.code).state, "rejected", "a linked approval reads as nothing");
+  assert.equal(fake.ran.length, ranBefore, "nothing ran");
+  assert.ok(existsSync(join(elsewhere, "approval.json")), "only the link was removed, not what it pointed to");
+
+  // 2. The approvals folder itself swapped for a link (a junction on Windows): the console doesn't look inside.
+  const r2 = await web("/api/requests", { body: { type: "defender-update" } });
+  const req2 = await admin.api.adminRequest(r2.body.code);
+  await admin.api.approveAdmin(r2.body.code, req2.digest, admin.stepUp);
+  const planted = join(elsewhere, "approvals");
+  renameSync(approvals, planted);
+  symlinkSync(planted, approvals, "junction");
+  con.takeApprovals();
+  const st = con.state();
+  assert.equal(st.requests.find((x) => x.code === r2.body.code).state, "waiting", "not taken through the link");
+  assert.equal(fake.ran.length, ranBefore);
+  assert.ok(st.alerts.some((a) => a.title === "Approvals can't be read safely"));
+  assert.ok(st.audit.some((a) => a.type === "bridge.refused"));
+  assert.ok(existsSync(join(planted, `${r2.body.code}.json`)), "nothing behind the link was touched");
+  rmSync(approvals);
+  renameSync(planted, approvals);
+  con.takeApprovals();
+  assert.equal(con.state().requests.find((x) => x.code === r2.body.code).state, "running", "the same approval counts once the folder is real again");
+  assert.equal(con.state().alerts.some((a) => a.title === "Approvals can't be read safely"), false);
+  rmSync(elsewhere, { recursive: true, force: true });
 });
 
 test("break-glass: a restart without the phone only while the server is down", async () => {

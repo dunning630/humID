@@ -42,7 +42,7 @@ Core and keys never call each other or the internet. Front never stores document
 3. **Mutual TLS between roles.** Each role has a certificate from the server's own CA (`humid pki`). Core and keys admit only `humid-front`; the gateway admits only the role it meant to reach. Names are checked, not addresses.
 4. **Every internal request bound and single-use.** The gateway's assertion names the service, method, path, query and body hash, and each service accepts its id once (SEC-S-01, fixed in 3.0).
 5. **No snapshots of `humid-keys`.** A snapshot copies the document keys that Heartbeat and deletion are meant to destroy. Exclude the VM from snapshot schedules and replication; back it up with `humid backup` instead.
-6. **Backups encrypted, and apart.** `humid backup` writes `-main` and `-keys` files encrypted under the backup key. Store them in different places, and store the backup key (`humid backup-key`) offline, apart from both.
+6. **Backups encrypted, and apart.** `humid backup` writes a backup file and keyshare's half (`HumID-keyshare-….humidbak`), both encrypted to the backup key (`humid backup-key new -Path E:\humid-backup.key`: its private key goes only to that file, and the server can't open its own backups). Store the two files in different places, and the backup key file offline, apart from both.
 7. **Hypervisor access minimal.** Whoever controls the hypervisor can read VM memory. Few administrators, hardware-key sign-in, management on its own network. Where the CPUs support it, run front and keys as confidential VMs (AMD SEV-SNP or Intel TDX) so the hypervisor can't read their memory either.
 8. **Physical access logged.** A locked rack or cage, access logged, cameras on the room.
 
@@ -79,7 +79,7 @@ humid selftest
 
 `humid status` on each VM shows its roles, whether its secrets are sealed, and (on core and keys) the addresses it listens on. Certificates last about two years (`humid pki status` shows the days left); issue and import new ones before then.
 
-To split an existing single-PC install, run the steps above on the PC as front, then move the key-share data: `humid backup` on the PC, restore the `-keys` file on humid-keys with `humid restore -Path <keys file> -BackupKey <key>`, and only then set the PC's roles to `front,core`.
+To split an existing single-PC install, run the steps above on the PC as front, then move the key-share data: `humid backup` on the PC, restore keyshare's half alone on humid-keys with `humid restore -KeysharePath <HumID-keyshare-….humidbak> -Key <backup key file>`, and only then set the PC's roles to `front,core`.
 
 ## Setting it up (Linux VMs)
 
