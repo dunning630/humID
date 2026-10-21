@@ -153,3 +153,31 @@ export function issuedBy(cert, ca) {
 }
 
 export const curveOf = (cert) => cert._curve;
+
+/* ---------------- trust anchors with constraints ---------------- */
+
+/** "IL", "US-IL", "il" → "IL"; anything else (free text, empty) → null. */
+export const stateCode = (v) => { const m = /^(?:[A-Z]{2}-)?([A-Z0-9]{1,3})$/.exec(String(v ?? "").toUpperCase().trim()); return m ? m[1] : null; };
+export const countryCode = (v) => { const s = String(v ?? "").toUpperCase().trim(); return /^[A-Z]{2}$/.test(s) ? s : null; };
+
+/**
+ * Trust anchors as { cert, country, state, docTypes, source }. Accepts what callers
+ * already pass (DER bytes, PEM text or bundles, parsed certificates) and anchor
+ * objects ({ cert | der | pem, country?, state?, docTypes?, source? }) from a
+ * trust store, whose country and state come from the list that vouched for the
+ * root (a VICAL entry), not from the certificate alone.
+ */
+export function readAnchors(roots) {
+  const out = [];
+  for (const r of roots || []) {
+    if (r == null) continue;
+    if (r.tbs) { out.push({ cert: r, country: null, state: null, docTypes: [], source: null }); continue; }
+    if (typeof r === "string" || r instanceof Uint8Array || r instanceof ArrayBuffer) {
+      for (const cert of typeof r === "string" ? readCertificates(r) : [parseCertificate(r)]) out.push({ cert, country: null, state: null, docTypes: [], source: null });
+      continue;
+    }
+    const cert = r.cert?.tbs ? r.cert : parseCertificate(r.cert || r.der || r.pem);
+    out.push({ cert, country: countryCode(r.country), state: stateCode(r.state), docTypes: Array.isArray(r.docTypes) ? r.docTypes : [], source: r.source || null });
+  }
+  return out;
+}

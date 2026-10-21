@@ -271,3 +271,39 @@ test("anchor: the server, as reader, accepts a live mobile ID from a trusted sta
   assert.throws(() => mdocAuth(new Uint8Array(), { iacas: [authority.rootPem] }), (e) => e.code === "no_chip_proof");
   assert.throws(() => mdocAuth(new Uint8Array(), { session: {}, iacas: [] }), (e) => e.code === "no_trust");
 });
+
+/* ---------------- CRD-01: who the issuer speaks for comes from the trust anchor ---------------- */
+
+test("CRD-01: a trusted root can't vouch for another state's or country's license", () => {
+  const il = issuingAuthority({ C: "US", ST: "IL", name: "Illinois SOS" });
+  const forWi = (authority) => specimenMdl({ C: "US", ST: "WI" });
+  // An Illinois root signing a license that says it's from Wisconsin.
+  assert.throws(() => read(wallet({ authority: il, data: forWi(il) }), { roots: [il.rootPem] }), code("untrusted_issuer"));
+  // A root that names no state can't confirm any state claim.
+  const noState = issuingAuthority({ C: "US", ST: null, name: "Somewhere" });
+  assert.throws(() => read(wallet({ authority: noState, data: specimenMdl({ C: "US", ST: "IL" }) }), { roots: [noState.rootPem] }), code("untrusted_issuer"));
+  // ... unless the trust list that vouches for it says which state it speaks for.
+  const { docs } = read(wallet({ authority: noState, data: specimenMdl({ C: "US", ST: "IL" }) }), { roots: [{ cert: noState.rootPem, country: "US", state: "IL", source: "vical" }] });
+  assert.equal(docs[0].chain, "trusted");
+  assert.equal(docs[0].state, "IL");
+  assert.equal(docs[0].country, "US");
+  assert.equal(docs[0].root.source, "vical");
+  // The list and the certificate must agree when both say.
+  assert.throws(() => read(wallet({ authority: il }), { roots: [{ cert: il.rootPem, country: "US", state: "WI" }] }), code("untrusted_issuer"));
+  assert.throws(() => read(wallet({ authority: il }), { roots: [{ cert: il.rootPem, country: "CA" }] }), code("untrusted_issuer"));
+  // A root trusted only for other document types.
+  assert.throws(() => read(wallet({ authority: il }), { roots: [{ cert: il.rootPem, docTypes: ["eu.europa.ec.eudi.pid.1"] }] }), code("untrusted_issuer"));
+  assert.equal(read(wallet({ authority: il }), { roots: [{ cert: il.rootPem, docTypes: [MDL_DOCTYPE] }] }).docs[0].state, "IL");
+  // A document signer whose own subject names another state.
+  const crossed = issuingAuthority({ C: "US", ST: "IL", name: "Illinois SOS", dsSubject: { C: "US", ST: "WI", CN: "WI DS" } });
+  assert.throws(() => read(wallet({ authority: crossed }), { roots: [crossed.rootPem] }), code("untrusted_issuer"));
+  // A country claim with no state claim still has to match.
+  const data = specimenMdl({ C: "US", ST: "IL" });
+  delete data["org.iso.18013.5.1"].issuing_jurisdiction;
+  data["org.iso.18013.5.1"].issuing_country = "CA";
+  assert.throws(() => read(wallet({ authority: il, data }), { roots: [il.rootPem] }), code("untrusted_issuer"));
+  // A root that names no country at all isn't usable.
+  const nowhere = issuingAuthority({ C: null, ST: null, name: "Nowhere" });
+  const d2 = specimenMdl({ C: "US", ST: "IL" }); delete d2["org.iso.18013.5.1"].issuing_country; delete d2["org.iso.18013.5.1"].issuing_jurisdiction;
+  assert.throws(() => read(wallet({ authority: nowhere, data: d2 }), { roots: [nowhere.rootPem] }), code("untrusted_issuer"));
+});

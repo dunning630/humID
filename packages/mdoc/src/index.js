@@ -23,7 +23,7 @@ import { parseCertificate, issuedBy, curveOf } from "./x509.js";
 
 export { encode, decode, get, plain, Encoded, Tagged, CborError } from "./cbor.js";
 export { coseKey, ecCoseKey, parse1, verifySign1, verifyMac0, signSign1, macMac0, x5chain, ALG, CoseError } from "./cose.js";
-export { parseCertificate, readCertificates, issuedBy, fromPem, X509Error, OIDS } from "./x509.js";
+export { parseCertificate, readCertificates, issuedBy, fromPem, X509Error, OIDS, readAnchors, stateCode, countryCode } from "./x509.js";
 export { readEngagement, bleOptions, ReaderSession, sessionKey, ecdhX, SessionError, STATUS, RETRIEVAL } from "./session.js";
 export { hpkeKeyPair, hpkeOpen, hpkeSeal, HpkeError } from "./hpke.js";
 export {

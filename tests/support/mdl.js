@@ -41,13 +41,13 @@ const u8 = (b) => new Uint8Array(b);
 const sha256 = (b) => createHash("sha256").update(b).digest();
 
 /** An issuing authority: IACA root + Document Signer. */
-export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity } = {}) {
+export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity, dsSubject } = {}) {
   const root = ec(), ds = ec();
   const now = Date.now();
   const rootSubject = { C, ST, CN: `${name} IACA Root (TEST)` };
   const rootDer = cert({ subject: rootSubject, issuer: rootSubject, publicKey: root.publicKey, signingKey: root.privateKey, ca: true, notBefore: new Date(now - 30 * day), notAfter: new Date(now + 3650 * day) });
   const dsDer = cert({
-    subject: { C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku,
+    subject: dsSubject || { C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku,
     notBefore: dsValidity?.from || new Date(now - 10 * day), notAfter: dsValidity?.until || new Date(now + 365 * day),
   });
   return { root, ds, rootDer: u8(rootDer), dsDer: u8(dsDer), rootPem: pem(rootDer), C, ST };

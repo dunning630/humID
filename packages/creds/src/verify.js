@@ -57,11 +57,16 @@ function fromMdoc(doc, protocol) {
     address: street || v.resident_city ? { street, city: text(pick("resident_city", "resident_city_unicode")), region: text(v.resident_state), postal_code: text(v.resident_postal_code), country: text(v.resident_country) } : null,
   };
   const trusted = doc.chain === "trusted", holder = !!doc.device?.ok;
+  // Who issued it comes from the trust anchor (doc.country / doc.state), which
+  // verifyIssuerSigned has already required the document's own claims to match.
+  // Untrusted (signature-only): the document's word, said to be unconfirmed.
   return {
     type, format: "mso_mdoc", protocol, docType: doc.docType,
     assurance: trusted ? (holder ? "issuer+holder" : "issuer") : "signature-only",
     holderBound: holder,
-    issuer: { country: claims.issuing_country, jurisdiction: claims.issuing_jurisdiction, root: doc.root?.subject || null, signer: doc.signer?.subject || null },
+    issuer: trusted
+      ? { country: doc.country, jurisdiction: doc.state, bound: true, root: doc.root?.subject || null, rootSource: doc.root?.source || null, signer: doc.signer?.subject || null }
+      : { country: claims.issuing_country, jurisdiction: claims.issuing_jurisdiction, bound: false, root: null, signer: doc.signer?.subject || null },
     claims: prune(claims), values: doc.values, validUntil: doc.validity.validUntil,
     statusRef: wrap(() => statusReference(doc.mso)), status: null,
   };
@@ -84,11 +89,14 @@ function fromSdJwt(r, protocol) {
     address: a ? { street: a.street_address ?? null, city: a.locality ?? null, region: a.region ?? null, postal_code: a.postal_code ?? null, country: a.country ?? null } : null,
   };
   const holder = r.keyBinding.ok;
+  // The issuer's country is the one its trust anchor speaks for. A country claim
+  // nothing vouches for is dropped rather than reported as the issuer's.
+  if (!r.issuer.country) delete claims.issuing_country;
   return {
     type, format: "dc+sd-jwt", protocol, vct: r.vct,
     assurance: holder ? "issuer+holder" : "issuer",
     holderBound: holder,
-    issuer: { country: claims.issuing_country, jurisdiction: null, root: r.issuer.root?.subject || null, signer: r.issuer.leaf?.subject || null, iss: r.iss },
+    issuer: { country: r.issuer.country, jurisdiction: r.issuer.state || null, bound: !!r.issuer.country, root: r.issuer.root?.subject || null, signer: r.issuer.leaf?.subject || null, iss: r.iss },
     claims: prune(claims), values: c, validUntil: r.validity.exp ? new Date(r.validity.exp * 1000).toISOString() : null,
     statusRef: wrap(() => statusReference(r)), status: null,
   };
