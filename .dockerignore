@@ -9,3 +9,13 @@ plugins
 !plugins/humid-docscan/Cargo.toml
 .git
 tests/fixtures
+# secrets never enter an image's build context
+**/*.keystore
+**/*.jks
+**/*.p12
+**/*.pfx
+**/*.p8
+**/keystore.properties
+**/.env
+**/tlog-cosigner*.json
+**/*.state.json

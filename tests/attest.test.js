@@ -6,6 +6,7 @@ import { X509Certificate, randomBytes, generateKeyPairSync } from "node:crypto";
 import {
   readAndroidAttestation, checkAndroidPolicy, verifyAndroidKey, verifyAppAttest, verifyLiveKey, verifyLiveSig,
   appAttestClientData, decodeCbor, GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, parseStatusList, revocationList, serialKey,
+  REVOKED_ANDROID_CERTS, HUMID_ANDROID_RELEASE_CERT,
 } from "@humid/attest";
 import { testRoot, androidChain, appAttestation, liveKey } from "./support/pki.js";
 
@@ -96,6 +97,28 @@ test("android: only the release-signed HumID app counts; the server must know it
   assert.throws(ok({}, { signatureDigests: [] }), (e) => e.code === "not_configured", "no certificate configured: refuse, don't accept anyone");
   assert.throws(ok({}, { packageNames: [] }), (e) => e.code === "not_configured");
   assert.equal(ok({ signer: Buffer.alloc(32, 9) }, { signatureDigests: [], allowAnySigner: true })().proof, "android-tee", "test builds only, by explicit choice");
+});
+
+// PC-05: tools/android-test.keystore (password "android") is public, in the repository's history.
+const LEAKED_TEST_CERT = "b066cd4564ac8446b02567e276992aacf64783004de81da3d3f1e51f3411928c";
+test("android: the leaked test signing key is refused even if an operator allows it", () => {
+  assert.ok(REVOKED_ANDROID_CERTS.includes(LEAKED_TEST_CERT));
+  assert.ok(Object.isFrozen(REVOKED_ANDROID_CERTS), "the deny-list can't be changed at run time");
+  assert.ok(!REVOKED_ANDROID_CERTS.includes(HUMID_ANDROID_RELEASE_CERT), "the release certificate isn't revoked");
+  const leaked = { signer: Buffer.from(LEAKED_TEST_CERT, "hex") };
+  // listed in HUMID_ANDROID_CERT_DIGESTS (lower or upper case, with the official one beside it)
+  assert.throws(ok(leaked, { signatureDigests: [HUMID_ANDROID_RELEASE_CERT, LEAKED_TEST_CERT] }), (e) => e.code === "revoked_signer");
+  assert.throws(ok(leaked, { signatureDigests: [LEAKED_TEST_CERT.toUpperCase(), LEAKED_TEST_CERT] }), (e) => e.code === "revoked_signer");
+  // HUMID_ANDROID_ALLOW_ANY_SIGNER=1
+  assert.throws(ok(leaked, { signatureDigests: [], allowAnySigner: true }), (e) => e.code === "revoked_signer");
+  assert.throws(ok(leaked, { signatureDigests: [SIGNER], allowAnySigner: true }), (e) => e.code === "revoked_signer");
+  // through verifyLiveKey, as services/identity calls it
+  const challenge = randomBytes(32);
+  const a = androidChain({ root, challenge, ...leaked });
+  const cfg = { roots: { android: [root.pem] }, androidPackages: ["app.humid.vault"], androidDigests: [LEAKED_TEST_CERT], allowAnySigner: true };
+  assert.throws(() => verifyLiveKey({ pub: a.pub, attestation: { kind: "android-key", chain: a.chain } }, challenge, cfg), (e) => e.code === "revoked_signer");
+  // other signers are unaffected
+  assert.equal(ok({}, { signatureDigests: [SIGNER] })().proof, "android-tee");
 });
 
 test("android: both security levels must be TEE or StrongBox; the key is for signing only", () => {

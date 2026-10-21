@@ -51,7 +51,12 @@ Windows, Linux, Windows Server), a README naming the server the apps are
 pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
 
 - Set repository variables `HUMID_SERVER_URL` and `HUMID_SERVER_KID` (printed
-  by `deploy/setup.sh`) so the apps pin your server.
+  by `deploy/setup.sh`) so the apps pin your server. A publishing run refuses
+  to start without a 64-hex `HUMID_SERVER_KID` repository variable, and refuses
+  the run form's `server_kid` box (that box is for unpublished test builds).
+- *Release apps* runs only **on `main`, or on an `app-v*` tag whose commit is
+  already on `main`** (its `guard` job checks with `git merge-base
+  --is-ancestor`). Merge first; CI compiles every branch.
 - **One or a few platforms:** Actions → *Release apps* → platforms: `android`
   (or `ios,android`, or `all`).
 - **Desktop apps are paused** (2026-10-17, see [docs/SECURITY.md](docs/SECURITY.md)):
@@ -65,11 +70,53 @@ pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
   bug report pins the exact combination.
 
 Signing secrets are listed at the top of `.github/workflows/release.yml`.
+They belong in the `release` environment, not in repository secrets (below).
 **Android needs its release key** (`ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS`): without it there is no Android build. HumID never ships a
 debug build, which would be debuggable, remotely inspectable and signed with a
 key anyone could get. The workflow checks the APK is signed with the HumID key
-and not debuggable, and prints the certificate's SHA-256 for the server.
+and not debuggable, and prints the certificate's SHA-256 for the server. It
+checks every APK and AAB it publishes (and nothing else is published: never
+Gradle's `intermediary-bundle.aab`), and fails if any is signed with a revoked
+key such as the leaked test key (`REVOKED_ANDROID_CERTS`,
+[docs/INCIDENT-2026-10-android-test-key.md](docs/INCIDENT-2026-10-android-test-key.md)).
+
+### Release environment (maintainer, one-time)
+
+The jobs that hold signing secrets (`build`) or create tags and releases
+(`publish`) run in a GitHub environment named **`release`**. The workflow's
+`guard` job refuses runs that aren't on `main` or an `app-v*` tag on `main`,
+but a workflow file on a branch can be edited to drop that check, so the real
+boundary is GitHub's: secrets that only the `release` environment can read,
+and an environment that only `main` and release tags can use.
+
+1. **Settings → Environments → New environment → `release`.**
+2. **Deployment branches and tags → Selected branches and tags:** add branch
+   `main`, tag `app-v*` and tag `server-win-v*`. Nothing else.
+3. **Required reviewers:** add yourself (and a second person when there is
+   one; tick *Prevent self-review* then). Each run then waits for approval
+   before the `build` jobs and again before `publish`.
+4. **Environment secrets:** add `ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD`,
+   `ANDROID_KEY_ALIAS`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+   `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, `APPLE_API_ISSUER`, `APPLE_API_KEY`,
+   `APPLE_API_KEY_P8`, `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`
+   there, then **delete them from Settings → Secrets and variables → Actions →
+   Repository secrets**, where any workflow on any branch can read them.
+5. Keep `HUMID_SERVER_URL`, `HUMID_SERVER_KID` and `HUMID_DESKTOP_RELEASES` as
+   **repository variables** (they're public values; the `plan` job, which
+   runs outside the environment, reads them).
+6. **Tags:** add a tag ruleset (Settings → Rules → Rulesets) so only you can
+   create, move or delete `app-v*` and `server-win-v*` tags, and a branch
+   ruleset for `main` requiring a pull request, passing checks (CI, Secret
+   scan) and a code-owner review (`.github/CODEOWNERS`).
+
+GitHub's plans gate some of this for **private** repositories: environment
+secrets and deployment-branch rules need GitHub Pro or Team, required
+reviewers need Enterprise (or a public repository), and branch and tag
+rulesets need a paid plan. Check the current plan pages before relying on
+them. Until then the `guard` job, the per-job permissions and the CODEOWNERS
+file are what protect a release, and anyone with write access can still read
+repository-level secrets from a branch: upgrading is the fix.
 
 **Live-check proof needs these on the server side** (`deploy/.env`):
 
@@ -86,7 +133,8 @@ and not debuggable, and prints the certificate's SHA-256 for the server.
   re-signed or rebuilt copy can't join. If you build and sign your own, add your
   certificate's SHA-256 with `HUMID_ANDROID_CERT_DIGESTS` (Play App Signing: the
   app-signing key's certificate). `HUMID_ANDROID_ALLOW_ANY_SIGNER=1` accepts any
-  signer, for a test server only.
+  signer, for a test server only. Neither setting admits a revoked certificate
+  (`REVOKED_ANDROID_CERTS`: the leaked `tools/android-test.keystore`).
 - **Android, optional:** `HUMID_ANDROID_MIN_PATCH=YYYYMM` refuses phones on an
   older security patch. Google's attestation revocation list is fetched every
   6 hours (`HUMID_ATTESTATION_STATUS_URL`; `HUMID_ATTESTATION_STATUS_REQUIRED=1`
@@ -105,9 +153,9 @@ repository's Releases page, one release per version:
 
 1. Bump `deploy/windows/package.json` and add an entry to
    `deploy/windows/CHANGELOG.md`.
-2. Either click **Actions → Release apps → Run workflow**, pick the branch,
+2. Either click **Actions → Release apps → Run workflow** on `main`,
    set platforms to `server-windows` and tick the publish box, or tag the
-   commit yourself: `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
+   commit yourself (once it's on `main`): `git tag server-win-v1.0.1 && git push origin server-win-v1.0.1`
 
 *Release HumID Server for Windows* builds the zip on Windows, installs it and
 runs the smoke test there, then creates the release with the zip and the

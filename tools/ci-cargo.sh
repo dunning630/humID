@@ -3,11 +3,13 @@
 # annotation. Annotations show on the run's summary page and through the API,
 # so a failure can be diagnosed without downloading the full log.
 #
-#   tools/ci-cargo.sh build --target aarch64-apple-ios --lib
+#   tools/ci-cargo.sh build --target aarch64-apple-ios --lib   (runs cargo build --locked ...)
 set -uo pipefail
 
+# Always --locked: build exactly what Cargo.lock names, never a freshly resolved
+# dependency (the subcommand comes first: ci-cargo.sh build ...).
 log=$(mktemp)
-cargo "$@" 2>&1 | tee "$log"
+cargo "$1" --locked "${@:2}" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 
 if [ "$status" -ne 0 ]; then
