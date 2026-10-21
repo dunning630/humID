@@ -75,6 +75,11 @@ test("NFC: SELECT the FIDO applet; a U2F-only key and a non-FIDO card are told a
   assert.equal(t.sent[0], "00a4040008" + hex(FIDO_AID) + "00");
   await assert.rejects(selectFido(scripted(["6a82"])), (e) => e.code === "not_fido");
   await assert.rejects(inspectKey(simulatedKey({ versions: ["U2F_V2"] })), (e) => e.code === "ctap1_only");
+  // A key that does both answers U2F_V2 to SELECT, as YubiKey 5 NFC keys do: still a FIDO2 key.
+  const both = simulatedKey({ versions: ["U2F_V2", "FIDO_2_0", "FIDO_2_1"], pin: PIN });
+  assert.equal((await inspectKey(both)).pinSet, true);
+  const added = await addRecoveryKey(both, { pin: PIN, challenge: new Uint8Array(32).fill(7) });
+  assert.equal(added.secret.length, 32);
 });
 
 test("NFC: a key that answers 9100 while it works is polled with NFCCTAP_GETRESPONSE", async () => {
