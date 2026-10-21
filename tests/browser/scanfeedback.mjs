@@ -1,13 +1,13 @@
-// What the camera tells the person while it scans (apps 2.1.0), in a real browser with
-// a fake camera. Checks that:
-//   - the state card is on screen from the first moment ("Looking for the document"),
-//     is a live region, with the steps as a row and buttons that are 44 px or more
+// What the camera tells the person while it scans, in a real browser with a fake camera.
+// Checks that:
+//   - the panel is on screen from the first moment ("Point the camera at the document" for a
+//     Photo), is a live region, with the live chips, and buttons that are 44 px or more
 //   - the analysis runs in the worker (development builds say where: __humidLook.where)
-//   - with a passport in view the card moves on: Hold steady / Reading / Verifying, ends on
-//     Done, and the camera closes after the tick
-//   - with only a table in view, after 10 s the card says the round button is there to use,
-//     and after 30 s the camera stops, says "This is taking a while" and offers Try again
-//     and Take photo; Try again starts looking again
+//   - with a passport in view the panel moves on: Hold still / Reading the lines / Captured, ends on
+//     Got it, and the camera closes after it
+//   - with only a table in view, after 8 s the panel says the round button is there to use,
+//     and after 40 s the camera stops looking, says "This is taking a while" and offers Try
+//     again (the round button still works); Try again starts looking again
 //   - a dark table in good light is not called "Too dark"
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
@@ -57,7 +57,7 @@ async function launch(cameraFile) {
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) }); };
 /** The photo camera (3.0.1): Add opens the picker, Photo opens the camera at once. */
 async function openPhotoCamera(page) { await openAddFlow(page); await pick(page, "Photo"); await startCamera(page); }
-const state = (page) => page.locator(".doccam .dc-state");
+const state = (page) => page.locator(".doccam .dc-panel");
 
 try {
   let { ctx, page } = await launch(fixture("camera-empty.mjpeg"));
@@ -67,40 +67,37 @@ try {
 
   /* ---------------- 1. nothing in view: what it says, the offer at 10 s, the stop at 30 s ---------------- */
   await openPhotoCamera(page);
-  await state(page).getByText("Looking for the document").waitFor({ timeout: 10_000 });
+  await state(page).getByText("Point the camera at the document").waitFor({ timeout: 10_000 });
   await shot(page, "1-looking");
   const live = state(page).locator('[role="status"]');
   assert.equal(await live.count(), 1, "the card is a live region");
   assert.equal(await live.getAttribute("aria-live"), "polite");
-  assert.equal(await state(page).locator(".dc-steps li").count(), 4, "four steps for a photo: Find, Steady, Capture, Done");
+  assert.deepEqual((await state(page).locator(".dc-chips li").allTextContents()).map((t) => t.trim()), ["Found", "Sharp", "Steady", "Light"], "the live chips for a photo");
   await page.locator(".doccam .dc-frame").first().waitFor({ state: "attached" });
   await page.waitForFunction(() => globalThis.__humidLook, null, { timeout: 15_000 });
   assert.equal(await page.evaluate(() => globalThis.__humidLook.where), "worker", "the analysis runs in the worker");
   const ms = await page.evaluate(() => globalThis.__humidLook.ms);
   assert.ok(ms < 400, `a look takes ${ms} ms`);
-  step(`looking, as a live region, four steps, analysed in the worker (${ms} ms a look)`);
-  assert.notEqual(await state(page).getAttribute("data-state"), "problem", "a dark table in good light isn't 'too dark'");
+  step(`looking, as a live region, four live chips, analysed in the worker (${ms} ms a look)`);
+  assert.notEqual(await state(page).getAttribute("data-phase"), "adjust", "a dark table in good light isn't 'too dark'");
 
   await state(page).getByText(/take the photo yourself/i).waitFor({ timeout: 14_000 });
   assert.equal(await page.locator(".doccam .dc-shutter").getAttribute("data-offer"), "1", "the round button is called out");
-  const take = state(page).getByRole("button", { name: "Take photo" });
-  assert.ok((await take.boundingBox()).height >= 44, "Take photo is at least 44 px tall");
   await shot(page, "2-offer");
-  step("after 10 s it says the round button is there");
+  step("after 8 s it says the round button is there, and the button pulses");
 
-  await state(page).getByText("This is taking a while").waitFor({ timeout: 30_000 });
+  await state(page).getByText("This is taking a while").waitFor({ timeout: 40_000 });
   const retry = state(page).getByRole("button", { name: "Try again" });
-  for (const b of [retry, state(page).getByRole("button", { name: "Take photo" })]) {
-    const box = await b.boundingBox();
-    assert.ok(box.height >= 44 && box.width >= 44, `buttons are 44 px or more (${Math.round(box.width)}×${Math.round(box.height)})`);
-  }
+  const box = await retry.boundingBox();
+  assert.ok(box.height >= 44 && box.width >= 44, `Try again is 44 px or more (${Math.round(box.width)}×${Math.round(box.height)})`);
+  assert.equal(await page.locator(".doccam .dc-shutter").isDisabled(), false, "the round button still takes the photo");
   const frozen = await page.evaluate(() => globalThis.__humidLook?.ms);
   await shot(page, "3-gave-up");
   await retry.click();
-  await state(page).getByText("Looking for the document").waitFor();
+  await state(page).getByText("Point the camera at the document").waitFor();
   assert.equal(await page.locator(".doccam .dc-shutter").getAttribute("data-offer"), null, "a fresh budget");
   void frozen;
-  step("after 30 s it stops and offers Try again / Take photo; Try again looks again");
+  step("after 40 s it stops looking and offers Try again (the round button still works); Try again looks again");
   await page.getByRole("button", { name: "Close the camera" }).click();
   await ctx.close();
 
@@ -111,20 +108,21 @@ try {
   await page.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 20_000 });
   await page.evaluate(() => {
     globalThis.__seen = [];
-    new MutationObserver(() => { const s = document.querySelector(".doccam .dc-state"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
+    new MutationObserver(() => { const s = document.querySelector(".doccam .dc-panel"); const t = s?.querySelector("strong")?.textContent; if (t && globalThis.__seen.at(-1) !== t) globalThis.__seen.push(t); })
       .observe(document.body, { subtree: true, childList: true, characterData: true });
   });
   await openPicker(page); await chooseId(page, "Passport"); // 3.0.1: Passport in the picker opens its outline at once
-  await state(page).locator(".dc-steps li").nth(4).waitFor({ timeout: 10_000 });
-  assert.equal(await state(page).locator(".dc-steps li").count(), 5, "five steps with something to read: Line up, Steady, Read, Verify, Done");
+  await state(page).locator('.dc-chips li[data-k="code"]').waitFor({ timeout: 10_000 });
+  assert.equal((await state(page).locator('.dc-chips li[data-k="code"]').textContent()).trim(), "ID lines", "a chip for the lines of <<<");
   await page.locator(".doccam").waitFor({ state: "detached", timeout: 120_000 });
   const seen = await page.evaluate(() => globalThis.__seen);
   step(`the card said: ${seen.join(" → ")}`);
-  const isDone = (t) => /(^|· )Done$/.test(t); // the live label may lead the title (3.0)
+  const isDone = (t) => t === "Got it";
   const firstDone = seen.findIndex(isDone);
-  assert.ok(firstDone >= 0, "it ended on Done");
-  assert.ok(seen.slice(firstDone).every(isDone), "nothing after Done");
-  assert.ok(seen.some((t) => /Reading|Verifying|Hold steady/.test(t)), "it showed progress");
+  assert.ok(firstDone >= 0, "it ended on Got it");
+  assert.ok(seen.slice(firstDone).every(isDone), "nothing after Got it");
+  assert.ok(seen.includes("Captured"), "it said when the photo was taken");
+  assert.ok(seen.some((t) => /Reading the lines|Lines read|Checking the lines|Hold still/.test(t)), "it showed progress");
   await ctx.close();
   console.log("ok — The camera says what it is doing, in the browser");
 } catch (e) {

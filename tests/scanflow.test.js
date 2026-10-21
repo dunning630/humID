@@ -6,158 +6,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { begin, step, describe, diagnose, calmer, gaveUp, pace, TIMING, STEP_LISTS, FAILS } from "../apps/mobile/src/core/scanflow.js";
+import { TIPS, diagnose } from "../apps/mobile/src/core/capture.js";
 import { createCore, LOOK_PX } from "../apps/mobile/src/core/scancore.js";
 import { lookAt, shrink, warp, homography, relabel, bandPlan, applyHomography, outputSize, PAPER } from "../apps/mobile/src/core/docfind.js";
 
 const src = (f) => readFileSync(new URL(`../apps/mobile/src/${f}`, import.meta.url), "utf8");
 const noComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-
-/* ---------------- the state machine ---------------- */
-
-const GOOD = { found: true, ok: true, fits: true, big: true, light: true, glare: false, sharp: true, steady: true, mean: 140, hint: "Hold still…" };
-const run = (s, events, t0 = 0, dt = 100) => events.reduce((st, ev, i) => step(st, ev, t0 + i * dt), s);
-
-test("starting → looking → hold steady → reading → verifying → done, in order, with the right words", () => {
-  let s = begin({ codes: true, now: 0 });
-  assert.equal(describe(s).title, "Getting ready");
-  s = step(s, { t: "ready" }, 100);
-  assert.equal(s.id, "looking");
-  assert.equal(describe(s).title, "Looking for the document");
-  s = step(s, { t: "look", look: { found: false, ok: false }, progress: 0 }, 200);
-  assert.equal(s.id, "looking");
-  s = step(s, { t: "look", look: GOOD, progress: 0.4 }, 300);
-  assert.equal(s.id, "steady");
-  assert.equal(describe(s).title, "Hold steady");
-  assert.equal(describe(s).progress, 0.4);
-  s = step(s, { t: "reading", note: "Barcode found. Reading…" }, 400);
-  assert.equal(describe(s).title, "Reading");
-  assert.equal(describe(s).detail, "Barcode found. Reading…");
-  s = step(s, { t: "verifying" }, 500);
-  assert.equal(describe(s).title, "Verifying");
-  s = step(s, { t: "saved" }, 600);
-  assert.equal(describe(s).title, "Done");
-  assert.equal(describe(s).tone, "ok");
-  assert.equal(step(s, { t: "look", look: GOOD }, 700), s, "done is final: nothing moves it");
-});
-
-test("the steps shown follow what the camera has to do", () => {
-  assert.deepEqual(STEP_LISTS.read.map((x) => x.id), ["looking", "steady", "reading", "verifying", "done"]);
-  assert.deepEqual(STEP_LISTS.photo.map((x) => x.id), ["looking", "steady", "reading", "done"]);
-  const v = describe(run(begin({ codes: true }), [{ t: "ready" }, { t: "look", look: GOOD, progress: 0.1 }]));
-  assert.equal(v.step, 1);
-  assert.equal(v.steps.length, 5);
-  assert.equal(describe(begin({ codes: false })).steps.length, 4);
-});
-
-test("each failure says what it is and what to do", () => {
-  const cases = [
-    [{ found: false, dim: true, mean: 12 }, "dark", "Too dark"],
-    [{ ...GOOD, light: false, mean: 20 }, "dark", "Too dark"],
-    [{ ...GOOD, light: false, mean: 250 }, "bright", "Too bright"],
-    [{ ...GOOD, glare: true }, "glare", "Too much glare"],
-    [{ ...GOOD, big: false }, "far", "Too far"],
-    [{ ...GOOD, fits: false }, "shape", "Not the right document"],
-  ];
-  for (const [look, why, title] of cases) {
-    assert.equal(diagnose(look), why, title);
-    // a problem is shown only once it has lasted
-    let s = run(begin(), [{ t: "ready" }]);
-    s = step(s, { t: "look", look }, 1000);
-    assert.notEqual(s.id, "problem", `${title}: not at once`);
-    s = step(s, { t: "look", look }, 1000 + TIMING.showProblemAfter + 10);
-    assert.equal(s.id, "problem");
-    const v = describe(s, { shape: "td3" });
-    assert.equal(v.title, title);
-    assert.ok(v.detail && v.detail.length < 70, `${title}: a short line, got "${v.detail}"`);
-    assert.ok(!/error|exception|failed|invalid/i.test(`${v.title} ${v.detail}`), "plain words");
-    // and goes the moment the problem does
-    s = step(s, { t: "look", look: GOOD, progress: 0.2 }, 5000);
-    assert.equal(s.id, "steady");
-  }
-  assert.equal(describe({ ...begin(), id: "problem", fail: "dark" }).action, "light", "too dark offers the light");
-  assert.match(describe(run(begin(), [{ t: "ready" }]), { shape: "td3" }).detail, /card|photo|document/i);
-  assert.equal(diagnose({ ...GOOD, steady: false }), "steady");
-  assert.equal(diagnose(GOOD), null);
-});
-
-test("a problem that flickers is never shown", () => {
-  let s = run(begin(), [{ t: "ready" }]);
-  for (let i = 0; i < 30; i++) s = step(s, { t: "look", look: i % 2 ? GOOD : { ...GOOD, glare: true }, progress: 0.3 }, 1000 + i * 120);
-  assert.notEqual(s.id, "problem");
-});
-
-test("a barcode that isn't a license's stays up long enough to read", () => {
-  let s = run(begin({ codes: true }), [{ t: "ready" }, { t: "look", look: GOOD }]);
-  s = step(s, { t: "other" }, 1000);
-  assert.equal(describe(s).title, "Not a license barcode");
-  s = step(s, { t: "look", look: GOOD }, 1500);
-  assert.equal(s.id, "problem");
-  s = step(s, { t: "look", look: GOOD }, 4600);
-  assert.equal(s.id, "steady");
-});
-
-test("the budget: manual capture is offered, then the scan gives up with Try again and Take photo", () => {
-  let s = run(begin({ codes: true, now: 0 }), [{ t: "ready" }], 0);
-  s = step(s, { t: "look", look: { found: false, ok: false }, progress: 0 }, 1000);
-  assert.equal(s.manual, false);
-  s = step(s, { t: "tick" }, TIMING.offerManualAfter + 1);
-  assert.equal(s.manual, true);
-  assert.match(describe(s).detail, /take the photo yourself/i);
-  assert.equal(describe(s).manual, true, "the shutter is called out");
-  assert.equal(gaveUp(s), false);
-  s = step(s, { t: "tick" }, TIMING.giveUpAfter + 1);
-  assert.equal(s.id, "timeout");
-  assert.equal(gaveUp(s), true);
-  const v = describe(s);
-  assert.equal(v.action, "retry");
-  assert.equal(v.assertive, true);
-  assert.equal(v.title, "This is taking a while");
-  // looks no longer move it; Try again starts a fresh budget
-  assert.equal(step(s, { t: "look", look: GOOD }, 40000).id, "timeout");
-  const again = step(s, { t: "retry" }, 50000);
-  assert.equal(again.id, "looking");
-  assert.equal(again.manual, false);
-  assert.equal(gaveUp(step(again, { t: "tick" }, 50000 + TIMING.giveUpAfter - 1)), false);
-});
-
-test("while a photo is being taken the budget doesn't run out and looks don't interfere", () => {
-  let s = run(begin(), [{ t: "ready" }, { t: "look", look: GOOD }]);
-  s = step(s, { t: "captured" }, 1000);
-  assert.equal(describe(s).title, "Capturing");
-  assert.equal(describe(s).busy, true);
-  assert.equal(step(s, { t: "look", look: { found: false } }, 1100).id, "reading");
-  assert.equal(step(s, { t: "tick" }, 120000).id, "reading", "never times out mid-capture");
-  // a failed save: back to looking with a fresh budget
-  assert.equal(step(s, { t: "retry" }, 1200).id, "looking");
-  assert.equal(step(s, { t: "unreadable" }, 1200).id, "unreadable");
-});
-
-test("a reader with something in view isn't pulled back to 'looking' by the next look", () => {
-  let s = run(begin({ codes: true }), [{ t: "ready" }, { t: "look", look: GOOD }, { t: "reading" }, { t: "verifying" }]);
-  s = step(s, { t: "look", look: { found: false }, holdReading: true }, 1000);
-  assert.equal(s.id, "verifying");
-  s = step(s, { t: "look", look: { found: false }, holdReading: false }, 1100);
-  assert.equal(s.id, "looking");
-});
-
-test("the card is calm: ordinary steps are held, problems and progress go through", () => {
-  const c = calmer({ dwell: 1000 });
-  const looking = describe(run(begin(), [{ t: "ready" }]));
-  const steady = describe(run(begin(), [{ t: "ready" }, { t: "look", look: GOOD, progress: 0.5 }]));
-  assert.equal(c.show(looking, 0).id, "looking");
-  assert.equal(c.show(steady, 300).id, "looking", "held for a moment");
-  assert.equal(c.show(steady, 1200).id, "steady");
-  assert.equal(c.show({ ...steady, id: "reading", title: "Reading" }, 1300).id, "reading", "reading is at once");
-  assert.equal(c.show({ ...steady, id: "problem", title: "Glare" }, 1310).id, "problem");
-});
-
-test("pace: slow phones are given room, fast ones aren't slowed", () => {
-  assert.equal(pace(5), 70);
-  assert.equal(pace(40), 88);
-  assert.equal(pace(400), 260);
-  assert.ok(pace(60) > pace(20));
-});
 
 /* ---------------- scan modes: the entry point ---------------- */
 
@@ -303,29 +157,25 @@ test("the MRZ strip: same picture as straightening the whole card, turning it an
 
 /* ---------------- the screen ---------------- */
 
-test("the camera screen: a visible state card, live region, 44 px targets, the worker, frame-paced loops", () => {
+test("the camera screen: one panel under the frame, a live region, 44 px targets, the worker, frame-paced loops", () => {
   const cam = noComments(src("screens/add/camera.jsx"));
-  const ui = cam;
   const css = src("brand/flows.css");
-  assert.match(cam, /<ScanState /, "the state card is on the camera");
-  assert.match(ui, /aria-live=\{error \|\| notice \|\| view\.assertive \? "assertive" : "polite"\}/, "the card is a live region");
-  assert.match(ui, /role="status"/);
-  assert.match(ui, /role="progressbar"/);
-  for (const w of ["Try again", "Take photo"]) assert.match(ui, new RegExp(w), `${w} is one tap away`);
+  assert.match(cam, /class="dc-panel"/, "the panel is on the camera");
+  assert.match(cam, /\{guided && panel\}/, "for a document with a frame, the panel hangs under the frame");
+  assert.match(cam, /role="status" aria-atomic="true" aria-live=\{/, "the words are a live region");
+  for (const w of ["Try again", "Keep the photo", "Continue"]) assert.match(cam, new RegExp(w), `${w} is one tap away`);
   assert.match(cam, /requestVideoFrameCallback/, "paced by the video's frames");
-  assert.match(cam, /createAnalyzer\(/, "the analysis is off the main thread where it can be");
+  assert.match(cam, /createAnalyzer\(/, "the barcode is read off the main thread where it can be");
   assert.match(cam, /cheer\(\)/, "a haptic cue when it's done");
-  assert.match(cam, /gaveUp\(L\.flow\)/, "the scan stops at its budget");
-  // the old per-look cost is gone from the live loop
+  assert.match(cam, /GIVE_UP_MS/, "the scan stops at its budget");
   assert.doesNotMatch(cam, /grayOf\(v, 320\)/);
   assert.doesNotMatch(cam, /liveCard\(/, "no whole-card straightening per read");
-  // every button on the card is at least 44 px
   const rule = (sel) => (css.match(new RegExp(`${sel.replace(/[.[\]]/g, "\\$&")} \\{([^}]*)\\}`)) || [])[1] || "";
   assert.match(rule(".dc-act"), /min-height: 44px/);
   assert.match(rule(".dc-act"), /min-width: 44px/);
-  assert.match(rule(".dc-msg"), /min-height: 44px/);
-  // and motion respects the setting
-  assert.match(css, /prefers-reduced-motion: reduce\) \{[\s\S]{0,400}\.dc-/, "the camera's motion stops under reduced motion");
+  assert.match(rule(".dc-say"), /min-height: 44px/);
+  assert.match(rule(".dc-side"), /min-height: 44px/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{[\s\S]{0,600}\.dc-/, "the camera's motion stops under reduced motion");
   assert.doesNotMatch(css.match(/@keyframes dc-sweep \{[^}]*\}/)[0], /top|left|width|height/, "the sweep moves by transform only (no layout every frame)");
 });
 
@@ -337,15 +187,15 @@ test("the build ships the scan worker next to the app, and the worker is reachab
 });
 
 test("nothing from a scan is logged or kept: no console output, no storage, no network in the scan files", () => {
-  for (const f of ["core/scancore.js", "core/scanworker.js", "core/analyzer.js", "core/scanflow.js", "screens/add/camera.jsx"]) {
+  for (const f of ["core/scancore.js", "core/scanworker.js", "core/analyzer.js", "core/capture.js", "core/guidecap.js", "screens/add/camera.jsx"]) {
     const t = noComments(src(f));
     assert.doesNotMatch(t, /console\.|localStorage|sessionStorage|indexedDB|fetch\(|XMLHttpRequest|sendBeacon|WebSocket/, `${f}`);
   }
   assert.doesNotMatch(noComments(src("screens/add/ids.jsx")), /console\./);
 });
 
-test("the failures table has plain, short words", () => {
-  for (const [id, f] of Object.entries(FAILS)) {
+test("the instructions have plain, short words", () => {
+  for (const [id, f] of Object.entries(TIPS)) {
     assert.ok(f.title.length <= 28, `${id} title`);
     if (f.detail) assert.ok(f.detail.length <= 80, `${id} detail`);
   }

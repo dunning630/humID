@@ -17,7 +17,6 @@ import { b64Bytes, bytesB64 } from "./bytes.js";
 import { span } from "./perf.js";
 
 export { createAnalyzer } from "./analyzer.js";
-export * as flow from "./scanflow.js";
 
 /* global __HUMID_OCR_DIR__, __HUMID_SCAN_DIR__ */
 // The engines live in content-hashed directories next to the app bundle (build.mjs), so

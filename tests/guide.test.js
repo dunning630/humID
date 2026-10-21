@@ -2,8 +2,8 @@
 // the metrics read off a synthetic camera view, the verdict they give, the hold timer, the templates.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, SAY_AFTER, TH, motionOf } from "../apps/mobile/src/core/guide.js";
-import { begin, step, describe, STEP_LISTS } from "../apps/mobile/src/core/scanflow.js";
+import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, TH, motionOf } from "../apps/mobile/src/core/guide.js";
+import { begin, step, view, SAY_AFTER } from "../apps/mobile/src/core/capture.js";
 import { SCAN_MODE } from "../apps/mobile/src/core/addroute.js";
 import { scene, pgm, blur } from "./support/guideview.js";
 
@@ -130,16 +130,16 @@ test("the still: mapping of the preview into a photo of another shape, and the f
   assert.equal(agree(a, { w: 10, h: 10, g: new Uint8ClampedArray(100) }).score, -1);
 });
 
-test("scanflow in guided mode: its steps, its words, and problems are shown after their own delay", () => {
-  assert.equal(STEP_LISTS.guidedPhoto[0].label ?? STEP_LISTS.guidedPhoto[0], STEP_LISTS.guidedRead[0].label ?? STEP_LISTS.guidedRead[0]);
-  let s = begin({ codes: true, guided: true, now: 0 });
+test("the camera's machine on guided verdicts: aiming says the frame; a problem is said after its own delay", () => {
+  let s = begin({ expect: "barcode", now: 0 });
   s = step(s, { t: "ready" }, 100);
-  assert.match(describe(s, { guided: true, noun: "licence" }).title + describe(s, { guided: true, noun: "licence" }).detail, /outline/i);
+  assert.match(view(s, { noun: "license" }).headline, /frame/i);
   assert.ok(SAY_AFTER.blur > 700 && SAY_AFTER.dark < SAY_AFTER.blur);
-  s = step(s, { t: "look", look: { found: true, guide: { key: "closer", detail: "x", present: true }, hint: "x" }, progress: 0 }, 200);
-  assert.notEqual(describe(s, { guided: true, noun: "card" }).title, "Move closer", "not at once");
-  s = step(s, { t: "look", look: { found: true, guide: { key: "closer", detail: "x", present: true }, hint: "x" }, progress: 0 }, 1200);
-  assert.equal(describe(s, { guided: true, noun: "card" }).title, "Move closer");
+  const v = { key: "closer", detail: "x", present: true, aligned: false };
+  s = step(s, { t: "look", v, progress: 0 }, 200);
+  assert.notEqual(view(s).headline, "Move closer", "not at once");
+  s = step(s, { t: "look", v, progress: 0 }, 1200);
+  assert.equal(view(s).headline, "Move closer");
 });
 
 test("3.0.1: a paper page's outline stands up between US Letter and A4, and both line up in it", () => {

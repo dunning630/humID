@@ -56,6 +56,12 @@ const P = {
   turn: <><path d="M18.5 13a6.5 6.5 0 1 1-1.9-4.6" /><path d="M17.5 3.8v4.9h-4.9" /></>,
   rotate: <><path d="M4.5 12a7.5 7.5 0 0 1 13-5.1L19.5 9" /><path d="M19.5 4.5V9H15" /><path d="M19.5 12a7.5 7.5 0 0 1-13 5.1L4.5 15" /><path d="M4.5 19.5V15H9" /></>,
   nfc: <><path d="M8 7.5a6.5 6.5 0 0 1 0 9M11.5 5a10 10 0 0 1 0 14M15 3a13.5 13.5 0 0 1 0 18" /><circle cx="5" cy="12" r="1.2" /></>,
+  // the camera's instructions (3.0.3)
+  sun: <><circle cx="12" cy="12" r="3.6" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" /></>,
+  zoomin: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M9 9l-4-4M15 9l4-4M9 15l-4 4M15 15l4 4" />,
+  zoomout: <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />,
+  move: <path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" />,
+  phone: <><rect x="7" y="2.5" width="10" height="19" rx="2.5" /><path d="M11 18.5h2" /></>,
   wifi_off: <><path d="M4 4.5 20 19.5M8.5 15.5a5.5 5.5 0 0 1 6.3-.8M5 12.3a10 10 0 0 1 3.2-2M19 12.3a10 10 0 0 0-6.3-2.7" /><circle cx="12" cy="18.5" r="1" /></>,
 };
 

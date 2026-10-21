@@ -95,7 +95,7 @@ try {
   const q = look.quad;
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4 / look.vw, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4 / look.vh;
   assert.ok(Math.abs(cx - 0.5) < 0.056 && Math.abs(cy - 0.398) < 0.031, `outline centred at ${cx.toFixed(3)},${cy.toFixed(3)} of the frame`);
-  await page.locator(".doccam[data-look='ok'], .doccam[data-look='close'], .doccam[data-phase='reading']").first().waitFor({ timeout: 10_000 });
+  await page.locator(".doccam[data-look='ok'], .doccam[data-look='close'], .doccam[data-phase='capture'], .doccam[data-phase='check']").first().waitFor({ timeout: 10_000 });
   assert.equal(await page.locator(".dc-outline, .doccam > svg, .dc-stage polygon").count(), 0, "no four-point outline is drawn over the page");
   await shot(page, "1-found");
   step(`the page is found where it lies (${Math.round(cx * look.vw)}, ${Math.round(cy * look.vh)} of ${look.vw}×${look.vh}, uncropped); the frame's corners say so, with no outline drawn over it`);

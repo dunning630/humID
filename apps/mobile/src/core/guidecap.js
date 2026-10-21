@@ -176,5 +176,28 @@ export function uprightOf(c) {
   return { rotate: flip ? 180 : 0, confidence: o.confidence };
 }
 
+/**
+ * Ask the camera to focus at a point ({ x, y } as shares of the video, 0..1), where the phone lets the
+ * page choose (Chrome on Android: pointsOfInterest and a one-off focus; elsewhere nothing happens).
+ * Back to continuous focus a moment later. Resolves true when the camera took the request.
+ */
+export async function focusAt(track, { x = 0.5, y = 0.5 } = {}) {
+  if (!track || track.readyState !== "live") return false;
+  let caps = {}, supported = {};
+  try { caps = track.getCapabilities?.() || {}; } catch { /* none */ }
+  try { supported = navigator.mediaDevices?.getSupportedConstraints?.() || {}; } catch { /* none */ }
+  const modes = caps.focusMode || [];
+  const ask = {};
+  if (supported.pointsOfInterest) ask.pointsOfInterest = [{ x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) }];
+  if (modes.includes("single-shot")) ask.focusMode = "single-shot";
+  else if (modes.includes("continuous") && ask.pointsOfInterest) ask.focusMode = "continuous";
+  if (!Object.keys(ask).length) return false;
+  try { await track.applyConstraints({ advanced: [ask] }); } catch { return false; }
+  if (ask.focusMode === "single-shot" && modes.includes("continuous")) {
+    setTimeout(() => { if (track.readyState === "live") track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {}); }, 1200);
+  }
+  return true;
+}
+
 /** The tilt the crop is turned by is only used when it is a small, believable angle. */
 export const deskewOf = (v) => (v && Math.abs(v) >= TH.deskew[0] && Math.abs(v) <= TH.deskew[1] ? v : 0);

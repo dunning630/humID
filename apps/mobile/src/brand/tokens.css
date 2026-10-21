@@ -22,6 +22,13 @@
   --brand-ink:   #0B1410;
   /* the camera is always dark, in either theme: what dims the view outside a guided outline */
   --cam-dim: rgba(4, 10, 7, 0.62);
+  /* …and its own meanings, the same in either theme: mint lined up / read / kept, amber something to change */
+  --cam-ok: var(--brand-mint);
+  --cam-ok-ink: #04170F;
+  --cam-warn: #FFB94A;
+  --cam-warn-hi: #FFC86B;
+  --cam-warn-ink: #241500;
+  --cam-panel: rgba(8, 18, 13, 0.92);
 
   /* --- ground & surfaces --- */
   --abyss:     #060D0A;   /* behind everything; the viewer and camera */

@@ -29,6 +29,15 @@ export async function readFrontEitherWay(shot, pan = null) {
   return r2?.pan ? { r: r2, canvas: turned } : { r, canvas: shot };
 }
 
+/** What the camera says back about a card front it read (screens/add/camera.jsx shows it before moving on). */
+export function frontSaid(r) {
+  if (!r?.pan) return { ok: false, title: "Couldn't read the card number", detail: "Try again in better light, number side up, or keep the photo and type it." };
+  const fields = [{ label: "Card", value: `${brandOf(r.pan).name} ending ${r.pan.slice(-4)}` }];
+  if (r.expiry) fields.push({ label: "Expires", value: showExpiry(r.expiry) });
+  if (r.name) fields.push({ label: "Name", value: r.name });
+  return { ok: true, title: "Got it", detail: "Read from the front. Never the PIN.", fields };
+}
+
 const readNote = (r) => {
   const amex = brandOf(r.pan).id === "amex";
   return { tone: "ok", text: `Read ${brandOf(r.pan).name} ending ${r.pan.slice(-4)}${r.expiry ? ", its expiry" : ""}${r.name ? " and the name" : ""}. Review them.${amex ? r.cvv ? " The 4-digit security code is on the front: switch on Keep the security code below to keep it." : "" : " Then scan the back for the security code."}` };
@@ -76,7 +85,7 @@ export function CardFlow({ start, onExit, onDraft }) {
   async function front({ canvas: shot }) {
     const { r, canvas } = await readFrontEitherWay(shot, rec.current.fields.pan);
     const img = await jpeg(canvas, { maxW: 1200 });
-    return () => {
+    return { result: frontSaid(r), next: () => {
       setCam(null);
       setImage(rec.current, "front", img);
       if (r?.pan) {
@@ -87,7 +96,7 @@ export function CardFlow({ start, onExit, onDraft }) {
         } catch { setNote({ tone: "warn", text: "Couldn't read the number clearly. Type it below." }); }
       } else setNote({ tone: "warn", text: "Couldn't read the number from the photo. Type it below, or try again in better light." });
       redraw();
-    };
+    } };
   }
 
   // The back: read the security code and the bank's phone number. The photo isn't kept.
@@ -95,7 +104,10 @@ export function CardFlow({ start, onExit, onDraft }) {
     const found = (x) => !!(x?.cvv || x?.phone);
     let r = await readCardPhoto(canvas, { side: "back", pan: rec.current.fields.pan });
     if (!found(r)) { const r2 = await readCardPhoto(rotateCanvas(canvas, 180), { side: "back", pan: rec.current.fields.pan }); if (found(r2)) r = r2; }
-    return () => {
+    const said = found(r)
+      ? { ok: true, title: "Got it", detail: "The photo of the back isn't kept.", fields: [r.cvv && { label: "Security code", value: "•".repeat(r.cvv.length) }, r.phone && { label: "Bank's phone", value: r.phone }].filter(Boolean) }
+      : { ok: false, title: "Couldn't read the back", detail: "Try again in better light, or keep going and type the security code yourself." };
+    return { result: said, next: () => {
       setCam(null);
       if (r?.cvv) setStoreCvv(rec.current, true);
       applyRead(rec.current, { cvv: r?.cvv, phone: r?.phone }, "camera");
@@ -104,7 +116,7 @@ export function CardFlow({ start, onExit, onDraft }) {
         ? { tone: "ok", text: `Read ${got.join(" and ")} from the back. The photo of the back wasn't kept.${r?.cvv ? " The code will be kept; switch off Keep the security code to drop it." : ""}` }
         : { tone: "warn", text: "Couldn't read the back clearly. Type the security code below if you want to keep it." });
       redraw();
-    };
+    } };
   }
 
   async function tap() {
@@ -124,8 +136,8 @@ export function CardFlow({ start, onExit, onDraft }) {
       <Step eyebrow="Payment card" title={tapping ? "Hold the card still…" : "Review, then seal"} onBack={onExit}>
         <CardForm rec={rec.current} note={note} pending={pendingCvv} resume={start.rec ? start : null} onRetake={() => setCam("front")} onBack={() => setCam("back")} onChange={redraw} onDraft={onDraft} />
       </Step>
-      {cam === "front" && <DocCamera kind="card" side="front" shape="id1" eyebrow="Card · front" title="The front of the card" hint="Line the card up inside the outline, number side up." onCancel={() => setCam(null)} onDone={front} />}
-      {cam === "back" && <DocCamera kind="card" side="back" shape="id1" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip, lined up inside the outline. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
+      {cam === "front" && <DocCamera kind="card" side="front" shape="id1" expect="card" eyebrow="Card · front" title="The front of the card" hint="Number side up, filling the frame. Never the PIN." onCancel={() => setCam(null)} onDone={front} />}
+      {cam === "back" && <DocCamera kind="card" side="back" shape="id1" expect="card" eyebrow="Card · back" title="The back of the card" hint="The side with the signature strip, filling the frame. The photo isn't kept." onCancel={() => setCam(null)} onDone={back} />}
     </>
   );
 }

@@ -152,6 +152,42 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
 
+## The capture screen, rebuilt (apps 3.1.0)
+
+What 3.0.x got wrong, from testing on a phone: you couldn't tell whether the camera saw the
+document, whether it had taken the picture, or whether the picture had what it needed. Nothing
+was read until after the photo (a license's barcode, a passport's lines were read from the still
+only), so a miss showed up as a short error and a silent restart; instructions lagged the camera
+by up to two seconds (a 0.7-2.2 s delay before a problem was said, then a 1.2 s hold on ordinary
+steps); the only feedback on the document itself was the colour of four corners, with the words
+200 px further down; and the moment of capture was a 0.2 s tick before the next screen.
+
+The frame stays (2.2.0's fixed outline, which never moves, so the crop never moves). Around it:
+
+| | 3.1.0 |
+|---|---|
+| **Does it see it?** | A **lock box** inside the frame follows the document the camera actually sees (four edges and an angle from `measure()`, eased, `core/capture.js docBox`), amber, and settles onto the frame when it's lined up; the frame and its corners go amber, then mint. Not a free four-point outline: four numbers and an angle can't jump about. |
+| **What do I change?** | One instruction in a **panel right under the frame**: problems are said after 0.35 s (blur 1.5 s, the wrong side 1.2 s, dark 0.6 s), a new problem replacing another after 0.55 s, and good news at once. A row of **live chips** (Framed · Sharp · Steady · Light, and Barcode or ID lines where the side has them) shows each condition; a chip moves only when two looks agree. While lined up, a **ring** fills round the frame. A blur while lined up is "Focusing…" first, and the camera is asked to focus on the frame again (`focusAt`, where the phone allows it); tapping the picture focuses there. |
+| **Is it reading?** | A license back's barcode is read **live** from the full-size video the moment it's in the frame (in the scan worker, one read at a time); a passport's lines are read live too (two agreeing reads, `MrzConsensus`). The chip goes Barcode → reading → ✓ and the panel says "Barcode read ✓". The photo is taken the moment the details are in (lined up, or 2.5 s later at most), not on a timer. The still is still read when nothing was read live (the hold fires as before). |
+| **Did it take it?** | A flash, the photo **frozen in the frame**, "Captured", a line sweeping it while it's read. |
+| **Did it get what it needs?** | Before moving on, the panel **says back what it read** (Name, Date of birth, Number, Expires, the city; a card's brand and last four, expiry and name) for 1.3 s, with Continue. If a side had something to read and nothing usable was read, it says so in plain words ("Couldn't read the barcode") with **Try again** or **Keep the photo** (and type the details). Taken by itself, it looks again once without asking first. |
+| **Wrong side** | A license or state ID **back** held up when the front is asked for is read and kept as the back ("That was the back"), and the front's camera opens ("Back saved. Now the front."). |
+
+The live lines of a passport are checked against the photo's own lines before they're kept
+(`readStill` seeded with the live vote, `core/mrzseed.js`): if the photo doesn't confirm them they're
+kept for review, not as a consensus. A barcode read live is a decoded PDF417 (error-corrected), kept as read.
+
+`core/capture.js` is the machine (pure, `tests/doccam.test.js`): phases starting → aim ⇄ adjust ⇄ hold →
+capture → check → done | fail, the chips, the timings (`SAY_AFTER`, `SWITCH_AFTER`, `TIMING`), the lock box
+and `summarize()` (what was read, in the words the panel uses). It replaces `scanflow.js`. A hand that is
+nearly still (within 1.5x the steadiness threshold) and sharp for 1.5 s now counts as still. The scan stops
+looking after 40 s (Try again starts it again; the round button always works).
+
+**Check on a phone** (beyond the list below): that live barcode reads keep up on a mid-range Android (the
+worker reads one crop at a time); that `focusAt` refocuses on Chrome Android (pointsOfInterest, single-shot)
+and does nothing harmful elsewhere; that the lock box is calm on a real table; the panel's fit on a short
+screen (under 700 px it tightens).
+
 ## The guided scan (apps 2.2.0)
 
 Cards, licences, ID cards and passports are scanned the way a bank's app does it:
@@ -198,8 +234,7 @@ released on exit, Back or background.
 
 Edges come from five-run profiles per side with a robust line fit; the shape is checked against the
 template's aspect (> 7% off: nothing is said about size and nothing is taken by itself, the round button
-works). A problem is said after 0.7 s (`SAY_AFTER` for the slower ones); the scan-state card (`scanflow.js`,
-`scanui.jsx`) shows it, as a live region.
+works). How and when it is said is the capture screen's (above, 3.1.0).
 
 **Capture.** Lined up, steady and sharp for 0.6 s (`holdTracker`, 0.22 s grace) fires the shot with a short
 vibration; the round button is always there. `takeStill` (`core/guidecap.js`) asks `ImageCapture.takePhoto` for up to
