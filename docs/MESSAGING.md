@@ -218,7 +218,7 @@ fixed or stated as limits here.
 
 | Audit item | What 4.0 does |
 |---|---|
-| Timing leaks in the PQ code (T3–T4) | All primitives sit behind one swappable backend (`backend.js`). The app replaces the JS maths with the platform's own (iOS 26 CryptoKit ML-KEM-1024 / ML-DSA-87) via `useBackend`, which first proves the replacement agrees byte for byte. The relay runs no cryptography, so there's no server-side timing oracle at all. `npm run test:timing` (Welch's t-test, valid vs invalid ML-KEM ciphertexts, X25519 scalars) runs in CI, informational on shared runners. |
+| Timing leaks in the PQ code (T3–T4) | All primitives sit behind one swappable backend (`backend.js`). The app replaces the JS maths with the platform's own (iOS 26 CryptoKit ML-KEM-1024 / ML-DSA-87) via `useBackend`, which first runs `checkBackend` against the reference (exactly what it checks is listed under [Replacing the crypto backend](#replacing-the-crypto-backend)). The relay runs no cryptography, so there's no server-side timing oracle at all. `npm run test:timing` (Welch's t-test, valid vs invalid ML-KEM ciphertexts, X25519 scalars) runs in CI, informational on shared runners. |
 | A lattice break (T5) | Every key needs X25519 as well as ML-KEM; every handshake needs SLH-DSA (hash-based) as well as ML-DSA. **Next:** HQC as a third KEM in the ratchet step once its standard is final (2027): one more secret in the step's input, under a new message-format version. |
 | Signatures that must outlive their algorithm (T5) | Handshakes are dual-signed ML-DSA-87 + SLH-DSA-SHA2-256f, both required. Messages deliberately aren't signed (deniability), so nothing long-lived depends on lattice signatures. |
 | Kernel spyware (T4) | Keys are erased as soon as used (forward secrecy), the ratchet heals after one exchange, and conversation state is sealed at rest. **Next:** keep persona signing keys in the Secure Enclave where the platform supports ML-DSA. |
@@ -236,6 +236,45 @@ fixed or stated as limits here.
 | "Unlinkability checked by string search only" | Tested by the protocol: personas share no key material, box ids differ by direction and day, every relay object is a fixed size class with no persona keys or IDs inside, the issuer sees only blinded values, the same message blinds differently each time. |
 | Relay rate-limit table | Bounded; when full it drops past windows and then refuses new addresses, so a flood of addresses can't reset a busy client's limit. Tested. |
 | "Fuzzing: one fixed seed, any error type accepted" | `tests/msg.test.js` fuzzes messages, requests, invites, stored state and codes with a fresh seed each run (printed on failure, rerun with `MSG_FUZZ_SEED`), and accepts only `MsgError` with a code. |
+
+### Replacing the crypto backend
+
+`useBackend(b)` installs a replacement only if `checkBackend(b)` passes. Before
+audit finding PC-12 it compared key generation and one ML-DSA rejection, so a
+replacement whose SLH-DSA verify always said yes, whose X25519 returned a
+constant, or whose ML-DSA verify ignored the public key got in. It now checks,
+against the reference (noble), on fresh random seeds and fixed test messages:
+
+- **X25519.** The RFC 7748 §6.1 test vector (both public keys and the shared
+  secret, both directions). On fresh keys: the same public keys; a shared
+  secret equal to the reference's and the same from both sides. A public key
+  with the top bit set, and nine low-order or non-canonical points (0, 1,
+  p − 1, the two order-8 points, p, p + 1, and 0 and 1 with the top bit set),
+  must be treated exactly as the reference treats them: the reference refuses
+  all nine, so the candidate must refuse them too, not return zeros.
+- **ML-KEM-1024.** The same public key from the same seed. The candidate's
+  ciphertext decapsulates on the reference, and the reference's on the
+  candidate, each with its own secret key and with the other side's (secret
+  keys are stored in conversation state, so they must be interchangeable).
+  Implicit rejection: a ciphertext with one bit flipped (first byte, last byte)
+  must give the candidate the same value the reference gives, J(z ‖ c), never
+  the real secret and never an error.
+- **ML-DSA-87 and SLH-DSA-SHA2-256f**, the same procedure. The same public key
+  from the same seed. The reference's signature verifies on the candidate; the
+  candidate's signature verifies on the reference and on the candidate. For
+  both signatures the candidate's verify must reject (return false or throw): a
+  bit flipped at the first, middle and last byte of the signature, a bit
+  flipped in the message, two other valid public keys (one fresh, one fixed
+  whose encoding starts with a zero byte), and the signature truncated by one
+  byte.
+
+The first difference throws `MsgError` with a code naming the primitive:
+`backend_mismatch_x25519`, `backend_mismatch_ml_kem`, `backend_mismatch_ml_dsa`
+or `backend_mismatch_slh_dsa` (an error the candidate throws becomes the same
+code). Each signature scheme signs once per side, so the check takes about 1.5 s,
+mostly the two SLH-DSA signatures. It is an interoperability and
+negative-case check, not a proof of correctness: it can't see timing, or a
+fault that appears only on inputs it doesn't try.
 
 **Prerequisites before the relay and stamp route go live** (server-wide
 findings outside this module, in the audit's order): SEC-S-01 (bind internal
