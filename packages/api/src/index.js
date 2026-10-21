@@ -3,12 +3,12 @@
 // (and in the app's control) and this module never holds a private key.
 
 import { HtpClient, HtpError } from "@humid/htp/client";
-import { registerMessage, deviceMessage, loginMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
-import { verifyLedger, verifyCheckpoint } from "@humid/audit";
+import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
+import { verifyLedger, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
 
-export { HtpError, verifyLedger, verifyCheckpoint };
+export { HtpError, verifyLedger, verifyCheckpoint, parseCosigners };
 
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -177,24 +177,31 @@ export class HumidApi {
 
   /**
    * Join an existing account (after a device link or a recovery), in a fresh session.
+   * The server lets a device in only with evidence: `linkCode` (a link one of the account's
+   * devices approved for this device key) or `recoveryId` (a released recovery).
    * `sign(message, th)` returns { sigAccount, sigDevice, live?, gateMethod?, assurance? } over the same message.
    */
-  async enrollDevice({ account, device, via, recoveryId, sign, soleBiometric }) {
+  async enrollDevice({ account, device, via, recoveryId, linkCode, sign, soleBiometric }) {
     await this.htp.connect();
     const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
-    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
+    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
     return this.session;
   }
 
   /**
-   * Sign in. `sign(message)` runs the biometric interrupt and returns
-   * { sig (device key), interrupt, live? (liveness key, same message) }.
+   * Sign in. `sign(message, { presence })` runs the biometric interrupt and returns
+   * { sig, interrupt, live?, d? }. The liveness key signs `message`. The device key signs
+   * `presence(d)` when the caller reports presence (d = 1 for the duress gesture, else 0;
+   * every current app does, on every unlock), or `message` from callers that don't.
    */
   async login({ id, device, sign }) {
     await this.htp.connect();
     const { challenge } = await this.#json("POST", "/auth/challenge", { body: { id, device } });
-    const { sig, interrupt, live } = await sign(loginMessage(this.htp.transcript, `${id}/${device}`, unb64u(challenge)));
-    this.session = await this.#json("POST", "/auth/login", { body: { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}) } });
+    const th = this.htp.transcript, who = `${id}/${device}`, nonce = unb64u(challenge);
+    const presence = (d) => loginPresenceMessage(th, who, nonce, d);
+    const { sig, interrupt, live, d } = await sign(loginMessage(th, who, nonce), { presence });
+    const body = { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}), ...(d === 0 || d === 1 ? { d } : {}) };
+    this.session = await this.#json("POST", "/auth/login", { body });
     return this.session;
   }
 
@@ -210,8 +217,10 @@ export class HumidApi {
   /* ---------------- duress ---------------- */
 
   /**
-   * Sent after EVERY unlock. duress = true only when the person used their duress
-   * gesture. The request is the same size and shape either way.
+   * Older apps sent this after every unlock with the duress flag in it. The duress report
+   * now travels inside the signed sign-in (login's `d`), so the server ignores the flag here:
+   * a bare request from a signed-in session must never be able to lock down or erase a vault.
+   * Kept so older callers still get an answer.
    */
   presence(duress = false) { return this.#json("POST", "/auth/presence", { body: { d: duress ? 1 : 0, pad: PRESENCE_PAD } }); }
   /** { lockdown, since, lastDuressAt, clearableAt } — a decoy session always sees { lockdown: false }. */
@@ -276,14 +285,16 @@ export class HumidApi {
    * Check this account's place in the public transparency log: the latest ledger
    * entry is in the published tree, and the tree extends `previous` ({ size, root }),
    * the checkpoint this device verified last time. Returns verifyCheckpoint's result.
+   * `trustedKeyFp`: the ledger key this device saw first (a different key is refused).
+   * `cosigners`: the cosigners built into the app (parseCosigners); only they count.
    */
-  async continuity({ previous, trustedKeyFp } = {}) {
+  async continuity({ previous, trustedKeyFp, cosigners } = {}) {
     const inc = await this.#json("GET", "/ledger/tlog/inclusion");
     let consistency = null;
     if (previous?.size > 0 && previous.size <= inc.checkpoint.size) {
       consistency = (await this.#json("GET", `/ledger/tlog/consistency?from=${previous.size}&to=${inc.checkpoint.size}`)).proof;
     }
-    const r = verifyCheckpoint(inc, { trustedKeyFp, previous, consistency, inclusion: { owner: inc.owner, seq: inc.seq, hash: inc.hash, index: inc.index, proof: inc.proof } });
+    const r = verifyCheckpoint(inc, { trustedKeyFp, cosigners, previous, consistency, inclusion: { owner: inc.owner, seq: inc.seq, hash: inc.hash, index: inc.index, proof: inc.proof } });
     if (r.ok && this.session?.id && inc.owner !== this.session.id) return { ok: false, reason: "The log answered for someone else" };
     return { ...r, seq: inc.seq };
   }
@@ -301,8 +312,8 @@ export class HumidApi {
    * New device: ask to join. The code shown must commit to this device's own keys:
    * recomputed here, so a server that swapped in its keys is caught before anything is shown.
    */
-  async startLink({ kemPk, xPk, platform }) {
-    const r = await this.#json("POST", "/recovery/links", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), platform } });
+  async startLink({ kemPk, xPk, platform, devicePk }) {
+    const r = await this.#json("POST", "/recovery/links", { body: { kemPk: b64u(kemPk), xPk: b64u(xPk), platform, ...(devicePk ? { devicePk: b64u(devicePk) } : {}) } });
     checkCode(r.code, LINK_LABEL, kemPk, xPk);
     return r;
   }

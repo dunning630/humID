@@ -82,3 +82,36 @@ test("JSON null, arrays and scalars are a 400 where an object is required (F-05)
   }
   assert.equal((await fetch(`http://127.0.0.1:${port}/obj`, { method: "POST", body: '{"a":1}' })).status, 200);
 });
+
+/* PC-08: an internal assertion is good for one request only. The audit's proof of concept:
+   one assertion the gateway made for reading one object was accepted for listing the vault
+   and deleting a different object. */
+test("PC-08: an internal assertion can't be replayed or turned into another request", async () => {
+  const { signRequestAssertion, verifyAssertion, newInternalKeys } = await import("../packages/svc/src/index.js");
+  const reply = json;
+  const k = newInternalKeys();
+  const seen = [];
+  const svc = createService({
+    name: "vault-test", port: 0, verify: (t) => verifyAssertion(k.pk, t, "vault"),
+    routes: [
+      ["GET", "/objects/:id", ({ params }) => { seen.push(`get ${params.id}`); return reply(200, { ok: true }); }],
+      ["GET", "/objects", () => { seen.push("list"); return reply(200, { ok: true }); }],
+      ["DELETE", "/objects/:id", ({ params }) => { seen.push(`delete ${params.id}`); return reply(200, { ok: true }); }],
+    ],
+  });
+  await svc.start();
+  try {
+    const base = `http://127.0.0.1:${svc.server.address().port}`;
+    const mint = (method, path, body) => signRequestAssertion(k.sk, { iss: "gateway", aud: "vault", rid: crypto.randomUUID(), sub: "hid_" + "a".repeat(40), stepUp: { at: Date.now() } }, { method, path, body });
+    const call = (method, path, a, body) => fetch(base + path, { method, headers: { "x-humid-assertion": a }, body });
+    const read = mint("GET", "/objects/aaaa");
+    assert.equal((await call("GET", "/objects/aaaa", read)).status, 200);
+    assert.equal((await call("GET", "/objects/aaaa", read)).status, 401, "used once");
+    const read2 = mint("GET", "/objects/aaaa");
+    assert.equal((await call("GET", "/objects", read2)).status, 401, "not for another path");
+    assert.equal((await call("DELETE", "/objects/bbbb", read2)).status, 401, "not for another method or object");
+    const del = mint("DELETE", "/objects/bbbb", Buffer.from("x"));
+    assert.equal((await call("DELETE", "/objects/bbbb", del, "y")).status, 401, "not with another body");
+    assert.deepEqual(seen, ["get aaaa"]);
+  } finally { await svc.stop(); }
+});

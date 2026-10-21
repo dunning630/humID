@@ -165,9 +165,13 @@ seconds, or tap the mark three times) unlocks exactly as usual. Then:
 - **Decoy view.** The app shows only documents you marked "Show in decoy
   view" (a flag inside the encrypted index), a calm Security screen (duress
   off, no alerts) and an Activity list limited to those documents.
-- **Silent lockdown.** Every unlock sends `POST /auth/presence` with the same
-  size and shape; only the encrypted flag differs, and the server's work
-  happens after the reply. With the flag set, the server locks the account:
+- **Silent lockdown.** Every sign-in carries a duress flag, signed by the
+  device key that only the live check releases (the flag is decided inside
+  that check, from the sealed setting). The sign-in has the same size and
+  shape either way, and the server's work happens after the reply. A bare
+  request from a session that is already signed in can't raise it (the old
+  `POST /auth/presence` flag is ignored), so malware riding an open session
+  can't lock down or erase a vault. With the flag set, the server locks the account:
   adding or removing devices, approving links, changing recovery, settings or
   stations, helping others recover and closing the account fail like a busy
   server (`503 busy`), on every session. Reading still works, so nothing
