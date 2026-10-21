@@ -20,22 +20,22 @@ import { LIGHT_TIP } from "../../core/addroute.js";
 
 // What each kind of document asks the camera for, side by side.
 export const PLAN = {
-  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "Line the photo page up inside the outline, with the two lines of <<< at the bottom. It takes the photo by itself." }],
+  passport: [{ side: "front", shape: "td3", read: { mrz: true }, title: "The photo page", hint: "The page with your photo, the two lines of <<< at the bottom of the frame." }],
   driver_license: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "Line the card up inside the outline. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "Line the back up inside the outline, barcode showing. It takes the photo and reads the barcode by itself." },
+    { side: "front", shape: "id1", read: {}, title: "Front of the license", hint: "The side with your photo, filling the frame edge to edge." },
+    { side: "back", shape: "id1", read: { barcode: true }, title: "Back of the license", hint: "The side with the long barcode. It's read the moment it's in the frame." },
   ],
   id_card: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "Line the card up inside the outline. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "Line the back up inside the outline. A barcode or the lines of <<< read by themselves.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front of the card", hint: "The side with your photo, filling the frame edge to edge." },
+    { side: "back", shape: "id1", read: { barcode: true, mrz: true }, title: "Back of the card", hint: "A barcode or lines of <<< are read the moment they're in the frame.", optional: true },
   ],
   residence_permit: [
-    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "Line the card up inside the outline. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "Line the back up inside the outline, with the three lines of <<< showing. They read by themselves.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front of the permit", hint: "The side with your photo, filling the frame edge to edge." },
+    { side: "back", shape: "id1", read: { mrz: true }, title: "Back of the permit", hint: "The side with three lines of <<<. They're read the moment they're in the frame.", optional: true },
   ],
   other: [
-    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Line the card up inside the outline. It takes the photo by itself." },
-    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Line the card up inside the outline. It takes the photo by itself.", optional: true },
+    { side: "front", shape: "id1", read: {}, title: "Front", hint: "Fill the frame edge to edge. It takes the photo by itself." },
+    { side: "back", shape: "id1", read: {}, title: "Back", hint: "Fill the frame edge to edge. It takes the photo by itself.", optional: true },
   ],
 };
 
@@ -127,8 +127,10 @@ export function IdFlow({ start, onExit, onDraft }) {
   useEffect(() => { if (step === "review") setName((n) => n || recordTitle(rec.current)); }, [step]);
   useEffect(() => { onDraft?.({ rec: rec.current, step, name, tags }); }, [step, name, tags, r.images.front, r.images.back, r.verified.chip]);
 
-  async function captured(p, { canvas, barcode, mrz, consensus }) {
+  async function captured(asked, { canvas, barcode, mrz, consensus, side }) {
     const rc = rec.current;
+    // the camera can tell a license front from its back by the barcode: a back held up for the front is kept as the back
+    const p = side && side !== asked.side ? (PLAN[rc.kind] || PLAN.other).find((x) => x.side === side) || asked : asked;
     let img;
     try { img = await jpeg(canvas); }
     catch { throw new Error("Couldn't save that photo. Try again, or choose one with Photo."); }
@@ -151,7 +153,7 @@ export function IdFlow({ start, onExit, onDraft }) {
     redraw();
     const left = (PLAN[rc.kind] || PLAN.other).find((x) => !rc.images[x.side] && !rc.skipped?.includes(x.side));
     if (left && n.tone === "ok") {
-      return () => { setSaved({ text: p.side === "front" ? "Front saved. Now turn it over." : `${p.title} saved.`, img }); setCam(left); };
+      return () => { setSaved({ text: p.side === "front" ? "Front saved. Now turn it over." : left.side === "front" ? "Back saved. Now the front." : `${p.title} saved.`, img }); setCam({ ...left }); }; // a fresh camera, even for the side that was just open
     }
     return () => { setSaved(null); setCam(null); afterCapture(); };
   }

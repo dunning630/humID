@@ -78,7 +78,7 @@ async function pick(page, name) {
   if (name === "Payment card") { await pickKind(page, "Payment card"); await startCamera(page); return; }
   await chooseId(page, name);
 }
-const state = (page) => page.locator(".doccam .dc-state");
+const state = (page) => page.locator(".doccam .dc-panel");
 const title = async (page) => (await state(page).locator("strong").first().innerText()).trim();
 const guide = (page) => page.evaluate(() => globalThis.__humidGuide || null);
 const developed = (page) => page.evaluate(() => { const d = globalThis.__humidDevelop; return d ? { ...d, png: undefined } : null; });
@@ -127,7 +127,8 @@ const scene = (name, run, file) => { if (!ONLY || ONLY.test(name)) scenes.push({
 const problem = (name, file, kindName, text, { hold: ms = 4500, waitFor = 25_000 } = {}) => scene(name, async (page) => {
   await pick(page, kindName);
   const g = await says(page, text, waitFor);
-  assert.equal(await state(page).getAttribute("data-state"), "problem", `${text} is a problem on the card`);
+  assert.equal(await state(page).getAttribute("data-phase"), "adjust", `${text} is an instruction on the panel`);
+  assert.equal(await state(page).getAttribute("data-tone"), "warn", `${text} is said in amber`);
   await shot(page, name);
   await page.waitForTimeout(ms);
   assert.equal(await page.locator(".doccam").count(), 1, `${text}: the camera stays open: no photo by itself`);
@@ -167,7 +168,11 @@ scene("outline", async (page) => {
   assert.equal(await page.locator(".dc-outline, .doccam > svg, .dc-stage polygon").count(), 0, "no four-point outline is drawn");
   const live = state(page).locator('[role="status"]');
   assert.equal(await live.getAttribute("aria-live"), "polite", "the card is a live region");
-  assert.equal((await state(page).locator(".dc-steps li").first().textContent()).trim(), "Line up");
+  assert.deepEqual((await state(page).locator(".dc-chips li").allTextContents()).map((t) => t.trim()).slice(0, 4), ["Framed", "Sharp", "Steady", "Light"], "the live chips");
+  assert.equal((await state(page).locator(".dc-chips li").nth(4).textContent()).trim(), "ID lines", "a passport's chip for the lines of <<<");
+  // the panel sits right under the frame
+  const pb = await state(page).boundingBox();
+  assert.ok(pb.y > f.y + f.height && pb.y - (f.y + f.height) < 30, `the panel is right under the frame (${Math.round(pb.y - (f.y + f.height))} px)`);
   // the rect the app uses for the crop, in the video's pixels, is where the fixtures put their documents
   const g = await page.evaluate(() => globalThis.__humidGuide?.rect);
   if (g) for (const k of ["x", "y", "w", "h"]) assert.ok(Math.abs(g[k] - GUIDE.td3[k]) < 10, `the outline's ${k} is ${g[k]} in the video; the fixtures assume ${GUIDE.td3[k]} (re-run make-guided.py if the layout moved)`);
@@ -187,7 +192,7 @@ scene("outline", async (page) => {
   await page.waitForFunction(() => globalThis.__constraints?.video?.width?.ideal === 1920, null, { timeout: 10_000 });
   const c2 = await page.evaluate(() => globalThis.__constraints.video);
   assert.equal(c2.width.ideal, 1920); assert.equal(c2.height, undefined);
-  await state(page).locator("strong", { hasText: /Fit the card in the outline|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
+  await state(page).locator("strong", { hasText: /Place the card in the frame|Move closer/ }).waitFor(); // on a small card the first complaint can come at once
   // the app goes to the background: the stream is released at once
   await page.evaluate(() => { Object.defineProperty(document, "hidden", { get: () => true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.waitForFunction(() => globalThis.__tracks.every((t) => t.readyState === "ended"), null, { timeout: 5000 });
@@ -213,12 +218,14 @@ problem("passport-wrongpage", "pp-wrongpage", "Passport", "Show the photo page")
 // 3. a shaking view: lined up, but never steady, so never taken
 scene("card-shaky", async (page) => {
   await pick(page, "Another card");
-  await says(page, "Hold steady", 20_000);
+  await says(page, "Hold still", 20_000);
+  await state(page).locator('.dc-chips li[data-k="steady"][data-state="warn"]').waitFor({ timeout: 10_000 });
+  await shot(page, "card-shaky");
   await page.waitForTimeout(5000);
   assert.equal(await page.locator(".doccam").count(), 1, "shaking: no photo by itself");
   assert.equal(await developed(page), null);
   const g = await guide(page);
-  step(`a shaking view: "Hold steady", no photo (motion ${g?.motion?.toFixed?.(3)})`);
+  step(`a shaking view: "Hold still" with the Steady chip amber, no photo (motion ${g?.motion?.toFixed?.(3)})`);
 }, "lic-back-shaky");
 
 // 4. the wrong side: a license's front where the back is asked for
@@ -256,20 +263,28 @@ scene("license-back-ok", async (page) => {
   await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 30_000 });
   await page.evaluate(() => { globalThis.__humidDevelop = undefined; }); // the back's camera has opened by itself
   const seen = new Set();
-  const watch = setInterval(() => page.evaluate(() => document.querySelector(".doccam .dc-state strong")?.textContent).then((t) => t && seen.add(t)).catch(() => {}), 120);
+  const watch = setInterval(() => page.evaluate(() => document.querySelector(".doccam .dc-panel strong")?.textContent).then((t) => t && seen.add(t)).catch(() => {}), 60);
+  // before moving on, the camera says what it read
+  await state(page).locator("strong", { hasText: "Got it" }).waitFor({ timeout: 60_000 });
+  const fields = await state(page).locator(".dc-fields div").allInnerTexts();
+  assert.ok(fields.some((f) => /Name\s+Jordan Alex Specimen/.test(f)), `the read-back lists the name: ${fields.join(" | ")}`);
+  assert.ok(fields.some((f) => /Number\s+S12345678901/.test(f)), "and the number");
+  assert.ok(await page.locator(".doccam .dc-freeze").count(), "the photo is frozen in the frame");
+  await shot(page, "license-back-readback");
   await page.locator(".pushed", { hasText: "Review, then seal" }).waitFor({ timeout: 60_000 });
   clearInterval(watch);
   const d = await developed(page);
   assert.equal(d.how, "auto", "taken by itself");
   assert.equal(d.guided, true);
-  assert.ok(seen.has("Hold steady") || seen.has("Reading") || seen.has("Verifying"), `it said ${[...seen].join(", ")}`);
+  assert.ok(seen.has("Captured") && seen.has("Got it"), `it said ${[...seen].join(", ")}`);
+  const code = await page.evaluate(() => globalThis.__humidCode);
   const r = await cropIoU(page, { size: 0.97, ratio: 85.6 / 54 }, "license-back");
   assert.ok(r.iou > 0.93, `the crop holds the whole card where it was: overlap ${r.iou.toFixed(3)}`);
   assert.ok(Math.abs(r.ratio - 85.6 / 54) < 0.02, `ID-1 proportions: ${r.ratio.toFixed(3)}`);
   assert.equal(await page.locator("#idf-surname").inputValue(), "SPECIMEN", "the barcode was read from the still");
   assert.equal(await page.locator("#idf-number").inputValue(), "S12345678901");
   await shot(page, "license-back-read");
-  step(`license back: taken by itself, crop overlap ${r.iou.toFixed(3)}, barcode read from the ${d.source} (${d.stillW}px wide), rotate ${d.rotate}`);
+  step(`license back: taken by itself, crop overlap ${r.iou.toFixed(3)}, barcode read ${d.live ? `live, before the photo (${code?.n} reads)` : `from the ${d.source}`}; said: ${[...seen].join(" → ")}`);
   // the review has a Rotate control
   const rot = page.locator(".id-thumbs").getByRole("button", { name: /Rotate the back/ });
   assert.ok((await rot.boundingBox()).height >= 44, "Rotate is a 44 px target");
@@ -415,17 +430,18 @@ scene("still-upside-down", async (page) => {
 scene("green-while-reading", async (page) => {
   await page.evaluate(() => {
     globalThis.__looks = new Set();
-    new MutationObserver(() => { const c = document.querySelector(".doccam"); if (c) globalThis.__looks.add(`${c.dataset.phase}:${c.dataset.look}:${!!c.querySelector(".dc-busy:not(.dc-saved)")}:${!!c.querySelector(".dc-sweep")}`); })
+    new MutationObserver(() => { const c = document.querySelector(".doccam"); if (c) globalThis.__looks.add(`${c.dataset.phase}:${c.dataset.look}:${!!c.querySelector(".dc-freeze")}:${!!c.querySelector(".dc-sweep")}`); })
       .observe(document.body, { subtree: true, attributes: true, childList: true });
   });
   await pick(page, "Passport");
   await page.getByText("Read the ID chip").first().waitFor({ timeout: 90_000 });
   const looks = await page.evaluate(() => [...globalThis.__looks]);
-  const reading = looks.filter((l) => l.startsWith("reading:"));
+  const reading = looks.filter((l) => l.startsWith("check:"));
   assert.ok(reading.length, `the photo was read: ${looks.join(" ")}`);
-  assert.ok(reading.every((l) => l.startsWith("reading:ok:false")), `green, uncovered while reading: ${reading.join(" ")}`);
-  assert.ok(reading.some((l) => l.endsWith(":true")), "a green line sweeps the outline while it is read");
-  step(`while the passport page is read the outline stays green and uncovered (${reading.join(", ")})`);
+  assert.ok(reading.every((l) => l.startsWith("check:ok:true")), `green, with the photo frozen in the frame, while reading: ${reading.join(" ")}`);
+  assert.ok(reading.some((l) => l.endsWith(":true")), "a green line sweeps the frame while it is read");
+  assert.ok(looks.some((l) => l.startsWith("done:ok")), `then it says it's done: ${looks.join(" ")}`);
+  step(`while the passport page is read the frame is green, the photo frozen in it, a line sweeping it (${reading.join(", ")})`);
 }, "pp-ok");
 
 // 3.0.1: a document page: the page outline (between US Letter and A4), taken by itself, to the photo review with a clean scan
@@ -447,6 +463,72 @@ scene("page", async (page) => {
   assert.equal(await page.locator(".pushed .eyebrow", { hasText: "Document" }).count() > 0, true, "reviewed as a document");
   step(`a Letter page: the page outline (1:1.35), taken by itself, crop overlap ${r.iou.toFixed(3)}, reviewed as a document`);
 }, "page-letter-ok");
+
+// 3.0.3: the lock box follows the document the camera sees inside the frame (four edges and an angle, eased), amber while it isn't lined up
+scene("lock-box", async (page) => {
+  await pick(page, "Another card");
+  await says(page, "Move closer");
+  await page.locator(".dc-lock").waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(800); // eased onto where the card is
+  const f = await page.locator(".dc-frame").boundingBox(), b = await page.locator(".dc-lock").boundingBox();
+  const share = b.width / f.width, cx = (b.x + b.width / 2 - f.x) / f.width;
+  assert.ok(Math.abs(share - 0.58) < 0.06, `the lock box is the card's size: ${share.toFixed(2)} of the frame (the card is 0.58)`);
+  assert.ok(Math.abs(cx - 0.5) < 0.05, `and where it is: centre at ${cx.toFixed(2)}`);
+  assert.equal(await page.locator('.dc-frame[data-state="close"]').count(), 1, "the frame says close (amber)");
+  assert.equal(await state(page).locator('.dc-chips li[data-k="framed"]').getAttribute("data-state"), "warn", "Framed: amber");
+  await shot(page, "lock-box");
+  step(`the lock box sits on the card the camera sees: ${share.toFixed(2)} of the frame wide, centred at ${cx.toFixed(2)}; frame and Framed chip amber`);
+}, "lic-back-small");
+
+// 3.0.3: a license back held up when the front is asked for: its barcode is read live and it's kept as the back, then the front is asked for
+scene("front-is-back", async (page) => {
+  await pick(page, "Driver's license");
+  await state(page).locator("strong", { hasText: "That was the back" }).waitFor({ timeout: 60_000 });
+  const fields = await state(page).locator(".dc-fields div").allInnerTexts();
+  assert.ok(fields.some((f) => /Name\s+Jordan Alex Specimen/.test(f)), `read from its barcode: ${fields.join(" | ")}`);
+  await shot(page, "front-is-back");
+  await page.locator(".dc-saved-chip", { hasText: "Back saved. Now the front." }).waitFor({ timeout: 20_000 });
+  const d = await developed(page);
+  assert.equal(d.side, "back"); assert.equal(d.live, true, "read live, before the photo");
+  step("a license back held up for the front: read live, kept as the back, and the front's camera opens (\"Back saved. Now the front.\")");
+}, "lic-back-ok");
+
+// 3.0.3: nothing to read in the photo: the camera says so plainly and offers Try again or Keep the photo, never a silent loop
+scene("no-read-choice", async (page) => {
+  await pick(page, "Driver's license");
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam .dc-shutter").click(); // the front
+  await page.locator(".dc-saved-chip", { hasText: "Front saved" }).waitFor({ timeout: 30_000 });
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam .dc-shutter").click(); // the back, far too blurred to read
+  await state(page).locator("strong", { hasText: "Couldn't read the barcode" }).waitFor({ timeout: 60_000 });
+  assert.equal(await state(page).getAttribute("data-phase"), "fail");
+  await shot(page, "no-read-choice");
+  // Try again goes back to the live view
+  await state(page).getByRole("button", { name: "Try again" }).click();
+  await page.waitForFunction(() => ["aim", "adjust", "hold"].includes(document.querySelector(".doccam")?.dataset.phase), null, { timeout: 10_000 });
+  // the shutter again, then Keep the photo: on to the review, to type the details
+  await page.locator(".doccam .dc-shutter:not([disabled])").waitFor({ timeout: 20_000 });
+  await page.locator(".doccam .dc-shutter").click();
+  await state(page).getByRole("button", { name: "Keep the photo" }).click({ timeout: 60_000 });
+  await page.locator(".pushed", { hasText: "Review, then seal" }).waitFor({ timeout: 30_000 });
+  step("a back that can't be read: \"Couldn't read the barcode\" with Try again (back to live) and Keep the photo (on to type the details)");
+}, "lic-back-blur");
+
+// 3.0.3: the payment card's number is said back on the camera before the form
+scene("card-readback", async (page) => {
+  await page.evaluate(() => {
+    globalThis.__said = [];
+    new MutationObserver(() => { const t = document.querySelector(".doccam .dc-panel strong")?.textContent; if (t && globalThis.__said.at(-1) !== t) globalThis.__said.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
+  await pick(page, "Payment card");
+  await state(page).locator("strong", { hasText: "Got it" }).waitFor({ timeout: 90_000 }).catch(async (e) => { console.error("said: " + JSON.stringify(await page.evaluate(() => globalThis.__said))); throw e; });
+  const fields = await state(page).locator(".dc-fields div").allInnerTexts();
+  assert.ok(fields.some((f) => /Card\s+Visa ending 1111/.test(f)), `the card is said back: ${fields.join(" | ")}`);
+  await shot(page, "card-readback");
+  await page.locator("#cf-pan").waitFor({ timeout: 30_000 });
+  step(`payment card: "${fields.join(" · ").replace(/\n/g, " ")}" said on the camera, then the form`);
+}, "pay-front-ok");
 
 /* ---------------- run ---------------- */
 

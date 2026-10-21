@@ -100,7 +100,7 @@ try {
   await unlock(page);
   await page.locator(".item", { hasText: "Travel card" }).waitFor({ timeout: 30_000 });
   await openCardCamera(page);
-  await page.locator(".dc-status").getByRole("button", { name: "Type it" }).click();
+  await page.locator(".dc-panel").getByRole("button", { name: "Type it" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });
   await page.fill("#cf-pan", "4111 1111 1111 1112");
   assert.ok(await page.getByText("That number has a typo").isVisible(), "a typo is caught");

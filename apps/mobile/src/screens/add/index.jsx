@@ -21,7 +21,7 @@ import * as S from "../../core/state.js";
 import { addDocument, checkPass, addPass, toast, markPicking, setPref, setDraft, clearDraft } from "../../core/index.js";
 import { DocCamera } from "./camera.jsx";
 import { IdFlow, ID_CHOICES, recordFrom } from "./ids.jsx";
-import { CardFlow, cardTapReader, readFrontEitherWay } from "./cards.jsx";
+import { CardFlow, cardTapReader, readFrontEitherWay, frontSaid } from "./cards.jsx";
 import { Review, Step, PhotoChoice, canvasBlob, versionOf, PAPER_SHARE } from "./review.jsx";
 import { PassCheck } from "./passes.jsx";
 import { looksLikePass } from "@humid/wallet";
@@ -63,7 +63,7 @@ function groups() {
       ids.find((c) => c.key === "other"),
     ] },
     { title: "Documents and more", items: [
-      { key: "page", icon: "scan", title: "Document", sub: "A letter, form or certificate, one page at a time. Line the page up in the outline." },
+      { key: "page", icon: "scan", title: "Document", sub: "A letter, form or certificate, one page at a time." },
       { key: "photo", icon: "camera", title: "Photo", sub: "Anything else. Take the picture yourself." },
       { key: "pass", icon: "ticket", title: "Wallet pass", sub: "A boarding pass, ticket or membership from Apple Wallet (.pkpass). Checked against its issuer." },
       { key: "file", icon: "file", title: "File", sub: "PDF, image, any type up to 50 MB." },
@@ -234,13 +234,13 @@ function AddFlow({ open }) {
           onCancel={back} onDone={(res) => photographed(res, "photo")} />
       )}
       {step.at === "pagecam" && (
-        <DocCamera kind="page" shape="page" eyebrow="Document" title="One page" hint="Lay the page flat and line it up inside the outline. It takes the photo by itself."
+        <DocCamera kind="page" shape="page" eyebrow="Document" title="One page" hint="Lay the page flat and fill the frame with it. It takes the photo by itself."
           onCancel={back} onDone={(res) => photographed(res, "page")} />
       )}
       {step.at === "cardcam" && (
-        <DocCamera kind="card" side="front" shape="id1" eyebrow="Payment card" title="The front of the card" hint="Line the card up inside the outline, number side up. Never the PIN."
+        <DocCamera kind="card" side="front" shape="id1" expect="card" eyebrow="Payment card" title="The front of the card" hint="Number side up, filling the frame. Never the PIN."
           onCancel={back} extra={cardWays("cardcam")}
-          onDone={async ({ canvas }) => { const r = await readFrontEitherWay(canvas); return () => go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "cardcam"); }} />
+          onDone={async ({ canvas }) => { const r = await readFrontEitherWay(canvas); return { result: frontSaid(r.r), next: () => go({ at: "card", start: { front: { canvas: r.canvas, read: r.r } } }, "cardcam") }; }} />
       )}
       {step.at === "photo" && <PhotoReview step={step} setStep={setStep} when={when} onBack={back} onDraft={setInner}
         onRetake={() => go({ at: step.kind === "page" ? "pagecam" : "camera" }, "pick")} onPick={() => go({ at: "pick", shot: step.shot, back: { ...step, from: from.current } }, "close")} />}

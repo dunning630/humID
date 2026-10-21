@@ -428,20 +428,17 @@ export function fitOf(edges) {
 export const MESSAGES = {
   dark: { title: "Too dark", detail: "Turn on the light, or move somewhere brighter.", help: "light" },
   glare: { title: "Too much glare", detail: "Tilt the document a little so the shine moves off it.", help: null },
-  closer: { title: "Move closer", detail: "Fill the outline with the document.", help: null },
-  fill: { title: "Fill the outline", detail: "Bring it a little closer, edge to edge.", help: null },
-  back: { title: "Move back a little", detail: "The whole document has to fit inside the outline.", help: null },
-  shift: { title: "Line it up", detail: "Move it so its edges meet the outline.", help: null },
-  tilt: { title: "Straighten the card", detail: "Turn it until its edges run along the outline.", help: null },
+  closer: { title: "Move closer", detail: "Fill the frame with the document.", help: null },
+  fill: { title: "Fill the frame", detail: "Bring it a little closer, edge to edge.", help: null },
+  back: { title: "Move back a little", detail: "The whole document has to fit inside the frame.", help: null },
+  shift: { title: "Line it up", detail: "Move it so its edges meet the frame.", help: null },
+  tilt: { title: "Straighten the card", detail: "Turn it until its edges run along the frame.", help: null },
   flat: { title: "Hold the phone flat", detail: "Hold it straight above the document, not at an angle.", help: null },
   blur: { title: "Not sharp yet", detail: "Hold still and let the camera focus. Wipe the lens if it stays blurry.", help: null },
   showback: { title: "Show the back", detail: "Turn it to the side with the barcode, or press the round button.", help: null },
   showfront: { title: "Show the front", detail: "The side with your photo.", help: null },
   showpage: { title: "Show the photo page", detail: "The page with your photo and the two lines of <<<.", help: null },
 };
-
-/** How long a problem must last before it is said (ms), where it is not the usual 700: a blur is often just the focus settling; the wrong side takes a moment to turn. */
-export const SAY_AFTER = { blur: 1800, showback: 1800, showfront: 1800, showpage: 2200, dark: 900 };
 
 /**
  * One verdict from the numbers.
@@ -503,10 +500,10 @@ export function judge(m, template, extra = {}) {
     const x = side(m.dx, "left", "right"), y = side(m.dy, "higher", "lower");
     const move = [side(m.dx, "right", "left"), side(m.dy, "down", "up")].filter(Boolean).join(" and ");
     const at = [y, x && `to the ${x}`].filter(Boolean).join(" and ");
-    return say("shift", at ? `The ${noun} sits ${at} of the outline. Move it ${move}.` : null);
+    return say("shift", at ? `The ${noun} sits ${at} of the frame. Move it ${move}.` : null);
   }
   // turn
-  if (Math.abs(m.rot) > TH.tilt && m.rotSpread < 6) return say("tilt", template?.shape === "td3" ? "Turn the page until its edges run along the outline." : null);
+  if (Math.abs(m.rot) > TH.tilt && m.rotSpread < 6) return say("tilt", template?.shape === "td3" ? "Turn the page until its edges run along the frame." : null);
   if (Math.abs(m.flatH) > TH.flat || Math.abs(m.flatV) > TH.flat) return say("flat");
   if (Math.abs(m.rot) >= TH.deskew[0] && Math.abs(m.rot) <= TH.deskew[1] && m.rotSpread < 4 && m.sides >= 3) out.deskew = m.rot;
   // the picture's own quality

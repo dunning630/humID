@@ -223,7 +223,7 @@ try {
   await page.waitForTimeout(5000);
   assert.ok(await page.locator(".doccam").isVisible(), "no document, no photo");
   assert.equal(await page.locator(".doccam").getAttribute("data-look"), "searching");
-  await page.locator(".doccam .dc-state strong", { hasText: /Fit the card in the outline|Too dark/ }).waitFor(); // this fixture is a dim table: "Too dark" is the honest answer
+  await page.locator(".doccam .dc-panel strong", { hasText: /Place the card in the frame|Too dark/ }).waitFor(); // this fixture is a dim table: "Too dark" is the honest answer
   await shot(page, "8-empty-table");
   await page.getByRole("button", { name: "Close the camera" }).click();
   await page.locator(".doccam").waitFor({ state: "detached" });

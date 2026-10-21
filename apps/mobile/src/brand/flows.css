@@ -72,134 +72,154 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .boot-error pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--f-mono); color: var(--amber-hi); background: var(--abyss); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 12px; margin: 14px 0 20px; }
 
 /* ---------------- identity documents: camera, review, card view ---------------- */
+/* The document camera (3.0.3). Always dark, whatever the app's theme: its colours are its own.
+   White: looking. Amber: something to change. Mint: lined up, read, kept (the brand's meanings). */
 .doccam { position: fixed; inset: 0; z-index: 55; background: #000; color: #fff; overflow: hidden; animation: fade .2s var(--ease) both; }
-.doccam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-/* the phone's document scanner takes the photo: no live view or frame here, only what it's doing */
-.doccam[data-scanner] video, .doccam[data-scanner] .dc-frame .c, .doccam[data-scanner] .dc-bottom .dc-shutter { visibility: hidden; }
-.doccam[data-scanner] .dc-frame { border: 0; box-shadow: none; }
-.dc-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: calc(var(--safe-t) + 76px) 16px calc(var(--safe-b) + 150px); pointer-events: none; }
+.doccam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; touch-action: manipulation; }
+.dc-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: calc(var(--safe-t) + 76px) 16px calc(var(--safe-b) + 250px); pointer-events: none; }
 .dc-frame { position: relative; width: min(100%, 560px); aspect-ratio: 1.586; max-height: 100%; border-radius: 16px; transition: opacity .25s var(--ease); }
 .dc-frame[data-shape="td3"] { aspect-ratio: 1.42; }
 .dc-frame[data-shape="full"] { width: 100%; height: 100%; aspect-ratio: auto; }
 .dc-frame[data-shape="page"] { width: min(100%, 440px, calc((100dvh - var(--safe-t) - var(--safe-b) - 226px) / 1.35)); aspect-ratio: 100 / 135; }
-/* 3.0.1: no outline is drawn around a document found in view (no four corner dots): the frame's own
-   corners say it, amber when close, green when it is found and steady. */
-.doccam:not([data-guided])[data-look="close"] .dc-frame .c { border-color: var(--amber-hi); opacity: 1; }
-.doccam:not([data-guided])[data-look="ok"] .dc-frame .c { border-color: var(--mint); opacity: 1; }
-.dc-sweep { position: absolute; left: 4%; right: 4%; top: 5%; bottom: 5%; overflow: hidden; pointer-events: none; }
-.dc-sweep i { position: absolute; inset: 0; border-bottom: 3px solid var(--mint); background: linear-gradient(180deg, transparent 70%, rgba(111,227,180,.22)); transform: translateY(-100%); will-change: transform; animation: dc-sweep 1.6s ease-in-out infinite alternate; }
-@keyframes dc-sweep { to { transform: translateY(0); } }
-.doccam[data-look="searching"] .dc-frame .c { animation: dc-seek 2.4s var(--ease) infinite; }
-@keyframes dc-seek { 50% { transform: scale(1.12); } }
-.dc-frame .c { transform-box: fill-box; }
-.dc-frame .c { position: absolute; width: 34px; height: 34px; border: 3px solid var(--mint); }
-.dc-frame .tl { top: -2px; left: -2px; border-right: 0; border-bottom: 0; border-radius: 16px 0 0 0; }
-.dc-frame .tr { top: -2px; right: -2px; border-left: 0; border-bottom: 0; border-radius: 0 16px 0 0; }
-.dc-frame .bl { bottom: -2px; left: -2px; border-right: 0; border-top: 0; border-radius: 0 0 0 16px; }
-.dc-frame .br { bottom: -2px; right: -2px; border-left: 0; border-top: 0; border-radius: 0 0 16px 0; }
-.dc-mrz { position: absolute; left: 3%; right: 3%; bottom: 3%; height: 24%; border: 1.5px dashed rgba(245,166,35,.85); border-radius: 8px; background: rgba(245,166,35,.06); }
-.dc-mrz[data-shape="id1"] { height: 32%; }
-/* The guided scan (core/guide.js, 2.2.0): a fixed outline at the document's real proportions (ID-1 85.6 x 54 mm,
-   ID-3 125 x 88 mm), centred, everything outside it dimmed, four corner marks. It never moves: the person lines
-   the document up in it. White while looking, amber when close, mint when lined up (the brand's meanings). */
-.doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,255,255,.5); aspect-ratio: 85.6 / 54; transition: box-shadow .25s var(--ease); }
+
+/* the frame: fixed, at the document's real proportions (ID-1 85.6 x 54 mm, ID-3 125 x 88 mm, a page 1:1.35), centred,
+   everything outside it dimmed. It never moves, so the crop never moves. */
+.doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,255,255,.55); aspect-ratio: 85.6 / 54; transition: box-shadow .2s var(--ease); }
 .doccam[data-guided] .dc-frame[data-shape="td3"] { aspect-ratio: 125 / 88; }
 .doccam[data-guided] .dc-frame[data-shape="page"] { aspect-ratio: 100 / 135; border-radius: 6px; }
-.doccam[data-guided] .dc-frame .c { opacity: 1; width: 30px; height: 30px; border-color: #fff; }
-.doccam[data-guided][data-look="close"] .dc-frame .c { border-color: var(--amber-hi); }
-.doccam[data-guided][data-look="ok"] .dc-frame .c { border-color: var(--mint); }
-.doccam[data-guided][data-look="ok"] .dc-frame { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 2.5px var(--mint); }
-.doccam[data-guided][data-look="searching"] .dc-frame .c { animation: none; }
-.dc-zone { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,255,255,.42); border-radius: 6px; pointer-events: none; }
+.doccam[data-guided] .dc-frame[data-state="close"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,185,74,.6); }
+.doccam[data-guided] .dc-frame[data-state="ok"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 3px var(--cam-ok), 0 0 26px 2px rgba(111,227,180,.35); }
+.dc-frame .c { position: absolute; width: 30px; height: 30px; border: 3.5px solid #fff; transition: border-color .15s var(--ease), transform .2s var(--ease); }
+.dc-frame .tl { top: -3px; left: -3px; border-right: 0; border-bottom: 0; border-radius: 16px 0 0 0; }
+.dc-frame .tr { top: -3px; right: -3px; border-left: 0; border-bottom: 0; border-radius: 0 16px 0 0; }
+.dc-frame .bl { bottom: -3px; left: -3px; border-right: 0; border-top: 0; border-radius: 0 0 0 16px; }
+.dc-frame .br { bottom: -3px; right: -3px; border-left: 0; border-top: 0; border-radius: 0 0 16px 0; }
+.dc-frame[data-state="close"] .c { border-color: var(--cam-warn); }
+.dc-frame[data-state="ok"] .c { border-color: var(--cam-ok); }
+/* looking for it: the corners breathe toward the middle */
+.dc-frame[data-state="searching"] .c { animation: dc-breathe 2.2s var(--ease) infinite; }
+.dc-frame[data-state="searching"] .tl { --dx: 6px; --dy: 6px; } .dc-frame[data-state="searching"] .tr { --dx: -6px; --dy: 6px; }
+.dc-frame[data-state="searching"] .bl { --dx: 6px; --dy: -6px; } .dc-frame[data-state="searching"] .br { --dx: -6px; --dy: -6px; }
+@keyframes dc-breathe { 50% { transform: translate(var(--dx), var(--dy)); } }
+.dc-frame[data-shape="full"] .c { opacity: .6; }
+.doccam:not([data-guided]) .dc-frame .c { border-color: rgba(255,255,255,.75); }
+
+/* what's printed where, faintly, so it's clear which way up and which side: the photo, the barcode, the lines of <<< */
+.dc-zone { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,255,255,.32); border-radius: 6px; pointer-events: none; transition: border-color .2s var(--ease), background .2s var(--ease), opacity .2s var(--ease); }
 .dc-zone[data-k="photo"] { border-radius: 8px; }
-.dc-zone[data-k="line"], .dc-zone[data-k="num"] { border-width: 0 0 1.5px; border-radius: 0; }
 .dc-zone[data-k="chip"] { border-radius: 4px; }
-.dc-zone[data-k="stripe"] { border: 0; background: rgba(255,255,255,.14); border-radius: 0; }
+.dc-zone[data-k="num"] { border-width: 0 0 1.5px; border-radius: 0; }
+.dc-zone[data-k="stripe"] { border: 0; background: rgba(255,255,255,.12); border-radius: 0; }
 .dc-zone[data-k="sign"] { border-style: solid; border-width: 0 0 1.5px; border-radius: 0; }
-.dc-zone[data-k="mrz"] { border-color: rgba(245,166,35,.85); background: rgba(245,166,35,.07); }
-.dc-zone[data-k="bar"] { border-color: rgba(255,255,255,.5); }
-.doccam[data-guided][data-phase="reading"] .dc-zone, .doccam[data-guided][data-phase="saved"] .dc-zone { opacity: 0; }
-/* being read: the template stays green and a green line sweeps it (no dark cover over the document) */
-.doccam[data-guided][data-phase="reading"] .dc-frame, .doccam[data-guided][data-phase="saved"] .dc-frame { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 3px var(--mint), 0 0 24px 2px rgba(111,227,180,.35); }
-.doccam[data-guided] .dc-sweep { left: 0; right: 0; top: 0; bottom: 0; border-radius: inherit; }
-@media (prefers-reduced-motion: reduce) { .doccam[data-guided] .dc-frame { transition: none; } }
-/* auto-capture: the corners say how close it is; a fill sweeps across as it's about to take the photo */
-.dc-frame .c { transition: border-color .2s var(--ease), opacity .25s var(--ease); }
-.doccam[data-look="searching"] .dc-frame .c { border-color: rgba(255,255,255,.75); }
-.dc-frame[data-shape="full"] .c { opacity: .55; }
-.dc-busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(4,14,10,.45); border-radius: 16px; }
-.dc-busy i { width: 42px; height: 42px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--mint); animation: spin .9s linear infinite; }
-.dc-saved { background: rgba(4,14,10,.55); animation: fade .15s var(--ease) both; }
-.dc-saved svg { width: 56px; height: 56px; padding: 10px; border-radius: 50%; color: var(--ground); background: var(--mint); box-shadow: 0 0 0 8px rgba(111,227,180,.25); }
-.dc-saved-chip { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 70px); display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 6px; border-radius: 999px; background: rgba(10,24,17,.88); border: 1px solid rgba(111,227,180,.45); font-size: var(--t-sm); white-space: nowrap; animation: fade .2s var(--ease) both; }
-.dc-saved-chip img { width: 46px; height: 29px; object-fit: cover; border-radius: 6px; }
-.dc-saved-chip span { display: flex; align-items: center; gap: 6px; }
-.dc-saved-chip svg { width: 16px; height: 16px; color: var(--mint); }
-.dc-side:disabled { opacity: .4; }
-.dc-label { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 70px); display: flex; align-items: center; gap: 12px; padding: 6px 10px 6px 12px; border-radius: 999px; background: rgba(10,24,17,.88); border: 1px solid rgba(111,227,180,.45); font-size: var(--t-sm); white-space: nowrap; max-width: calc(100% - 32px); animation: fade .2s var(--ease) both; }
-.dc-label > span { display: flex; align-items: center; gap: 6px; }
-.dc-label svg { width: 16px; height: 16px; color: var(--mint); }
-.dc-label .linklike { margin: -12px -4px; }
-.dc-bottom[data-tools] { grid-template-rows: auto auto; }
-.dc-tools { grid-column: 1 / -1; display: flex; justify-content: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-.doccam:has(.dc-tools) .dc-status { bottom: calc(var(--safe-b) + 230px); }
-.dc-stage { padding-bottom: calc(var(--safe-b) + 250px); }
-.doccam:has(.dc-tools) .dc-stage { padding-bottom: calc(var(--safe-b) + 356px); }
-.dc-tool { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.28); background: rgba(0,0,0,.45); color: #fff; font-size: 12.5px; }
-.dc-tool svg { width: 16px; height: 16px; }
-.dc-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: calc(var(--safe-t) + 10px) 10px 10px; background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0)); }
-.dc-top .grow { flex: 1; min-width: 0; }
-.dc-top strong { display: block; font-size: var(--t-lg); font-weight: 600; }
-.dc-top .eyebrow { color: var(--amber-hi); }
-.dc-top .icon-btn { color: #fff; background: rgba(0,0,0,.35); }
-.dc-top .icon-btn[aria-pressed="true"] { color: var(--amber-ink); background: var(--amber-hi); }
-/* What the camera is doing, as a card above the shutter (screens/scanui.jsx, core/scanflow.js) */
-.dc-status { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 122px); width: min(94%, 460px); font-size: var(--t-sm); color: var(--text); }
-.dc-state { display: grid; gap: 8px; padding: 10px 14px 12px; border-radius: 18px; background: rgba(8,20,14,.9); border: 1px solid rgba(111,227,180,.32); text-align: left; transition: border-color .25s var(--ease), background .25s var(--ease); }
-.dc-state[data-tone="warn"] { border-color: rgba(255,185,74,.7); background: rgba(29,17,5,.86); }
-.dc-state[data-tone="ok"] { border-color: var(--mint); }
-.dc-steps { list-style: none; display: flex; gap: 4px; margin: 0; padding: 0; }
-.dc-steps li { flex: 1; display: grid; gap: 4px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: rgba(243,246,244,.55); }
-.dc-steps li i { display: block; height: 4px; border-radius: 2px; background: rgba(255,255,255,.18); transition: background .25s var(--ease); }
-.dc-steps li[data-past] { color: rgba(243,246,244,.8); }
-.dc-steps li[data-past] i { background: var(--mint-deep); }
-.dc-steps li[data-on] { color: #fff; }
-.dc-steps li[data-on] i { background: var(--mint); }
-.dc-state[data-tone="warn"] .dc-steps li[data-on] i { background: var(--amber-hi); }
-.dc-msg { display: flex; align-items: center; gap: 10px; min-height: 44px; }
-.dc-ico { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: rgba(111,227,180,.16); color: var(--mint); }
-.dc-ico svg { width: 20px; height: 20px; }
-.dc-state[data-tone="warn"] .dc-ico { background: rgba(255,185,74,.2); color: var(--amber-hi); }
-.dc-state[data-tone="ok"] .dc-ico { background: var(--mint); color: var(--mint-ink); }
-.dc-ico[data-spin] svg { animation: dc-pulse 1.4s var(--ease) infinite; }
-@keyframes dc-pulse { 50% { opacity: .45; transform: scale(.88); } }
-.dc-words { display: grid; gap: 1px; min-width: 0; }
-.dc-words strong { font-size: var(--t-md); font-weight: 600; line-height: 1.2; }
-.dc-words span { color: rgba(243,246,244,.82); line-height: 1.3; }
-.dc-bar-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.16); overflow: hidden; }
-.dc-bar-track i { display: block; width: 100%; height: 100%; border-radius: 2px; background: var(--mint); transform-origin: 0 50%; transition: transform .2s linear; }
-.dc-bar-track[data-indeterminate] i { width: 40%; transform: none; animation: dc-slide 1.1s var(--ease) infinite; }
-@keyframes dc-slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+.dc-zone[data-k="mrz"], .dc-zone[data-k="bar"] { border-color: rgba(255,185,74,.75); background: rgba(255,185,74,.06); }
+.dc-zone[data-read] { border-style: solid; border-color: var(--cam-ok); background: rgba(111,227,180,.14); }
+.doccam[data-guided]:not([data-phase="aim"]):not([data-phase="adjust"]):not([data-phase="hold"]) .dc-zone { opacity: 0; }
+
+/* the lock box: where the camera sees the document, easing onto the frame as it's lined up */
+.dc-lock { position: absolute; box-sizing: border-box; border: 2px solid var(--cam-warn); border-radius: 12px; background: rgba(255,185,74,.08); transform-origin: 50% 50%; pointer-events: none;
+  transition: left .12s linear, top .12s linear, width .12s linear, height .12s linear, transform .12s linear; }
+/* the hold ring: fills round the frame as it holds still */
+.dc-ring { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.dc-ring path { fill: none; stroke: var(--cam-ok); stroke-width: 5; stroke-linecap: round; transition: stroke-dasharray .14s linear; }
+
+/* the capture: a flash, the photo frozen in the frame, a line sweeping it while it is read, a stamp once kept */
+.dc-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; pointer-events: none; }
+.dc-freeze { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: fill; animation: dc-settle .28s var(--ease-out) both; }
+.doccam:not([data-guided]) .dc-freeze { object-fit: contain; background: #000; }
+@keyframes dc-settle { from { transform: scale(1.04); filter: brightness(1.6); } }
+.dc-flash { position: absolute; inset: 0; background: #fff; animation: dc-flash .35s ease-out both; }
+@keyframes dc-flash { from { opacity: .85; } to { opacity: 0; } }
+.dc-sweep { position: absolute; inset: 0; overflow: hidden; }
+.dc-sweep i { position: absolute; inset: 0; border-bottom: 3px solid var(--cam-ok); background: linear-gradient(180deg, transparent 70%, rgba(111,227,180,.25)); transform: translateY(-100%); will-change: transform; animation: dc-sweep 1.3s ease-in-out infinite alternate; }
+@keyframes dc-sweep { to { transform: translateY(0); } }
+.dc-stamp { position: absolute; top: 10px; right: 10px; pointer-events: none; }
+.dc-stamp svg { display: block; width: 44px; height: 44px; padding: 9px; border-radius: 50%; color: var(--cam-ok-ink); background: var(--cam-ok); box-shadow: 0 0 0 6px rgba(111,227,180,.28), 0 4px 14px rgba(0,0,0,.4); animation: dc-pop .3s var(--ease-out) both; }
+@keyframes dc-pop { from { transform: scale(.4); opacity: 0; } }
+/* tap to focus */
+.dc-focus { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 2px solid var(--cam-warn); border-radius: 12px; animation: dc-focus .9s var(--ease-out) both; }
+@keyframes dc-focus { from { transform: scale(1.5); opacity: 0; } 25% { transform: scale(1); opacity: 1; } to { opacity: 0; } }
+
+/* the panel: right under the frame, where the eyes already are */
+.dc-panel { box-sizing: border-box; display: grid; gap: 10px; padding: 12px 14px; border-radius: 18px; background: var(--cam-panel); border: 1px solid rgba(255,255,255,.14); font-size: var(--t-sm); color: #fff; text-align: left; pointer-events: auto; transition: border-color .2s var(--ease); }
+.dc-frame > .dc-panel { position: absolute; top: calc(100% + 16px); left: 0; right: 0; }
+.dc-frame[data-shape="page"] > .dc-panel { left: -8%; right: -8%; }
+.doccam > .dc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 128px); width: min(calc(100% - 32px), 460px); }
+.dc-panel[data-tone="warn"] { border-color: rgba(255,185,74,.75); }
+.dc-panel[data-tone="ok"] { border-color: rgba(111,227,180,.7); }
+.dc-say { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+.dc-ico { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.1); color: #fff; }
+.dc-ico svg { width: 22px; height: 22px; }
+.dc-panel[data-tone="warn"] .dc-ico { background: rgba(255,185,74,.2); color: var(--cam-warn); }
+.dc-panel[data-tone="ok"] .dc-ico { background: var(--cam-ok); color: var(--cam-ok-ink); }
+.dc-panel[data-tone="busy"] .dc-ico { background: rgba(111,227,180,.16); color: var(--cam-ok); }
+.dc-ico[data-spin] svg { animation: dc-pulse 1.2s var(--ease) infinite; }
+@keyframes dc-pulse { 50% { opacity: .45; transform: scale(.86); } }
+.dc-words { display: grid; gap: 2px; min-width: 0; }
+.dc-words strong { font-size: 1.125rem; font-weight: 650; line-height: 1.2; }
+.dc-panel[data-tone="warn"] .dc-words strong { color: var(--cam-warn); }
+.dc-words > span:not(.sr) { color: rgba(243,246,244,.82); line-height: 1.3; }
+/* the live chips */
+.dc-chips { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; }
+.dc-chips li { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: .01em; color: rgba(243,246,244,.5); background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); transition: color .15s, background .15s, border-color .15s; }
+.dc-chips li i { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.3); transition: background .15s; }
+.dc-chips li[data-state="ok"] { color: #fff; border-color: rgba(111,227,180,.5); background: rgba(111,227,180,.14); }
+.dc-chips li[data-state="ok"] i { background: var(--cam-ok); }
+.dc-chips li[data-state="warn"] { color: #fff; border-color: rgba(255,185,74,.55); background: rgba(255,185,74,.14); }
+.dc-chips li[data-state="warn"] i { background: var(--cam-warn); }
+.dc-chips li[data-state="seen"] { color: #fff; border-color: rgba(255,185,74,.45); }
+.dc-chips li[data-state="seen"] i { background: var(--cam-warn); }
+.dc-chips li[data-state="busy"] { color: #fff; border-color: rgba(111,227,180,.4); }
+.dc-chips li[data-state="busy"] i { background: var(--cam-ok); animation: dc-pulse 0.9s var(--ease) infinite; }
+/* what was read */
+.dc-fields { display: grid; gap: 4px; margin: 0; padding: 8px 10px; border-radius: 12px; background: rgba(111,227,180,.08); border: 1px solid rgba(111,227,180,.22); }
+.dc-fields div { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; align-items: baseline; animation: dc-in .25s var(--ease-out) both; }
+.dc-fields div:nth-child(2) { animation-delay: .06s; } .dc-fields div:nth-child(3) { animation-delay: .12s; } .dc-fields div:nth-child(4) { animation-delay: .18s; } .dc-fields div:nth-child(5) { animation-delay: .24s; }
+@keyframes dc-in { from { opacity: 0; transform: translateY(4px); } }
+.dc-fields dt { color: rgba(243,246,244,.6); font-size: 12px; }
+.dc-fields dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .dc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .dc-act { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; min-width: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid rgba(255,255,255,.3); background: rgba(0,0,0,.35); color: #fff; font: 600 var(--t-sm)/1 var(--f-ui); }
 .dc-act svg { width: 18px; height: 18px; }
-.dc-act.primary { background: linear-gradient(180deg, var(--amber-hi), var(--amber)); border-color: transparent; color: var(--amber-ink); }
-.dc-act[aria-pressed="true"] { background: var(--amber-hi); color: var(--amber-ink); }
-.dc-shutter[data-offer] { animation: dc-offer 1.6s var(--ease) infinite; }
-@keyframes dc-offer { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,185,74,.0); } 50% { box-shadow: 0 0 0 10px rgba(255,185,74,.35); } }
-@media (prefers-reduced-motion: reduce) {
-  .dc-frame, .dc-frame .c, .dc-state, .dc-bar-track i { transition: none; }
-  .dc-sweep i, .dc-ico[data-spin] svg, .dc-shutter[data-offer], .doccam[data-look="searching"] .dc-frame .c { animation: none; }
-  .doccam .dc-bar-track[data-indeterminate] i { animation: none; width: 100%; opacity: .6; }
-}
-.dc-bottom { position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 16px 24px calc(var(--safe-b) + 22px); background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0)); }
+.dc-act.primary { background: linear-gradient(180deg, var(--cam-warn-hi), var(--cam-warn)); border-color: transparent; color: var(--cam-warn-ink); }
+.dc-act[aria-pressed="true"] { background: var(--cam-warn); color: var(--cam-warn-ink); }
+
+/* top and bottom bars */
+.dc-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: calc(var(--safe-t) + 10px) 10px 10px; background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0)); }
+.dc-top .grow { flex: 1; min-width: 0; }
+.dc-top strong { display: block; font-size: var(--t-lg); font-weight: 600; }
+.dc-top .eyebrow { color: var(--cam-warn); }
+.dc-top .icon-btn { color: #fff; background: rgba(0,0,0,.35); }
+.dc-top .icon-btn[aria-pressed="true"] { color: var(--cam-warn-ink); background: var(--cam-warn); }
+.dc-saved-chip { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 70px); display: flex; align-items: center; gap: 10px; padding: 6px 14px 6px 6px; border-radius: 999px; background: rgba(10,24,17,.9); border: 1px solid rgba(111,227,180,.45); font-size: var(--t-sm); max-width: calc(100% - 32px); box-sizing: border-box; animation: fade .2s var(--ease) both; }
+.dc-saved-chip img { flex: none; width: 46px; height: 29px; object-fit: cover; border-radius: 6px; }
+.dc-saved-chip span { display: flex; align-items: center; gap: 6px; }
+.dc-saved-chip svg { width: 16px; height: 16px; color: var(--cam-ok); }
+.dc-bottom { position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 16px 24px calc(var(--safe-b) + 22px); background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0)); transition: opacity .2s var(--ease); }
+.doccam[data-phase="done"] .dc-bottom, .doccam[data-phase="check"] .dc-bottom, .doccam[data-phase="capture"] .dc-bottom { opacity: .35; }
 .dc-shutter { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 5px; }
 .dc-shutter i { display: block; width: 100%; height: 100%; border-radius: 50%; background: #fff; transition: transform .15s var(--ease); }
 .dc-shutter:active i { transform: scale(.88); }
 .dc-shutter:disabled { opacity: .4; }
-.dc-side { justify-self: center; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 64px; border: 0; background: transparent; color: #fff; font-size: 12.5px; }
+.dc-shutter[data-offer] { animation: dc-offer 1.6s var(--ease) infinite; }
+@keyframes dc-offer { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,185,74,0); } 50% { box-shadow: 0 0 0 10px rgba(255,185,74,.35); } }
+.dc-side { justify-self: center; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 64px; min-height: 44px; border: 0; background: transparent; color: #fff; font-size: 12.5px; }
 .dc-side svg { width: 26px; height: 26px; }
-.dc-bottom .dc-side:last-child { justify-self: center; }
+.dc-side:disabled { opacity: .4; }
+
+/* short screens: the panel and the bar share the space under the frame */
+@media (max-height: 700px) {
+  .dc-stage { padding-bottom: calc(var(--safe-b) + 230px); }
+  .dc-panel { gap: 8px; padding: 10px 12px; }
+  .dc-ico { width: 34px; height: 34px; }
+  .dc-words strong { font-size: 1rem; }
+  .dc-bottom { padding-top: 8px; padding-bottom: calc(var(--safe-b) + 12px); }
+  .dc-shutter { width: 66px; height: 66px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dc-frame, .dc-frame .c, .dc-lock, .dc-ring path, .dc-chips li, .dc-zone { transition: none; }
+  .dc-frame .c, .dc-sweep i, .dc-ico[data-spin] svg, .dc-shutter[data-offer], .dc-chips li i, .dc-freeze, .dc-flash, .dc-stamp svg, .dc-fields div, .dc-focus { animation: none; }
+  .dc-flash { display: none; }
+}
 
 .kinds { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
 .kinds-group { margin-top: 18px; }
