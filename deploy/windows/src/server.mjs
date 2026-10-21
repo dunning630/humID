@@ -6,9 +6,6 @@
 //   node humid-server.mjs set   [--root DIR]  K=V …          change settings
 //   node humid-server.mjs show  [--root DIR]                 print settings (keys hidden) and server.json
 //   node humid-server.mjs mint  [--root DIR] COUNT [BATCH]   print COUNT new access codes to sell (docs/ANONYMITY.md)
-//   node humid-server.mjs backup  [--root DIR] --out FILE [--part all|main|keys]   an encrypted backup (stop the server first)
-//   node humid-server.mjs restore [--root DIR] --in FILE[,FILE] --to NEWDIR [--backup-key HBK-…]   decrypt into NEWDIR
-//   node humid-server.mjs backup-key [--root DIR]            print the backup key, to keep offline
 //   node humid-server.mjs pki init|status|issue ROLE --out DIR|import --from DIR [--root DIR]   mutual TLS between roles
 //   node humid-server.mjs seal-status [--root DIR]           which secrets are sealed (JSON)
 //   node humid-server.mjs version
@@ -30,7 +27,9 @@
 //             (HUMID_INTERNAL_PORT_BASE + 1…6) with mutual TLS (<root>\pki); the gateway reaches
 //             roles elsewhere at HUMID_CORE_HOST / HUMID_KEYS_HOST.
 //   sealing   every server secret is sealed under the seal key (keyguard.mjs: DPAPI on Windows).
-//   backups   encrypted under the backup key (backup.mjs); the key-share data can be its own file.
+//   backups   written by the admin program (admin/admin.mjs backup, restore; admin/backups.mjs):
+//             encrypted to a backup key the administrator keeps off this computer (server 3.1,
+//             PC-10), keyshare's data in its own file. This program holds no backup key.
 
 import "./embedded.mjs"; // must stay the first import
 import { existsSync, writeFileSync, mkdirSync, renameSync, readFileSync, readdirSync } from "node:fs";
@@ -38,8 +37,7 @@ import http from "node:http";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newInternalKeys, isSealedText, isSealedFile, makeCa, issueRoleCert, serverTls, roleOf, daysLeft, ROLES } from "@humid/svc";
-import { loadSealKey, loadBackupKey, serverSealer, storeKey, formatBackupKey, parseBackupKey, sealMode } from "./keyguard.mjs";
-import { writeBackup, restoreInto, readHeader, keyIdOf } from "./backup.mjs";
+import { loadSealKey, serverSealer, sealMode } from "./keyguard.mjs";
 import { sealer as makeSealer, writeAtomic } from "@humid/svc";
 import { createIdentity } from "../../../services/identity/src/server.js";
 import { createVault } from "../../../services/vault/src/server.js";
@@ -85,12 +83,9 @@ async function main() {
     case "show": return show();
     case "run": return run({ service: has("--service") });
     case "mint": return mint(argv[0], argv[1]);
-    case "backup": return backup();
-    case "restore": return restore();
-    case "backup-key": return printBackupKey();
     case "pki": return pki(argv.shift(), argv);
     case "seal-status": return sealStatus();
-    default: fail(`Unknown command "${command}". Use run, init, set, show, mint, backup, restore, backup-key, pki, seal-status or version.`, 2);
+    default: fail(`Unknown command "${command}". Use run, init, set, show, mint, pki, seal-status or version. (Backups: humid-admin.mjs backup and restore.)`, 2);
   }
 }
 
@@ -112,7 +107,6 @@ function init(changes) {
     else if (cur.HUMID_INTERNAL_SK && seal.on && !isSealedText(cur.HUMID_INTERNAL_SK)) missing.HUMID_INTERNAL_SK = seal.sealText("humid.env/HUMID_INTERNAL_SK", cur.HUMID_INTERNAL_SK); // seal an older install's key in place
     if (Object.keys(missing).length) updateEnvFile(envFile, missing);
   }
-  loadBackupKey(root, { create: true, env: envNow }); // made now, while an administrator is here to be shown it
   if (Object.keys(changes).length) set(changes);
   else validate(readEnvFile(envFile));
 }
@@ -197,7 +191,11 @@ async function run({ service }) {
   if (here3("front")) {
     if (!process.env.HUMID_INTERNAL_SK) fail("This machine runs the front role but has no HUMID_INTERNAL_SK (run init).");
     internalSk = seal.openText("humid.env/HUMID_INTERNAL_SK", process.env.HUMID_INTERNAL_SK);
-    if (seal.on && !isSealedText(cfg.HUMID_INTERNAL_SK)) { updateEnvFile(envFile, { HUMID_INTERNAL_SK: seal.sealText("humid.env/HUMID_INTERNAL_SK", internalSk) }); log("info", "sealed the internal key in humid.env"); }
+    if (seal.on && !isSealedText(cfg.HUMID_INTERNAL_SK)) {
+      // On Windows the server's account can't change humid.env (PC-09): humid install (init, as an administrator) seals it there.
+      try { updateEnvFile(envFile, { HUMID_INTERNAL_SK: seal.sealText("humid.env/HUMID_INTERNAL_SK", internalSk) }); log("info", "sealed the internal key in humid.env"); }
+      catch (e) { log("warn", "the internal key in humid.env is still in plain; humid install seals it", { err: e.code || e.message }); }
+    }
   }
   const pk = process.env.HUMID_INTERNAL_PK;
 
@@ -298,44 +296,6 @@ function healthOnly({ port, host, svcs, roles }) {
     res.end(JSON.stringify(req.url === "/healthz" ? { ok, roles } : { error: "not_found" }));
   });
   return { server, start: () => new Promise((r, j) => { server.once("error", j); server.listen(port, host, () => r(server)); }) };
-}
-
-/* ---------------- backups ---------------- */
-
-function backup() {
-  const out = flag("--out");
-  const part = flag("--part") || "all";
-  if (!out) fail("Usage: backup --out FILE.humidbak [--part all|main|keys]   (stop the server first)");
-  const env = { ...readEnvFile(envFile), ...process.env };
-  const backupKey = loadBackupKey(root, { create: true, env });
-  const sealKey = loadSealKey(root, { create: false, env });
-  const r = writeBackup({ root, out: resolve(out), part, backupKey, sealKey });
-  process.stdout.write(JSON.stringify({ file: r.file, bytes: r.bytes, files: r.files, part, keyId: keyIdOf(backupKey).toString("hex") }) + "\n");
-}
-
-function restore() {
-  const inp = flag("--in"), to = flag("--to"), typed = flag("--backup-key");
-  if (!inp || !to) fail("Usage: restore --in FILE[,FILE2] --to NEWDIR [--backup-key HBK-…]");
-  const files = inp.split(",").map((f) => resolve(f.trim())).filter(Boolean);
-  const env = { ...readEnvFile(envFile), ...process.env };
-  let key = typed ? parseBackupKey(typed) : loadBackupKey(root, { create: false, env });
-  if (!key) fail("This server has no backup key yet: give the one the backup was made with, --backup-key HBK-…");
-  const want = readHeader(files[0]).keyId;
-  if (keyIdOf(key).toString("hex") !== want) {
-    if (typed) fail("That backup key doesn't open this backup.");
-    fail("This backup was made with another server's backup key. Give it with -BackupKey HBK-… (humid backup-key on that server, or the copy you wrote down).");
-  }
-  const r = restoreInto({ files, to: resolve(to), backupKey: key });
-  // the seal key goes back under this machine's own protection; a typed backup key becomes this server's
-  if (r.sealKey) storeKey(resolve(to), "seal", r.sealKey);
-  if (typed) storeKey(resolve(to), "backup", key);
-  process.stdout.write(JSON.stringify({ to: resolve(to), files: r.files, parts: r.parts, sealKey: !!r.sealKey }) + "\n");
-}
-
-function printBackupKey() {
-  const env = { ...readEnvFile(envFile), ...process.env };
-  const k = loadBackupKey(root, { create: true, env });
-  process.stdout.write(`${formatBackupKey(k)}\n`);
 }
 
 /* ---------------- PKI for split roles ---------------- */

@@ -164,7 +164,10 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
    machine's seal key (DPAPI with BitLocker's TPM protector on Windows, a TPM2
    systemd credential on Linux), and the keys role can run on its own machine
    and storage over mutual TLS (docs/DEPLOY-VMS.md). On a single PC both halves
-   still share one machine, but a copy of its data folder opens neither.
+   still share one machine, but a copy of its data folder opens neither. Its
+   backups keep them apart too (server 3.1): each is encrypted to a backup key
+   kept off the computer, with keyshare's half in a separate file that can go
+   to another disk ([ADMIN.md](ADMIN.md), *Backups*).
 
 **Limits:**
 
@@ -313,8 +316,8 @@ storage). What it costs, and why IDs are kept off it:
 4. Server keys in an HSM or cloud KMS (including keyshare's `share-key.bin`), keyshare on
    separate storage from the vault; encrypted, tested backups of every volume. Server 3.0
    covers the middle of this: every server secret sealed at rest under a TPM-bound machine
-   key, the keys role on its own machine over mutual TLS, and encrypted backups with the
-   key-share data in its own file (docs/DEPLOY-VMS.md). An HSM is still the step after.
+   key, the keys role on its own machine over mutual TLS, and (3.1) backups encrypted to a key
+   held offline, with the key-share data in its own file (docs/DEPLOY-VMS.md, docs/ADMIN.md). An HSM is still the step after.
 5. Push and email alerts for new devices and recoveries.
 6. Account-key rotation after a device is removed.
 7. Penetration test of the deployed stack, including the admin console (docs/ADMIN.md).
@@ -342,9 +345,14 @@ storage). What it costs, and why IDs are kept off it:
 - **Mutual TLS between roles.** When front, core and keys run on separate machines, each
   hop is TLS 1.3 with Ed25519 certificates from the server's own CA; core and keys accept
   only `humid-front`, and the gateway accepts only the role it meant to reach.
-- **Encrypted backups.** `humid backup` writes chunked AES-256-GCM files under a backup key
-  (shown to the administrator once, `humid backup-key`), the key-share data in its own file.
-  A cut, reordered or altered backup is refused before anything is written.
+- **Encrypted backups (server 3.1, PC-10).** `humid backup` writes chunked AES-256-GCM files
+  whose file keys are sealed (HUMID-PQ1: ML-KEM-1024 + X25519) to a backup key the
+  administrator makes with `humid backup-key new -Path <file>`. Its private half goes only to
+  that file, kept off the computer; the server keeps the public half, so it can make backups
+  but can't open them. The key-share data goes to its own file (another disk), and the seal key
+  travels only inside the encrypted stream, so a restore on a new machine seals it again under
+  that machine's DPAPI. A cut, reordered, swapped or altered backup is refused before anything
+  changes. (3.0 test builds kept a DPAPI-sealed backup key on the server; 3.1 removes it.)
 - **Still open:** the hypervisor of a VM can read its memory (use confidential VMs where
   possible); restarting the keys role erases Heartbeat-armed vaults; an HSM for the seal
   key; one process per role (no scale-out yet).
