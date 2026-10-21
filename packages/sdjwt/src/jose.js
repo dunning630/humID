@@ -30,8 +30,12 @@ export function unb64u(s) {
   if (typeof s !== "string" || !/^[A-Za-z0-9_-]*$/.test(s)) fail("malformed", "Not base64url.");
   if (s.length % 4 === 1) fail("malformed", "Not base64url.");
   const t = s.replace(/-/g, "+").replace(/_/g, "/");
-  try { return Uint8Array.from(atob(t + "===".slice((t.length + 3) % 4)), (c) => c.charCodeAt(0)); }
+  let out;
+  try { out = Uint8Array.from(atob(t + "===".slice((t.length + 3) % 4)), (c) => c.charCodeAt(0)); }
   catch { fail("malformed", "Not base64url."); }
+  // Canonical only: unused trailing bits must be zero, so no two strings decode to the same bytes.
+  if (b64u(out) !== s) fail("malformed", "Not canonical base64url.");
+  return out;
 }
 const unb64 = (s) => { try { return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); } catch { fail("malformed", "A certificate in x5c isn't base64."); } };
 export const jsonOf = (s, what = "token") => { try { return JSON.parse(td.decode(unb64u(s))); } catch (e) { if (e instanceof JoseError) throw e; fail("malformed", `The ${what} isn't valid JSON.`); } };
