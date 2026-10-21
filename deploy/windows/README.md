@@ -15,9 +15,11 @@ node deploy/windows/build.mjs --zip
 CI builds the same zip on every change that touches a service, installs it on
 a Windows runner exactly as a person would, runs the deployment smoke test
 against it under both device policies, backs up, restores, updates in place,
-tests the admin console and its jobs (`tests/windows/admin-console.ps1`: an
-update that can't start is put back by itself, a good one keeps the server
-key, rollback) and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
+tests the admin console and its jobs (`tests/windows/admin-console.ps1`: the
+server's account writes only its own data, planted junctions are refused and
+removed, backups are encrypted with keyshare's half apart, unsigned or wrongly
+signed updates are refused, an update that can't start is put back by itself, a
+good one keeps the server key, rollback) and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
 
 ## What's in the package
 
@@ -26,7 +28,8 @@ key, rollback) and uninstalls. The zip is attached to the run as `HumID-Server-W
 | `humid-server.mjs` | The seven services (identity, vault, ledger, recovery, access, keyshare, gateway) and a local edge, bundled into one file. The same service code as the Docker images. |
 | `app/` | The web app the edge serves (release build: no demo mode). |
 | `humid-admin.mjs` | HumID Admin, the admin console ([docs/ADMIN.md](../../docs/ADMIN.md)), with its page inside. |
-| `humid.ps1` | Install, update, start / stop, status, logs, settings, backup / restore, expose, console, admin, uninstall; and the Windows side of the console (`probe`, `job-run`). Windows PowerShell 5.1 compatible. |
+| `humid-selftest.mjs` | The deployment smoke test as one file (`humid selftest`). |
+| `humid.ps1` | Install, update, start / stop, status, logs, settings, backup / restore / backup-key, pki, selftest, expose, console, admin, uninstall, test instances (`-Instance`); and the Windows side of the console (`probe`, `job-run`). Windows PowerShell 5.1 compatible. |
 | `Install HumID Server.cmd`, `Uninstall HumID Server.cmd` | Double-click launchers that ask for administrator rights. |
 | `README.txt` | Instructions for the person installing it. |
 
@@ -54,12 +57,19 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
   domain, which must use Cloudflare DNS).
 - **Files.** Program in `C:\Program Files\HumID Server`; settings, keys,
   databases and logs in `C:\ProgramData\HumID`, which only SYSTEM,
-  Administrators and LOCAL SERVICE can open.
+  Administrators and LOCAL SERVICE can open. LOCAL SERVICE reads it but writes
+  only its own data (`data\<service>`, `logs\`, its status files and the
+  approvals drop box), never where the SYSTEM console and its jobs read or
+  write ([docs/ADMIN.md](../../docs/ADMIN.md), "Separate rights").
 - **The admin console** is a second task, *HumID Admin*, run as SYSTEM on
   127.0.0.1:8490 (`HUMID_ADMIN_PORT`), with a third, *HumID Admin Job*, that
   runs what an administrator approved on their phone: HumID updates with
   automatic rollback, Windows updates, backups, restarts. See
   [docs/ADMIN.md](../../docs/ADMIN.md).
+- **Backups** are encrypted to a backup key whose private half you keep off the
+  computer (`humid backup-key new -Path E:\humid-backup.key`), with keyshare's
+  data in a separate file you can put on another disk; restoring needs the key
+  file. Without a key, backups wait ([docs/ADMIN.md](../../docs/ADMIN.md), "Backups").
 - **Settings** live in `C:\ProgramData\HumID\humid.env` and are changed with
   `humid set KEY=VALUE`, which validates them and restarts the server. The
   same variables as the Docker deployment ([../README.md](../README.md)),
