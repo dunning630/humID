@@ -95,8 +95,16 @@ function SecurityKeySheet({ onClose }) {
   useEffect(() => { setDraft("seckey", name ? { name } : null); }, [name]);
   const available = rec?.keys?.available !== false;
   const enough = [...pin.normalize("NFC")].length >= (newPin ? 6 : 4);
-  const ready = available && reader?.available && enough && (!newPin || pin === again) && !busy;
+  const usable = available && reader?.available && !busy;
+  // Never a dead button: a tap with something missing says what, and puts the cursor there.
+  const missing = () => {
+    if (!enough) return ["key-pin", newPin ? "Choose a PIN of at least 6 characters." : "Type your key's PIN first."];
+    if (newPin && pin !== again) return ["key-pin-again", "Type the same PIN again."];
+    return null;
+  };
   const add = async () => {
+    const m = missing();
+    if (m) { setProblem({ code: "missing", message: m[1] }); document.getElementById(m[0])?.focus(); return; }
     setBusy(true); setProblem(null);
     const r = await addSecurityKey({ name: name.trim() || `Security key ${keys.length + 1}`, pin, newPin });
     setBusy(false);
@@ -144,7 +152,7 @@ function SecurityKeySheet({ onClose }) {
           )}
           <Toggle checked={newPin} label="My key doesn't have a PIN yet" hint="HumID gives it the one you choose. The key keeps it; HumID doesn't."
             onChange={(v) => { setNewPin(v); setProblem(null); setAgain(""); }} />
-          <button class="btn primary block" style={{ marginTop: 12 }} disabled={!ready} onClick={add}><Icon name="fingerprint" />Hold the key to {reader?.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
+          <button class="btn primary block" style={{ marginTop: 12 }} disabled={!usable} onClick={add}><Icon name="fingerprint" />Hold the key to {reader?.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
           <p class="fine" style={{ marginTop: 8 }}>{reader && !reader.available
             ? (reader.reason || "This device can't reach a security key. Use the HumID app on a phone with NFC, or a computer with a contactless card reader.")
             : "One tap: the key makes HumID's credential and proves it's there. Then your face or fingerprint seals your key's part of recovery."}</p>

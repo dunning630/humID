@@ -65,7 +65,7 @@ test("NFC: data over 255 bytes goes in chained blocks (CLA | 0x10), answers over
   assert.ok(t.sent[0].startsWith("90108000ff"), "first block: CLA 0x90, 255 bytes, no Le");
   assert.equal(t.sent[0].length, (5 + 255) * 2);
   assert.ok(t.sent[1].startsWith("90108000ff"));
-  assert.ok(t.sent[2].startsWith("8010800096") && t.sent[2].endsWith("00"), "last block: CLA 0x80, 150 bytes, Le 00");
+  assert.ok(t.sent[2].startsWith("801080005a") && t.sent[2].endsWith("00"), "last block: CLA 0x80, 90 bytes, Le 00");
   assert.equal(t.sent[3], "00c0000010", "GET RESPONSE for the rest");
 });
 
@@ -192,9 +192,16 @@ test("keys HumID can't use are refused before anything is made, with a reason", 
 function tampered(k, fix) {
   return {
     transceive: async (apdu) => {
-      const r = await k.transceive(apdu);
-      const body = r.subarray(0, r.length - 2), sw = r.subarray(r.length - 2);
+      let r = await k.transceive(apdu);
       if (apdu[1] !== 0x10 && apdu[1] !== 0x11) return r; // only CTAP messages
+      // Gather a chained answer (61xx) from the key, so the whole CBOR can be rewritten.
+      const parts = [];
+      while (r[r.length - 2] === 0x61) {
+        parts.push(r.subarray(0, r.length - 2));
+        r = await k.transceive(Uint8Array.of(0x00, 0xc0, 0x00, 0x00, r[r.length - 1]));
+      }
+      if (parts.length) r = Uint8Array.from([...parts.flatMap((x) => [...x]), ...r]);
+      const body = r.subarray(0, r.length - 2), sw = r.subarray(r.length - 2);
       if (sw[0] !== 0x90 || body.length < 2 || body[0] !== 0) return r;
       const m = decode(body.subarray(1));
       const out = fix(m);

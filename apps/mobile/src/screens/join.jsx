@@ -289,7 +289,8 @@ function QuorumWait({ p, st, now }) {
                       <input id="join-key-pin" class="input code" type="password" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={63} value={pin} onInput={(e) => { setPin(e.currentTarget.value); setPinProblem(null); }} aria-describedby="join-key-hint" />
                       {pinProblem ? <span id="join-key-hint" class="hint danger" role="alert">{pinProblem.message}</span> : <span id="join-key-hint" class="hint">Only the key checks it. Eight wrong tries lock the key for good.</span>}
                     </div>
-                    <button class="btn primary" disabled={busy || [...pin].length < 4} onClick={() => run(async () => {
+                    <button class="btn primary" disabled={busy} onClick={() => run(async () => {
+                      if ([...pin].length < 4) { setPinProblem({ code: "missing", message: "Type your key's PIN first." }); document.getElementById("join-key-pin")?.focus(); return; }
                       const r = await addKeyToJoin(pin);
                       if (r === true) setPin("");
                       else if (r?.pinError) { setPinProblem(r.pinError); if (r.pinError.code === "pin_invalid") setPin(""); }

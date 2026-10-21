@@ -445,6 +445,10 @@ class SimulatedKey {
     if (!c) return sw(0x6700);
     if (c.cla === 0x00 && c.ins === 0xc0) return this.#getResponse(c);
     this.#responseRest = null; // anything but GET RESPONSE abandons a chained response
+    if (c.ins !== 0x10 && this.#chainLength + this.#chain.length) {
+      this.#chain = []; // ...and anything but NFCCTAP_MSG abandons a chained command
+      this.#chainLength = 0;
+    }
     if (c.cla === 0x00 && c.ins === 0xa4) return this.#select(c);
     if (c.cla !== 0x00 && c.cla !== 0x80 && c.cla !== 0x90) return sw(0x6e00);
     if (!this.#selected) return sw(0x6985);
@@ -518,10 +522,10 @@ class SimulatedKey {
     return sw(0x9000);
   }
 
-  // Response chaining: at most Ne bytes now (short APDU: Le, or 256 when absent;
-  // extended APDU: Le, or 65536), the rest announced by 61xx for GET RESPONSE.
+  // Response chaining: at most Ne bytes now (Le when given, short or extended;
+  // 256 when the command carried no Le), the rest announced by 61xx for GET RESPONSE.
   #deliver(body, c) {
-    const limit = c.le ?? (c.extended ? 65536 : 256);
+    const limit = c.le ?? 256;
     if (body.length <= limit) return sw(0x9000, body);
     this.#responseRest = body.slice(limit);
     return sw(0x6100 | Math.min(this.#responseRest.length, 256) % 256, body.subarray(0, limit));
@@ -946,7 +950,8 @@ class SimulatedKey {
     }
     if (!found.length) fail(S.NO_CREDENTIALS);
 
-    const ctx = { clientDataHash, up, uv, hmacInput, userDetails: uv && !byAllowList };
+    // §6.2.2: name and displayName only with UV and only when choosing among several accounts
+    const ctx = { clientDataHash, up, uv, hmacInput, userDetails: uv && found.length > 1 };
     const response = this.#assert(found[0], ctx);
     if (found.length > 1) {
       response.set(0x05, found.length);
@@ -993,7 +998,6 @@ class SimulatedKey {
       [0x03, signature],
     ]);
     if (cred.rk) {
-      // user name and display name only after user verification, among several accounts
       const u = { id: cred.userId };
       if (userDetails) {
         if (cred.userName !== undefined) u.name = cred.userName;
