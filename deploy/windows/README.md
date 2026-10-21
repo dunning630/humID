@@ -54,7 +54,10 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
   domain, which must use Cloudflare DNS).
 - **Files.** Program in `C:\Program Files\HumID Server`; settings, keys,
   databases and logs in `C:\ProgramData\HumID`, which only SYSTEM,
-  Administrators and LOCAL SERVICE can open.
+  Administrators and LOCAL SERVICE can open. LOCAL SERVICE reads it but writes
+  only its own data (`data\<service>`, `logs\`, its status files and the
+  approvals drop box), never where the SYSTEM console and its jobs read or
+  write ([docs/ADMIN.md](../../docs/ADMIN.md), "Separate rights").
 - **The admin console** is a second task, *HumID Admin*, run as SYSTEM on
   127.0.0.1:8490 (`HUMID_ADMIN_PORT`), with a third, *HumID Admin Job*, that
   runs what an administrator approved on their phone: HumID updates with

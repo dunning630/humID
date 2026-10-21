@@ -25,6 +25,7 @@ import { openStore, readJson, writeJsonAtomic } from "./store.mjs";
 import { newCode, formatCode, requestDigest, digestCheck, verifyApproval, ApprovalError, REQUEST_TTL_MS, CODE_RE } from "./verify.mjs";
 import { latestRelease, download, compareVersions, DEFAULT_REPO } from "./updates.mjs";
 import { pinnedKeys } from "./release.mjs";
+import { assertNoLinks, isPlainFile } from "./nolinks.mjs";
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const SESSION_IDLE_MS = 30 * MIN, SESSION_MAX_MS = 12 * HOUR;
@@ -33,6 +34,7 @@ const BREAK_GLASS_AFTER_MS = 30_000; // down this long before break-glass restar
 const CHECK_EVERY_MS = 6 * HOUR;    // HumID releases and Windows Update
 const JOB_TYPES = new Set(["restart-server", "backup", "update-humid", "rollback-humid", "os-install", "reboot", "defender-update", "os-scan"]);
 const MAINTENANCE = new Set(["restart-server", "backup", "update-humid", "rollback-humid", "reboot"]);
+const MAX_APPROVAL_BYTES = 256 * 1024; // an approval is a few kilobytes
 
 /* global __HUMID_ADMIN_PAGE__ */
 const PAGE = typeof __HUMID_ADMIN_PAGE__ === "string" ? __HUMID_ADMIN_PAGE__ : readFileSync(new URL("./page.html", import.meta.url), "utf8");
@@ -68,7 +70,7 @@ export function createConsole({
   const S = {
     status: null, edge: { ok: null, ms: null, at: 0, downSince: null }, probe: { data: null, at: 0, error: null },
     publicUrl: { at: 0 }, cpu: { pct: null, last: null }, humid: { checkedAt: 0, latest: null, error: null, checking: false },
-    requests: new Map(), lastOsScanStart: 0,
+    requests: new Map(), lastOsScanStart: 0, bridgeError: null,
   };
   const sessions = new Map();
 
@@ -225,11 +227,15 @@ export function createConsole({
     return r;
   }
 
+  /** The shared folder (data\admin) as real folders all the way down, or throw. */
+  const bridge = (dir) => { assertNoLinks(root, dir); return dir; };
+
   function publishRequest(r) {
+    bridge(shared.requests);
     const approvers = r.kind === "enrol" ? [] : store.admins().map((a) => a.account);
     writeJsonAtomic(join(shared.requests, `${r.code}.json`), { code: r.code, kind: r.kind, title: r.title, lines: r.lines, digest: r.digest, check: r.check, expiresAt: r.expiresAt, approvers });
   }
-  const unpublish = (code) => rmSync(join(shared.requests, `${code}.json`), { force: true });
+  const unpublish = (code) => rmSync(join(bridge(shared.requests), `${code}.json`), { force: true });
 
   function finish(r, state, extra = {}) {
     Object.assign(r, { state, ...extra, finishedAt: now() });
@@ -238,13 +244,22 @@ export function createConsole({
 
   /** Approvals the server handed over: each is checked here before anything happens. */
   function takeApprovals() {
+    // The server's account can drop files into approvals\, nothing more; a link anywhere on the
+    // way there means something planted it, and the console doesn't read through it.
+    try { bridge(shared.approvals); }
+    catch (e) {
+      if (S.bridgeError !== e.message) { store.audit("bridge.refused", { reason: e.message }); log("warn", "shared folder refused", { err: e.message }); }
+      S.bridgeError = e.message;
+      return;
+    }
+    S.bridgeError = null;
     let files = [];
     try { files = readdirSync(shared.approvals).filter((f) => f.endsWith(".json")); } catch { return; }
     for (const f of files) {
       const code = basename(f, ".json");
       const file = join(shared.approvals, f);
-      const rec = readJson(file);
-      rmSync(file, { force: true });
+      const rec = isPlainFile(file, MAX_APPROVAL_BYTES) ? readJson(file) : null; // a link or a folder reads as nothing
+      try { rmSync(file, { force: true }); } catch {}
       const r = CODE_RE.test(code) ? S.requests.get(code) : null;
       if (!r || r.state !== "waiting") { if (r) store.audit("approval.ignored", { code, reason: `request is ${r.state}` }); continue; }
       let v;
@@ -292,7 +307,7 @@ export function createConsole({
       if (["done", "failed", "expired", "cancelled", "rejected", "running"].includes(r.state) && t - (r.finishedAt || r.createdAt) > HOUR) S.requests.delete(r.code);
     }
     // anything left in the shared folder that this console doesn't know about (after a restart)
-    try { for (const f of readdirSync(shared.requests)) if (!S.requests.has(basename(f, ".json"))) rmSync(join(shared.requests, f), { force: true }); } catch {}
+    try { for (const f of readdirSync(bridge(shared.requests))) if (!S.requests.has(basename(f, ".json"))) rmSync(join(shared.requests, f), { force: true }); } catch {}
   }
 
   /* ---------------------------------------------------------------- health and alerts */
@@ -362,6 +377,7 @@ export function createConsole({
     const a = store.auditState();
     if (a.broken) add("bad", "console", "The admin audit log was altered", a.broken);
     if (S.probe.error) add("info", "console", "Couldn't read Windows details", S.probe.error);
+    if (S.bridgeError) add("bad", "console", "Approvals can't be read safely", `${S.bridgeError} Run humid install again in Terminal (Admin) to remove it, and check this computer.`);
     const order = { bad: 0, warn: 1, info: 2 };
     return out.sort((x, y) => order[x.level] - order[y.level]);
   }
@@ -369,6 +385,7 @@ export function createConsole({
   function summaryForPhones() {
     const al = alerts();
     const osu = osUpdates();
+    bridge(shared.dir);
     writeJsonAtomic(shared.summary, {
       at: new Date(now()).toISOString(),
       health: al.some((a) => a.level === "bad") ? "bad" : al.some((a) => a.level === "warn") ? "warn" : "ok",

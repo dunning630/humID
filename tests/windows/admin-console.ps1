@@ -1,5 +1,8 @@
 # The admin console on a real Windows machine (CI, after `humid install`):
 #   - HumID Admin runs as SYSTEM, on 127.0.0.1 only; its folder is closed to the server's account
+#   - the server's account writes only its own data, logs and the approvals drop box; a junction
+#     planted where SYSTEM reads (the approvals folder, a service's data) is refused, and
+#     installing again removes it without touching what it points to
 #   - `humid probe` reads this computer; `humid console` makes a one-time sign-in link that works
 #   - approved jobs run through the "HumID Admin Job" task: backup, restart
 #   - an update must be signed by a release key the console pins: unsigned or wrongly signed
@@ -37,7 +40,7 @@ if ($acl -match 'LOCAL SERVICE|Users|Everyone') { throw "backups folder is open 
 Say 'The console answers on 127.0.0.1:8490, and only there'
 $up = $false
 for ($i = 0; $i -lt 60 -and -not $up; $i++) { try { $up = (Invoke-WebRequest -UseBasicParsing "$base/healthz" -TimeoutSec 3).StatusCode -eq 200 } catch { Start-Sleep 2 } }
-if (-not $up) { Get-Content (Join-Path $data 'logs\humid-admin.log') -Tail 80 -ErrorAction SilentlyContinue; throw 'the console never answered' }
+if (-not $up) { Get-Content (Join-Path $data 'admin\logs\humid-admin.log') -Tail 80 -ErrorAction SilentlyContinue; throw 'the console never answered' }
 $listen = @(Get-NetTCPConnection -LocalPort 8490 -State Listen)
 if ($listen.LocalAddress | Where-Object { $_ -ne '127.0.0.1' }) { throw "the console listens on $($listen.LocalAddress -join ', ')" }
 
@@ -81,6 +84,63 @@ function Run-Job([string]$Type, $JobArgs = @{}, [int]$Minutes = 10) {
 Say 'Job: backup'
 $j = Run-Job 'backup'
 if ($j.state -ne 'done' -or -not (Test-Path (Join-Path $data "backups\$($j.result.file)"))) { throw 'backup job failed' }
+
+Say 'The server''s account writes only its own data, its log, and new files in the approvals drop box'
+$bad = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, DeleteSubdirectoriesAndFiles, WriteAttributes, Delete, ChangePermissions, TakeOwnership'
+function LsRights([string]$P) {
+  $r = 0
+  foreach ($a in (Get-Acl -LiteralPath $P).Access) {
+    if ($a.AccessControlType -eq 'Allow' -and $a.IdentityReference.Value -match 'LOCAL ?SERVICE' -and -not ($a.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { $r = $r -bor [int]$a.FileSystemRights }
+  }
+  return [Security.AccessControl.FileSystemRights]$r
+}
+foreach ($p in 'data', 'data\admin', 'data\admin\requests', 'csca') {
+  $full = Join-Path $data $p
+  if (-not (Test-Path $full)) { continue }
+  $r = LsRights $full
+  if ([int]$r -band [int]$bad) { throw "the server's account can change $p ($r)" }
+}
+foreach ($p in '.', 'data\admin\approvals') {
+  $r = LsRights (Join-Path $data $p)
+  if (-not ([int]$r -band [int][Security.AccessControl.FileSystemRights]::CreateFiles)) { throw "the server's account can't add files to $p ($r)" }
+  if ([int]$r -band [int]([Security.AccessControl.FileSystemRights]'AppendData, Delete, DeleteSubdirectoriesAndFiles, WriteAttributes, ChangePermissions')) { throw "the server's account can do more than add files to $p ($r)" }
+}
+foreach ($p in 'humid.env', 'data\admin\summary.json') {
+  $full = Join-Path $data $p
+  if ((Test-Path $full) -and ([int](LsRights $full) -band [int]$bad)) { throw "the server's account can change $p" }
+}
+foreach ($p in 'data\vault', 'data\keyshare', 'logs') {
+  $m = [int][Security.AccessControl.FileSystemRights]::Modify
+  if (([int](LsRights (Join-Path $data $p)) -band $m) -ne $m) { throw "the server's account can't write $p" }
+}
+if ((Get-Acl (Join-Path $data 'data\admin')).Owner -match 'LOCAL ?SERVICE') { throw 'the server''s account owns data\admin' }
+
+Say 'A junction planted as the approvals folder is refused by the console'
+$elsewhere = Join-Path $env:RUNNER_TEMP 'humid-planted'
+New-Item -ItemType Directory -Force -Path $elsewhere | Out-Null
+Set-Content -Path (Join-Path $elsewhere 'keep.txt') -Value 'not HumID''s' -Encoding ascii
+$approvals = Join-Path $data 'data\admin\approvals'
+$aside = Join-Path $data 'data\admin\approvals.real'
+Move-Item -LiteralPath $approvals -Destination $aside
+New-Item -ItemType Junction -Path $approvals -Target $elsewhere | Out-Null
+$seen = $false
+for ($i = 0; $i -lt 20 -and -not $seen; $i++) { Start-Sleep 2; $st = Invoke-RestMethod "$base/api/state" -WebSession $s; $seen = [bool](@($st.alerts) | Where-Object { $_.title -eq 'Approvals can''t be read safely' }) }
+if (-not $seen) { throw 'the console didn''t notice the junction' }
+[IO.Directory]::Delete($approvals, $false)
+Move-Item -LiteralPath $aside -Destination $approvals
+
+Say 'Job: a backup refuses a junction planted in a service''s data'
+$planted = Join-Path $data 'data\vault\planted'
+New-Item -ItemType Junction -Path $planted -Target $elsewhere | Out-Null
+$j = Run-Job 'backup'
+if ($j.state -ne 'failed' -or $j.error -notmatch 'is a link') { throw "expected the backup to refuse the junction, got $($j.state): $($j.error)" }
+
+Say 'Installing again removes planted junctions, and nothing they point to'
+New-Item -ItemType Junction -Path (Join-Path $data 'data\admin\requests\planted') -Target $elsewhere | Out-Null
+H install -Quiet
+foreach ($p in $planted, (Join-Path $data 'data\admin\requests\planted')) { if (Test-Path -LiteralPath $p) { throw "$p is still there" } }
+if (-not (Test-Path (Join-Path $elsewhere 'keep.txt'))) { throw 'removing a junction touched what it pointed to' }
+for ($i = 0; $i -lt 30; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "$base/healthz" -TimeoutSec 3).StatusCode -eq 200) { break } } catch { Start-Sleep 2 } }
 
 Say 'Job: restart the server'
 $kid = (Info).kid
