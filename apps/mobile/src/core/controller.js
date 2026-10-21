@@ -29,12 +29,12 @@ import {
   quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, sealCardPart, openCardPart, QUORUM, accountCheck, adminCheck,
 } from "@humid/recovery";
 import { readDocument } from "@humid/emrtd";
-import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, safeCheckIntegrity, chipIntegrityOk, applyChip, setImage } from "@humid/idscan";
+import { MEDIA_TYPE as ID_TYPE, encodeRecord, decodeRecord, summary as idSummary, readDg1, readDg2, safeCheckIntegrity, chipIntegrityOk, applyChip, setImage, recheckChip } from "@humid/idscan";
 import { MEDIA_TYPE as CARD_TYPE, encodeCard, decodeCard, summary as cardSummary, readContactless, readCardText, readCardBack } from "@humid/cards";
 import { parseAccessCode } from "@humid/pass";
 import { sealedWallet } from "@humid/pass/atrest";
 import { probeNfc, openChip } from "./nfc.js";
-import { textReader, grab } from "./scan.js";
+import { textReader, grab, portraitImage } from "./scan.js";
 import { readPkpass, passIndex, MEDIA_TYPE as PASS_TYPE, APPLE_ROOTS, WalletError } from "@humid/wallet";
 import { classify, inferKind, kindFromType } from "./categories.js";
 import { createLink, isNetworkFailure } from "./link.js";
@@ -1029,9 +1029,17 @@ async function fetchPlain(item, purpose, label) {
     const { envelope, share } = await api.downloadWithShare(item.id, proof);
     showInterrupt({ progress: 0.85, message: share ? "Checking, then opening with both keys…" : "Checking it's untouched, then opening…" });
     const out = await Suite.openOwn(envelope, keys);
-    if (!isSplit(out.meta)) { wipe(share); return out; }
-    try { return await splitUnwrap(out.bytes, share); }
-    finally { wipe(out.bytes, share); }
+    let result;
+    if (!isSplit(out.meta)) { wipe(share); result = out; }
+    else { try { result = await splitUnwrap(out.bytes, share); } finally { wipe(out.bytes, share); } }
+    // The envelope must be the document this vault entry names, not another one the
+    // holder once sealed (a deleted file, an older version): the index entry, sealed
+    // under a key only the holder has, records the document's hash.
+    if (item.plainHash && toHex(Suite.sha3_512(result.bytes)) !== item.plainHash) {
+      wipe(result.bytes);
+      throw new Error("The server sent a different document than the one in your vault. It wasn't opened.");
+    }
+    return result;
   });
 }
 
@@ -1043,6 +1051,13 @@ export async function openItem(item) {
     let url = null, text = null, idRecord = null, cardRecord = null, pass = null, passError = null;
     if (type === ID_TYPE) {
       try { idRecord = decodeRecord(bytes); } catch { text = new TextDecoder().decode(bytes); }
+      // The chip photo shown is re-made from the chip's own DG2 every time, never
+      // taken from the stored copy (precert APP-05): a JPEG 2000 photo can't be
+      // compared byte for byte after conversion.
+      if (idRecord?.raw?.chip?.dg2 && recheckChip(idRecord).ok) {
+        try { idRecord.images.portrait = await portraitImage(readDg2(fromB64(idRecord.raw.chip.dg2))); }
+        catch { delete idRecord.images.portrait; }
+      }
     } else if (type === CARD_TYPE) {
       try { cardRecord = decodeCard(bytes); } catch { text = "This card record can't be read."; }
       wipe(bytes); // the card lives only in the viewer, masked until revealed

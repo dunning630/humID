@@ -50,7 +50,8 @@ function embeddedV4(v6) {
   if (!words) return null;
   const v4 = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
   if (words.slice(0, 5).every((w) => w === 0) && (words[5] === 0xffff || words[5] === 0)) return v4(words[6], words[7]); // ::ffff:a.b.c.d, ::a.b.c.d
-  if (words[0] === 0x64 && words[1] === 0xff9b) return v4(words[6], words[7]); // 64:ff9b::/96 NAT64
+  if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) return v4(words[6], words[7]); // ::ffff:0:a.b.c.d (SIIT)
+  if (words[0] === 0x64 && words[1] === 0xff9b && words.slice(2, 6).every((w) => w === 0)) return v4(words[6], words[7]); // 64:ff9b::/96 NAT64
   if (words[0] === 0x2002) return v4(words[1], words[2]); // 6to4
   return null;
 }
@@ -74,7 +75,12 @@ export function publicAddress(address, blockList = STRICT) {
   if (family === 6) {
     if (blockList.check(address, "ipv6")) return false;
     const v4 = embeddedV4(address);
-    return v4 ? !blockList.check(v4, "ipv4") : true;
+    if (v4) return !blockList.check(v4, "ipv4");
+    const w = expand(address);
+    if (!w) return false;
+    if (w[0] === 0x64 && w[1] === 0xff9b) return false; // 64:ff9b:1::/48, local-use NAT64 (RFC 8215)
+    // Otherwise only global unicast (2000::/3) is reachable on the internet.
+    return (w[0] & 0xe000) === 0x2000;
   }
   return false;
 }
@@ -110,7 +116,9 @@ export function safeFetch(input, { maxBytes = 8 * MiB, timeoutMs = 10_000, accep
 
   return new Promise((done, failed) => {
     let finished = false;
-    const finish = (fn, v) => { if (!finished) { finished = true; clearTimeout(timer); fn(v); } };
+    // Whatever ends the request also closes its connection: nothing keeps reading
+    // after the answer is decided (review finding: drained error bodies, late DNS).
+    const finish = (fn, v) => { if (!finished) { finished = true; clearTimeout(timer); req?.destroy(); fn(v); } };
     const timer = setTimeout(() => { req?.destroy(); finish(failed, new CredsError("timeout", "The server took too long to answer.")); }, timeoutMs);
     let req;
 
@@ -124,6 +132,7 @@ export function safeFetch(input, { maxBytes = 8 * MiB, timeoutMs = 10_000, accep
       // Every answer must be public: a name that also resolves to a private
       // address is refused outright, rather than hoping the public one is used.
       if (!addresses.every((a) => publicAddress(a, blockList))) throw new CredsError("blocked_address", "That address points inside a private network.");
+      if (finished) return; // the deadline passed while DNS answered: send nothing
       const pinned = addresses[0];
       const family = isIP(pinned);
 
@@ -135,8 +144,8 @@ export function safeFetch(input, { maxBytes = 8 * MiB, timeoutMs = 10_000, accep
         minVersion: "TLSv1.2", agent: false, ...(ca ? { ca } : {}),
       }, (res) => {
         const status = res.statusCode || 0;
-        if (status >= 300 && status < 400) { res.resume(); return finish(failed, new CredsError("redirect_refused", "The server answered with a redirect, which isn't followed.")); }
-        if (status !== 200) { res.resume(); return finish(failed, new CredsError("http_error", `The server answered ${status}.`)); }
+        if (status >= 300 && status < 400) { res.destroy(); return finish(failed, new CredsError("redirect_refused", "The server answered with a redirect, which isn't followed.")); }
+        if (status !== 200) { res.destroy(); return finish(failed, new CredsError("http_error", `The server answered ${status}.`)); }
         const declared = Number(res.headers["content-length"]);
         if (Number.isFinite(declared) && declared > maxBytes) { res.destroy(); return finish(failed, new CredsError("too_large", "The server's answer is too large.")); }
         const chunks = [];
@@ -149,6 +158,7 @@ export function safeFetch(input, { maxBytes = 8 * MiB, timeoutMs = 10_000, accep
         res.on("end", () => finish(done, { bytes: new Uint8Array(Buffer.concat(chunks)), contentType: String(res.headers["content-type"] || "").split(";")[0].trim().toLowerCase(), url: u.href }));
         res.on("error", () => finish(failed, new CredsError("network", "The connection broke while reading.")));
       });
+      req.setTimeout(timeoutMs, () => req.destroy());
       req.on("error", (e) => finish(failed, e instanceof CredsError ? e : new CredsError("network", "The server couldn't be reached securely.")));
       req.end();
     })().catch((e) => finish(failed, e instanceof CredsError ? e : new CredsError("network", "The server couldn't be reached.")));

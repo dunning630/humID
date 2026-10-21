@@ -307,3 +307,17 @@ test("CRD-01: a trusted root can't vouch for another state's or country's licens
   const d2 = specimenMdl({ C: "US", ST: "IL" }); delete d2["org.iso.18013.5.1"].issuing_country; delete d2["org.iso.18013.5.1"].issuing_jurisdiction;
   assert.throws(() => read(wallet({ authority: nowhere, data: d2 }), { roots: [nowhere.rootPem] }), code("untrusted_issuer"));
 });
+
+test("CRD-01 (review): a country or state claim in any namespace is held to the anchor", () => {
+  const device = generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey;
+  const il = issuingAuthority({ C: "US", ST: "IL", name: "Illinois SOS" });
+  for (const [ns, el] of [["org.iso.23220.1", { issuing_country: "CA" }], ["eu.europa.ec.eudi.pid.1", { issuing_country: "FR" }], ["org.iso.18013.5.1.aamva", { issuing_jurisdiction: "US-WI" }]]) {
+    // Straight through issuer data authentication, whatever a reader asked for.
+    const data = { ...specimenMdl({ C: "US", ST: "IL" }), [ns]: el };
+    assert.throws(() => verifyIssuerSigned(issue(il, data, device), { roots: [il.rootPem] }), code("untrusted_issuer"), ns);
+  }
+  assert.equal(verifyIssuerSigned(issue(il, specimenMdl({ C: "US", ST: "IL" }), device), { roots: [il.rootPem] }).state, "IL");
+  // A decoy mDL namespace with no country doesn't hide the claim in another one.
+  const decoy = { "org.iso.18013.5.1": { family_name: "X" }, "eu.europa.ec.eudi.pid.1": { issuing_country: "FR" } };
+  assert.throws(() => verifyIssuerSigned(issue(il, decoy, device), { roots: [il.rootPem] }), code("untrusted_issuer"));
+});

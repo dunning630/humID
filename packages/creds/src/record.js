@@ -34,9 +34,12 @@ export function recheckMdocRecord(rec, { roots, at } = {}) {
     return { ok: false, chain: "unchecked", reason: e instanceof MdocError ? e.message.replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()) : "the mobile ID's signed data can't be read" };
   }
   const fields = mdocFields(doc.docType, doc.values).fields;
-  for (const [k, from] of Object.entries(rec.source || {})) {
-    if (from !== "mdoc") continue;
-    if (!same(fields[k], rec.fields?.[k])) return { ok: false, chain: doc.chain, reason: "details marked as from the mobile ID don't match what its issuer signed" };
+  // Every field the issuer signed is compared, whatever source the record claims;
+  // only a correction marked as typed by hand may differ.
+  for (const [k, v] of Object.entries(fields)) {
+    if (v == null || v === "") continue;
+    if (same(v, rec.fields?.[k]) || rec.source?.[k] === "typed") continue;
+    return { ok: false, chain: doc.chain, reason: "details on this card don't match what the mobile ID's issuer signed" };
   }
   return { ok: true, chain: doc.chain };
 }
