@@ -18,6 +18,9 @@ on:
     branches: [main]
   workflow_dispatch: # manual run: everything
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -31,9 +34,9 @@ jobs:
       anyApps: ${{ steps.affected.outputs.anyApps }}
       anyServices: ${{ steps.affected.outputs.anyServices }}
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Tests (crypto compatibility, HTP/1 protocol, services end to end, penetration regression)
@@ -48,8 +51,12 @@ jobs:
         run: npm run build:app
       - name: Work out what this change affects
         id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          BASE=${{ github.event_name == 'workflow_dispatch' && 'none' || github.event.pull_request.base.sha || 'HEAD~1' }}
+          BASE="${PR_BASE:-HEAD~1}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then BASE=none; fi
           OUT=$(node tools/affected.mjs "$BASE")
           echo "$OUT" | jq .
           echo "apps=$(echo "$OUT" | jq -c .appMatrix)" >> "$GITHUB_OUTPUT"
@@ -65,8 +72,9 @@ jobs:
     if: needs.test.outputs.anyApps == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Unit tests on Windows (as the release runs them)
@@ -96,14 +104,16 @@ jobs:
       matrix: ${{ fromJson(needs.test.outputs.apps) }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
         with:
+          toolchain: 1.99.1 # = rust-toolchain.toml
           targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || matrix.platform == 'android' && 'aarch64-linux-android' || '' }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with: { workspaces: apps/mobile/src-tauri }
       - name: Linux system libraries
         if: matrix.platform == 'linux' || matrix.platform == 'android'
@@ -111,11 +121,13 @@ jobs:
       - name: Android NDK
         if: matrix.platform == 'android'
         id: ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
         with: { ndk-version: r27c }
       - name: Android NDK toolchain on PATH
         if: matrix.platform == 'android'
-        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+        env:
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
+        run: echo "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
       - run: npm run build:app
       - name: Compile (desktop)
         if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
@@ -141,12 +153,14 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04 # pcsc-lite 2 (--disable-polkit) and vsmartcard 0.9
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
+        with: { toolchain: 1.99.1 } # = rust-toolchain.toml
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with: { workspaces: plugins/humid-nfc }
       - name: PC/SC daemon, virtual reader, Linux libraries
         run: |
@@ -174,8 +188,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 25 # the checks take ~8 min; a stuck browser fails fast instead of holding the run
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Chromium for the browser check
@@ -240,7 +255,7 @@ jobs:
           grep -v '^{"t"' checkin.log | tail -60
           echo "::error::$(grep -v '^{"t"' checkin.log | grep -E 'Error|expected|actual|assert|waiting for|checkin.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/checkin" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
 
@@ -252,10 +267,11 @@ jobs:
       matrix: ${{ fromJson(needs.test.outputs.services) }}
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build humid-${{ matrix.service }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.service == 'edge' && 'services/edge/Dockerfile' || 'services/Dockerfile' }}
@@ -264,7 +280,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           outputs: type=docker,dest=/tmp/humid-${{ matrix.service }}.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: "image-${{ matrix.service }}", path: "/tmp/humid-${{ matrix.service }}.tar", retention-days: 1 }
 
   stack:
@@ -272,11 +288,12 @@ jobs:
     if: needs.test.outputs.anyServices == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { pattern: "image-*", path: /tmp/images, merge-multiple: true }
       - name: Load images built in this run; build the rest
         working-directory: deploy
@@ -326,8 +343,9 @@ jobs:
       HUMID: C:\Program Files\HumID Server\humid.ps1
       NODE_NO_WARNINGS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Build HumID Server for Windows
@@ -450,7 +468,7 @@ jobs:
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
           Get-Content C:\ProgramData\HumID\admin\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
           Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: HumID-Server-Windows
           path: deploy/windows/out/HumID-Server-Windows-*.zip
