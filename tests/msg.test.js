@@ -335,15 +335,132 @@ test("backend: the platform's crypto can replace the JS maths only if it agrees 
   assert.ok(M.checkBackend(M.backend()));
   const ref = M.backend();
   const broken = { ...ref, name: "broken", x25519: { publicKey: () => new Uint8Array(32), shared: ref.x25519.shared } };
-  assert.throws(() => M.useBackend(broken), (e) => e.code === "backend_mismatch");
+  assert.throws(() => M.useBackend(broken), (e) => e instanceof M.MsgError && e.code === "backend_mismatch_x25519");
   const lazyKem = { ...ref, name: "lazy", kem: { ...ref.kem, decapsulate: () => new Uint8Array(32) } };
-  assert.throws(() => M.useBackend(lazyKem), (e) => e.code === "backend_mismatch");
+  assert.throws(() => M.useBackend(lazyKem), (e) => e instanceof M.MsgError && e.code === "backend_mismatch_ml_kem");
   let calls = 0;
   const wrapped = { ...ref, name: "wrapped", kem: { ...ref.kem, encapsulate: (pk) => { calls++; return ref.kem.encapsulate(pk); } } };
   M.useBackend(wrapped);
   try { M.newPersona(rnd(64)); assert.equal(M.backend().name, "wrapped"); }
   finally { M.resetBackend(); }
   assert.ok(calls > 0);
+});
+
+/* checkBackend (audit PC-12): every primitive is exercised, so a replacement that gets a negative case wrong is refused. */
+
+const REF = M.backend();
+const same = (a, b) => a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
+const oneBitApart = (a, b) => {
+  if (a.length !== b.length) return false;
+  let bits = 0;
+  for (let i = 0; i < a.length && bits < 2; i++) for (let x = a[i] ^ b[i]; x; x &= x - 1) bits++;
+  return bits === 1;
+};
+/** A verify that is right on everything the reference accepts, plus whatever `alsoAccept` lets through near a signature it has seen verify. */
+const lenientVerify = (refVerify, alsoAccept) => {
+  const seen = [];
+  return (sig, msg, pk) => {
+    if (refVerify(sig, msg, pk)) { seen.push({ sig, msg, pk }); return true; }
+    return seen.some((g) => alsoAccept(g, { sig, msg, pk }));
+  };
+};
+const VERIFY_DEFECTS = {
+  // defect name: [what the lenient verify also lets through, what checkBackend must say]
+  "a flipped signature bit": [(g, x) => same(g.msg, x.msg) && same(g.pk, x.pk) && oneBitApart(g.sig, x.sig), /accepted a signature with a bit flipped/],
+  "a flipped message bit": [(g, x) => same(g.sig, x.sig) && same(g.pk, x.pk) && oneBitApart(g.msg, x.msg), /accepted a message with a bit flipped/],
+  "a wrong (different valid) public key": [(g, x) => same(g.sig, x.sig) && same(g.msg, x.msg), /accepted a different valid public key/],
+  "a truncated signature": [(g, x) => same(g.msg, x.msg) && same(g.pk, x.pk) && x.sig.length < g.sig.length && same(g.sig.subarray(0, x.sig.length), x.sig), /accepted a truncated signature/],
+};
+const refused = (b, code, why = /./) => {
+  assert.throws(() => M.useBackend(b), (e) => e instanceof M.MsgError && e.code === code && why.test(e.message), `${b.name} should be refused with ${code} (${why})`);
+  assert.equal(M.backend(), REF, "a refused backend must not be installed");
+};
+
+test("checkBackend: the honest reference backend still passes, in reasonable time", () => {
+  const t = performance.now();
+  assert.equal(M.checkBackend(REF), true);
+  const ms = performance.now() - t;
+  assert.ok(ms < 10_000, `checkBackend took ${Math.round(ms)} ms`);
+  // A faithful wrapper (what a native bridge looks like) is accepted and installed.
+  const wrapped = { name: "faithful wrapper", kem: { ...REF.kem }, dsa: { ...REF.dsa }, slh: { ...REF.slh }, x25519: { ...REF.x25519 } };
+  try { M.useBackend(wrapped); assert.equal(M.backend().name, "faithful wrapper"); }
+  finally { M.resetBackend(); }
+});
+
+test("checkBackend regression (audit PC-12 PoC): the three malicious backends it got accepted are refused", () => {
+  // (a) SLH-DSA verify that always says yes: it used to be accepted, after which dualVerify took a random SLH-DSA signature.
+  const slhStub = { ...REF, name: "native-bridge(slh stub)", slh: { ...REF.slh, verify: () => true, sign: () => new Uint8Array(M.SIZES.slhSig) } };
+  refused(slhStub, "backend_mismatch_slh_dsa", /SLH-DSA/);
+  const p = M.newPersona(rnd(64));
+  const m = rnd(64);
+  const good = M.dualSign("request", m, p.keys);
+  assert.equal(M.dualVerify("request", m, good, p.pub), true);
+  assert.equal(M.dualVerify("request", m, { dsa: good.dsa, slh: rnd(M.SIZES.slhSig) }, p.pub), false);
+  // (b) X25519 shared secret that is a constant: every dh1/dh2/dh3 and ratchet DH output would have been 0x42...
+  refused({ ...REF, name: "native-bridge(x25519 const)", x25519: { ...REF.x25519, shared: () => new Uint8Array(32).fill(0x42) } }, "backend_mismatch_x25519", /RFC 7748/);
+  // (c) ML-DSA verify that ignores the public key when pk[0] === 0 (caught every run: one wrong key starts with a zero byte).
+  refused({ ...REF, name: "dsa verify that ignores pk", dsa: { ...REF.dsa, verify: (sig, mm, pk) => REF.dsa.verify(sig, mm, pk) || (sig.length === M.SIZES.dsaSig && pk[0] === 0x00) } }, "backend_mismatch_ml_dsa", /different valid public key/);
+});
+
+for (const [scheme, key, code] of [["ML-DSA-87", "dsa", "backend_mismatch_ml_dsa"], ["SLH-DSA", "slh", "backend_mismatch_slh_dsa"]]) {
+  for (const [defect, [alsoAccept, why]] of Object.entries(VERIFY_DEFECTS)) {
+    test(`checkBackend: a ${scheme} verify that accepts ${defect} is refused`, () => {
+      refused({ ...REF, name: `${key} accepts ${defect}`, [key]: { ...REF[key], verify: lenientVerify(REF[key].verify, alsoAccept) } }, code, why);
+    });
+  }
+  test(`checkBackend: ${scheme} signatures the reference can't verify are refused`, () => {
+    refused({ ...REF, name: `${key} signs garbage`, [key]: { ...REF[key], sign: (msg, sk) => { const s = REF[key].sign(msg, sk); s[7] ^= 1; return s; } } }, code, /reference rejects the candidate's signature/);
+  });
+  test(`checkBackend: a ${scheme} verify that rejects the reference's signatures is refused`, () => {
+    let n = 0;
+    refused({ ...REF, name: `${key} rejects the first valid signature`, [key]: { ...REF[key], verify: (s, mm, pk) => n++ > 0 && REF[key].verify(s, mm, pk) } }, code, /rejected the reference's signature/);
+  });
+}
+
+test("checkBackend: X25519 that differs from RFC 7748 or the reference is refused", () => {
+  const x = (name, over) => ({ ...REF, name, x25519: { ...REF.x25519, ...over } });
+  // Wrong on the RFC 7748 §6.1 vector (arguments swapped, a natural bridging mistake).
+  refused(x("x25519 swapped args", { shared: (sk, pk) => REF.x25519.shared(pk, sk) }), "backend_mismatch_x25519", /RFC 7748/);
+  // Right on the published vector, wrong on fresh keys.
+  let first = 2;
+  refused(x("x25519 right only twice", { shared: (sk, pk) => (first-- > 0 ? REF.x25519.shared(sk, pk) : new Uint8Array(32).fill(7)) }), "backend_mismatch_x25519", /shared secret/);
+});
+
+test("checkBackend: X25519 that accepts low-order points (or doesn't mask the top bit) like the reference doesn't is refused", () => {
+  const zeroOnLowOrder = (sk, pk) => { try { return REF.x25519.shared(sk, pk); } catch { return new Uint8Array(32); } };
+  refused({ ...REF, name: "x25519 all-zero on low order", x25519: { ...REF.x25519, shared: zeroOnLowOrder } }, "backend_mismatch_x25519", /low-order/);
+  const strictTopBit = (sk, pk) => { if (pk[31] & 0x80) throw new Error("top bit set"); return REF.x25519.shared(sk, pk); };
+  refused({ ...REF, name: "x25519 refuses the top bit", x25519: { ...REF.x25519, shared: strictTopBit } }, "backend_mismatch_x25519", /top bit/);
+});
+
+test("checkBackend: ML-KEM decapsulation must interoperate both ways and reject exactly like FIPS 203", async () => {
+  const { shake256 } = await import("@noble/hashes/sha3.js");
+  // FIPS 203 implicit rejection value J(z ‖ c): z is the last 32 bytes of the decapsulation key.
+  const rejection = (ct, sk) => shake256(Buffer.concat([sk.subarray(sk.length - 32), ct]), { dkLen: 32 });
+  const isRejection = (ss, ct, sk) => same(ss, rejection(ct, sk));
+  const k = (name, over) => ({ ...REF, name, kem: { ...REF.kem, ...over } });
+  // Explicit (zero) rejection instead of J(z ‖ c).
+  refused(k("kem explicit rejection", { decapsulate: (ct, sk) => { const ss = REF.kem.decapsulate(ct, sk); return isRejection(ss, ct, sk) ? new Uint8Array(32) : ss; } }), "backend_mismatch_ml_kem", /implicit rejection/);
+  // A missing re-encryption check: a ciphertext one bit away from a good one yields the good one's secret.
+  const good = [];
+  refused(k("kem ignores tampering", { decapsulate: (ct, sk) => {
+    const ss = REF.kem.decapsulate(ct, sk);
+    if (!isRejection(ss, ct, sk)) { good.push({ ct, ss }); return ss; }
+    return good.find((g) => oneBitApart(g.ct, ct))?.ss ?? ss;
+  } }), "backend_mismatch_ml_kem", /gave the real shared secret/);
+  // A secret key in its own encoding: self-consistent, but not interchangeable with the reference's.
+  refused(k("kem private sk encoding", {
+    keygen: (seed) => { const kp = REF.kem.keygen(seed); return { publicKey: kp.publicKey, secretKey: Uint8Array.of(0xaa, ...kp.secretKey) }; },
+    decapsulate: (ct, sk) => REF.kem.decapsulate(ct, sk.subarray(1)),
+  }), "backend_mismatch_ml_kem", /secret key encoding/);
+  // Throwing on a modified ciphertext is not implicit rejection either.
+  refused(k("kem throws on bad ct", { decapsulate: (ct, sk) => { const ss = REF.kem.decapsulate(ct, sk); if (isRejection(ss, ct, sk)) throw new Error("bad ct"); return ss; } }), "backend_mismatch_ml_kem", /bad ct/);
+});
+
+test("checkBackend: a backend missing a primitive or throwing a foreign error is refused with the module's own error", () => {
+  const { slh, ...noSlh } = REF; void slh;
+  refused({ ...noSlh, name: "no slh" }, "backend_mismatch_slh_dsa");
+  refused({ ...REF, name: "dsa keygen throws", dsa: { ...REF.dsa, keygen: () => { throw new TypeError("bridge down"); } } }, "backend_mismatch_ml_dsa");
 });
 
 
