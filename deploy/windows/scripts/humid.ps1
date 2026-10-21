@@ -25,7 +25,12 @@
     humid set KEY=VALUE [KEY=VALUE ...]           change a setting, then restart
     humid show                                    print the settings (secret key hidden)
     humid mint 50 [batch-name]                    print 50 new access codes to sell (cash or online)
-    humid backup [-Path file.zip] | restore -Path file.zip
+    humid backup-key new -Path E:\humid-backup.key [-Replace]   make the backup key: its private key goes to the
+                                                  file you name (a USB drive), only its public key stays here
+    humid backup-key [show] | backup-key keyshare <folder>|default   where the console puts keyshare's half
+    humid backup [-Path file.humidbak] [-KeysharePath file.humidbak]   encrypted to the backup key; keyshare's
+                                                  data goes to its own file (put it on another disk)
+    humid restore -Path <backup.humidbak> -KeysharePath <keyshare.humidbak> -Key <backup key file>
     humid console                                 open the admin console (a sign-in link that works once)
     humid admin token <github-token>              let the console check the private repository for HumID updates
     humid admin token clear | admin repo owner/name | admin reset (forget every administrator phone)
@@ -37,7 +42,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'expose', 'console', 'admin', 'probe', 'job-run', 'help')]
+  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'set', 'show', 'mint', 'backup', 'restore', 'backup-key', 'expose', 'console', 'admin', 'probe', 'job-run', 'help')]
   [string]$Command = 'help',
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
   [string[]]$Rest = @(),
@@ -50,10 +55,13 @@ param(
   [string]$Token,
   [string]$Hostname,
   [string]$Path,
+  [string]$KeysharePath,
+  [string]$Key,
   [switch]$StayAwake,
   [switch]$NoStart,
   [switch]$RemoveData,
   [switch]$Follow,
+  [switch]$Replace,
   [switch]$Quiet
 )
 
@@ -182,6 +190,32 @@ function Invoke-Server {
   if ($code -ne 0) { Die "humid-server $($ServerArgs[0]) failed (exit $code)." }
 }
 
+# Run a humid-admin.mjs command (backups, the backup key) and collect what it prints: plain
+# lines, "Warning: ..." for warnings, and on failure a last line saying why.
+function Invoke-AdminJs([string[]]$Arguments) {
+  $old = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { $lines = @(& $NodeExe (@('--no-warnings', $AdminJs) + $Arguments) 2>&1 | ForEach-Object { "$_" }) }
+  finally { $ErrorActionPreference = $old }
+  return [pscustomobject]@{ Code = $LASTEXITCODE; Lines = $lines }
+}
+
+function Show-AdminLines([string[]]$Lines) {
+  foreach ($l in $Lines) {
+    if ($l -like 'Warning: *') { Warn $l.Substring(9) }
+    elseif (-not $l.StartsWith('{')) { Say "   $l" }   # a line starting with { is the summary for jobs
+  }
+}
+
+# Why a humid-admin.mjs command failed: its last line.
+function Why-AdminFailed($R) {
+  $why = @($R.Lines) | Where-Object { $_.Trim() } | Select-Object -Last 1
+  if ($why) { return $why } else { return "humid-admin.mjs stopped (exit $($R.Code))." }
+}
+
+# A path as typed, relative to the current location (not the process's own current folder).
+function Full-Path([string]$P) { return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($P) }
+
 function Get-Setting([string]$Name, [string]$Default = '') {
   if (-not (Test-Path $EnvFile)) { return $Default }
   foreach ($line in Get-Content -LiteralPath $EnvFile) {
@@ -267,9 +301,13 @@ function Assert-NoReparse([string]$Path) {
 }
 
 # Up to 2.1.0 the server's account could write anywhere under the data root, so it could have
-# left links there. Take out every junction and symbolic link below $Dir: the link only, never
-# what it points to, and never following one. (Other reparse points, such as a deduplicated
-# file, are data and stay.)
+# left links there. Take out every junction and symbolic link below $Dir (any folder that is a
+# reparse point counts): the link only, never what it points to, and never following one. (A
+# file that's another kind of reparse point, such as a deduplicated file, is data and stays.)
+function Test-Link($Item) {
+  return ($Item -is [IO.DirectoryInfo]) -or (@('Junction', 'SymbolicLink') -contains [string]$Item.LinkType)
+}
+
 function Remove-ReparsePoints([string]$Dir) {
   if (-not (Test-Path -LiteralPath $Dir)) { return }
   $stack = New-Object System.Collections.Stack
@@ -278,7 +316,7 @@ function Remove-ReparsePoints([string]$Dir) {
     $d = $stack.Pop()
     foreach ($i in $d.GetFileSystemInfos()) {
       if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        if (@('Junction', 'SymbolicLink') -contains [string]$i.LinkType) {
+        if (Test-Link $i) {
           Warn "Removing a link HumID didn't make: $($i.FullName)"
           if ($i -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($i.FullName, $false) } else { [IO.File]::Delete($i.FullName) }
         }
@@ -297,7 +335,7 @@ function Assert-NoReparseBelow([string]$Dir) {
   while ($stack.Count -gt 0) {
     foreach ($i in $stack.Pop().GetFileSystemInfos()) {
       if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        if (@('Junction', 'SymbolicLink') -contains [string]$i.LinkType) { throw "$($i.FullName) is a link (a junction or symbolic link). HumID never makes one; nothing was backed up. Run humid install again to remove it, and check this computer." }
+        if (Test-Link $i) { throw "$($i.FullName) is a link (a junction or symbolic link). HumID never makes one; nothing was backed up. Run humid install again to remove it, and check this computer." }
         continue
       }
       if ($i -is [IO.DirectoryInfo]) { $stack.Push($i) }
@@ -395,14 +433,19 @@ function Register-AdminTasks {
     -Action $jobAction -Principal $system -Settings $jobSettings -Force | Out-Null
 }
 
-function Make-Backup([string]$Target) {
-  # A consistent copy needs the databases closed: stop, zip settings + data, start again.
-  New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
+# Backups (docs/ADMIN.md, "Backups") are written by humid-admin.mjs with the databases closed:
+# check first (no backup key, a file already there) without stopping anything, then stop the
+# server, write, and start it again. Every lasting backup is encrypted to the backup key, and
+# keyshare's data goes to its own file. Returns what it printed.
+function Make-Backup([string[]]$BackupArgs) {
+  $base = @('backup', '--root', $DataRoot) + $BackupArgs
+  $check = Invoke-AdminJs ($base + @('--check'))
+  if ($check.Code -ne 0) { throw (Why-AdminFailed $check) }
   Stop-Server
-  try {
-    Assert-NoReparseBelow (Join-Path $DataRoot 'data')   # Compress-Archive would follow a link
-    Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $Target -Force
-  } finally { Start-Server | Out-Null }
+  try { $r = Invoke-AdminJs $base }
+  finally { Start-Server | Out-Null }
+  if ($r.Code -ne 0) { throw (Why-AdminFailed $r) }
+  return $r.Lines
 }
 
 function Find-Tool([string]$Name, [string[]]$Candidates) {
@@ -637,41 +680,72 @@ function Do-Set {
 
 function Do-Backup {
   Require-Admin; Require-Installed
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $target = $Path
-  if (-not $target) { $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("HumID-backup-{0}.zip" -f (Get-Date -Format 'yyyyMMdd-HHmm')) }
+  if (-not $target) { $target = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "HumID-backup-$stamp.humidbak" }
+  $target = Full-Path $target
+  $ks = $KeysharePath
+  if (-not $ks) { $ks = Join-Path (Split-Path -Parent $target) "HumID-keyshare-$stamp.humidbak" }
+  $ks = Full-Path $ks
+  $check = Invoke-AdminJs @('backup', '--root', $DataRoot, '--out', $target, '--keyshare-out', $ks, '--check')
+  if ($check.Code -ne 0) { Die (Why-AdminFailed $check) }
   Confirm-ArmedErase 'a backup, which stops the server,'
   Step 'Stopping the server for a consistent copy...'
-  Make-Backup $target
-  Good "Backup written to $target"
-  Warn 'It holds the server keys and every sealed document. Keep it somewhere safe and offline.'
+  try { $lines = Make-Backup @('--out', $target, '--keyshare-out', $ks) } catch { Die $_.Exception.Message }
+  Show-AdminLines $lines
+  Good 'Backup written.'
+  Say '   Restoring needs both files and the backup key file:'
+  Say "   humid restore -Path `"$target`" -KeysharePath `"$ks`" -Key <backup key file>"
 }
 
 function Do-Restore {
   Require-Admin; Require-Installed
-  if (-not $Path -or -not (Test-Path $Path)) { Die 'Usage: humid restore -Path <backup.zip>' }
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { Die 'Usage: humid restore -Path <HumID-backup-....humidbak> -KeysharePath <HumID-keyshare-....humidbak> -Key <backup key file>' }
+  $src = @{ Path = (Resolve-Path -LiteralPath $Path).Path }
+  if ($src.Path -like '*.zip') {
+    Warn "$(Split-Path $Path -Leaf) is a backup from 2.1.0 or earlier: not encrypted, keyshare's data inside."
+  } else {
+    foreach ($p in @(@('Keyshare', $KeysharePath), @('Key', $Key))) {
+      if (-not $p[1]) { continue }
+      if (-not (Test-Path -LiteralPath $p[1] -PathType Leaf)) { Die "There's no file at $($p[1])." }
+      $src[$p[0]] = (Resolve-Path -LiteralPath $p[1]).Path
+    }
+  }
   Confirm-ArmedErase 'restoring a backup'
   if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($Path)?" $false)) { return }
-  try { $old = Restore-Data $Path } catch { Start-Server | Out-Null; Die $_.Exception.Message }
+  try { $old = Restore-Data $src } catch { Start-Server | Out-Null; Die $_.Exception.Message }
   Good "Restored. The previous data is in $old"
   Start-Server | Out-Null
 }
 
 # Unpack a backup into a new folder only SYSTEM and Administrators can open (under admin\),
 # check it, and only then swap it in for humid.env and data\. Nothing is ever unpacked into a
-# folder the server's account can write. Stops the server; returns where the old data went.
-function Restore-Data([string]$Zip) {
+# folder the server's account can write. An encrypted backup needs its keyshare file and the
+# backup key file (humid-admin.mjs restore checks them, and every piece, before anything moves);
+# a local rollback copy needs neither. Stops the server; returns where the old data went.
+#   $Src  @{ Path = backup; Keyshare = keyshare's file; Key = backup key file }
+function Restore-Data([hashtable]$Src) {
   $workRoot = Join-Path $AdminDir 'work'
   Set-PrivateAcl $AdminDir
   Assert-NoReparse $workRoot
   New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $now = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $stamp = $now
+  for ($n = 2; (Test-Path -LiteralPath (Join-Path $workRoot "restore-$stamp")) -or (Test-Path -LiteralPath (Join-Path $DataRoot "before-restore-$stamp")); $n++) { $stamp = "$now-$n" }
   $work = Join-Path $workRoot "restore-$stamp"
-  if (Test-Path -LiteralPath $work) { throw "$work already exists." }
-  New-Item -ItemType Directory -Path $work | Out-Null
   try {
-    Expand-Archive -LiteralPath $Zip -DestinationPath $work
+    if ($Src.Path -like '*.zip') {
+      New-Item -ItemType Directory -Path $work | Out-Null
+      Expand-Archive -LiteralPath $Src.Path -DestinationPath $work
+    } else {
+      $a = @('restore', '--root', $DataRoot, '--into', $work, '--in', $Src.Path)
+      if ($Src.Keyshare) { $a += @('--keyshare', $Src.Keyshare) }
+      if ($Src.Key) { $a += @('--key', $Src.Key) }
+      $r = Invoke-AdminJs $a
+      if ($r.Code -ne 0) { throw (Why-AdminFailed $r) }
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $work 'data') -PathType Container) -or -not (Test-Path -LiteralPath (Join-Path $work 'humid.env') -PathType Leaf)) {
-      throw "$(Split-Path $Zip -Leaf) isn't a HumID backup (no humid.env and data folder inside). Nothing was changed."
+      throw "$(Split-Path $Src.Path -Leaf) isn't a HumID backup (no humid.env and data folder inside). Nothing was changed."
     }
     Stop-Server
     $old = Join-Path $DataRoot "before-restore-$stamp"
@@ -755,6 +829,42 @@ function Do-Expose {
     if ($how -eq 'tailscale') { Warn 'In Tailscale, turn on Preferences > Run unattended, so the address keeps working when nobody is signed in to Windows.' }
   }
   Show-AppBuildHint
+}
+
+function Do-BackupKey {
+  Require-Admin; Require-Installed
+  $sub = 'show'; if ($Rest -and $Rest.Count -gt 0) { $sub = $Rest[0].ToLower() }
+  Set-PrivateAcl $AdminDir
+  $r = $null
+  switch ($sub) {
+    'new' {
+      if (-not $Path) {
+        Say 'Make the backup key. Its private key goes to the file you name, which you keep off this computer'
+        Say '(a USB drive, and a second copy somewhere safe); only its public key stays here. Restoring needs that file.'
+        Say '   humid backup-key new -Path E:\humid-backup.key'
+        exit 1
+      }
+      $a = @('backup-key-new', '--root', $DataRoot, '--out', (Full-Path $Path))
+      if ($Replace) { $a += '--replace' }
+      $r = Invoke-AdminJs $a
+    }
+    'keyshare' {
+      $d = ''; if ($Rest.Count -gt 1) { $d = $Rest[1] } elseif ($Path) { $d = $Path }
+      if (-not $d) { Die 'Usage: humid backup-key keyshare D:\HumID-keyshare   (or: default, for backups\keyshare)' }
+      if ($d -ne 'default') { $d = Full-Path $d }
+      $r = Invoke-AdminJs @('backup-keyshare-dir', '--root', $DataRoot, '--dir', $d)
+    }
+    'show' { $r = Invoke-AdminJs @('backup-key-show', '--root', $DataRoot) }
+    default {
+      Say 'Usage:'
+      Say '   humid backup-key new -Path E:\humid-backup.key [-Replace]   make the backup key (its private key goes to that file)'
+      Say '   humid backup-key [show]                                    the backup key and where backups go'
+      Say '   humid backup-key keyshare D:\HumID-keyshare | default      where the console puts keyshare''s half of each backup'
+      return
+    }
+  }
+  if ($r.Code -ne 0) { Die (Why-AdminFailed $r) }
+  Show-AdminLines $r.Lines
 }
 
 function Do-Logs {
@@ -960,21 +1070,33 @@ function Job-Restart {
   return @{ ok = $true }
 }
 
-function Prune-Backups([int]$Keep = 10) {
-  Get-ChildItem -LiteralPath $BackupDir -Filter '*.zip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep |
-    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+function Job-Backup {
+  Set-PrivateAcl $BackupDir
+  Job-Step 'Backing up, encrypted to the backup key (the server stops for a moment)'
+  $lines = Make-Backup @('--console')
+  $sum = (@($lines) | Where-Object { $_.StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json
+  Job-Step ("Backup written to backups\{0} ({1:N0} MB); keyshare's half to {2}" -f $sum.file, ($sum.bytes / 1MB), $sum.keyshare)
+  foreach ($w in @($lines) | Where-Object { $_ -like 'Warning: *' }) { Job-Step $w.Substring(9) }
+  return @{ file = $sum.file; bytes = $sum.bytes; keyshare = $sum.keyshare; key = $sum.key }
 }
 
-function Job-Backup([string]$Name) {
-  Set-PrivateAcl $BackupDir
-  if (-not $Name) { $Name = "HumID-backup-$(Get-Date -Format 'yyyyMMdd-HHmm').zip" }
-  $target = Join-Path $BackupDir $Name
-  Job-Step "Backing up to backups\$Name (the server stops for a moment)"
-  Make-Backup $target
-  if (-not (Test-Path $target)) { throw 'The backup file was not written.' }
-  Job-Step ("Backup written ({0:N0} MB)" -f ((Get-Item -LiteralPath $target).Length / 1MB))
-  Prune-Backups 10
-  return @{ file = $Name; bytes = (Get-Item -LiteralPath $target).Length }
+# Before an update or a rollback: a copy of humid.env and data\ to put back if neither version
+# comes up. It's in admin\rollback (SYSTEM and Administrators only) and is NOT encrypted to the
+# backup key: the job has to restore it by itself, and the key is kept off this computer. It's
+# deleted as soon as the change has worked (after a failed one, at the next update or rollback).
+# With a backup key set, a lasting encrypted backup is made in the same stop.
+function Job-Snapshot([string]$Name) {
+  $dir = Join-Path $AdminDir 'rollback'
+  Set-PrivateAcl $dir
+  Get-ChildItem -LiteralPath $dir -Filter '*.humidbak' | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }   # older ones are out of date
+  $file = Join-Path $dir "$Name.humidbak"
+  Job-Step 'Taking a local rollback copy (the server stops for a moment)'
+  $lines = Make-Backup @('--local', $file, '--console-if-key')
+  if (-not (Test-Path -LiteralPath $file)) { throw 'The rollback copy was not written.' }
+  $sum = @($lines) | Where-Object { $_.StartsWith('{') } | Select-Object -Last 1
+  if ($sum) { $sum = $sum | ConvertFrom-Json; Job-Step "Backup written to backups\$($sum.file), encrypted to backup key $($sum.key)" }
+  else { Job-Step 'No backup key is set, so only the local rollback copy was taken (it''s deleted after the update). Set one up: humid backup-key new' }
+  return $file
 }
 
 # Same server identity, the expected version, healthy: or the reason it isn't.
@@ -1002,12 +1124,13 @@ function Copy-Program([string]$From, [string]$To) {
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $To -Recurse -Force }
 }
 
-function Restore-Quietly([string]$Zip) {
-  Restore-Data $Zip | Out-Null
+function Restore-Quietly([string]$Snapshot) {
+  Restore-Data @{ Path = $Snapshot } | Out-Null
 }
 
-# Switch the program to the package in $Pkg; on any failure, put $Fallback back (and the data, if needed).
-function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [string]$FallbackVersion, [string]$Kid, [string]$BackupZip) {
+# Switch the program to the package in $Pkg; on any failure, put $Fallback back (and the data,
+# from the local rollback copy $Snapshot, if needed).
+function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [string]$FallbackVersion, [string]$Kid, [string]$Snapshot) {
   $since = (Get-Date).AddSeconds(-2)
   Job-Step "Installing $Want"
   $code = Install-Package $Pkg
@@ -1026,14 +1149,14 @@ function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [stri
   $again = $null
   if ($code -ne 0) { $again = "the installer stopped (exit $code)" } else { $again = Test-Updated $FallbackVersion $Kid $since }
   if ($again) {
-    Job-Step "$FallbackVersion didn't come up either ($again). Restoring the data from the backup taken first"
-    Restore-Quietly $BackupZip
+    Job-Step "$FallbackVersion didn't come up either ($again). Restoring the data from the copy taken first"
+    Restore-Quietly $Snapshot
     $since = (Get-Date).AddSeconds(-2)
     Start-Server | Out-Null
     $again = Test-Updated $FallbackVersion $Kid $since
   }
   Start-Admin
-  if ($again) { throw "$Want failed ($problem), and so did putting $FallbackVersion back ($again). Run humid status in Terminal (Admin); the backup is backups\$(Split-Path $BackupZip -Leaf)." }
+  if ($again) { throw "$Want failed ($problem), and so did putting $FallbackVersion back ($again). Run humid status in Terminal (Admin); the copy taken first is $Snapshot (humid restore -Path `"$Snapshot`")." }
   throw "$Want failed ($problem). $FallbackVersion is running again; nothing was lost."
 }
 
@@ -1074,11 +1197,13 @@ function Job-Update($A) {
   Get-ChildItem -LiteralPath $pkg -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
   $from = Read-PackageVersion $InstallDir
   $kid = (Get-Info).kid
-  $backup = Job-Backup "pre-update-$from-to-$v-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  $snap = Job-Snapshot "pre-update-$from-to-$v-$(Get-Date -Format 'yyyyMMdd-HHmm')"
   Job-Step "Keeping $from for rollback"
   Copy-Program $InstallDir $PrevDir
-  Switch-Program $pkg $v $PrevDir $from $kid (Join-Path $BackupDir $backup.file)
+  Switch-Program $pkg $v $PrevDir $from $kid $snap
   Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $snap -Force -ErrorAction SilentlyContinue
+  Job-Step 'Deleted the local rollback copy'
   return @{ from = $from; to = $v }
 }
 
@@ -1087,11 +1212,12 @@ function Job-Rollback($A) {
   if (-not $to -or $to -ne [string]$A.to) { throw "The kept version is $to, not $($A.to)." }
   $from = Read-PackageVersion $InstallDir
   $kid = (Get-Info).kid
-  $backup = Job-Backup "pre-rollback-$from-to-$to-$(Get-Date -Format 'yyyyMMdd-HHmm').zip"
+  $snap = Job-Snapshot "pre-rollback-$from-to-$to-$(Get-Date -Format 'yyyyMMdd-HHmm')"
   $current = "$InstallDir.rollback"
   Job-Step "Keeping $from aside"
   Copy-Program $InstallDir $current
-  Switch-Program $PrevDir $to $current $from $kid (Join-Path $BackupDir $backup.file)
+  Switch-Program $PrevDir $to $current $from $kid $snap
+  Remove-Item -LiteralPath $snap -Force -ErrorAction SilentlyContinue
   # Now $from is the one kept, so it can be rolled forward again.
   Copy-Program $current $PrevDir
   Remove-Item -LiteralPath $current -Recurse -Force -ErrorAction SilentlyContinue
@@ -1193,6 +1319,7 @@ switch ($Command) {
   'mint'      { Require-Admin; Require-Installed; Invoke-Server (@('mint', '--root', $DataRoot) + $Rest) }
   'backup'    { Do-Backup }
   'restore'   { Do-Restore }
+  'backup-key' { Do-BackupKey }
   'expose'    { Do-Expose }
   'console'   { Do-Console }
   'admin'     { Do-AdminCmd }

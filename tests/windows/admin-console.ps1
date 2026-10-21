@@ -25,8 +25,8 @@ function Say($m) { Write-Host "-> $m" -ForegroundColor Cyan }
 function H { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $humid @args; if ($LASTEXITCODE) { throw "humid $($args -join ' ') failed ($LASTEXITCODE)" } }
 function Info { Get-Content (Join-Path $data 'server.json') -Raw | ConvertFrom-Json }
 
-# No automatic Windows Update scans while this runs.
-Set-Content -Path (Join-Path $data 'admin\admin.env') -Value 'HUMID_AUTO_CHECKS=0' -Encoding ascii
+# No automatic Windows Update scans while this runs (keeping the backup key the job before set, if any).
+Add-Content -Path (Join-Path $data 'admin\admin.env') -Value 'HUMID_AUTO_CHECKS=0' -Encoding ascii
 
 Say 'HumID Admin runs as SYSTEM; its folder is closed to the server account'
 $t = Get-ScheduledTask -TaskName 'HumID Admin'
@@ -81,9 +81,17 @@ function Run-Job([string]$Type, $JobArgs = @{}, [int]$Minutes = 10) {
   throw "job $Type didn't finish in $Minutes minutes"
 }
 
-Say 'Job: backup'
+Say 'Job: backup, encrypted to the backup key, keyshare''s half in its own file'
+$usb = Join-Path $env:RUNNER_TEMP 'console-usb'
+New-Item -ItemType Directory -Force -Path $usb | Out-Null
+H backup-key new -Path (Join-Path $usb 'humid-backup.key') -Replace
 $j = Run-Job 'backup'
 if ($j.state -ne 'done' -or -not (Test-Path (Join-Path $data "backups\$($j.result.file)"))) { throw 'backup job failed' }
+if ($j.result.file -notlike '*.humidbak' -or -not (Test-Path $j.result.keyshare)) { throw "expected an encrypted backup and keyshare's half: $($j.result | ConvertTo-Json -Compress)" }
+if (Select-String -LiteralPath (Join-Path $data "backups\$($j.result.file)") -Pattern 'HUMID_INTERNAL_SK' -SimpleMatch -Quiet) { throw 'the backup holds the settings in the clear' }
+$st = Invoke-RestMethod "$base/api/state" -WebSession $s
+if (-not $st.backupKey.fingerprint) { throw 'the console doesn''t see the backup key' }
+if (-not (@($st.alerts) | Where-Object { $_.title -like 'Both halves of every split key*' })) { throw 'no warning that both halves are on one disk' }
 
 Say 'The server''s account writes only its own data, its log, and new files in the approvals drop box'
 $bad = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, DeleteSubdirectoriesAndFiles, WriteAttributes, Delete, ChangePermissions, TakeOwnership'
@@ -221,6 +229,7 @@ $sha = Stage $good
 $j = Run-Job 'update-humid' @{ version = '9.9.9'; from = $orig; file = 'HumID-Server-Windows-9.9.9.zip'; sha256 = $sha } 15
 if ($j.state -ne 'done') { throw "update failed: $($j.error)" }
 if ((Info).version -ne '9.9.9' -or (Info).kid -ne $kid) { throw "after the update: version $((Info).version), kid changed: $((Info).kid -ne $kid)" }
+if (@(Get-ChildItem (Join-Path $data 'admin\rollback') -Filter '*.humidbak' -ErrorAction SilentlyContinue).Count) { throw 'the local rollback copy is still there after a good update' }
 $p = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $humid probe | Select-Object -Last 1) | ConvertFrom-Json
 if ($p.previous.version -ne $orig) { throw "expected $orig kept for rollback, got $($p.previous.version)" }
 & node (Join-Path $Repo 'tests\smoke.mjs') http://127.0.0.1:8480

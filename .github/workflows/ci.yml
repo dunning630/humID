@@ -364,14 +364,26 @@ jobs:
           if (-not ($out -match 'blind-signed pass')) { throw "the full flow didn't run with an access pass" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed on restart" }
-      - name: Backup, restore, and update in place keep the server's identity
+      - name: Encrypted backup (keyshare apart), restore with the key file, and update in place keep the server's identity
         shell: pwsh
         run: |
+          function H { & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args | Out-Host; return $LASTEXITCODE }
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID backup -Path "$env:RUNNER_TEMP\b.zip"
-          if ($LASTEXITCODE -or -not (Test-Path "$env:RUNNER_TEMP\b.zip")) { throw 'backup failed' }
-          powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID restore -Path "$env:RUNNER_TEMP\b.zip" -Quiet
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $usb = Join-Path $env:RUNNER_TEMP 'usb'
+          New-Item -ItemType Directory -Force -Path $usb | Out-Null
+          $b = "$env:RUNNER_TEMP\b.humidbak"; $k = "$usb\keyshare.humidbak"; $key = "$usb\humid-backup.key"
+          if ((H backup -Path "$env:RUNNER_TEMP\early.humidbak") -eq 0) { throw 'a backup ran without a backup key' }
+          if (Test-Path "$env:RUNNER_TEMP\early.humidbak") { throw 'a plain backup was written' }
+          if ((H backup-key new -Path 'C:\ProgramData\HumID\data\k.key') -eq 0 -or (Test-Path 'C:\ProgramData\HumID\data\k.key')) { throw 'the backup key went inside the data folder' }
+          if (H backup-key new -Path $key) { throw 'backup-key new failed' }
+          if (Select-String -LiteralPath 'C:\ProgramData\HumID\admin\admin.env' -Pattern '"seed"' -SimpleMatch -Quiet) { throw 'the private key is on the server' }
+          if (H backup -Path $b -KeysharePath $k) { throw 'backup failed' }
+          if (-not (Test-Path $b) -or -not (Test-Path $k)) { throw 'backup files missing' }
+          foreach ($f in $b, $k) { if (Select-String -LiteralPath $f -Pattern 'HUMID_INTERNAL_SK' -SimpleMatch -Quiet) { throw "$f holds the settings in the clear" } }
+          if ((H restore -Path $b -KeysharePath $k -Quiet) -eq 0) { throw 'restored without the backup key file' }
+          if ((H restore -Path $b -Key $key -Quiet) -eq 0) { throw 'restored without keyshare''s half' }
+          if (H restore -Path $b -KeysharePath $k -Key $key -Quiet) { throw 'restore failed' }
+          if (-not (Test-Path 'C:\ProgramData\HumID\data\keyshare\share-key.bin')) { throw 'keyshare''s data not restored' }
           powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid

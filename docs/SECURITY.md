@@ -161,7 +161,9 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
    Docker deployment, keep `keyshare-data` on different storage from
    `vault-data`, ideally another host, and move `share-key.bin` into an HSM or
    KMS before real data. On HumID Server for Windows both sit on one PC, so a
-   stolen disk has both halves.
+   stolen disk has both halves (turn on BitLocker). Its backups don't: each is
+   encrypted to a backup key kept off the computer, with keyshare's half in a
+   separate file that can go to another disk ([ADMIN.md](ADMIN.md), *Backups*).
 
 **Limits:**
 

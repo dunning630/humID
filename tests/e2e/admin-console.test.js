@@ -153,6 +153,29 @@ test("a change waits for the phone, and runs only after its signature checks out
   assert.equal(st.console.audit.broken, null, "audit chain intact");
 });
 
+test("backups wait for a backup key, and then name it in what the phone approves", async () => {
+  let st = con.state();
+  assert.ok(st.alerts.some((a) => a.level === "bad" && a.title === "Backups aren't encrypted: set up a backup key"));
+  const refused = await web("/api/requests", { body: { type: "backup" } });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "no_backup_key");
+  // humid backup-key new, as an administrator would run it: the private key goes off the server
+  const usb = mkdtempSync(join(tmpdir(), "humid-usb-"));
+  const admin_ = join(repo, "deploy", "windows", "admin", "admin.mjs");
+  const out = execFileSync(process.execPath, ["--no-warnings", admin_, "backup-key-new", "--root", root, "--out", join(usb, "humid-backup.key")], { encoding: "utf8" });
+  const fp = /Backup key ([0-9A-F-]{19}) is set/.exec(out)[1];
+  st = con.state();
+  assert.equal(st.backupKey.fingerprint, fp);
+  assert.equal(st.alerts.some((a) => a.title === "Backups aren't encrypted: set up a backup key"), false);
+  assert.ok(st.alerts.some((a) => a.title === "Both halves of every split key are backed up to the same disk"), "keyshare's half defaults to the same disk");
+  const r = await web("/api/requests", { body: { type: "backup" } });
+  assert.equal(r.status, 200);
+  const req = await admin.api.adminRequest(r.body.code);
+  assert.ok(req.lines.some((l) => l.includes(`backup key ${fp}`)), "the phone sees which key the backup is encrypted to");
+  await web(`/api/requests/${r.body.code}/cancel`, { body: {} });
+  rmSync(usb, { recursive: true, force: true });
+});
+
 test("someone who isn't an administrator can't see or approve a change", async () => {
   const other = await holder("Somebody else");
   const r = await web("/api/requests", { body: { type: "backup" } });

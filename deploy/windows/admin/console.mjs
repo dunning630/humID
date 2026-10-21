@@ -26,6 +26,7 @@ import { newCode, formatCode, requestDigest, digestCheck, verifyApproval, Approv
 import { latestRelease, download, compareVersions, DEFAULT_REPO } from "./updates.mjs";
 import { pinnedKeys } from "./release.mjs";
 import { assertNoLinks, isPlainFile } from "./nolinks.mjs";
+import { publicKeyOf, sameDisk, EXT as BACKUP_EXT } from "./backups.mjs";
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const SESSION_IDLE_MS = 30 * MIN, SESSION_MAX_MS = 12 * HOUR;
@@ -45,7 +46,7 @@ const fmtBytes = (n) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : `${
 /** What each change does, in the words both the console and the phone show. */
 const DESCRIBE = {
   "restart-server": () => ({ title: "Restart the HumID server", lines: ["Phones are disconnected for about a minute and sign in again with a live check."] }),
-  "backup": () => ({ title: "Back up the HumID server now", lines: ["Stops the server for a few seconds for a consistent copy.", "The backup holds the server keys and every sealed document; it stays on this computer, readable only by administrators."] }),
+  "backup": (a) => ({ title: "Back up the HumID server now", lines: ["Stops the server for a few seconds for a consistent copy.", `Encrypted to backup key ${a.key}, whose private key is kept off this computer. Keyshare's half goes to a separate file in ${a.keyshareDir}.`] }),
   "update-humid": (a) => ({ title: `Update HumID Server ${a.from} → ${a.version}`, lines: [`File ${a.file}, SHA-256 ${a.sha256.slice(0, 16)}…, signed by HumID release key ${a.signer}`, "Backs up first, keeps the current version, and rolls back by itself if the new one doesn't come up healthy with the same server identity."] }),
   "rollback-humid": (a) => ({ title: `Roll back HumID Server ${a.from} → ${a.to}`, lines: ["Backs up first. Phones on newer app versions may need the server they had."] }),
   "os-install": (a) => ({ title: `Install ${a.updates.length} Windows update${a.updates.length === 1 ? "" : "s"}`, lines: a.updates.slice(0, 10).map((u) => u.title).concat(a.updates.length > 10 ? [`and ${a.updates.length - 10} more`] : []) }),
@@ -163,15 +164,25 @@ export function createConsole({
     return queueJob("os-scan", {}, { by: "schedule" });
   }
 
+  /** Backups in backups\: encrypted ones, and plain zips left by 2.1.0 and earlier. */
   function backups() {
     let out = [];
     try {
-      out = readdirSync(backupsDir).filter((f) => f.endsWith(".zip")).map((f) => {
+      out = readdirSync(backupsDir).filter((f) => (f.startsWith("HumID-backup-") && f.endsWith(BACKUP_EXT)) || f.endsWith(".zip")).map((f) => {
         const st = statSync(join(backupsDir, f));
-        return { name: f, bytes: st.size, at: st.mtime.toISOString() };
+        return { name: f, bytes: st.size, at: st.mtime.toISOString(), encrypted: f.endsWith(BACKUP_EXT) };
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
     } catch {}
     return out;
+  }
+
+  /** The backup key (its public half) and where keyshare's half of each backup goes. */
+  function backupKey() {
+    const env = adminEnv();
+    const keyshareDir = env.HUMID_BACKUP_KEYSHARE_DIR || join(backupsDir, "keyshare");
+    let fingerprint = null, error = null;
+    if (env.HUMID_BACKUP_KEY) { try { fingerprint = publicKeyOf(env.HUMID_BACKUP_KEY).fingerprint; } catch (e) { error = e.message; } }
+    return { fingerprint, error, keyshareDir, sameDisk: sameDisk(backupsDir, keyshareDir) };
   }
 
   const installedVersion = () => S.probe.data?.installed?.version || S.status?.version || S.serverInfo?.version || "0.0.0";
@@ -370,9 +381,14 @@ export function createConsole({
     if (S.humid.latest) add("warn", "updates", `HumID Server ${S.humid.latest.version} is available`, `Installed: ${installedVersion()}.`);
     if (S.humid.error) add("info", "updates", "Couldn't check for HumID updates", S.humid.error);
     if (!pinnedKeys().length) add("warn", "updates", "HumID updates can't be installed from the console", "This build has no HumID release key pinned, so it can't tell who made an update and refuses them all. Install the next release by hand (unzip it and run its installer).");
-    const b = backups()[0];
-    if (!b) add("warn", "backups", "No backups on this computer yet", "Back up now, then copy the file somewhere safe and offline.");
-    else if (now() - Date.parse(b.at) > 7 * 24 * HOUR) add("warn", "backups", "The last backup is more than a week old", b.name);
+    const bk = backupKey();
+    if (!bk.fingerprint) add("bad", "backups", "Backups aren't encrypted: set up a backup key", `${bk.error ? `${bk.error} ` : ""}Backups wait until there is one. In Terminal (Admin): humid backup-key new -Path E:\\humid-backup.key (a USB drive), then keep that file off this computer.`);
+    else if (bk.sameDisk) add("warn", "backups", "Both halves of every split key are backed up to the same disk", `Keyshare's half goes to ${bk.keyshareDir}. Point it at another disk: humid backup-key keyshare D:\\HumID-keyshare`);
+    const all = backups(), b = all.find((x) => x.encrypted);
+    const plain = all.filter((x) => !x.encrypted);
+    if (plain.length) add("warn", "backups", `${plain.length} old backup${plain.length === 1 ? " isn't" : "s aren't"} encrypted`, "Made by 2.1.0 or earlier, they hold every server key and both halves of every split key in the clear. Delete them from ProgramData\\HumID\\backups once you have an encrypted backup.");
+    if (bk.fingerprint && !b) add("warn", "backups", "No backups on this computer yet", "Back up now, then copy the files somewhere safe and offline.");
+    else if (b && now() - Date.parse(b.at) > 7 * 24 * HOUR) add("warn", "backups", "The last backup is more than a week old", b.name);
     if (!store.admins().length) add("warn", "console", "No administrator phone yet", "Changes need a phone's live check. Add yours under Administrators.");
     const a = store.auditState();
     if (a.broken) add("bad", "console", "The admin audit log was altered", a.broken);
@@ -425,6 +441,7 @@ export function createConsole({
         os: osUpdates(),
       },
       backups: backups(),
+      backupKey: backupKey(),
       alerts: alerts(),
       history: store.history().filter((_, i, a) => a.length <= 360 || i % Math.ceil(a.length / 360) === 0 || i === a.length - 1),
       admins: store.admins().map(({ account, device, platform, proofLevel, assurance, addedAt, check }) => ({ account, device, platform, proofLevel, assurance, addedAt, check })),
@@ -460,7 +477,13 @@ export function createConsole({
     if ([...S.requests.values()].some((r) => r.state === "waiting" && r.type === type)) throw httpError(409, "pending", "There's already a request for that waiting for a phone.");
     let args = {};
     switch (type) {
-      case "restart-server": case "backup": case "reboot": case "defender-update": break;
+      case "restart-server": case "reboot": case "defender-update": break;
+      case "backup": {
+        const bk = backupKey();
+        if (!bk.fingerprint) throw httpError(409, "no_backup_key", "Set up a backup key first: backups are always encrypted. In Terminal (Admin): humid backup-key new -Path E:\\humid-backup.key (a USB drive), then keep that file off this computer.");
+        args = { key: bk.fingerprint, keyshareDir: bk.keyshareDir };
+        break;
+      }
       case "update-humid": {
         const latest = S.humid.latest;
         if (!latest) throw httpError(409, "no_update", "No newer HumID Server release was found. Check again first.");
