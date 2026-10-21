@@ -1,7 +1,7 @@
 {
   "name": "@humid/idscan",
   "version": "1.0.3",
-  "description": "Reads identity documents into one record: passport and ID card machine-readable zones (OCR-tolerant, check digits), US and Canadian driver's license barcodes (AAMVA PDF417), and passport chip data (DG1, DG2 photo, SOD hashes). No platform code.",
+  "description": "Reads identity documents into one record: passport and ID card machine-readable zones (OCR-tolerant, check digits), US and Canadian driver's license barcodes (AAMVA PDF417), passport chip data (DG1, DG2 photo, SOD hashes), and mobile IDs (ISO 18013-5, verified by @humid/mdoc). No platform code.",
   "type": "module",
   "exports": {
     ".": "./src/index.js"

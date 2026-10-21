@@ -15,20 +15,21 @@ const SERVICES = [...NODE_SERVICES, "edge"];
 // Which shared package feeds which service image. Every package also feeds the
 // app, except the server-only ones.
 const SERVER_ONLY = new Set(["svc", "attest", "anchor"]);
-// Modules no app or service imports yet (HumID 3.0 work in progress). Remove a
-// name from here in the same change that wires it into the app.
-const NOT_SHIPPED = new Set(["backup"]);
+// Modules no app or service imports yet (HumID 3.0 and 4.0 work in progress).
+// Remove a name from here in the same change that wires it into the app.
+const NOT_SHIPPED = new Set(["backup", "msg", "sdjwt", "creds"]);
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
   attest: ["identity", "vault", "gateway", "recovery"],
   anchor: ["recovery"],
+  mdoc: ["recovery"], // read in the app; verified again by @humid/anchor in the recovery service
   htp: NODE_SERVICES,
   crypto: ["vault", "recovery"],
   codec: ["vault", "recovery"],
   audit: ["ledger"],
   recovery: ["recovery"],
   pass: ["access"],
-  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [], backup: [],
+  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [], backup: [], msg: [], sdjwt: [], creds: [],
 };
 
 // [pattern, apps, services] — first match wins.
