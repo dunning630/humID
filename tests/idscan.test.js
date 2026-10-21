@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import {
   parseMrz, findMrz, MrzConsensus, mrzDate, accessFromMrz, parseAamva, isAamva, aamvaDate,
   readDg1, readDg2, checkIntegrity, safeCheckIntegrity, chipIntegrityOk, sodHashes, newRecord, applyMrz, applyAamva, applyChip, applyTyped,
-  title, status, summary, provenance, encodeRecord, decodeRecord, fullName, fieldsFor, MEDIA_TYPE,
+  title, status, summary, provenance, recheckChip, encodeRecord, decodeRecord, fullName, fieldsFor, MEDIA_TYPE,
 } from "@humid/idscan";
 import { readDocument } from "@humid/emrtd";
 import { testCsca, testPassport, td3 } from "./support/passport.js";
@@ -268,6 +268,46 @@ test("record: chip data from an unchecked chip is not applied and is labelled no
   assert.match(provenance(ok).text, /^Chip data integrity-checked/);
   assert.match(provenance(ok).text, /signature isn't checked on this phone/);
   assert.doesNotMatch(provenance(ok).text, /\bverified\b/i);
+});
+
+test("APP-05: the chip label is re-checked from the chip's files, never taken from a stored flag", () => {
+  const passport = testPassport({ csca, mrz: MRZ, photo: JPEG });
+  const { mrz } = readDg1(passport.dg1);
+  const b64 = (b) => Buffer.from(b).toString("base64");
+  const chip = { dg1: passport.dg1, dg2: passport.dg2, sod: passport.sod, access: "BAC" };
+  const make = () => applyChip(newRecord("passport"), chip, { mrz, integrity: checkIntegrity(passport.sod, { 1: passport.dg1, 2: passport.dg2 }), b64 });
+  assert.equal(recheckChip(make()).ok, true);
+
+  // A forged record: the flag says integrity-checked, but no chip files are kept.
+  const noFiles = make(); delete noFiles.raw.chip;
+  assert.equal(provenance(noFiles).level, "chip-mismatch");
+  // The flag is set, but the files don't match the hash list.
+  const flipped = Buffer.from(passport.dg2); flipped[flipped.length - 1] ^= 1;
+  const swapped = make(); swapped.raw.chip.dg2 = b64(flipped);
+  assert.equal(provenance(swapped).level, "chip-mismatch");
+  // The files are genuine, but a "chip" field was rewritten while keeping its chip source.
+  const relabelled = make(); relabelled.fields.surname = "MALLORY";
+  assert.equal(provenance(relabelled).level, "chip-mismatch");
+  assert.match(provenance(relabelled).text, /^Not verified: details marked as read from the chip/);
+  // A flag set on a record with no chip read at all is caught too.
+  const flagOnly = applyMrz(newRecord("passport"), parseMrz(td3(MRZ), { now: NOW }));
+  flagOnly.verified.chip = { integrity: true };
+  assert.equal(provenance(flagOnly).level, "chip-mismatch");
+  // An honest correction by hand is still "chip, edited".
+  const edited = applyTyped(make(), { surname: "ERIKSSON-LUND" });
+  assert.equal(provenance(edited).level, "chip-edited");
+  // Garbage in the stored files is "not verified", never a crash.
+  const junk = make(); junk.raw.chip.dg1 = "%%%";
+  assert.equal(provenance(junk).level, "chip-mismatch");
+});
+
+test("APP-05: a mobile ID's labels need a fresh check passed in; stored flags alone don't earn them", () => {
+  const rec = newRecord("driver_license");
+  rec.verified.mdoc = { docType: "org.iso.18013.5.1.mDL", chain: "trusted", deviceOk: true };
+  assert.equal(provenance(rec).level, "mdoc-unchecked");
+  assert.equal(provenance(rec, { mdoc: { ok: false, reason: "the issuer's signature doesn't verify" } }).level, "mdoc-mismatch");
+  assert.equal(provenance(rec, { mdoc: { ok: true, chain: "unchecked" } }).level, "mdoc-unchecked");
+  assert.equal(provenance(rec, { mdoc: { ok: true, chain: "trusted" } }).level, "mdoc");
 });
 
 /* ---------------- the record ---------------- */

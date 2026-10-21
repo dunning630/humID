@@ -186,6 +186,7 @@ test("VICAL: a signed list of issuing-authority roots is read and its signature 
 import { newRecord, applyMdoc, applyAamva, parseAamva, provenance, title, summary, encodeRecord, decodeRecord } from "@humid/idscan";
 import { mdocAuth, mdocAnchorOf, mdocAnchorSummary } from "@humid/anchor";
 import { randomBytes } from "node:crypto";
+import { recheckMdocRecord } from "@humid/creds";
 
 const b64 = (u) => Buffer.from(u).toString("base64");
 
@@ -208,7 +209,15 @@ test("record: a verified mobile license fills the same fields as the barcode, an
   assert.equal(rec.fields.organDonor, true);
   assert.deepEqual(rec.address, { street: "123 MAIN ST", street2: "", city: "SPRINGFIELD", region: "IL", postalCode: "62701", country: "USA" });
   assert.equal(rec.images.portrait.type, "image/jpeg");
-  assert.equal(provenance(rec).level, "mdoc");
+  assert.equal(provenance(rec).level, "mdoc-unchecked", "stored flags alone don't earn the label (APP-05)");
+  assert.equal(provenance(rec, { mdoc: recheckMdocRecord(rec, { roots: [authority.rootPem] }) }).level, "mdoc");
+  assert.equal(provenance(rec, { mdoc: recheckMdocRecord(rec) }).level, "mdoc-unchecked", "signature fine, root not checked");
+  const altered = structuredClone(rec); altered.fields.surname = "MALLORY";
+  assert.equal(provenance(altered, { mdoc: recheckMdocRecord(altered, { roots: [authority.rootPem] }) }).level, "mdoc-mismatch");
+  const other = issuingAuthority({ C: "US", ST: "IL", name: "Not Illinois" });
+  assert.equal(provenance(rec, { mdoc: recheckMdocRecord(rec, { roots: [other.rootPem] }) }).level, "mdoc-mismatch");
+  const stripped = structuredClone(rec); delete stripped.raw.mdoc;
+  assert.equal(provenance(stripped, { mdoc: recheckMdocRecord(stripped, { roots: [authority.rootPem] }) }).level, "mdoc-mismatch");
   assert.equal(title(rec), "Driver's license · Illinois");
   assert.deepEqual(summary(rec), { kind: "driver_license", issuer: "USA", region: "IL", expiry: "2032-04-21" });
   // The barcode afterwards doesn't overwrite what the issuer signed.

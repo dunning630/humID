@@ -12,7 +12,7 @@ export { parseAamva, isAamva, aamvaDate } from "./aamva.js";
 export { readDg1, readDg2, sodHashes, checkIntegrity, safeCheckIntegrity, chipIntegrityOk, tlvAt, tlvChildren } from "./chip.js";
 export {
   SCHEMA, MEDIA_TYPE, KINDS, FIELDS, kindLabel, fieldsFor, newRecord, applyMrz, applyAamva, applyChip, applyMdoc, applyTyped, setImage,
-  niceName, fullName, title, status, summary, provenance, encodeRecord, decodeRecord,
+  niceName, fullName, title, status, summary, provenance, recheckChip, encodeRecord, decodeRecord,
 } from "./record.js";
 export { COUNTRIES, REGIONS, ALPHA2, countryName, regionName } from "./places.js";
 export { mdocFields, isMdocType, alpha3, imageType, MDOC_TYPES } from "./mdoc.js";

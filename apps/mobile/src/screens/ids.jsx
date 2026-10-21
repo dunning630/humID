@@ -1240,7 +1240,7 @@ export function IdView({ record: rec, item }) {
         <span class={`pill ${st.state === "expired" ? "danger" : st.state === "expiring" ? "amber" : st.state === "valid" ? "mint" : ""}`}>
           <Icon name="clock" />{st.state === "expired" ? `Expired ${fmtDay(rec.fields.expiry)}` : st.state === "expiring" ? `Expires in ${st.days} days` : st.state === "valid" ? `Valid to ${fmtDay(rec.fields.expiry)}` : "No expiry date"}
         </span>
-        <span class={`pill ${p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level === "chip" ? "Chip data integrity-checked" : p.level.startsWith("chip") ? "Not verified" : p.level === "mrz-unverified" ? "Not verified" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
+        <span class={`pill ${p.level === "barcode" || p.level === "mrz" ? "mint" : ""}`}><Icon name={p.level.startsWith("chip") ? "nfc" : p.level === "barcode" ? "barcode" : p.level.startsWith("mrz") ? "scan" : "pencil"} />{p.level === "chip-edited" ? "Chip, edited" : p.level === "chip" ? "Chip data integrity-checked" : p.level.startsWith("chip") ? "Not verified" : p.level === "mdoc" ? "Mobile ID, issuer checked" : p.level === "mdoc-edited" ? "Mobile ID, edited" : p.level.startsWith("mdoc") ? "Not verified" : p.level === "mrz-unverified" ? "Not verified" : p.level === "barcode" ? "From the barcode" : p.level.startsWith("mrz") ? "Scanned from the document" : "Typed"}</span>
       </div>
       <div class="card" style={{ marginTop: 14 }}>
         {rows.map((f) => (

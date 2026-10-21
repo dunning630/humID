@@ -22,6 +22,7 @@ export { credentialRequest, claimsFor, mdocElements, CredsError, REQUEST_TTL_MS 
 export { verifyCredentialResponse, checkStatus, fromLicenseBarcode } from "./verify.js";
 export { minimise, commit, checkCommitment, canonical, ageOn, FACTS, CLAIM_SCHEMA } from "./attest.js";
 export { checkSsnFormat, ecbsvVerifier } from "./ssn.js";
+export { recheckMdocRecord } from "./record.js";
 
 /**
  * IACA roots for mobile IDs from a VICAL (e.g. AAMVA's Digital Trust Service),
