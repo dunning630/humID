@@ -385,7 +385,15 @@ jobs:
       - name: Encrypted backup (keyshare apart), restore with the key file, and update in place keep the server's identity
         shell: pwsh
         run: |
-          function H { & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args | Out-Host; return $LASTEXITCODE }
+          # On failure: say which check and what humid printed last, as an annotation (readable without the log).
+          $script:last = ''
+          trap {
+            $m = ($script:last -replace "`r?`n", ' | ')
+            if ($m.Length -gt 1500) { $m = '...' + $m.Substring($m.Length - 1500) }
+            Write-Host "::error title=Encrypted backup step::$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber)). Last humid output: $m"
+            exit 1
+          }
+          function H { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args 2>&1 | Out-String; $code = $LASTEXITCODE; $script:last = $o; Write-Host $o; return $code }
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           $usb = Join-Path $env:RUNNER_TEMP 'usb'
           New-Item -ItemType Directory -Force -Path $usb | Out-Null
@@ -402,12 +410,14 @@ jobs:
           if ((H restore -Path $b -Key $key -Quiet) -eq 0) { throw 'restored without keyshare''s half' }
           if (H restore -Path $b -KeysharePath $k -Key $key -Quiet) { throw 'restore failed' }
           if (-not (Test-Path 'C:\ProgramData\HumID\data\keyshare\share-key.bin')) { throw 'keyshare''s data not restored' }
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $script:last = & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet 2>&1 | Out-String
+          $code = $LASTEXITCODE; Write-Host $script:last
+          if ($code) { throw "reinstall failed (exit $code)" }
           $after = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           if ($after -ne $kid) { throw "server identity changed" }
-          node tests/smoke.mjs http://127.0.0.1:8480
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $script:last = node tests/smoke.mjs http://127.0.0.1:8480 2>&1 | Out-String
+          $code = $LASTEXITCODE; Write-Host $script:last
+          if ($code) { throw "smoke test failed after restore (exit $code)" }
       - name: Check-in guard (with vaults armed, humid commands that stop the server wait for a typed ERASE)
         shell: pwsh
         run: |
