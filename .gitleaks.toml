@@ -14,3 +14,16 @@ path = '''(?i)(\.(keystore|jks|p12|pfx|p8)|(^|/)keystore\.properties)$'''
 [[allowlists]]
 description = "local-storage key names"
 regexes = ['''^humid\.[a-z0-9.-]+\.v[0-9]+$''']
+
+# Not secrets (4.0.0): a variable named "key" holding the token's x5c header, and the
+# setting that keeps internal services on the loopback address.
+[[allowlists]]
+description = "code and settings the generic-api-key rule mistakes for keys"
+regexes = ['''^jws\.header\.x5c$''', '''^HUMID_INTERNAL_BIND=127\.0\.0\.1$''']
+
+# A deliberately broken PEM header in a test (checks that unsealing refuses it): no key material.
+[[allowlists]]
+description = "fake PEM header in a server test"
+condition = "AND"
+paths = ['''^tests/server3\.test\.js$''']
+regexes = ['''-----BEGIN PRIVATE KEY-----x"''']
