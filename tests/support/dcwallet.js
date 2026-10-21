@@ -61,7 +61,7 @@ export async function answerAnnexC(w, request, { origin, tamper, ...opts } = {})
   const [first] = asked(Buffer.from(deviceRequest, "base64url"));
   const response = deviceResponse(w, transcript, { docType: first.docType, want: first.want, ...opts });
   const pub = await crypto.subtle.importKey("jwk", { kty: "EC", crv: "P-256", x: b64u(get(rk, -2)), y: b64u(get(rk, -3)) }, { name: "ECDH", namedCurve: "P-256" }, true, []);
-  const sender = await suite.createSenderContext({ recipientPublicKey: pub, info: Encoded.of(transcript).encoded });
+  const sender = await suite.createSenderContext({ recipientPublicKey: pub, info: encode(transcript) }); // HPKE info: the SessionTranscript's plain CBOR (as @owf/mdoc does)
   const cipherText = u8(await sender.seal(response));
   if (tamper === "cipher") cipherText[3] ^= 1;
   return { response: b64u(encode(["dcapi", new Map([["enc", u8(sender.enc)], ["cipherText", cipherText]])])) };

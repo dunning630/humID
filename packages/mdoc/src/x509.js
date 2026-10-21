@@ -61,8 +61,22 @@ const NAMES = { "2.5.4.3": "CN", "2.5.4.6": "C", "2.5.4.8": "ST", "2.5.4.10": "O
 
 export const OIDS = {
   ekuMdlDs: "1.0.18013.5.1.2", // id-mdl-kp-mdlDS: may sign mdoc Mobile Security Objects
-  basicConstraints: "2.5.29.19", keyUsage: "2.5.29.15", extKeyUsage: "2.5.29.37",
+  ekuMdlReaderAuth: "1.0.18013.5.1.6", // id-mdl-kp-mdlReaderAuth
+  ekuVicalSigner: "1.0.18013.5.1.8", // id-mdl-kp-VICALSigner
+  basicConstraints: "2.5.29.19", keyUsage: "2.5.29.15", extKeyUsage: "2.5.29.37", subjectAltName: "2.5.29.17",
 };
+
+/** subjectAltName → { dns: [...], uri: [...] } ([2] dNSName, [6] uniformResourceIdentifier). */
+function readSan(value) {
+  const out = { dns: [], uri: [] };
+  const td = new TextDecoder();
+  for (const g of children(der(value))) {
+    if (g.cls !== 2 || g.constructed) continue;
+    if (g.tag === 2) out.dns.push(td.decode(g.value).toLowerCase());
+    if (g.tag === 6) out.uri.push(td.decode(g.value));
+  }
+  return out;
+}
 
 function readName(t) {
   const out = {};
@@ -104,12 +118,15 @@ export function parseCertificate(input) {
     const eku = ext[OIDS.extKeyUsage] ? children(der(ext[OIDS.extKeyUsage].value)).map((o) => oidString(o.value)) : [];
     const ku = ext[OIDS.keyUsage] ? der(ext[OIDS.keyUsage].value).value : null;
     const keyCertSign = ku ? !!(ku.length > 1 && ku[1] & 0x04) : null;
+    const digitalSignature = ku ? !!(ku.length > 1 && ku[1] & 0x80) : null;
+    const san = ext[OIDS.subjectAltName] ? readSan(ext[OIDS.subjectAltName].value) : { dns: [], uri: [] };
     const curveInfo = curveOid && CURVES[oidString(curveOid.value)];
     return {
       der: bytes, tbs: tbs.raw, serial: serial.value, sigAlg: oidString(children(sigAlg)[0].value), signature: sig.value.subarray(1),
       issuerRaw: issuer.raw, subjectRaw: subject.raw, issuer: readName(issuer), subject: readName(subject),
       notBefore: time(nb), notAfter: time(na),
-      curve: curveInfo?.name || null, publicKey: point.value.subarray(1), isCa, eku, keyCertSign, extensions: ext,
+      curve: curveInfo?.name || null, publicKey: point.value.subarray(1), isCa, eku, keyCertSign, digitalSignature, san, extensions: ext,
+      fingerprint: Array.from(sha256(bytes), (x) => x.toString(16).padStart(2, "0")).join(""),
       _curve: curveInfo?.curve || null,
     };
   } catch (e) {

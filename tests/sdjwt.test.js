@@ -23,7 +23,7 @@ const code = (c) => (e) => { assert.ok(e instanceof SdJwtError || e instanceof S
 const PID = { family_name: "SPECIMEN", given_name: "ERIKA", birth_date: "1990-08-12", age_over_18: true, nationalities: ["DE"], address: { street_address: "HEIDESTRASSE 17", locality: "KOELN", postal_code: "51147", country: "DE" } };
 
 async function setup(opts = {}) {
-  const authority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider" });
+  const authority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider", dsSan: ["pid.example.eu"] });
   const holder = ec();
   const holderJwk = holder.publicKey.export({ format: "jwk" });
   const cred = await issueSdJwt({ issuerKey: authority.ds.privateKey, x5c: x5cOf(authority.dsDer), claims: PID, holderJwk, ...opts });
@@ -82,8 +82,11 @@ test("issuer trust: untrusted root, broken chain, tampered payload, alg none and
   const { holder, cred, trust } = await setup();
   const p = await presentSdJwt(cred, { names: ["given_name"], holderKey: holder.privateKey, aud: AUD, nonce: NONCE });
   assert.throws(() => verifySdJwtVc(p, { trust: { roots: [issuingAuthority().rootPem] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://pid.example.eu": ["urn:other:vct"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.equal(verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://pid.example.eu": ["urn:eudi:pid:1"] } }, nonce: NONCE, aud: AUD }).issuer.keySource, "certificate");
   assert.throws(() => verifySdJwtVc(p, { trust: { roots: [] }, nonce: NONCE, aud: AUD }), code("no_trust"));
-  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: ["https://someone-else.example"] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: { "https://someone-else.example": ["urn:eudi:pid:1"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.throws(() => verifySdJwtVc(p, { trust: { ...trust, issuers: ["https://pid.example.eu"] }, nonce: NONCE, aud: AUD }), code("bad_request"));
   // Change the payload under the signature.
   const [h, body, sig] = cred.jwt.split(".");
   const payload = JSON.parse(Buffer.from(body, "base64url"));
@@ -115,10 +118,41 @@ test("a pinned issuer key (issuer metadata) instead of a certificate chain", asy
   assert.throws(() => issuerMetadataUrl("http://issuer.example"), code("bad_issuer"));
   const metadata = { issuer: "https://issuer.example/tenant/", jwks: { keys: [jwk] } };
   const resolveKey = ({ iss, header }) => keyFromIssuerMetadata(metadata, { iss, kid: header.kid });
-  const r = verifySdJwtVc(p, { trust: { resolveKey }, nonce: NONCE, aud: AUD });
+  const issuers = { "https://issuer.example/tenant/": ["urn:eudi:pid:1"] };
+  const r = verifySdJwtVc(p, { trust: { resolveKey, issuers }, nonce: NONCE, aud: AUD });
   assert.equal(r.issuer.pinned, true);
+  assert.equal(r.issuer.keySource, "pinned");
+  // Review F3: metadata alone is never trust. Without an explicit issuer → type allowlist, a key from resolveKey is refused…
+  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  // …and an allowed issuer can't issue a type it isn't listed for.
+  assert.throws(() => verifySdJwtVc(p, { trust: { resolveKey, issuers: { "https://issuer.example/tenant/": ["urn:other:1"] } }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  assert.throws(() => keyFromIssuerMetadata({ issuer: metadata.issuer, jwks: { keys: [null, 5] } }, { iss: metadata.issuer }), code("untrusted_issuer"));
   assert.throws(() => keyFromIssuerMetadata({ ...metadata, issuer: "https://evil.example" }, { iss: metadata.issuer, kid: "k1" }), code("bad_issuer"));
   assert.throws(() => verifySdJwtVc(p, { trust: {}, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+});
+
+test("review F4: the issuer certificate must name the issuer (SAN) and the issuing country must be the certificate's", async () => {
+  const fr = issuingAuthority({ C: "FR", ST: "", name: "FR PID", dsSan: ["pid.fr.example"] });
+  const holder = ec();
+  const holderJwk = holder.publicKey.export({ format: "jwk" });
+  const trust = { roots: [fr.rootPem] };
+  const mk = async (iss, claims) => {
+    const cred = await issueSdJwt({ issuerKey: fr.ds.privateKey, x5c: x5cOf(fr.dsDer), iss, claims, holderJwk });
+    return presentSdJwt(cred, { names: Object.keys(claims), holderKey: holder.privateKey, aud: AUD, nonce: NONCE });
+  };
+  // An FR certificate claiming to be the German provider.
+  const posing = await mk("https://pid.de.example", { given_name: "ERIKA" });
+  assert.throws(() => verifySdJwtVc(posing, { trust, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  // Its own name, but a German issuing country.
+  const de = await mk("https://pid.fr.example", { given_name: "ERIKA", issuing_country: "DE" });
+  assert.throws(() => verifySdJwtVc(de, { trust, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
+  const ok = verifySdJwtVc(await mk("https://pid.fr.example", { given_name: "ERIKA", issuing_country: "FR" }), { trust, nonce: NONCE, aud: AUD });
+  assert.equal(ok.issuer.country, "FR");
+  // A certificate without a SAN can't vouch for any issuer.
+  const bare = issuingAuthority({ C: "FR", ST: "", name: "No SAN" });
+  const c2 = await issueSdJwt({ issuerKey: bare.ds.privateKey, x5c: x5cOf(bare.dsDer), iss: "https://pid.fr.example", claims: { given_name: "X" }, holderJwk });
+  const p2 = await presentSdJwt(c2, { names: ["given_name"], holderKey: holder.privateKey, aud: AUD, nonce: NONCE });
+  assert.throws(() => verifySdJwtVc(p2, { trust: { roots: [bare.rootPem] }, nonce: NONCE, aud: AUD }), code("untrusted_issuer"));
 });
 
 test("JWK thumbprints match RFC 7638 (independent: jose)", async () => {

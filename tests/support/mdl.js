@@ -21,12 +21,13 @@ export const dn = ({ C, ST, CN }) => seq(
 );
 
 let serial = 5000;
-function cert({ subject, issuer, publicKey, signingKey, ca = false, eku, notBefore, notAfter }) {
+function cert({ subject, issuer, publicKey, signingKey, ca = false, eku, notBefore, notAfter, san, ku }) {
   const alg = seq(oid("1.2.840.10045.4.3.2"));
   const exts = [];
   if (ca) exts.push(extension("2.5.29.19", seq(bool(true)), true), extension("2.5.29.15", tlv(0x03, Buffer.from([1, 0x06])), true));
-  else exts.push(extension("2.5.29.15", tlv(0x03, Buffer.from([7, 0x80])), true));
-  if (eku) exts.push(extension("2.5.29.37", seq(...eku.map(oid)), true));
+  else if (ku !== null) exts.push(extension("2.5.29.15", tlv(0x03, Buffer.from(ku ?? [7, 0x80])), true));
+  if (eku && eku.length) exts.push(extension("2.5.29.37", seq(...eku.map(oid)), true));
+  if (san) exts.push(extension("2.5.29.17", seq(...san.map((n) => (n.includes("://") ? tlv(0x86, Buffer.from(n)) : tlv(0x82, Buffer.from(n)))))));
   const tbs = seq(explicit(0, int(2)), int(serial++), alg, dn(issuer), seq(utcTime(notBefore), utcTime(notAfter)), dn(subject),
     publicKey.export({ type: "spki", format: "der" }), explicit(3, seq(...exts)));
   return seq(tbs, alg, bitString(sign("sha256", tbs, signingKey)));
@@ -41,13 +42,13 @@ const u8 = (b) => new Uint8Array(b);
 const sha256 = (b) => createHash("sha256").update(b).digest();
 
 /** An issuing authority: IACA root + Document Signer. */
-export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity } = {}) {
+export function issuingAuthority({ C = "US", ST = "UT", name = "Utopia DMV", dsEku = ["1.0.18013.5.1.2"], dsValidity, dsSan, dsKu, dsC } = {}) {
   const root = ec(), ds = ec();
   const now = Date.now();
   const rootSubject = { C, ST, CN: `${name} IACA Root (TEST)` };
   const rootDer = cert({ subject: rootSubject, issuer: rootSubject, publicKey: root.publicKey, signingKey: root.privateKey, ca: true, notBefore: new Date(now - 30 * day), notAfter: new Date(now + 3650 * day) });
   const dsDer = cert({
-    subject: { C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku,
+    subject: { C: dsC ?? C, ST, CN: `${name} Document Signer (TEST)` }, issuer: rootSubject, publicKey: ds.publicKey, signingKey: root.privateKey, eku: dsEku, san: dsSan, ku: dsKu,
     notBefore: dsValidity?.from || new Date(now - 10 * day), notAfter: dsValidity?.until || new Date(now + 365 * day),
   });
   return { root, ds, rootDer: u8(rootDer), dsDer: u8(dsDer), rootPem: pem(rootDer), C, ST };

@@ -410,7 +410,15 @@ function readMasterListInner(bytes, publisherCscas, now) {
   const signer = new X509Certificate(named[0]);
   const f = certFields(named[0]);
   if (f.ca || !canSign(f.keyUsage)) fail("bad_signature", "The master list's signer isn't a signing certificate.");
-  if (!verifyWith(signer.publicKey, algorithm(si[4]), digestAlg, signedAttrsDer, octets(si[5]))) fail("bad_signature", "The master list's signature doesn't verify.");
+  // ICAO 9303-12: a master list signer carries the master list signing key usage. A Document Signer under the same CSCA doesn't, and can't publish a list.
+  const eku = Array.isArray(signer.keyUsage) ? signer.keyUsage : [];
+  if (!eku.includes(ML.signerEku)) fail("bad_signature", "The master list isn't signed by a master list signer.");
+  // No SHA-1 anywhere, and the signature's own hash must be the digest the attributes were made with.
+  const sigAlg = algorithm(si[4]);
+  const sigSpec = SIG[sigAlg.oid];
+  const sigHash = sigSpec?.kind === "pss" ? pssParams(sigAlg.params).hash : sigSpec?.hash || digestAlg;
+  if (!sigSpec || sigHash === "sha1" || sigHash !== digestAlg) fail("unsupported", "The master list's signature algorithm isn't accepted.");
+  if (!verifyWith(signer.publicKey, sigAlg, digestAlg, signedAttrsDer, octets(si[5]))) fail("bad_signature", "The master list's signature doesn't verify.");
   if (now < new Date(signer.validFrom) || now > new Date(signer.validTo)) fail("bad_signature", "The master list's signer certificate isn't valid now.");
   const publisher = publisherCscas.map(asCert).find((ca) => { try { return signer.checkIssued(ca) && signer.verify(ca.publicKey); } catch { return false; } });
   if (!publisher) fail("untrusted_country", "The master list isn't signed by the publisher you trust.");

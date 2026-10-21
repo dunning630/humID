@@ -15,7 +15,8 @@
 //
 // Passport and ID card chips: @humid/creds/server (Node only).
 
-import { readVical } from "@humid/mdoc";
+import { readVical, MdocError } from "@humid/mdoc";
+import { CredsError } from "./request.js";
 
 export { TYPES, CATALOG, CLAIMS, PURPOSES, MDL_DOCTYPE, PHOTOID_DOCTYPE, PID_DOCTYPE, PID_VCT } from "./catalog.js";
 export { credentialRequest, claimsFor, mdocElements, CredsError, REQUEST_TTL_MS } from "./request.js";
@@ -25,11 +26,13 @@ export { checkSsnFormat, ecbsvVerifier } from "./ssn.js";
 
 /**
  * IACA roots for mobile IDs from a VICAL (e.g. AAMVA's Digital Trust Service),
- * whose own signature must chain to `providerRoots`. docType filters by what
+ * whose own signature must chain to `providerRoots`, made by a VICAL signing certificate, and
+ * not stale (pass the last `minIssueId` seen to refuse a rollback). docType filters by what
  * each issuer may sign. Returns DER certificates to pass as trust.iaca.
  */
-export function iacaFromVical(bytes, { providerRoots, docType } = {}) {
-  if (!providerRoots?.length) throw new Error("A VICAL is only as good as its provider: pass the provider's root.");
-  const v = readVical(bytes, { providerRoots });
+export function iacaFromVical(bytes, { providerRoots, docType, now, minIssueId } = {}) {
+  let v;
+  try { v = readVical(bytes, { providerRoots, now, minIssueId }); }
+  catch (e) { if (e instanceof MdocError) throw new CredsError(e.code, e.message); throw e; }
   return v.certificates.filter((c) => !docType || !c.docTypes.length || c.docTypes.includes(docType)).map((c) => c.der);
 }

@@ -196,7 +196,7 @@ test("OpenID4VP: transcripts for another nonce, origin or key; unencrypted answe
 });
 
 test("OpenID4VP: an EU PID as SD-JWT VC, bound to origin: and the nonce, with age from age_equal_or_over", async () => {
-  const pidAuthority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider" });
+  const pidAuthority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider", dsSan: ["pid.example.eu"] });
   const holder = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const cred = await issueSdJwt({
     issuerKey: pidAuthority.ds.privateKey, x5c: [Buffer.from(pidAuthority.dsDer).toString("base64")], holderJwk: holder.publicKey.export({ format: "jwk" }),
@@ -221,7 +221,7 @@ test("OpenID4VP: an EU PID as SD-JWT VC, bound to origin: and the nonce, with ag
 });
 
 test("revocation through creds: a revoked credential is found revoked and can't back a 'valid document' claim", async () => {
-  const pidAuthority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider" });
+  const pidAuthority = issuingAuthority({ C: "DE", ST: "", name: "PID Provider", dsSan: ["pid.example.eu"] });
   const holder = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const uri = "https://pid.example.eu/status/1";
   const cred = await issueSdJwt({
@@ -306,16 +306,16 @@ test("passport chip through creds/server: passive + active authentication → is
 });
 
 /** A CSCA master list (CMS SignedData, eContentType 2.23.136.1.1.2) signed by the publisher's ML signer. */
-function masterList({ publisher, cscas, tamper }) {
+function masterList({ publisher, cscas, tamper, eku = true, sha1 = false }) {
   const signer = ecKeys("P-256");
-  const signerDer = certificate({ subject: { cn: "Test Master List Signer", country: publisher.country }, issuer: publisher.name, publicKey: signer.publicKey, signingKey: publisher.privateKey, serialNumber: 777, extensions: [extension("2.5.29.15", keyUsage(0), true), extension("2.5.29.37", seq(oid("2.23.136.1.1.3")))] });
+  const signerDer = certificate({ subject: { cn: "Test Master List Signer", country: publisher.country }, issuer: publisher.name, publicKey: signer.publicKey, signingKey: publisher.privateKey, serialNumber: 777, extensions: [extension("2.5.29.15", keyUsage(0), true), ...(eku ? [extension("2.5.29.37", seq(oid("2.23.136.1.1.3")))] : [])] });
   const content = seq(int(0), set(...cscas.map((c) => c.der)));
   const attrs = set(...[seq(oid("1.2.840.113549.1.9.3"), set(oid("2.23.136.1.1.2"))), seq(oid("1.2.840.113549.1.9.4"), set(octet(createHash("sha256").update(content).digest())))].sort(Buffer.compare));
-  const sig = nodeSign("sha256", attrs, signer.privateKey);
+  const sig = nodeSign(sha1 ? "sha1" : "sha256", attrs, signer.privateKey);
   // SignerIdentifier: issuerAndSerialNumber of the signer certificate.
   const sid = seq(nameOf(publisher.name), int(777));
   const signedAttrs = Buffer.concat([Buffer.from([0xa0]), attrs.subarray(1)]);
-  const si = seq(int(1), sid, seq(oid("2.16.840.1.101.3.4.2.1")), signedAttrs, seq(oid("1.2.840.10045.4.3.2")), octet(sig));
+  const si = seq(int(1), sid, seq(oid("2.16.840.1.101.3.4.2.1")), signedAttrs, seq(oid(sha1 ? "1.2.840.10045.4.1" : "1.2.840.10045.4.3.2")), octet(sig));
   const eContent = tamper ? seq(int(0), set(cscas[0].der)) : content;
   const sd = seq(int(3), set(seq(oid("2.16.840.1.101.3.4.2.1"))), seq(oid("2.23.136.1.1.2"), explicit(0, octet(eContent))), explicit(0, signerDer), set(si));
   return seq(oid("1.2.840.113549.1.7.2"), explicit(0, sd));
@@ -333,6 +333,12 @@ test("ICAO master list: CSCAs vouched for by a trusted publisher; a tampered lis
   assert.throws(() => cscasFromMasterList(ml, { publisherCscas: [testCsca("X", "DE").pem] }), code("untrusted_country"));
   assert.throws(() => cscasFromMasterList(masterList({ publisher, cscas: [uto, other], tamper: true }), { publisherCscas: [publisher.pem] }), code("data_altered"));
   assert.throws(() => cscasFromMasterList(ml, { publisherCscas: [] }), code("no_trust"));
+  // Review F1: a certificate under the publisher's CSCA without the master list signer key usage
+  // (for example one of its passport Document Signers) can't publish a list.
+  const evil = testCsca("Attacker CSCA", "UT");
+  assert.throws(() => cscasFromMasterList(masterList({ publisher, cscas: [evil], eku: false }), { publisherCscas: [publisher.pem] }), code("bad_signature"));
+  // Review F2: no SHA-1 signatures.
+  assert.throws(() => cscasFromMasterList(masterList({ publisher, cscas: [uto], sha1: true }), { publisherCscas: [publisher.pem] }), code("unsupported"));
 });
 
 /* ---------------- SSN ---------------- */

@@ -13,8 +13,8 @@
 // its subject is the uri the credential named, and that it isn't stale. The
 // app does the fetching; nothing here touches the network.
 
-import { decode, get, parse1, verifySign1, x5chain, parseCertificate, issuedBy } from "@humid/mdoc";
-import { parseJws, verifyJwsWith, jwkKey, x5cKey, unb64u, JoseError } from "./jose.js";
+import { decode, get, parse1, verifySign1, x5chain } from "@humid/mdoc";
+import { parseJws, verifyJwsWith, jwkKey, x5cKey, chainKey, unb64u, JoseError } from "./jose.js";
 
 export class StatusError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -84,13 +84,20 @@ const fresh = ({ iat, exp, ttl }, now, maxAgeSeconds, skew = 60) => {
 /**
  * Check a statuslist+jwt and the reference's entry in it.
  * trust: as verifySdJwtVc ({ roots } for x5c, or { resolveKey }).
+ * root: the credential's own root fingerprint; when given, the list must chain to the same root.
  */
-export async function checkStatusJwt(token, ref, { trust = {}, now = new Date(), maxAgeSeconds = 86400 } = {}) {
+export async function checkStatusJwt(token, ref, { trust = {}, now = new Date(), maxAgeSeconds = 86400, root } = {}) {
   const jws = jose(() => parseJws(token));
   if (jws.header.typ !== "statuslist+jwt") fail("bad_status_list", "This isn't a status list token.");
-  const key = jws.header.x5c ? jose(() => x5cKey(jws.header.x5c, { roots: trust.roots, now })).key
-    : trust.resolveKey ? jose(() => jwkKey(trust.resolveKey({ iss: jws.payload.iss, header: jws.header }) || fail("untrusted_issuer", "No trusted key for the status list.")))
-    : fail("untrusted_issuer", "The status list doesn't say how to find its signer's key.");
+  let key;
+  if (jws.header.x5c) {
+    const c = jose(() => x5cKey(jws.header.x5c, { roots: trust.roots, now }));
+    if (root && c.root.fingerprint !== root) fail("untrusted_issuer", "The status list isn't signed under the credential's own issuer.");
+    key = c.key;
+  } else if (trust.resolveKey) {
+    if (root) fail("untrusted_issuer", "The status list must be signed under the credential's own issuer certificate.");
+    key = jose(() => jwkKey(trust.resolveKey({ iss: jws.payload.iss, header: jws.header }) || fail("untrusted_issuer", "No trusted key for the status list.")));
+  } else fail("untrusted_issuer", "The status list doesn't say how to find its signer's key.");
   jose(() => verifyJwsWith(jws, key));
   const p = jws.payload;
   if (p.sub !== ref.uri) fail("bad_status_list", "The status list is for a different address than the credential names.");
@@ -104,20 +111,17 @@ export async function checkStatusJwt(token, ref, { trust = {}, now = new Date(),
 const CWT = { sub: 2, exp: 4, iat: 6, ttl: 65534, statusList: 65533 };
 
 /** Check a statuslist+cwt (COSE_Sign1) and the reference's entry. roots: trusted issuer roots for its x5chain. */
-export async function checkStatusCwt(bytes, ref, { roots = [], now = new Date(), maxAgeSeconds = 86400 } = {}) {
+export async function checkStatusCwt(bytes, ref, { roots = [], now = new Date(), maxAgeSeconds = 86400, root } = {}) {
   let s1;
   try { s1 = parse1(bytes instanceof Uint8Array ? decode(bytes) : bytes); } catch { fail("bad_status_list", "The status list can't be read."); }
   const typ = get(s1.protectedMap, 16);
   if (typ !== "application/statuslist+cwt" && typ !== 65533) fail("bad_status_list", "This isn't a status list token.");
-  const chain = x5chain(s1).map((c) => { try { return parseCertificate(c); } catch { return null; } });
-  if (!chain.length || chain.some((c) => !c)) fail("bad_status_list", "The status list's signer certificate is missing or unreadable.");
-  const anchors = roots.map((r) => (r?.tbs ? r : typeof r === "string" ? parseCertificate(r) : parseCertificate(r)));
-  const leaf = chain[0];
-  if (now < leaf.notBefore || now > leaf.notAfter) fail("bad_status_list", "The status list's signer certificate isn't valid now.");
-  const top = chain[chain.length - 1];
-  for (let i = 0; i < chain.length - 1; i++) if (!chain[i + 1].isCa || !issuedBy(chain[i], chain[i + 1])) fail("bad_status_list", "The status list's certificate chain is broken.");
-  if (!anchors.some((r) => r.isCa && issuedBy(top, r))) fail("untrusted_issuer", "The status list isn't signed by a trusted issuer.");
-  if (!verifySign1(s1, { curve: leaf._curve, publicKey: leaf.publicKey })) fail("bad_signature", "The status list's signature doesn't verify.");
+  const ders = x5chain(s1);
+  if (!ders.length) fail("bad_status_list", "The status list's signer certificate is missing.");
+  // The same chain rules as a credential's issuer: every certificate valid now, CAs above, a signing leaf, a trusted root.
+  const c = jose(() => chainKey(ders, { roots, now }));
+  if (root && c.root.fingerprint !== root) fail("untrusted_issuer", "The status list isn't signed under the credential's own issuer.");
+  if (!verifySign1(s1, c.key)) fail("bad_signature", "The status list's signature doesn't verify.");
   let claims;
   try { claims = decode(s1.payload); } catch { fail("bad_status_list", "The status list can't be read."); }
   if (get(claims, CWT.sub) !== ref.uri) fail("bad_status_list", "The status list is for a different address than the credential names.");

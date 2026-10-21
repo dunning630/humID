@@ -13,7 +13,7 @@
 //     SessionTranscript  = [null, null, ["dcapi", SHA-256(cbor([b64url(EncryptionInfo), origin]))]]
 //     EncryptedResponse  = ["dcapi", { enc, cipherText }]
 //     HPKE               = DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-128-GCM;
-//                          info = SessionTranscript bytes, aad empty
+//                          info = CBOR(SessionTranscript) (not tag-24 wrapped), aad empty
 //
 //   openid4vp-v1-*       OpenID for Verifiable Presentations 1.0, Appendix B
 //     SessionTranscript  = [null, null, ["OpenID4VPDCAPIHandover",
@@ -77,7 +77,7 @@ export function openid4vpRedirectTranscript({ clientId, nonce, jwkThumbprint = n
   return [null, null, ["OpenID4VPHandover", sha256(encode([clientId, nonce, jwkThumbprint, responseUri]))]];
 }
 
-/** SessionTranscriptBytes = #6.24(bstr .cbor SessionTranscript): what HPKE's info and ReaderAuth cover. */
+/** SessionTranscriptBytes = #6.24(bstr .cbor SessionTranscript), as ISO 18013-5 uses it for session-key salts. (Annex C's HPKE info is the plain encoding.) */
 export const transcriptBytes = (transcript) => Encoded.of(transcript).encoded;
 
 /* ---------------- requests ---------------- */
@@ -135,7 +135,9 @@ export function annexCOpen(state, data) {
   const enc = get(er[1], "enc"), cipherText = get(er[1], "cipherText");
   if (!(enc instanceof Uint8Array) || !(cipherText instanceof Uint8Array)) fail("bad_response", "The wallet's answer is missing its encrypted part.");
   let response;
-  try { response = hpkeOpen(state.keyPair, enc, cipherText, { info: transcriptBytes(state.transcript) }); }
+  // HPKE info is the SessionTranscript's own CBOR encoding, not the tag-24
+  // SessionTranscriptBytes (checked against @owf/mdoc in tests/creds.test.js).
+  try { response = hpkeOpen(state.keyPair, enc, cipherText, { info: encode(state.transcript) }); }
   catch (e) { if (e instanceof HpkeError) fail("decrypt", e.message); throw e; }
   return { response, session: { transcript: state.transcript } };
 }

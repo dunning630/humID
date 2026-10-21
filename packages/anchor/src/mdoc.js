@@ -60,7 +60,8 @@ export function mdocAuth(response, { session, iacas, now = new Date() } = {}) {
     docType: d.docType, issuer: txt(v.issuing_country).toUpperCase(), jurisdiction: txt(v.issuing_jurisdiction).toUpperCase(),
     surname: txt(v.family_name).toUpperCase(), given: txt(v.given_name).toUpperCase(), birth: txt(v.birth_date).slice(0, 10), sex: txt(v.sex),
   };
-  if (!identity.surname || !identity.birth) throw new MdocAnchorError("bad_chip_data", "The mobile ID didn't share a name and date of birth.");
+  // A weak anchor (a surname and a birth date) would be too easy to collide with; ask for the full set.
+  if (!identity.surname || !identity.given || !identity.birth || !identity.issuer) throw new MdocAnchorError("bad_chip_data", "The mobile ID didn't share the full name, date of birth and issuing country.");
   return { identity, device: d.device.method, root: d.root?.subject || null, validUntil: d.validity.validUntil };
 }
 
