@@ -275,6 +275,79 @@ test("a key the server doesn't know is refused without telling anything about an
   await cancelAll().catch(() => {});
 });
 
+test("what the key signed is what the docs say: SHA-256(\"HUMID-KEY-v1 recover \" ‖ challenge)", () => {
+  const ch = random(32);
+  const ours = clientDataHash("recover", ch);
+  const theirs = createHash("sha256").update("HUMID-KEY-v1 recover ").update(ch).digest();
+  assert.deepEqual([...ours], [...theirs]);
+  assert.ok(createPublicKey && verifySig); // the server checks with node:crypto, independently of @humid/fido
+});
+
+/* ---------------- from the independent review ---------------- */
+
+/** A software "key": a P-256 key pair in memory signing what a key would, with chosen flags. */
+async function softKey(flags) {
+  const { generateKeyPairSync, sign } = await import("node:crypto");
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const jwk = publicKey.export({ format: "jwk" });
+  const pub = new Uint8Array([4, ...Buffer.from(jwk.x, "base64url"), ...Buffer.from(jwk.y, "base64url")]);
+  const answer = (purpose, ch, counter = 1) => {
+    const ad = Buffer.concat([createHash("sha256").update(RP_ID).digest(), Buffer.from([flags]), Buffer.from([0, 0, 0, counter])]);
+    return { authData: new Uint8Array(ad), signature: new Uint8Array(sign("sha256", Buffer.concat([ad, Buffer.from(clientDataHash(purpose, ch))]), { key: privateKey, dsaEncoding: "der" })) };
+  };
+  return { pub, answer };
+}
+
+test("a synced passkey (BE/BS flags) isn't a security key: refused when adding", async () => {
+  const soft = await softKey(0x01 | 0x04 | 0x08 | 0x10);
+  const { challenge } = await phone.keyChallenge();
+  const secret = random(32);
+  await assert.rejects(phone.addKey({ tag: keyTag(secret), blob: await sealKeyPart(secret, quorumParts(alice.seed).key, alice.id), pub: soft.pub, credentialId: random(32), ...soft.answer("add", challenge) }, alice.stepUp), (e) => e.code === "synced_credential");
+});
+
+test("malformed answers sent with someone's tag don't write anything to their Activity", async () => {
+  const before = (await phone.ledger()).entries.filter((e) => e.type === "recovery.key_refused").length;
+  const [c] = await readRecoveryKey(key, { pin: PIN, challenge: random(32) });
+  const tag = keyTag(c.secret); c.secret.fill(0);
+  for (let i = 0; i < 3; i++) {
+    const dev = await newDevice();
+    await dev.api.recoveryKeyChallenge(dev.req.id);
+    await assert.rejects(dev.api.recoveryAddKey(dev.req.id, [{ tag, authData: new Uint8Array(0), signature: new Uint8Array(0) }]), (e) => e.code === "bad_key_proof");
+  }
+  const after = (await phone.ledger()).entries.filter((e) => e.type === "recovery.key_refused").length;
+  assert.equal(after, before, "only a signature that was checked is worth telling Alice about");
+  await cancelAll().catch(() => {});
+});
+
+test("withdrawing a proof restarts the wait for the pair that's left", async () => {
+  const extra = simulatedKey({ pin: PIN });
+  const { id } = await addKey(alice, phone, extra);
+  const dev = await newDevice({ tag: cardTag(card.secret) });
+  const { r } = await keyProof(dev, extra);
+  await witness(0, dev.req.code); await witness(1, dev.req.code);
+  const was = (await dev.api.recoveryStatus(dev.req.id)).releaseAt;
+  assert.ok(was && was <= r.releaseAt, "a witness pair shortens it");
+  await sleep(600);
+  await phone.removeKey(id, alice.stepUp);
+  const st = await dev.api.recoveryStatus(dev.req.id);
+  assert.deepEqual(st.kinds.sort(), ["card", "witness"]);
+  assert.ok(st.releaseAt - Date.now() > DELAY - 1000, "card + witnesses wait the full base delay from the withdrawal");
+  await cancelAll();
+});
+
+test("an anonymous caller never sees an account id in an error, whatever the route", async () => {
+  const dev = await newDevice();
+  await dev.api.recoveryKeyChallenge(dev.req.id);
+  const [c] = await readRecoveryKey(key, { pin: PIN, challenge: random(32) });
+  const err = await dev.api.recoveryAddKey(dev.req.id, [{ tag: keyTag(c.secret), authData: c.authData, signature: c.signature }]).catch((e) => e);
+  c.secret.fill(0);
+  assert.equal(err.code, "bad_key_proof");
+  assert.ok(!JSON.stringify({ ...err, message: err.message }).includes("hid_"), "no account in what came back");
+  await cancelAll().catch(() => {});
+});
+
+/* ---------------- last: duress locks Alice's account down ---------------- */
+
 test("duress: adding or removing a key fails like a busy server", async () => {
   const coerced = anotherDevice(alice);
   const forced = new HumidApi({ baseUrl: stack.baseUrl });
@@ -284,12 +357,4 @@ test("duress: adding or removing a key fails like a busy server", async () => {
   await assert.rejects(addKey(alice, forced, simulatedKey({ pin: PIN }), { stepUp: coerced.stepUp }), (e) => e.code === "busy" && e.status === 503);
   const [first] = (await phone.keys()).keys;
   await assert.rejects(phone.removeKey(first.id, alice.stepUp), (e) => e.code === "busy");
-});
-
-test("what the key signed is what the docs say: SHA-256(\"HUMID-KEY-v1 recover \" ‖ challenge)", () => {
-  const ch = random(32);
-  const ours = clientDataHash("recover", ch);
-  const theirs = createHash("sha256").update("HUMID-KEY-v1 recover ").update(ch).digest();
-  assert.deepEqual([...ours], [...theirs]);
-  assert.ok(createPublicKey && verifySig); // the server checks with node:crypto, independently of @humid/fido
 });

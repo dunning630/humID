@@ -5,21 +5,21 @@
 // a real NFC framing here (NFCCTAP_MSG with P1 0x80 and 9100 polling, CLA 0x90
 // command chaining, 61xx + GET RESPONSE) into the simulator.
 //
-// Python: $HUMID_PYTHON, else the scratchpad venv used in development, else
-// python3. Skipped, with the reason, when none of them can import fido2 1.2+.
+// Python: $HUMID_PYTHON, else python3 (pip install fido2==1.2.0). Skipped, with the reason,
+// when neither can import fido2 1.2+, except where HUMID_REQUIRE_FIDO2=1 (CI): there it fails.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { simulatedKey, FIDO_AID } from "./support/fido-sim.js";
 
 const SCRIPT = fileURLToPath(new URL("./support/fido_crosscheck.py", import.meta.url));
-const DEV_VENV = "/tmp/claude-0/-home-claude/f3b5bbab-02ff-5454-8e93-b2d011540039/scratchpad/venv/bin/python";
+// CI sets HUMID_REQUIRE_FIDO2=1 (and installs python-fido2), so there a missing library fails the run.
+const REQUIRED = process.env.HUMID_REQUIRE_FIDO2 === "1";
 
 function findPython() {
-  const candidates = [process.env.HUMID_PYTHON, existsSync(DEV_VENV) ? DEV_VENV : null, "python3"].filter(Boolean);
+  const candidates = [process.env.HUMID_PYTHON, "python3"].filter(Boolean);
   const reasons = [];
   for (const py of candidates) {
     const r = spawnSync(py, ["-c", "import fido2, cryptography; print(fido2.__version__)"], { encoding: "utf8", timeout: 20_000 });
@@ -90,6 +90,7 @@ const python = findPython();
 
 test("python-fido2 (Yubico's reference client) against the simulated key, over NFC framing", { timeout: 120_000 }, async (t) => {
   if (python.reason) {
+    assert.ok(!REQUIRED, `python-fido2 is required here (HUMID_REQUIRE_FIDO2=1): ${python.reason}`);
     t.skip(python.reason);
     return;
   }

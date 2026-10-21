@@ -37,7 +37,7 @@ import {
 /* Security keys (docs/SECURITY-KEY.md). The relying party no website can claim, and what the key signs. */
 const KEY_RP_ID = "recovery.humid.invalid";
 const KEY_RP_HASH = createHash("sha256").update(KEY_RP_ID).digest();
-const KEY_FLAGS = { UP: 0x01, UV: 0x04, AT: 0x40 };
+const KEY_FLAGS = { UP: 0x01, UV: 0x04, BE: 0x08, BS: 0x10, AT: 0x40 };
 const keyClientDataHash = (purpose, challenge) => createHash("sha256").update(`HUMID-KEY-v1 ${purpose} `).update(challenge).digest();
 import { passiveAuth, activeAuth, anchorOf, anchorSummary, stableIdentity, loadCscas, AnchorError } from "@humid/anchor";
 
@@ -244,13 +244,15 @@ export function createRecovery({
   }
 
   /**
-   * A proof was withdrawn (a key or card removed): every open recovery of `account` that
-   * no longer has two kinds of proof goes back to collecting, and its wait is gone.
+   * A proof was withdrawn (a key or card removed): every waiting recovery of `account` starts
+   * its wait again from now if two kinds remain, and goes back to collecting if not.
    */
   function demote(account) {
     for (const q of db.prepare("SELECT * FROM requests WHERE account = ? AND method = 'quorum' AND status = 'waiting'").all(account)) {
-      if (kindsOf(q).length >= 2) { evaluate(q.id); continue; }
+      // Whatever remains, the wait starts again from now: a withdrawn proof never leaves a
+      // shorter wait behind for the pair that's left.
       db.prepare("UPDATE requests SET status = 'collecting', release_at = NULL, quorum_at = NULL, expires_at = ? WHERE id = ?").run(now() + collectTtlMs, q.id);
+      if (kindsOf(q).length >= 2) evaluate(q.id);
     }
   }
 
@@ -411,8 +413,12 @@ export function createRecovery({
     const flags = ad[32];
     if (!(flags & KEY_FLAGS.UP) || !(flags & KEY_FLAGS.UV)) throw new HttpError(422, "bad_key_proof", "The security key didn't confirm its PIN.");
     if (flags & KEY_FLAGS.AT) throw new HttpError(422, "bad_key_proof", "The security key's answer is malformed.");
+    // A credential that says it can be backed up or synced (a passkey in a cloud account) isn't a
+    // physical key: refused, at adding and at recovering (WebAuthn §6.1 BE/BS flags).
+    if (flags & (KEY_FLAGS.BE | KEY_FLAGS.BS)) throw new HttpError(422, "synced_credential", "That's a synced passkey, not a security key. Use a hardware security key.");
     const ok = (() => { try { return verifySig("sha256", Buffer.concat([ad, keyClientDataHash(purpose, challenge)]), { key: keyPub(pub), dsaEncoding: "der" }, sig); } catch { return false; } })();
-    if (!ok) throw new HttpError(422, "bad_key_proof", "The security key's signature didn't check out.");
+    // Only a signature that was actually checked and failed says anything about the stored key.
+    if (!ok) throw Object.assign(new HttpError(422, "bad_key_proof", "The security key's signature didn't check out."), { checked: true });
     return ad.readUInt32BE(33);
   }
   /** A counter must move forward, unless the key keeps it at zero. Backwards means a copy. */
@@ -721,7 +727,7 @@ export function createRecovery({
       // A stored key that answers wrongly is worth telling its owner about (the gateway records it).
       let count;
       try { count = checkKeyAnswer({ pub: pick.row.pub, authData: unb64u(String(pick.c.authData || "")), signature: unb64u(String(pick.c.signature || "")) }, "recover", challenge); }
-      catch (e) { if (e instanceof HttpError) e.detail = { account: pick.row.account, ref: q.ref }; throw e; }
+      catch (e) { if (e instanceof HttpError && e.checked) e.detail = { account: pick.row.account, ref: q.ref }; throw e; }
       if (!counterOk(pick.row.sign_count, count)) throw new HttpError(409, "key_cloned", "This security key's counter went backwards, which happens when a key has been copied. It doesn't count as a proof.", { account: pick.row.account, ref: q.ref });
       const first = bindAccount(q, pick.row.account);
       db.prepare("UPDATE seckeys SET sign_count = ? WHERE id = ?").run(count, pick.row.id);

@@ -333,16 +333,18 @@ export async function addCardToJoin(cardInput) {
 
 /**
  * Two proofs, while waiting: a security key (4.0). One tap with its PIN: the key signs the
- * server's challenge for this recovery and gives this device its secret. Then one live
- * check keeps that secret under this device's lock for the end of the wait, and only
- * then is the proof sent (so a cancelled check leaves nothing half-done on the server).
+ * server's challenge for this recovery and gives this device its secret. Then, inside one
+ * live check, the proof is sent and the matching secret is kept under this device's lock
+ * for the end of the wait. If the app stops between the two, the server counts the key but
+ * this device hasn't kept its secret: the screen then asks for one more tap (pending.hasKey
+ * is what this device has, not what the server counted).
  * Returns true | { pinError } | false.
  */
 export async function addKeyToJoin(pin) {
   const id = S.identity.value;
   const p = id?.pending;
   if (p?.method !== "quorum") return false;
-  if (p.hasKey) { toast("Your security key is already part of this recovery.", "warn"); return false; }
+  if (p.hasKey) { toast("Your security key is already part of this recovery.", "warn"); return false; } // kept here; a key the server counted without it may be read again
   const read = await readKeyForRecovery(p.requestId, pin);
   if (!read || read.pinError) return read || false;
   const gate = gateAdapter(id.gate.adapter);

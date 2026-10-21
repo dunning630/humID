@@ -89,7 +89,9 @@ export async function addSecurityKey({ name, pin, newPin = false }) {
         await R.api.addKey({ tag: keyTag(got.secret), blob, pub: got.publicKey, credentialId: got.credentialId, authData: got.authData, signature: got.signature, label }, proof);
       } finally { wipe(part.y); }
     });
-    toast("Security key added. With any one other proof it brings your vault back.");
+    toast(got.hidden
+      ? "Security key added. With any one other proof it brings your vault back."
+      : "Security key added. This older key can't hide that it holds a HumID credential, but it still needs its PIN to be used.", got.hidden ? undefined : "warn");
     loadRecovery();
     return { ok: true };
   } catch (e) {

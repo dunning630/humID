@@ -221,7 +221,7 @@ function JoinWait({ eyebrow }) {
 
 /** Two-proof recovery while collecting: one proof open at a time; the code to show in a panel. */
 function QuorumWait({ p, st, now }) {
-  const kinds = [...new Set([...(st?.kinds || []), ...(p.hasCard ? ["card"] : []), ...(p.hasKey ? ["key"] : [])])];
+  const kinds = [...new Set([...(st?.kinds || []), ...(p.hasCard ? ["card"] : [])])];
   const releaseAt = st?.releaseAt;
   const [open, setOpen] = useState(null); // which proof is expanded
   const [showCode, setShowCode] = useState(false);
@@ -237,6 +237,9 @@ function QuorumWait({ p, st, now }) {
   const nfc = S.nfc.value;
   const run = async (fn) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
   const has = (k) => kinds.includes(k);
+  // The key counts only when this device also kept its secret (the server may have counted it
+  // before the app was closed).
+  const keyHere = has("key") && !!p.hasKey;
   return (
     <>
       <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
@@ -245,7 +248,8 @@ function QuorumWait({ p, st, now }) {
         : "Any two different proofs. Open one below to add it."}</p>
       <div style={{ marginTop: 12 }}><ProofMeter have={kinds} /></div>
       {tier && <p class="small t2" style={{ marginTop: 8 }}><Icon name="clock" /> Wait with these proofs: {tier}</p>}
-      {!releaseAt && !ended && (
+      {releaseAt && has("key") && !p.hasKey && !ended && <div style={{ marginTop: 12 }}><Banner tone="amber" icon="seckey" title="One more tap with your security key" text="Your vault counted your key, but this phone didn't keep its secret (the app closed in between). Hold the key here again, or this phone can't open your vault when the wait ends." /></div>}
+      {(!releaseAt || (has("key") && !p.hasKey)) && !ended && (
         <div class="stack" style={{ marginTop: 14 }}>
           <div class="rows">
             <Row icon="users" tone={has("witness") ? "mint" : ""} title="Witnesses" sub={has("witness") ? "Approved" : st?.threshold ? `${st.approvals ?? 0} of ${st.threshold} have approved` : "A majority of your witnesses approve"} trail={has("witness") && <Icon name="check" />} onClick={() => setOpen(open === "witness" ? null : "witness")} />
@@ -279,8 +283,8 @@ function QuorumWait({ p, st, now }) {
                 )}
               </div>
             )}
-            <Row icon="seckey" tone={has("key") ? "mint" : ""} title="Security key" sub={has("key") ? "Verified: your key answered with its PIN" : "Type its PIN, then hold it to this phone"} trail={has("key") && <Icon name="check" />} onClick={() => setOpen(open === "key" ? null : "key")} />
-            {open === "key" && !has("key") && (
+            <Row icon="seckey" tone={keyHere ? "mint" : ""} title="Security key" sub={keyHere ? "Verified: your key answered with its PIN" : has("key") ? "Hold your key to this phone once more to finish" : "Type its PIN, then hold it to this phone"} trail={keyHere && <Icon name="check" />} onClick={() => setOpen(open === "key" ? null : "key")} />
+            {open === "key" && !keyHere && (
               <div style={{ padding: "0 16px 16px" }} class="stack">
                 {nfc?.available ? (
                   <>
@@ -292,7 +296,7 @@ function QuorumWait({ p, st, now }) {
                     <button class="btn primary" disabled={busy} onClick={() => run(async () => {
                       if ([...pin].length < 4) { setPinProblem({ code: "missing", message: "Type your key's PIN first." }); document.getElementById("join-key-pin")?.focus(); return; }
                       const r = await addKeyToJoin(pin);
-                      if (r === true) setPin("");
+                      if (r === true || r === false) setPin("");
                       else if (r?.pinError) { setPinProblem(r.pinError); if (r.pinError.code === "pin_invalid") setPin(""); }
                     })}><Icon name="fingerprint" />Hold the key to {nfc.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
                   </>

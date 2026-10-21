@@ -299,8 +299,10 @@ export class Authenticator {
 /** A PIN as CTAP wants it: NFC-normalised UTF-8, at most 63 bytes. */
 export function pinBytes(pin) {
   const s = String(pin ?? "").normalize("NFC");
-  const b = te.encode(s);
   if (!s.length) throw new FidoError("pin_empty", "Type the key's PIN.");
+  // A key reads a padded PIN up to its first zero byte: a PIN containing one would be set short.
+  if (s.includes("\u0000")) throw new FidoError("pin_policy", "A PIN can't contain that character.");
+  const b = te.encode(s);
   if (b.length > 63) { wipe(b); throw new FidoError("pin_policy", "That PIN is too long for a security key (63 bytes at most)."); }
   return b;
 }
