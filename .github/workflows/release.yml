@@ -241,6 +241,12 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: npm run tauri -- ios build --export-method app-store-connect
+      # `tauri ios build` runs beforeBuildCommand; the bare cargo check below doesn't, and
+      # generate_context!() refuses a missing frontendDist. Build the web app it embeds first.
+      - name: iOS · build the web app (what the compile check embeds)
+        if: matrix.platform == 'ios' && env.HAS_APPLE != 'true'
+        working-directory: apps/mobile
+        run: npm run build
       - name: iOS · compile check (no Apple signing yet)
         if: matrix.platform == 'ios' && env.HAS_APPLE != 'true'
         working-directory: apps/mobile/src-tauri
