@@ -18,6 +18,8 @@ name: Release apps
 # or the server_url / server_kid boxes when you run it by hand, which win over the variables):
 #   HUMID_SERVER_URL   e.g. https://vault.humidsecure.ai
 #   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh or `humid status`) — pins it in the app
+#   HUMID_TLOG_COSIGNERS  optional, the same name=key,… as the server's: the public log's independent cosigners
+#                      the apps trust (PC-04). Without it apps verify the log but show no cosigners.
 # A published build must pin its server: HUMID_SERVER_KID has to be set as a repository variable, and the
 # server_kid box is refused when publishing.
 #
@@ -194,6 +196,7 @@ jobs:
       HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
       HUMID_SERVER_URL: ${{ needs.plan.outputs.server_url }}
       HUMID_SERVER_KID: ${{ needs.plan.outputs.server_kid }}
+      HUMID_TLOG_COSIGNERS: ${{ vars.HUMID_TLOG_COSIGNERS }}
       HUMID_SIMULATE: ${{ inputs.simulate == true && '1' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -488,6 +491,7 @@ jobs:
     env:
       HUMID_SERVER_URL: ${{ needs.plan.outputs.server_url }}
       HUMID_SERVER_KID: ${{ needs.plan.outputs.server_kid }}
+      HUMID_TLOG_COSIGNERS: ${{ vars.HUMID_TLOG_COSIGNERS }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
