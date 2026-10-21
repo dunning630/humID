@@ -2,7 +2,7 @@
 // the metrics read off a synthetic camera view, the verdict they give, the hold timer, the templates.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, TH, motionOf } from "../apps/mobile/src/core/guide.js";
+import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, TH, motionOf, quadFromEdges, zoomFor } from "../apps/mobile/src/core/guide.js";
 import { begin, step, view, SAY_AFTER } from "../apps/mobile/src/core/capture.js";
 import { SCAN_MODE } from "../apps/mobile/src/core/addroute.js";
 import { scene, pgm, blur } from "./support/guideview.js";
@@ -76,18 +76,45 @@ test("sharpness is relative: a blurred picture scores lower than the same one sh
   assert.ok(measure(b, s.guide).focus < measure(s.im, s.guide).focus);
 });
 
-test("holdTracker: 0.6 s of ready fires once; one bad look under the grace doesn't restart; a longer gap does", () => {
-  const T = 1000; // performance.now() is never 0
+test("holdTracker: TH.holdMs of ready fires once; one bad look under the grace doesn't restart; a longer gap does", () => {
+  const T = 1000, H = TH.holdMs, G = TH.graceMs; // performance.now() is never 0
+  assert.ok(H <= 400, "3.1.1: a short hold: the sharpest moment, not a long wait for stillness");
   let h = holdTracker(), r;
-  for (let t = 0; t <= 500; t += 100) { r = h.feed(true, T + t); assert.equal(r.fire, false); }
+  for (let t = 0; t < H; t += 50) { r = h.feed(true, T + t); assert.equal(r.fire, false); }
   assert.ok(r.progress > 0.7 && r.progress < 1);
-  assert.equal(h.feed(true, T + 600).fire, true);
-  assert.equal(h.feed(true, T + 700).fire, false, "only once");
-  h = holdTracker(); h.feed(true, T); h.feed(true, T + 300); h.feed(false, T + 400); // 100 ms gap: within grace
-  assert.equal(h.feed(true, T + 600).fire, true);
-  h = holdTracker(); h.feed(true, T); h.feed(true, T + 300); h.feed(false, T + 400); h.feed(false, T + 700); // past grace
-  assert.equal(h.feed(true, T + 800).fire, false); assert.equal(h.feed(true, T + 1300).fire, false);
-  assert.equal(h.feed(true, T + 1400).fire, true);
+  assert.equal(h.feed(true, T + H).fire, true);
+  assert.equal(h.feed(true, T + H + 50).fire, false, "only once");
+  h = holdTracker(); h.feed(true, T); h.feed(true, T + 100); h.feed(false, T + 150); // a gap within grace
+  assert.equal(h.feed(true, T + H).fire, true);
+  h = holdTracker(); h.feed(true, T); h.feed(true, T + 100); h.feed(false, T + 150); h.feed(false, T + 100 + G + 50); // past grace
+  assert.equal(h.feed(true, T + 100 + G + 100).fire, false);
+  assert.equal(h.feed(true, T + 100 + G + 100 + H).fire, true);
+});
+
+test("3.1.1: the document's corners from its four measured edges (one missing is mirrored); nonsense is refused", () => {
+  const { im, guide } = scene({ ...GOOD, size: 0.8 });
+  const q = quadFromEdges(measure(im, guide).edges, guide);
+  assert.ok(q, "found");
+  const w = (q[1].x - q[0].x + q[2].x - q[3].x) / 2, h = (q[3].y - q[0].y + q[2].y - q[1].y) / 2;
+  assert.ok(Math.abs(w / guide.w - 0.8) < 0.03, `width ${(w / guide.w).toFixed(3)} of the outline`);
+  assert.ok(Math.abs(w / h - RATIO.id1) < 0.06, `card proportions ${(w / h).toFixed(3)}`);
+  const cx = (q[0].x + q[2].x) / 2, cy = (q[0].y + q[2].y) / 2;
+  assert.ok(Math.abs(cx - (guide.x + guide.w / 2)) < 3 && Math.abs(cy - (guide.y + guide.h / 2)) < 3, "centred where it lies");
+  const e = (off, slope = 0) => ({ found: true, off, slope });
+  const three = quadFromEdges({ top: e(-0.1), bottom: e(-0.1), left: e(-0.1), right: { found: false } }, { x: 0, y: 0, w: 100, h: 60 });
+  assert.ok(Math.abs(three[1].x - 90) < 1e-6, "the missing right side mirrors the left");
+  assert.equal(quadFromEdges({ top: e(0), bottom: { found: false }, left: e(0), right: { found: false } }, { x: 0, y: 0, w: 100, h: 60 }), null);
+  assert.equal(quadFromEdges({ top: e(-0.9), bottom: e(-0.9), left: e(0), right: e(0) }, { x: 0, y: 0, w: 100, h: 60 }), null, "top below bottom");
+});
+
+test("3.1.1: zoom so the phone is held far enough to focus, only where the camera offers zoom", () => {
+  const card = templateFor({ kind: "card" }), page = templateFor({ kind: "page" });
+  assert.equal(zoomFor(LIC, {}), 1, "no zoom offered: none");
+  assert.equal(zoomFor(LIC, { zoom: { min: 1, max: 1 } }), 1);
+  assert.equal(zoomFor(LIC, { zoom: { min: 1, max: 8, step: 0.1 } }), 2);
+  assert.equal(zoomFor(card, { zoom: { min: 1, max: 1.6, step: 0.1 } }), 1.6, "as far as it goes");
+  assert.equal(zoomFor(PP, { zoom: { min: 1, max: 8, step: 0.5 } }), 1.5);
+  assert.equal(zoomFor(page, { zoom: { min: 1, max: 8 } }), 1, "a page is held far enough already");
 });
 
 test("the template follows the kind: ID-1 for cards and licences, ID-3 for passports; zones; forbid", () => {

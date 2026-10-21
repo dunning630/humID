@@ -82,6 +82,12 @@ try {
   assert.equal(await page.inputValue("#cf-exp"), "08/29", "the expiry");
   assert.equal(await page.inputValue("#cf-name"), "JANE SPECIMEN", "the name");
   assert.match(await page.locator(".pushed [role=status]").first().innerText(), /Read Visa ending 1111/);
+  // 3.1.1: with the number in, the back's camera opens by itself for the security code (a chip never gives it out)
+  await page.locator(".doccam .dc-saved-chip", { hasText: "Now turn it over for the security code" }).waitFor({ timeout: 20_000 });
+  assert.match(await page.locator(".doccam .dc-top").innerText(), /card · back/i);
+  await shot(page, "1b-back-asked");
+  await page.locator(".doccam").getByRole("button", { name: "Skip" }).click();
+  await page.locator(".doccam").waitFor({ state: "detached" });
   await page.getByLabel("Nickname").fill("Travel card");
   await shot(page, "1-front-read");
   await page.getByRole("button", { name: "Seal", exact: true }).click();
@@ -91,7 +97,7 @@ try {
   assert.match(await row.innerText(), /Visa •••• 1111/);
   assert.ok(!(await row.innerText()).includes("4111 1111"), "the list never shows the number");
   await shot(page, "2-vault-list");
-  step("the front: number, expiry and name read by the camera; the list shows the last four only");
+  step("the front: number, expiry and name read by the camera; the back's camera then opens by itself for the security code (skipped here); the list shows the last four only");
   await ctx.close();
 
   /* ---------------- 2. the back ---------------- */

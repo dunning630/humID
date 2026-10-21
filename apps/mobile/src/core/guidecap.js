@@ -4,6 +4,8 @@
 //   grabWindow(video, rect)       the analysis picture: the outline and a margin, as a small grey picture
 //   takeStill(video, track, rect) the best still the phone gives, cropped to the outline (and a margin),
 //                                 turned straight by a small reliable angle; { canvas, source, ... }
+//   fitDocument(crop)             that crop cut to the document itself: no background, at its proportions (3.1.1)
+//   focusAt(track, point)         ask the camera to focus there, where the phone lets a page
 //   uprightOf(canvas)             which way up a cropped card reads by its print: 0 or 180 (not used on guided
 //                                 crops since 3.0.1: the outline's zones say which way up, and the print's
 //                                 guess turned real license fronts upside down)
@@ -13,8 +15,9 @@
 // scene in the outline, or the photo is dropped) and cropped by the outline's rectangle mapped into
 // it; otherwise the preview's own frame. Nothing is kept or logged: pictures live in memory until
 // the crop is made, and only the crop leaves this file.
-import { windowFor, stillMapping, rectInStill, agree, STILL_AGREES, TH } from "./guide.js";
+import { windowFor, stillMapping, rectInStill, agree, STILL_AGREES, TH, measure, inside, quadFromEdges, RATIO } from "./guide.js";
 import { toGray, orientation } from "./docfind.js";
+import { straighten, cornersIn } from "./scan.js";
 
 /** The crop keeps this share of the outline's size beyond it on every side (a document a little off the outline is whole in it). */
 export const CROP_MARGIN = 0.04;
@@ -104,11 +107,13 @@ async function photoSettings(ic) {
  * came back turned half round from the preview and was turned back), why? (why a photo wasn't used) }.
  * Never throws for a missing or failing ImageCapture: the preview's frame is the fallback.
  */
-export async function takeStill(video, track, rect, { tilt = 0, photo = true, timeoutMs = 3000 } = {}) {
+export async function takeStill(video, track, rect, { tilt = 0, photo = true, timeoutMs = 3000, burst = 3 } = {}) {
   const vw = video.videoWidth, vh = video.videoHeight;
   // the preview's frame, as it is now: the fallback, and what a photo is checked against
   const frameThumb = thumb(video, rect);
-  const fromFrame = (why) => ({ canvas: cropOut(video, rect, { tilt }), source: "frame", width: vw, height: vh, why });
+  // 3.1.1: the fallback is the sharpest of a few frames in a row, not whichever came first (a hand that
+  // trembles blurs one frame and not the next)
+  const fromFrame = async (why) => ({ ...(await sharpestFrame(video, rect, { tilt, n: burst })), source: "frame", width: vw, height: vh, why });
   if (!photo || typeof ImageCapture !== "function" || !track || track.readyState !== "live") return fromFrame(!photo ? "off" : "unsupported");
   let bmp = null;
   try {
@@ -140,6 +145,73 @@ export async function takeStill(video, track, rect, { tilt = 0, photo = true, ti
   } finally {
     try { bmp?.close?.(); } catch { /* gone */ }
   }
+}
+
+/** How sharp the outline's part of a crop is (core/guide.js inside(): focus), on a small grey copy. */
+export function sharpnessOf(c) {
+  const w = 320, h = Math.max(8, Math.round((w * c.height) / c.width));
+  const t = make(w, h);
+  const g = ctxOf(t);
+  g.imageSmoothingQuality = "medium";
+  g.drawImage(c, 0, 0, w, h);
+  const im = toGray(g.getImageData(0, 0, w, h));
+  return inside(im, { x: w * 0.06, y: h * 0.06, w: w * 0.88, h: h * 0.88 }).focus || 0;
+}
+
+/** The sharpest of `n` frames in a row (about 70 ms apart), cropped to the outline: { canvas, sharpness, frames }. */
+async function sharpestFrame(video, rect, { tilt = 0, n = 3 } = {}) {
+  let best = null, frames = 0;
+  for (let i = 0; i < Math.max(1, n); i++) {
+    if (i) await new Promise((r) => setTimeout(r, 70));
+    if (video.readyState < 2 || !video.videoWidth) continue;
+    const canvas = cropOut(video, rect, { tilt });
+    frames++;
+    const sharpness = n > 1 ? sharpnessOf(canvas) : 0;
+    if (!best || sharpness > best.sharpness) best = { canvas, sharpness };
+  }
+  return { ...(best || { canvas: cropOut(video, rect, { tilt }), sharpness: 0 }), frames };
+}
+
+/**
+ * The document itself, out of a guided crop (the outline plus CROP_MARGIN on every side): no table
+ * round it, straightened, at the document's proportions, so the picture is the card or the page and
+ * nothing else (3.1.1). Its edges come from the same measurement the live guidance makes
+ * (core/guide.js measure → quadFromEdges), refined by the finer corner finder near them; when they
+ * can't be told, the outline itself (without the margin). Returns { canvas, how: "edges" | "frame", quad }.
+ */
+export function fitDocument(crop, { shape = "id1", margin = CROP_MARGIN } = {}) {
+  const k = 1 + 2 * margin;
+  const outline = { x: (crop.width * margin) / k, y: (crop.height * margin) / k, w: crop.width / k, h: crop.height / k };
+  const rectQuad = (r) => [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
+  const prefer = shape === "page" ? null : shape;
+  let quad = null;
+  try {
+    const W = 360, s = W / crop.width, H = Math.max(8, Math.round(crop.height * s));
+    const t = make(W, H);
+    const g = ctxOf(t);
+    g.imageSmoothingQuality = "high";
+    g.drawImage(crop, 0, 0, W, H);
+    const im = toGray(g.getImageData(0, 0, W, H));
+    const guide = { x: outline.x * s, y: outline.y * s, w: outline.w * s, h: outline.h * s };
+    const q = quadFromEdges(measure(im, guide).edges, guide);
+    if (q && plausible(q, guide, shape)) {
+      const big = q.map((p) => ({ x: Math.max(0, Math.min(crop.width, p.x / s)), y: Math.max(0, Math.min(crop.height, p.y / s)) }));
+      quad = cornersIn(crop, { hint: big, shape: prefer || "full" }) || big;
+      if (!plausible(quad, outline, shape)) quad = big;
+    }
+  } catch { quad = null; }
+  const how = quad ? "edges" : "frame";
+  quad ||= rectQuad(outline);
+  return { canvas: straighten(crop, quad, { prefer }), how, quad };
+}
+
+/** A found document is believable: big enough, the right proportions, inside the picture. */
+function plausible(q, guide, shape) {
+  const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const across = (d(q[0], q[1]) + d(q[3], q[2])) / 2, down = (d(q[0], q[3]) + d(q[1], q[2])) / 2;
+  if (across < guide.w * 0.45 || down < guide.h * 0.45) return false;
+  const want = shape === "page" ? 1 / RATIO.page : RATIO[shape] || RATIO.id1;
+  return Math.abs(across / down / want - 1) < 0.12;
 }
 
 /** A rectangle's place in a picture turned half round (about its centre). */
@@ -181,7 +253,7 @@ export function uprightOf(c) {
  * page choose (Chrome on Android: pointsOfInterest and a one-off focus; elsewhere nothing happens).
  * Back to continuous focus a moment later. Resolves true when the camera took the request.
  */
-export async function focusAt(track, { x = 0.5, y = 0.5 } = {}) {
+export async function focusAt(track, { x = 0.5, y = 0.5 } = {}, { once = true } = {}) {
   if (!track || track.readyState !== "live") return false;
   let caps = {}, supported = {};
   try { caps = track.getCapabilities?.() || {}; } catch { /* none */ }
@@ -189,7 +261,7 @@ export async function focusAt(track, { x = 0.5, y = 0.5 } = {}) {
   const modes = caps.focusMode || [];
   const ask = {};
   if (supported.pointsOfInterest) ask.pointsOfInterest = [{ x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) }];
-  if (modes.includes("single-shot")) ask.focusMode = "single-shot";
+  if (once && modes.includes("single-shot")) ask.focusMode = "single-shot";
   else if (modes.includes("continuous") && ask.pointsOfInterest) ask.focusMode = "continuous";
   if (!Object.keys(ask).length) return false;
   try { await track.applyConstraints({ advanced: [ask] }); } catch { return false; }

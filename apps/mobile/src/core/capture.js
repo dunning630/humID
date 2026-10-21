@@ -47,6 +47,7 @@ const CODE = {
   barcode: { chip: "Barcode", reading: "Reading the barcode", read: "Barcode read", miss: "Couldn't read the barcode" },
   mrz: { chip: "ID lines", reading: "Reading the lines of <<<", read: "Lines read", miss: "Couldn't read the lines of <<<" },
   card: { chip: "Card number", reading: "Reading the card number", read: "Card number read", miss: "Couldn't read the card number" },
+  cvv: { chip: "Security code", reading: "Reading the security code", read: "Security code read", miss: "Couldn't read the security code" },
 };
 
 /* ---------------- the machine ---------------- */
@@ -181,7 +182,7 @@ const CHIP_LABELS = { framed: "Framed", sharp: "Sharp", steady: "Steady", light:
 export function view(s, { noun = "card", hint = "", torch = false, guided = true } = {}) {
   const code = s.code && CODE[s.code.want];
   const chips = Object.entries(s.chips).map(([k, state]) => ({ k, label: k === "framed" && !guided ? "Found" : CHIP_LABELS[k], state }));
-  if (s.code && s.code.want !== "card") {
+  if (s.code && s.code.want !== "card" && s.code.want !== "cvv") {
     const st = s.code.state;
     chips.push({ k: "code", label: code.chip, state: st === "read" ? "ok" : st === "miss" ? "warn" : st === "reading" ? "busy" : st === "seen" ? "seen" : "off" });
   }
@@ -208,7 +209,7 @@ export function view(s, { noun = "card", hint = "", torch = false, guided = true
         const title = s.tip === "tilt" && noun !== "card" ? `Straighten the ${noun}` : t.title;
         return done({ ...base, headline: title, detail: s.tipDetail || t.detail || "", tone: "warn", icon: ICON[s.tip] || "alert" });
       }
-      if (reading && s.code.want !== "card") {
+      if (reading && s.code.want !== "card" && s.code.want !== "cvv") {
         return done({ ...base, headline: `${code.reading}…`, detail: "Hold still. It takes a second.", tone: "busy", icon: s.code.want === "barcode" ? "barcode" : "scan", progress: null });
       }
       if (s.phase === "aim") {

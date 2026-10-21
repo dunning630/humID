@@ -87,6 +87,8 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,255,255,.55); aspect-ratio: 85.6 / 54; transition: box-shadow .2s var(--ease); }
 .doccam[data-guided] .dc-frame[data-shape="td3"] { aspect-ratio: 125 / 88; }
 .doccam[data-guided] .dc-frame[data-shape="page"] { aspect-ratio: 100 / 135; border-radius: 6px; }
+/* too close to focus: a smaller frame, so the document is held farther away (3.1.1) */
+.doccam[data-guided] .dc-frame[data-far] { width: min(70%, 400px); transition: width .3s var(--ease), box-shadow .2s var(--ease); }
 .doccam[data-guided] .dc-frame[data-state="close"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,185,74,.6); }
 .doccam[data-guided] .dc-frame[data-state="ok"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 3px var(--cam-ok), 0 0 26px 2px rgba(111,227,180,.35); }
 .dc-frame .c { position: absolute; width: 30px; height: 30px; border: 3.5px solid #fff; transition: border-color .15s var(--ease), transform .2s var(--ease); }
@@ -143,6 +145,7 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-panel { box-sizing: border-box; display: grid; gap: 10px; padding: 12px 14px; border-radius: 18px; background: var(--cam-panel); border: 1px solid rgba(255,255,255,.14); font-size: var(--t-sm); color: #fff; text-align: left; pointer-events: auto; transition: border-color .2s var(--ease); }
 .dc-frame > .dc-panel { position: absolute; top: calc(100% + 16px); left: 0; right: 0; }
 .dc-frame[data-shape="page"] > .dc-panel { left: -8%; right: -8%; }
+.doccam[data-guided] .dc-frame[data-far] > .dc-panel { left: -21.4%; right: -21.4%; } /* the smaller frame keeps a full-width panel */
 .doccam > .dc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 128px); width: min(calc(100% - 32px), 460px); }
 .dc-panel[data-tone="warn"] { border-color: rgba(255,185,74,.75); }
 .dc-panel[data-tone="ok"] { border-color: rgba(111,227,180,.7); }

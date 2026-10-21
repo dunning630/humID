@@ -188,6 +188,42 @@ worker reads one crop at a time); that `focusAt` refocuses on Chrome Android (po
 and does nothing harmful elsewhere; that the lock box is calm on a real table; the panel's fit on a short
 screen (under 700 px it tightens).
 
+## Crop, focus and the security code (apps 3.1.1)
+
+**The photo is the document.** The guided still is the frame plus a 4% margin; `fitDocument`
+(`core/guidecap.js`) now cuts the document itself out of it: its four edges from `measure()` on a
+360 px grey copy (`quadFromEdges` in `core/guide.js`, a missing side mirrored from its opposite),
+refined by the corner finder near them, checked for size (at least 45% of the frame each way) and
+proportions (within 12%), then straightened at the document's ratio (1600 px for a card). No table
+is left round it; a card the guidance called small still fills the picture. When the edges can't be
+told it falls back to the frame without the margin. The read uses the cut-out, and the uncut crop
+if the cut-out doesn't read.
+
+**Focus.** Most phones can't focus closer than 10-20 cm, and a card filling the frame at 1x sits about
+12 cm away, so they never came sharp. Now:
+- where the track offers `zoom`, cards are scanned at 2x and passport pages at 1.5x (`zoomFor`), so the
+  phone is held about twice as far away; pages stay at 1x;
+- the camera is asked to focus on the frame from the start (`pointsOfInterest`), and again after 0.6 s
+  of blur while lined up (not more often than every 1.8 s);
+- without zoom, a document that is lined up and never sharp for 2.6 s gets a smaller frame (70%) and
+  "Move back a little: too close for the camera to focus";
+- the photo is taken at the sharpest lined-up moment instead of waiting for stillness: `TH.steady`
+  0.0075 (about 1.5% of the document between looks; the measure saturates near 0.01, and 2.2.0's
+  0.004 was about 0.3%), a 0.3 s hold with 0.3 s grace, and "sharp" means sharp enough and within 70%
+  of the sharpest look of the last 1.2 s; without a full-resolution still, the sharpest of three
+  frames 70 ms apart is kept.
+
+**The security code.** Card chips never give out the printed code (by design, so a chip read can't
+be used to make a card-not-present payment). So after the number is in, from the front or a tap, the
+back's camera opens by itself (with Skip), and the back is read whole and then, if the code isn't
+found, its signature-strip band at twice the size. The camera says it back masked; it is sealed
+with the card and shown only when revealed, as before; the photo of the back isn't kept.
+
+Tests: `tests/guide.test.js` (corners from edges, zoom choice, the shorter hold); `tests/browser/guided.mjs`
+scenes *tremor* (a new fixture, a hand trembling a few pixels: taken by itself, cut out) and
+*too-close*; every crop check now asserts the document fills the picture. `tests/browser/cards.mjs`:
+the back's camera opens after the front.
+
 ## The guided scan (apps 2.2.0)
 
 Cards, licences, ID cards and passports are scanned the way a bank's app does it:

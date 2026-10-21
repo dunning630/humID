@@ -35,8 +35,8 @@ import {
   grayOf, cornersIn, develop as developPhoto, rotateCanvas, canvas as newCanvas, createAnalyzer, scanOptions,
 } from "../../core/scan.js";
 import { mrzBandLikely } from "../../core/addroute.js";
-import { templateFor, liveConstraints, previewTurned, measure, judge, holdTracker, barcodeSignal, bottomBand, TH } from "../../core/guide.js";
-import { grabWindow, takeStill, deskewOf, focusAt, CROP_MARGIN } from "../../core/guidecap.js";
+import { templateFor, liveConstraints, previewTurned, measure, judge, holdTracker, barcodeSignal, bottomBand, zoomFor, TH } from "../../core/guide.js";
+import { grabWindow, takeStill, deskewOf, focusAt, fitDocument } from "../../core/guidecap.js";
 import { confirmedByStill } from "../../core/mrzseed.js";
 import { begin, step as stepFlow, view as viewOf, summarize, docBox, easeBox, verdictOf, pace, isLive } from "../../core/capture.js";
 import { tracker, scaleQuad } from "../../core/docfind.js";
@@ -169,10 +169,15 @@ const nudge = () => buzzPref(8);
 const DONE_MS = 1300, DONE_PHOTO_MS = 700;
 /** The details are in but the document isn't lined up for the photo: it's taken anyway after this. */
 const READ_THEN_PHOTO_MS = 2500;
-/** A hand that is nearly still (within this many times the steadiness threshold) for this long counts as still. */
-const NEAR_STEADY = 1.5, NEAR_STEADY_MS = 1500;
 /** A blur that lasts this long while lined up asks the camera to focus again (not more often than every REFOCUS_EVERY). */
-const REFOCUS_AFTER = 900, REFOCUS_EVERY = 2500;
+const REFOCUS_AFTER = 600, REFOCUS_EVERY = 1800;
+/** The sharpest look of this last moment is what "sharp enough" is measured against (core/guide.js TH.sharpRel). */
+const PEAK_MS = 1200;
+/**
+ * Still not sharp after this long while lined up (and nothing else wrong): the phone is probably too close to
+ * focus. The frame gets smaller, so the document is held farther away (3.1.1). Once per camera.
+ */
+const TOO_CLOSE_MS = 2600;
 /** The scan gives up looking (and saves the battery) after this; Try again starts it again. */
 const GIVE_UP_MS = 40_000;
 const NO_READER = "The reader couldn't start on this phone. Take the photo with the round button and type the details.";
@@ -204,7 +209,7 @@ export function DocCamera(props) {
   const side = props.side ?? preset.side ?? "front";
   const guided = shape !== "full";
   const tpl = useMemo(() => (guided ? templateFor({ kind, side, shape, read }) : null), []);
-  const want = read.barcode ? "barcode" : read.mrz ? "mrz" : props.expect === "card" ? "card" : null;
+  const want = read.barcode ? "barcode" : read.mrz ? "mrz" : props.expect === "card" || props.expect === "cvv" ? props.expect : null;
   // a license or state ID's front: if its barcode is what's in view, it's the back, and it's read and kept as the back
   const spotBack = side === "front" && (kind === "driver_license" || kind === "id_card") && !read.barcode;
   const noun = tpl?.noun || "document";
@@ -217,10 +222,11 @@ export function DocCamera(props) {
   const [torch, setTorch] = useState(null);       // null: the phone has no light to offer
   const [tapAt, setTapAt] = useState(null);       // where the picture was tapped to focus
   const [size, setSize] = useState(null);         // the frame's size on screen, for the ring
+  const [far, setFar] = useState(false);          // the frame made smaller: the phone was too close to focus
   const [toldSaved, setToldSaved] = useState(!!saved);
   const L = useRef({
     stop: false, done: false, busy: false, stream: null, track: null, running: new Set(), flow: null, an: null,
-    hold: null, prev: null, bestFocus: 0, nearSince: 0, blurSince: 0, focusedAt: 0, codeBusy: false, codeDone: null,
+    hold: null, prev: null, peaks: [], blurSince: 0, focusedAt: 0, codeBusy: false, codeDone: null, zoom: 1, far: false, farAt: 0, prevAt: 0,
     consensus: null, barTries: 0, misses: 0, firePending: false, wasAligned: false, box: null, guideNow: null, startedAt: 0, pendingKeep: null,
   }).current;
   L.flow ||= flow;
@@ -298,7 +304,13 @@ export function DocCamera(props) {
         L.track = stream.getVideoTracks()[0];
         try { await L.track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch { /* not offered */ }
         try { await L.track.applyConstraints({ advanced: [{ exposureMode: "continuous" }] }); } catch { /* not offered */ }
-        try { if (L.track.getCapabilities?.().torch) setTorch(false); } catch { /* not offered */ }
+        let caps = {};
+        try { caps = L.track.getCapabilities?.() || {}; } catch { /* not offered */ }
+        if (caps.torch) setTorch(false);
+        // zoomed in, a card fills the frame from about 25 cm: far enough for the camera to focus (core/guide.js zoomFor)
+        const z = guided ? zoomFor(tpl, caps) : 1;
+        if (z > 1) { try { await L.track.applyConstraints({ advanced: [{ zoom: z }] }); L.zoom = z; } catch { /* not offered */ } }
+        if (DEMO_BUILD) globalThis.__humidZoom = L.zoom;
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
         // a preview that came back turned the wrong way for the screen leaves the frame a third of the pixels: ask once more
@@ -307,6 +319,8 @@ export function DocCamera(props) {
           try { await L.track.applyConstraints({ width: w.width, height: w.height }); await sleep(250); } catch { /* the first size stays */ }
         }
         trace("camera");
+        // focus where the document will be, from the start (where the phone lets a page say so)
+        if (guided && frame.current) { const r = frameRect(video.current, frame.current); if (r) focusAt(L.track, centreOf(r, video.current), { once: false }).catch(() => {}); }
         L.startedAt = Date.now();
         send({ t: "ready" });
         loop();
@@ -354,27 +368,33 @@ export function DocCamera(props) {
       let got, m, verdict, extra, spots = null;
       try {
         got = grabWindow(v, rect);
-        m = measure(got.im, got.win.guide, { prev: L.prev });
-        L.prev = got.im;
-        extra = { bestFocus: L.bestFocus };
+        m = measure(got.im, got.win.guide, { prev: L.prev && L.prev.w === got.im.w ? L.prev : null });
+        // movement per 150 ms, so a slow phone (looks far apart) isn't called shakier than a fast one
+        if (m.motion != null && L.prevAt) m.motion *= Math.max(0.6, Math.min(1.6, 150 / Math.max(60, now - L.prevAt)));
+        L.prev = got.im; L.prevAt = now;
+        // the sharpest look of the last moment, while lined up: the photo waits for a frame near it
+        L.peaks = L.peaks.filter((p) => now - p.t < PEAK_MS);
+        extra = { bestFocus: L.peaks.reduce((x, p) => Math.max(x, p.f), 0) };
         if (needBar) { spots = locateBarcodes(got.im); extra.barcode = barcodeSignal(spots, got.win.guide); }
         if (read.mrz) extra.mrz = mrzBandLikely(bottomBand(got.im, got.win.guide));
         verdict = judge(m, tpl, extra);
       } catch { await sleep(150); continue; }
       lastMs = performance.now() - t0;
       if (inactive()) continue;
-      L.bestFocus = verdict.aligned && m.focus ? Math.max(L.bestFocus * 0.985, m.focus) : L.bestFocus * 0.97;
-
-      // a hand that is nearly still, with the picture sharp, counts as still after a moment
-      const near = verdict.aligned && verdict.sharp && !verdict.key && m.motion != null && m.motion <= TH.steady * NEAR_STEADY;
-      L.nearSince = near ? L.nearSince || now : 0;
-      const ready = verdict.ready || (!!L.nearSince && now - L.nearSince >= NEAR_STEADY_MS);
+      if (verdict.aligned && m.focus) L.peaks.push({ t: now, f: m.focus });
+      const ready = verdict.ready;
       const h = L.hold.feed(ready, now);
 
-      // focus: a blur that lasts while lined up asks the camera to focus on the frame again
-      const blurred = verdict.aligned && verdict.sharp === false;
+      // focus: a blur that lasts while lined up asks the camera to focus on the frame again; one that lasts
+      // longer means the phone is too close to focus: the frame gets smaller, so it's held farther away
+      const blurred = verdict.aligned && verdict.sharp === false && (m.focus ?? 1) < TH.sharp;
       L.blurSince = blurred ? L.blurSince || now : 0;
       if (blurred && now - L.blurSince > REFOCUS_AFTER && now - L.focusedAt > REFOCUS_EVERY) { L.focusedAt = now; focusAt(L.track, centreOf(rect, v)).catch(() => {}); trace("refocus"); }
+      if (blurred && !L.far && shape !== "page" && now - L.blurSince > TOO_CLOSE_MS) {
+        L.far = true; L.farAt = now; L.blurSince = 0; L.peaks = []; L.prev = null; L.hold.reset(); L.box = null;
+        setFar(true); nudge(); trace("too-close");
+        continue; // the frame moves: the next look measures the smaller one
+      }
 
       // read what's there to read, as soon as it's in view
       const bar = extra.barcode;
@@ -388,11 +408,14 @@ export function DocCamera(props) {
       L.box = verdict.present && !verdict.unsure ? easeBox(L.box, verdict.aligned ? { x: 0, y: 0, w: 1, h: 1, rot: 0 } : docBox(m), 0.55) : null;
       setBox(L.box);
       L.guideNow = { rect, verdict, at: now };
-      if (DEMO_BUILD) globalThis.__humidGuide = { key: verdict.key, present: verdict.present, aligned: verdict.aligned, ready, steady: verdict.steady, sharp: verdict.sharp, scale: m.scale, dx: m.dx, dy: m.dy, rot: m.rot, flatH: m.flatH, flatV: m.flatV, sides: m.sides, focus: m.focus, motion: m.motion, mean: m.mean, p95: m.p95, sat: m.sat, patch: m.patch, energy: m.energy, ms: Math.round(lastMs), rect, video: [v.videoWidth, v.videoHeight], box: L.box, extra: { bar: bar ? Math.round(bar.across * 100) / 100 : bar, mrz: extra.mrz } }; // development builds: what the guidance sees (numbers, never pictures)
+      if (DEMO_BUILD) globalThis.__humidGuide = { far: L.far, zoom: L.zoom, peak: extra.bestFocus, key: verdict.key, present: verdict.present, aligned: verdict.aligned, ready, steady: verdict.steady, sharp: verdict.sharp, scale: m.scale, dx: m.dx, dy: m.dy, rot: m.rot, flatH: m.flatH, flatV: m.flatV, sides: m.sides, focus: m.focus, motion: m.motion, mean: m.mean, p95: m.p95, sat: m.sat, patch: m.patch, energy: m.energy, ms: Math.round(lastMs), rect, video: [v.videoWidth, v.videoHeight], box: L.box, extra: { bar: bar ? Math.round(bar.across * 100) / 100 : bar, mrz: extra.mrz } }; // development builds: what the guidance sees (numbers, never pictures)
       if (verdict.aligned && !L.wasAligned) nudge();
       L.wasAligned = verdict.aligned;
-      // a license front showing its barcode is the back: say so, and it's read and kept as the back
-      const said = spotBack && bar && verdict.key === "showfront" ? { ...verdict, detail: "That's the back. Hold still to keep it as the back, or turn it over." } : verdict;
+      // a license front showing its barcode is the back: say so, and it's read and kept as the back;
+      // and just after the frame got smaller, why it did
+      const said = spotBack && bar && verdict.key === "showfront" ? { ...verdict, detail: "That's the back. Hold still to keep it as the back, or turn it over." }
+        : L.far && now - L.farAt < 6000 && (verdict.key === "back" || verdict.key === "shift") ? { ...verdict, key: "back", detail: `Too close for the camera to focus. Hold the phone farther away and fit the ${noun} in the smaller frame.` }
+        : verdict;
       send({ t: "look", v: { ...said, ready }, progress: h.progress, codeSeen });
 
       // the photo: the moment the details are in (lined up, or after a short wait), or when it has held still
@@ -494,7 +517,12 @@ export function DocCamera(props) {
    * straightened from the corners found in it (helped by the live ones).
    */
   function develop(original, how, { cropped = false } = {}) {
-    if (cropped) return { canvas: original, original, straightened: true, rotate: 0, confidence: 1, changed: true };
+    if (cropped) {
+      // the document itself, cut out of the frame's crop: no table round it, at its own proportions (3.1.1)
+      const fit = fitDocument(original, { shape });
+      if (DEMO_BUILD) globalThis.__humidFit = { how: fit.how, out: [fit.canvas.width, fit.canvas.height] };
+      return { canvas: fit.canvas, uncut: original, fit: fit.how, original, straightened: true, rotate: 0, confidence: 1, changed: true };
+    }
     const quad = cornersIn(original, { hint: how === "file" ? null : L.quad, shape: guided ? shape : "full" });
     let dev = developPhoto(original, quad, { shape: guided ? shape : "full" });
     if (guided && !dev.straightened && how !== "file") {
@@ -526,8 +554,8 @@ export function DocCamera(props) {
         if (!c) await sleep(150);
       }
       if (!c) throw new Error("The camera gave a blank picture. Hold steady and try again.");
-      setFreeze(freezeOf(c));
       const dev = develop(c, how, { cropped: !!rect });
+      setFreeze(freezeOf(dev.canvas));
       res = await readAndSay(dev, how, known, still);
     } catch (e) {
       oops();
@@ -553,13 +581,18 @@ export function DocCamera(props) {
     } else if (read.barcode || read.mrz) {
       send({ t: "check" });
       readOut = await readStill(dev.canvas, read, shape, { tryFlip: dev.straightened, seed: read.mrz ? L.consensus : null });
+      // the cut-out didn't read: the frame's whole crop, in case the cut went wrong (what's kept is still the cut-out)
+      if (!readOut.barcode && !readOut.mrz?.valid && dev.uncut) {
+        const wide = await readStill(dev.uncut, read, shape, { tryFlip: true });
+        if (wide.barcode || wide.mrz?.valid) readOut = { ...wide, flipped: false };
+      }
       if (readOut.flipped) dev = { ...dev, canvas: rotateCanvas(dev.canvas, 180), rotate: (dev.rotate + 180) % 360, changed: true };
     }
     const sideNow = known?.side || side;
     const { flipped, ...codes } = readOut;
-    if (DEMO_BUILD) globalThis.__humidDevelop = { how, guided: !!still || guided, source: still?.source, stillW: still?.width, why: still?.why, turned: still?.turned, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, live: !!known, side: sideNow, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
+    if (DEMO_BUILD) globalThis.__humidDevelop = { how, fit: dev.fit, guided: !!still || guided, source: still?.source, stillW: still?.width, why: still?.why, turned: still?.turned, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, live: !!known, side: sideNow, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
     const result = { ...dev, ...codes, how, side: sideNow };
-    const codeWant = read.barcode && read.mrz ? (codes.barcode ? "barcode" : codes.mrz ? "mrz" : "both") : want === "card" ? null : want;
+    const codeWant = read.barcode && read.mrz ? (codes.barcode ? "barcode" : codes.mrz ? "mrz" : "both") : want === "card" || want === "cvv" ? null : want;
     const sum = summarize(kind, codes, sideNow !== side && known?.barcode ? "barcode" : codeWant);
     if (sideNow !== side) { sum.title = "That was the back"; sum.detail = "Read from its barcode. Now the front."; }
     L.summary = sum;
@@ -575,7 +608,7 @@ export function DocCamera(props) {
   /** Hand the photo over (onDone), say what it gave, then move on. */
   async function keep(result) {
     L.busy = true; L.stop = true;
-    send({ t: "check", note: want === "card" ? "Reading the card number…" : "Saving…" });
+    send({ t: "check", note: want === "card" ? "Reading the card number…" : want === "cvv" ? "Reading the security code…" : "Saving…" });
     let ret;
     try { ret = await onDone(result); }
     catch (e) { oops(); L.pendingKeep = null; send({ t: "fail", result: { title: e?.title || "Couldn't keep that photo", detail: e?.message || "Try again.", keep: false } }); return; }
@@ -601,7 +634,7 @@ export function DocCamera(props) {
   /** Back to the live view (after a miss, or Try again). `why`: said in the panel's place for a moment. */
   function resume(why) {
     L.busy = false; L.done = false; L.stop = false; L.codeDone = null; L.codeBusy = false; L.firePending = false;
-    L.pendingKeep = null; L.pendingThen = null; L.nearSince = 0; L.prev = null;
+    L.pendingKeep = null; L.pendingThen = null; L.peaks = []; L.prev = null; L.prevAt = 0; L.blurSince = 0;
     L.hold.reset(); L.consensus.reset(); L.tracker?.reset(); L.box = null;
     L.startedAt = Date.now();
     setFreeze(null); setBox(null);
@@ -706,13 +739,13 @@ export function DocCamera(props) {
     <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-guided={guided ? "1" : undefined} data-phase={flow.phase} data-shape={shape} data-look={frameState} data-tone={vw.tone}>
       <video ref={video} playsInline muted autoplay onPointerDown={tapFocus} />
       <div class="dc-stage">
-        <div class="dc-frame" data-shape={shape} data-template={tpl?.id} data-state={frameState} ref={frame}>
+        <div class="dc-frame" data-shape={shape} data-template={tpl?.id} data-state={frameState} data-far={far ? "1" : undefined} ref={frame}>
           <i class="c tl" /><i class="c tr" /><i class="c bl" /><i class="c br" />
           {zones.map((z) => <span class="dc-zone" data-k={z.k} data-read={(z.k === "bar" || z.k === "mrz") && flow.code?.state === "read" ? "1" : undefined} aria-hidden="true" style={{ left: `${z.x}%`, top: `${z.y}%`, width: `${z.w}%`, height: `${z.h}%` }} />)}
           {box && live && !aligned && <span class="dc-lock" aria-hidden="true" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%`, transform: `rotate(${box.rot.toFixed(1)}deg)` }} />}
           {ring && <svg class="dc-ring" aria-hidden="true" viewBox={`0 0 ${size.w} ${size.h}`}><path d={ring.d} pathLength="100" style={{ strokeDasharray: `${Math.round(vw.progress * 100)} 100` }} /></svg>}
           <span class="dc-clip" aria-hidden="true">
-            {freeze && <img class="dc-freeze" src={freeze} alt="" style={guided ? { left: `${-CROP_MARGIN * 100}%`, top: `${-CROP_MARGIN * 100}%`, width: `${(1 + 2 * CROP_MARGIN) * 100}%`, height: `${(1 + 2 * CROP_MARGIN) * 100}%` } : undefined} />}
+            {freeze && <img class="dc-freeze" src={freeze} alt="" />}
             {flash > 0 && <span class="dc-flash" key={flash} />}
             {(flow.phase === "check" || flow.phase === "capture") && <span class="dc-sweep"><i /></span>}
           </span>
