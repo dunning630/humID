@@ -69,7 +69,7 @@ export function saveTrustStoreFile(path, store) {
   mkdirSync(dirname(resolvePath(path)), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(store.toJSON()), { mode: 0o600 });
-  const fd = openSync(tmp, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
+  const fd = openSync(tmp, "r+"); try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path);
 }
 
