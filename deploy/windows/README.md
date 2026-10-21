@@ -15,9 +15,11 @@ node deploy/windows/build.mjs --zip
 CI builds the same zip on every change that touches a service, installs it on
 a Windows runner exactly as a person would, runs the deployment smoke test
 against it under both device policies, backs up, restores, updates in place,
-tests the admin console and its jobs (`tests/windows/admin-console.ps1`: an
-update that can't start is put back by itself, a good one keeps the server
-key, rollback) and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
+tests the admin console and its jobs (`tests/windows/admin-console.ps1`: the
+server's account writes only its own data, planted junctions are refused and
+removed, backups are encrypted with keyshare's half apart, unsigned or wrongly
+signed updates are refused, an update that can't start is put back by itself, a
+good one keeps the server key, rollback) and uninstalls. The zip is attached to the run as `HumID-Server-Windows`.
 
 ## What's in the package
 

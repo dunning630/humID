@@ -276,7 +276,8 @@ function updatesSection(s) {
     </dl>
     ${h.latest ? `<p><b>${esc(h.latest.version)}</b> is available${h.latest.publishedAt ? `, released ${esc(new Date(h.latest.publishedAt).toLocaleDateString())}` : ""}.</p>
       ${h.latest.notes ? `<details data-k="notes"><summary>What's new</summary><pre class="notes">${esc(h.latest.notes)}</pre></details>` : ""}
-      ${h.latest.asset?.sha256 ? "" : `<p class="small" style="color:var(--ember)">GitHub publishes no digest for this release's zip, so it can't be checked here.</p>`}`
+      ${h.latest.asset?.sha256 ? "" : `<p class="small" style="color:var(--ember)">GitHub publishes no digest for this release's zip, so it can't be checked here.</p>`}
+      ${!h.releaseKeys ? `<p class="small" style="color:var(--ember)">This console pins no HumID release key, so it can't tell who made an update and won't install it. Install the release by hand (unzip it and run its installer).</p>` : h.latest.sigAsset ? "" : `<p class="small" style="color:var(--ember)">This release has no signature (.sig), so the console won't install it.</p>`}`
       : h.error ? `<p class="small soft">${esc(h.error)}</p>` : `<p class="empty">You have the newest version.</p>`}
     ${!h.tokenSet && h.error ? `<p class="small soft">The repository is private. Make a fine-grained GitHub token with read-only access to its contents, then run <span class="mono">humid admin token &lt;token&gt;</span> in Terminal (Admin).</p>` : ""}
     <div class="actions">
