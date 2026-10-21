@@ -145,10 +145,12 @@ export function replayGuard({ max = 200_000, now = () => Date.now() } = {}) {
 /* ---------------- HTTP ---------------- */
 
 export class HttpError extends Error {
-  constructor(status, code, message) {
+  /** detail: extra fields for the JSON body, for internal callers (the gateway strips what the app mustn't see). */
+  constructor(status, code, message, detail) {
     super(message || code);
     this.status = status;
     this.code = code;
+    if (detail && typeof detail === "object") this.detail = detail;
   }
 }
 
@@ -259,7 +261,7 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
     } catch (e) {
       try {
         if (!(e instanceof HttpError)) log.error("unhandled", { err: e?.stack });
-        out = onError?.(e) || json(e?.status || 500, { error: e?.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
+        out = onError?.(e) || json(e?.status || 500, { ...(e instanceof HttpError && e.detail ? e.detail : {}), error: e?.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
       } catch (e2) {
         log.error("unhandled", { err: e2?.stack });
         out = json(500, { error: "internal", message: "Internal error" });

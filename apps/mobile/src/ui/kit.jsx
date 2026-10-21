@@ -54,16 +54,22 @@ export function Interrupt() {
   );
 }
 
-/** Progress while an ID chip or card is read over NFC. */
+const READ_TITLES = {
+  chip: { waiting: "Hold your document to the phone", error: "Couldn't read the chip", done: "Chip read", reading: "Reading the chip" },
+  key: { waiting: "Hold your security key to the phone", error: "Couldn't use the key", done: "Done with the key", reading: "Talking to your key" },
+};
+
+/** Progress while an ID chip, a card or a security key is read over NFC. */
 export function ChipReadOverlay() {
   const r = S.chipRead.value;
   if (!r) return null;
   const pct = Math.round((r.fraction || 0) * 100);
+  const words = READ_TITLES[r.subject === "key" ? "key" : "chip"];
   return (
     <div class="interrupt" data-state={r.stage === "error" ? "failed" : r.stage === "done" ? "verified" : "scanning"} role="dialog" aria-modal="true" aria-labelledby="chip-title" aria-live="polite">
-      <div class="eyebrow">{r.kind === "reader" ? "Card reader" : "Chip reader"}</div>
-      <span class="icon-btn" style={{ width: 72, height: 72, background: "var(--surface-2)", color: r.stage === "error" ? "var(--danger)" : "var(--amber)" }}><Icon name="nfc" /></span>
-      <h2 id="chip-title">{r.stage === "waiting" ? "Hold your document to the phone" : r.stage === "error" ? "Couldn't read the chip" : r.stage === "done" ? "Chip read" : "Reading the chip"}</h2>
+      <div class="eyebrow">{r.kind === "reader" ? "Card reader" : r.subject === "key" ? "Security key" : "Chip reader"}</div>
+      <span class="icon-btn" style={{ width: 72, height: 72, background: "var(--surface-2)", color: r.stage === "error" ? "var(--danger)" : "var(--amber)" }}><Icon name={r.subject === "key" ? "seckey" : "nfc"} /></span>
+      <h2 id="chip-title">{words[r.stage] || words.reading}</h2>
       <p>{r.message}</p>
       {r.stage === "reading" && <div class="stepper" style={{ width: 200 }} aria-label={`${pct}%`}><i class="on" style={{ flex: `${pct} 0 0` }} /><i style={{ flex: `${100 - pct} 0 0` }} /></div>}
       {r.stage === "error" && <button class="btn primary" data-back onClick={dismissChipRead}>Close</button>}

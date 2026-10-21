@@ -213,6 +213,7 @@ export const PROOFS = [
   { id: "witness", icon: "users", title: "Witnesses", short: "witnesses" },
   { id: "anchor", icon: "passport", title: "ID chip", short: "ID chip" },
   { id: "card", icon: "idcard", title: "Recovery card", short: "recovery card" },
+  { id: "key", icon: "seckey", title: "Security key", short: "security key" },
 ];
 export function ProofMeter({ have }) {
   const n = PROOFS.filter((p) => have.includes(p.id)).length;
@@ -233,8 +234,8 @@ export function tierText(kinds, anchorMode) {
 /** The wait for each pair of proofs, for the "what you'll need" screen. */
 export const WAITS = [
   { pair: "ID chip at a station + anything", wait: "about 24 hours" },
-  { pair: "Witnesses + recovery card, or witnesses + ID chip", wait: "about 72 hours" },
-  { pair: "Recovery card + ID chip read on your phone", wait: "about 7 days" },
+  { pair: "Witnesses + your recovery card, security key or ID chip", wait: "about 72 hours" },
+  { pair: "Any two of recovery card, security key, ID chip read on your phone", wait: "about 7 days" },
 ];
 
 /* ---------------- ID chips ---------------- */

@@ -8,7 +8,8 @@ export { refresh, addDocument, warmSeal, addIdRecord, addCardRecord, readCardTap
 export { loadLedger, checkContinuity } from "./ledger.js";
 export { loadDevices, myAccountCheck, findLink, approveLink, removeDevice } from "./devices.js";
 export { loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, loadAlerts, cancelRecovery, readChipFiles, demoPassport, setAnchor, removeAnchor } from "./recovery.js";
-export { startJoin, beginJoin, renewLink, pollJoin, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, confirmJoin, rejectJoin, cancelJoin, prettyCode } from "./join.js";
+export { startJoin, beginJoin, renewLink, pollJoin, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, confirmJoin, rejectJoin, cancelJoin, prettyCode } from "./join.js";
+export { keyReader, addSecurityKey, removeSecurityKey } from "./seckey.js";
 export { saveDuress, loadDuress, setWitnessAlert, clearLockdown, checkinArmed, checkinOffered, loadCheckin, armCheckin, checkIn, disarmCheckin, clockOffset } from "./safety.js";
 export { readChip, dismissChipRead, chipReader, readChipInto } from "./chips.js";
 export { stationLookup, stationReadChip, stationVerify, loadAdminSummary, findAdminRequest, approveAdminRequest } from "./operators.js";
