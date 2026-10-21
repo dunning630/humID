@@ -85,17 +85,21 @@ try {
     const p = A.page;
     await youScreen(p, "Recovery");
     const meter = p.locator(".pushed .proofmeter span");
+    await meter.first().waitFor({ timeout: 15_000 });
     assert.equal(await meter.count(), 4, "four proofs in the meter");
     assert.deepEqual(await meter.allInnerTexts(), ["Witnesses", "ID chip", "Recovery card", "Security key"]);
     await p.locator(".pushed").getByText("If you lose every device, any").waitFor();
-    await p.locator(".pushed .row", { hasText: "Security key" }).click();
+    await p.getByRole("button", { name: /^Security key/ }).click();
     const sheet = p.locator(".sheet");
     await sheet.getByRole("heading", { name: "Add a security key" }).waitFor();
     await shot(p, "01-key-sheet");
     await noSideScroll(p, "security key sheet");
     await bigEnough(p, ".sheet", "security key sheet");
     const go = sheet.getByRole("button", { name: /Hold the key to the phone, then confirm/ });
-    assert.equal(await go.isDisabled(), true, "nothing to do before a PIN is typed");
+    await go.click();
+    await sheet.getByText("Type your key's PIN first.").waitFor();
+    assert.equal(await p.evaluate(() => document.activeElement?.id), "key-pin", "a tap with no PIN points at the PIN");
+    assert.equal(await p.locator(".interrupt").count(), 0, "and starts nothing");
     await sheet.locator("#key-name").fill("Blue key on my keyring");
 
     // A wrong PIN first: the form says so, with the tries left.
@@ -139,7 +143,7 @@ try {
     await p.getByRole("button", { name: /Use demo mode/ }).click();
     await hold(p);
     await p.getByRole("heading", { name: "One proof in. Add a second" }).waitFor({ timeout: 20_000 });
-    await p.locator(".row", { hasText: "Security key" }).click();
+    await p.getByRole("button", { name: /^Security key/ }).click();
     await p.locator("#join-key-pin").fill("123456");
     await shot(p, "05-recover-key");
     await noSideScroll(p, "recovery wait");

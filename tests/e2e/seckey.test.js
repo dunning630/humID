@@ -25,10 +25,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let stack, alice, phone, docId, card, key, witnesses, witnessApis;
 
 /** What the app does when adding a key: one tap (challenge signed, secret read), then one live check. */
-async function addKey(h, api, k, { pin = PIN, newPin = false, label } = {}) {
+async function addKey(h, api, k, { pin = PIN, newPin = false, label, stepUp = h.stepUp } = {}) {
   const { challenge, exclude } = await api.keyChallenge();
   const got = await addRecoveryKey(k, { pin, newPin, challenge, exclude });
-  const r = await api.addKey(await addBody(h, got, label), h.stepUp);
+  const r = await api.addKey(await addBody(h, got, label), stepUp);
   return { ...r, got };
 }
 async function addBody(h, got, label) {
@@ -281,7 +281,7 @@ test("duress: adding or removing a key fails like a busy server", async () => {
   await forced.enrollDevice({ account: alice.id, device: coerced.device, via: "link", sign: coerced.enrollSign });
   await forced.presence(true);
   await sleep(150);
-  await assert.rejects(addKey(alice, forced, simulatedKey({ pin: PIN })), (e) => e.code === "busy" && e.status === 503);
+  await assert.rejects(addKey(alice, forced, simulatedKey({ pin: PIN }), { stepUp: coerced.stepUp }), (e) => e.code === "busy" && e.status === 503);
   const [first] = (await phone.keys()).keys;
   await assert.rejects(phone.removeKey(first.id, alice.stepUp), (e) => e.code === "busy");
 });
