@@ -1,0 +1,15 @@
+# Changes to these paths need the code owner's review once the main-branch
+# ruleset requires it (RELEASING.md, "Release environment").
+*                              @dunning630
+
+# Release chain: workflows, release tooling, the Windows server package
+/.github/                      @dunning630
+/tools/                        @dunning630
+/deploy/windows/               @dunning630
+/rust-toolchain.toml           @dunning630
+/.gitleaks.toml                @dunning630
+
+# Trust anchors and the protocol's cryptography
+/packages/attest/src/roots.js  @dunning630
+/packages/crypto/              @dunning630
+/packages/htp/                 @dunning630

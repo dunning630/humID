@@ -79,3 +79,17 @@ oyFraWVIyd/dganmrduC1bmTBGwD
  * builds and signs their own app adds theirs with HUMID_ANDROID_CERT_DIGESTS.
  */
 export const HUMID_ANDROID_RELEASE_CERT = "bfd3dc42aed6a3cbf4e518da390e6668eb3bc903eb2e4c06393205ff4966578e";
+
+/**
+ * Android signing certificates that are never accepted, whatever a server is told.
+ * A server refuses a liveness key whose app was signed by one of these even if an
+ * operator lists it in HUMID_ANDROID_CERT_DIGESTS or sets HUMID_ANDROID_ALLOW_ANY_SIGNER=1.
+ *
+ * b066cd45…928c: the test key `tools/android-test.keystore` (store and key password
+ * "android"), committed to the repository and still in its history, so anyone can
+ * sign an app as app.humid.vault with it. Old debug builds (app-v1.5.0 … 1.7.6) were
+ * signed with it. See docs/INCIDENT-2026-10-android-test-key.md.
+ */
+export const REVOKED_ANDROID_CERTS = Object.freeze([
+  "b066cd4564ac8446b02567e276992aacf64783004de81da3d3f1e51f3411928c",
+]);

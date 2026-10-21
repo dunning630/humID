@@ -45,8 +45,8 @@ jobs:
       HUMID: C:\Program Files\HumID Server\humid.ps1
       NODE_NO_WARNINGS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: A release key is pinned (the console refuses unsigned updates; see release-keys.mjs)
@@ -121,7 +121,7 @@ jobs:
           Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
           "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
           Get-Content "$env:RUNNER_TEMP\notes.md"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         if: github.ref_type == 'tag' || inputs.publish
         with:
           tag_name: server-win-v${{ steps.version.outputs.version }}
@@ -133,7 +133,7 @@ jobs:
           draft: true
           prerelease: false
           files: deploy/windows/out/HumID-Server-Windows-*.zip
-      - uses: actions/upload-artifact@v4 # also when publishing: Release apps bundles it
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 · also when publishing: Release apps bundles it
         with:
           name: HumID-Server-Windows
           path: deploy/windows/out/HumID-Server-Windows-*.zip
