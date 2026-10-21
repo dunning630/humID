@@ -75,6 +75,7 @@ export const CLAIMS = {
   issuing_jurisdiction: { mdl: "issuing_jurisdiction", photoid: null, pid_mdoc: null, pid_sdjwt: null },
   nationality: { mdl: "nationality", photoid: "nationality", pid_mdoc: "nationality", pid_sdjwt: ["nationalities"] },
   sex: { mdl: "sex", photoid: "sex", pid_mdoc: "sex", pid_sdjwt: ["sex"] },
+  driving_privileges: { mdl: "driving_privileges", photoid: null, pid_mdoc: null, pid_sdjwt: null },
   address: {
     mdl: ["resident_address", "resident_city", "resident_state", "resident_postal_code", "resident_country"],
     photoid: ["resident_address_unicode", "resident_city_unicode", "resident_postal_code", "resident_country"],
@@ -89,5 +90,5 @@ export const PURPOSES = {
   age_over_21: ["age_over_21"],
   identity: ["given_name", "family_name", "birth_date", "issuing_country", "issuing_jurisdiction", "expiry_date"],
   identity_with_photo: ["given_name", "family_name", "birth_date", "issuing_country", "issuing_jurisdiction", "expiry_date", "portrait"],
-  vault: ["given_name", "family_name", "birth_date", "sex", "nationality", "document_number", "issuing_country", "issuing_jurisdiction", "expiry_date", "portrait", "address"],
+  vault: ["given_name", "family_name", "birth_date", "sex", "nationality", "document_number", "issuing_country", "issuing_jurisdiction", "expiry_date", "portrait", "address", "driving_privileges"],
 };

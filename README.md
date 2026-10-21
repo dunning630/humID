@@ -19,8 +19,9 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC),
 [docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone),
 [docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in),
-[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups), and
-[docs/MESSAGING.md](docs/MESSAGING.md) (HumID 4.0, provisional: person to person, known only by an ID).
+[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups),
+[docs/MESSAGING.md](docs/MESSAGING.md) (HumID 4.0, provisional: person to person, known only by an ID), and
+[docs/CREDENTIALS.md](docs/CREDENTIALS.md) (HumID 4.0, provisional: asking for and checking mobile licenses, digital IDs, passports; what an SSN check can and can't be).
 
 ## Try it on your machine
 
@@ -102,6 +103,9 @@ packages/            independently versioned modules
   wallet                           Apple Wallet passes: bounded unzip, manifest hashes, issuer signature through Apple's pinned roots
   backup                           (3.0, provisional) computer backups: sealed pieces, 2-of-3 key parts (HumID, sheet, contact)
   msg                              (4.0, provisional) person to person: persona IDs, PQ double ratchet, live stamps, relay rules
+  mdoc                             mobile IDs (ISO 18013-5/-7): in person and online (Digital Credentials API, HPKE), issuer + device authentication
+  sdjwt                            (4.0, provisional) SD-JWT VC with key binding, JOSE, token status lists (revocation)
+  creds                            (4.0, provisional) one request and one verifier for public credentials; minimised claims; SSN (eCBSV)
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare

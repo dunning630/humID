@@ -64,6 +64,8 @@ function fromMdoc(doc, protocol) {
     issuer: { country: claims.issuing_country, jurisdiction: claims.issuing_jurisdiction, root: doc.root?.subject || null, signer: doc.signer?.subject || null },
     claims: prune(claims), values: doc.values, validUntil: doc.validity.validUntil,
     statusRef: wrap(() => statusReference(doc.mso)), status: null,
+    // What the holder's own ID record keeps, so the issuer check can be repeated later.
+    detail: { chain: doc.chain, root: doc.root, signer: doc.signer, device: doc.device, digestAlgorithm: doc.digestAlgorithm, validity: doc.validity, issuerSigned: doc.issuerSigned },
   };
 }
 
