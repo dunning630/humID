@@ -31,7 +31,7 @@ import {
   MsgError, kdf, H, label, lp, unlp, concat, random, wipe, toHex, b64u, unb64u, equal,
   encodeJSON, decodeJSON, aeadSeal, aeadOpen, guard,
 } from "./util.js";
-import { pad, unpad, checkWire, WIRE_VERSION, isBox } from "./wire.js";
+import { pad, unpad, checkWire, WIRE_VERSION, isBox, newRetract } from "./wire.js";
 
 export const INVITE_SECRET_BYTES = 16;      // 128 bits: what opens the bundle
 export const INVITE_PIN_BYTES = 10;         // 80 bits: which persona the bundle must carry
@@ -102,12 +102,14 @@ export async function createInvite(accountSeed, { now = Date.now(), ttlMs = DEFA
   const box = inviteBoxOf(secret);
   const nonce = random(12);
   const ct = await aeadSeal(inviteKey(secret), nonce, pad(plain, 29), concat(label("bundle"), new TextEncoder().encode(box)));
+  const { retract, retractTag } = newRetract();
   return {
     code: formatInviteCode(secret, pinOf(persona.pub)),
     box,
     wire: concat(Uint8Array.of(WIRE_VERSION), nonce, ct),
+    retractTag, // post with the bundle; state.retract takes it down again (cancelInvite)
     state: {
-      v: 1, secret, personaSalt: persona.salt, personaId: persona.id,
+      v: 1, secret, personaSalt: persona.salt, personaId: persona.id, box, retract,
       otkSk: otk.secretKey, otkPk: otk.publicKey, otxSk, replyBox, expires, uses, used: 0, seen: [],
       bundleHash: H(label("bundle hash"), plain),
     },
@@ -190,6 +192,7 @@ async function makeRequest(accountSeed, invite, { intro = "", stamper = null, no
     box: A.replyBox,
     wire: concat(Uint8Array.of(WIRE_VERSION), xePk, k1.cipherText, k2.cipherText, nonce, ct),
     session, persona: me,
+    ...newRetract(), // retractTag: post with the request; retract: withdraw it before it's read
   };
 }
 
@@ -266,6 +269,18 @@ export function acceptRequest(state, persona, request, { now = Date.now() } = {}
 /** Decline: remembered so the same request can't be shown again. Nothing is sent. */
 export function declineRequest(state, request) {
   if (request._accept) { state.seen.push(toHex(request._accept.th)); wipe(request._accept.rk0); }
+}
+
+/**
+ * Cancel an invite: erase its one-time secrets (requests made to it can no
+ * longer be read) and return what the app shows the relay to take the bundle
+ * down, so no one else can fetch it with the code: { box, retract }.
+ */
+export function cancelInvite(state) {
+  const takeDown = { box: state.box, retract: state.retract?.slice?.() ?? null };
+  closeInvite(state);
+  if (state.retract) { wipe(state.retract); state.retract = null; }
+  return takeDown;
 }
 
 /** Erase the invite's one-time secrets. Requests made to it can no longer be read. */

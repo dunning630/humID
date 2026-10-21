@@ -1,7 +1,7 @@
 # Person to person (HumID 4.0, provisional)
 
-> **Status:** 4.0 track, on branch `v4/p2p-comms`. The protocol, formats and
-> relay rules are built and tested (`packages/msg`, `tests/msg.test.js`,
+> **Status:** 4.0 track, on branch `v4/p2p-comms`. The protocol, formats,
+> delete and relay rules are built and tested (`packages/msg`, `tests/msg.test.js`,
 > `tools/timing-msg.mjs`); the relay service, the gateway's stamp route and the
 > app screens are not. Like the rest of HumID, it needs an independent
 > cryptographic review before real conversations go through it.
@@ -17,6 +17,7 @@ and can carry proof that a live human sent it, without saying which human.
 | "They only know my ID" | Each contact sees a different **persona ID** (`HC-XXXX-XXXX-XXXX-XXXX-XXXX`), made just for them. Two contacts comparing notes can't tell they know the same person. No name, number or email exists anywhere. | Whatever you choose to tell them in a message. |
 | "Zero chance of interception" | Interception is always *possible*: anyone on the network, or the relay itself, can copy the bytes. What they get is padded ciphertext, in one of a few fixed sizes, posted to a random mailbox that changes every day. | The relay sees when a phone deposits or fetches and from which address (use a VPN or Tor to hide that). |
 | "Not crackable" | Every key needs **both** ML-KEM-1024 and X25519 broken, and handshakes need **both** ML-DSA-87 and SLH-DSA (hash-based) forged. Keys change every time the conversation changes direction, so copying ciphertext now and decrypting it with a quantum computer later gains nothing. | "Not crackable" means no known attack, classical or quantum, comes close. No one can promise more than that for any system; the weak point in practice is a compromised phone, not the maths. |
+| "I can delete it" | Delete one message or a whole conversation, for you or for both of you; turn on disappearing messages; unsend a message the contact hasn't fetched yet. Deletes destroy keys, so deleted data can't be read back from the phone's storage or from a copy of the ciphertext. | Nothing can reach into the contact's phone against their will: a screenshot, a modified app or a second camera keeps what it saw. "For both" deletes *your* messages from *their* phone; what they sent stays theirs. |
 | "Validated as a live human" | A **live stamp** in a message proves a live face or fingerprint check on a proven phone approved those exact bytes. The server signs it blind, so it can't connect the stamp to anyone. | It proves *a* human approved the message, not *which* one; the ratchet proves it came from your contact. A person could still approve messages written by someone else (see "Limits"). |
 
 ## How two people meet
@@ -130,6 +131,73 @@ real human activity no bot farm can inflate without real people passing real
 checks, and it reveals nothing about who talked to whom. (What it does learn,
 see the table below: how many stamps each account asked for.)
 
+## Deleting
+
+Every kind of delete is in one object the app uses, `Conversation`
+(`packages/msg/src/conversation.js`).
+
+| You choose | What happens on your phone | What happens on the contact's phone | At the relay |
+|---|---|---|---|
+| **Delete for me** | The message is overwritten and left out of the next save. | Nothing. | Nothing. |
+| **Delete for both** (your own messages) | As above. | Their app erases it. If it hasn't arrived yet, their phone destroys the one key that would have opened it, so it can **never** be opened, even from a copy someone kept. | If the contact hasn't fetched it yet, it's **unsent**: removed, and you're told it was never delivered. |
+| **Disappearing messages** (either of you sets it, 30 s to a year, or off) | Each message is deleted when its time is up, counted from when it was sent. If it was never delivered, you can still unsend it or delete it for both for 14 days. | Deleted when its time is up, counted from when it arrived. Your own timer applies to what you receive too (the shorter wins), so a contact can't send you something that stays forever. | Messages are kept at most 14 days anyway. |
+| **Delete conversation, for me** | Every message and every key for this contact is overwritten; the contact's ID for you is forgotten for good. | Nothing; they aren't told. | — |
+| **Delete conversation, for both** | As above. | Their app erases every message you sent, then the conversation ends (the deletes count even if the "end" arrives first). | Anything not yet fetched is unsent, even if the conversation had already ended. |
+| **Cancel an invite / withdraw a request** | The invite's one-time keys are destroyed; requests to it can never be read. | — | The invite or request is taken down, so no one else can fetch it with the code. |
+
+### Why a deleted message really is gone
+
+- **Keys, not files.** Erasing a file on a phone's flash storage doesn't
+  reliably erase its bytes: the storage chip moves data around and old copies
+  survive. So a conversation (its ratchet and its history, in one blob) is
+  sealed under a **new random key every time it's saved**, and the app keeps
+  only the newest key, in the phone's secure storage (Keychain / Keystore),
+  overwriting the old one. A deleted message, and the ratchet's key for a
+  message deleted before it arrived, are absent from the new save; every older
+  save that still held them is sealed under a key that no longer exists. Tested:
+  the old save doesn't open with the new key. One blob also means a crash can't
+  save half a change.
+- **Saved before it's sent.** With `persist`, every change is saved before
+  anything is handed back to post; if the save fails, nothing goes out. Tested.
+- **The ratchet already forgets.** Every message key is erased the moment it's
+  used, so the conversation's own state never holds anything that could reopen
+  past messages. Each step works on a copy of the state, and the copy it
+  replaces is overwritten, not left in memory for the garbage collector. Tested.
+- **Unsent means never readable.** A delete for a message that hasn't arrived
+  names its place in the ratchet, and the contact's phone destroys the key it
+  had set aside for it. A relay or a network tap that kept the ciphertext holds
+  bytes nobody can ever open. Tested, including across a ratchet step.
+- **Unsend tokens.** Each thing a phone posts has a random token only that
+  phone holds; the relay stores a hash of it. Showing the token removes the
+  object if it's still there. No one else can unsend it, and the token links
+  nothing. Tested.
+- **Deleting a conversation** overwrites every key in it (root, chain, ratchet,
+  mailbox and wire keys, keys held for late messages); the session refuses any
+  further use. Operations run one at a time, so a send or receive already under
+  way finishes first and is forgotten with the rest. Tested.
+- **Timers agree.** Both phones apply one rule to every timer change (the
+  later change wins; on a tie, the shorter timer), so they can't end up with
+  different settings. Tested.
+- **No flooding.** Remembered ids of deleted messages are capped (5,000, oldest
+  first), so a contact sending endless deletes can't fill your phone. Tested.
+
+### What delete can't do
+
+- **It can't force another phone.** "Delete for both" asks the contact's
+  HumID app to erase, and an unmodified app always does. A screenshot, a photo
+  of the screen, or a modified app keeps what it already showed. That's true of
+  every messaging system; HumID says so instead of implying otherwise.
+- **You delete what you sent.** A contact can never delete your messages from
+  your phone, and you can't delete theirs from theirs: each person controls
+  their own words on the other's phone, and their own copy of everything.
+  Tested: a delete naming someone else's message is refused.
+- **After a conversation has ended**, a new delete for both can't be sent; the
+  app says so and keeps your copy so you can delete it for yourself. Unsend at
+  the relay still works for anything not yet fetched.
+- **Wiping memory in JavaScript** is best effort: key material is overwritten,
+  but text shown on screen is a JavaScript string, which can't be. The storage
+  promise (keys, not files) doesn't depend on this.
+
 ## Who can know what
 
 | Party | Sees | Never sees |
@@ -204,7 +272,9 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
    badge and safety code, approve with a check), conversations, missing-message
    notices, duress alerts opt-in per contact.
 4. **Contact list and conversation storage**, sealed under keys from the
-   account seed, with the rollback counter kept in the device's secure storage.
+   account seed, with the rollback counter and the newest history key kept in
+   the device's secure storage; Check-in and the duress erase extended to
+   messaging (destroying those keys erases every conversation at once).
 5. **Attachments**: sealed with a random key, uploaded as padded objects, key
    sent in a `file-key` message.
 6. **HQC** as a third KEM, once standardised.
@@ -217,7 +287,7 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 ## Try it
 
 ```bash
-node --test tests/msg.test.js                    # 32 tests: meeting, ratchet, stamps, relay, rollback, fuzz
+node --test tests/msg.test.js                    # 55 tests: meeting, ratchet, stamps, delete, relay, rollback, fuzz
 MSG_FUZZ_CASES=3000 node --test tests/msg.test.js
 npm run test:timing                              # timing check of the current backend
 ```
