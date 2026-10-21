@@ -42,7 +42,9 @@ const unb64u = (s) => {
   const t = s.replace(/-/g, "+").replace(/_/g, "/");
   let bin;
   try { bin = atob(t + "===".slice((t.length + 3) % 4)); } catch { fail("bad_response", "The response isn't base64url."); }
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  const out = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  if (b64u(out) !== s) fail("bad_response", "The response isn't canonical base64url.");
+  return out;
 };
 export { b64u as base64url, unb64u as fromBase64url };
 

@@ -175,3 +175,23 @@ test("F6 through creds: a VICAL needs its provider, a VICAL signer, and freshnes
   assert.throws(() => iacaFromVical(make({ key: il.ds.privateKey, cert: il.dsDer }), { providerRoots: [il.rootDer] }), code("bad_signature"));
   assert.throws(() => iacaFromVical(new Uint8Array([1, 2, 3]), { providerRoots: roots }), code("bad_vical"));
 });
+
+test("CI fuzz find (2026-10-21): a signature re-encoded with non-zero unused trailing bits is refused, not tolerated", async () => {
+  const { verifySdJwtVc, unb64u } = await import("@humid/sdjwt");
+  const { fromBase64url } = await import("@humid/mdoc");
+  const { issueSdJwt, presentSdJwt } = await import("./support/dcwallet.js");
+  const a = issuingAuthority({ C: "DE", ST: "", name: "P", dsSan: ["pid.example.eu"] });
+  const h = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const cred = await issueSdJwt({ issuerKey: a.ds.privateKey, x5c: [Buffer.from(a.dsDer).toString("base64")], claims: { given_name: "E" }, holderJwk: h.publicKey.export({ format: "jwk" }) });
+  const p = await presentSdJwt(cred, { names: ["given_name"], holderKey: h.privateKey, aud: "A", nonce: "N" });
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  // ES256: 64 bytes → 86 characters, the last carrying 4 unused bits. Same bytes, different text.
+  const sib = (str) => { const i = A.indexOf(str.at(-1)); return str.slice(0, -1) + A[(i & ~15) | ((i + 1) & 15)]; };
+  assert.equal(verifySdJwtVc(p, { trust: { roots: [a.rootPem] }, nonce: "N", aud: "A" }).keyBinding.ok, true);
+  assert.throws(() => verifySdJwtVc(sib(p), { trust: { roots: [a.rootPem] }, nonce: "N", aud: "A" }), (e) => e.code === "malformed");
+  const parts = p.split("~"); parts[0] = sib(parts[0]);
+  assert.throws(() => verifySdJwtVc(parts.join("~"), { trust: { roots: [a.rootPem] }, nonce: "N", aud: "A" }), (e) => e.code === "malformed");
+  assert.throws(() => unb64u("QR"), (e) => e.code === "malformed");
+  assert.deepEqual([...unb64u("QQ")], [65]);
+  assert.throws(() => fromBase64url("QR"), (e) => e.code === "bad_response");
+});
