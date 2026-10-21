@@ -10,13 +10,13 @@ import { fmtLeft } from "../ui/format.js";
 import { CodeBox, QrCode, ProofMeter, tierText, WAITS, ChipAccess, PROOFS } from "../ui/codes.jsx";
 import { TopBar, ConnectStep, SoleBiometric, BindButtons } from "./create.jsx";
 import * as S from "../core/state.js";
-import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, serverPinned } from "../core/index.js";
+import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned } from "../core/index.js";
 import { parseCard } from "@humid/recovery";
 import { serverHost, DEMO_BUILD } from "../core/config.js";
 
 const ROUTES = [
   { id: "link", icon: "key", title: "From another device", desc: "A phone that already has your HumID approves this one. Takes a minute." },
-  { id: "quorum", icon: "shield", title: "Prove it's me", desc: "Any two of: your witnesses, your ID chip, your recovery card. Opens after a wait your devices can veto." },
+  { id: "quorum", icon: "shield", title: "Prove it's me", desc: "Any two of: your witnesses, your ID chip, your recovery card, your security key. Opens after a wait your devices can veto." },
 ];
 const OLD_ROUTES = [
   { id: "card", icon: "idcard", title: "Older recovery card", desc: "A card made before two-proof recovery. Opens after 72 hours." },
@@ -69,15 +69,22 @@ export function Join() {
   );
 }
 
+const PRELUDE_SUB = {
+  witness: "A majority of the people you chose approve from their own HumID.",
+  anchor: "Your passport or ID card's chip, read by this phone or at a HumID station.",
+  card: "The code you wrote down when you created your HumID.",
+  key: "A security key you added, with its PIN, held to this phone.",
+};
+
 /** Before anything is bound: what two-proof recovery needs, and how long each pair waits. */
 function Prelude({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow} · What you'll need</div>
-      <h1 style={{ marginTop: 8 }}>Any two of these three</h1>
+      <h1 style={{ marginTop: 8 }}>Any two of these four</h1>
       <p class="lede" style={{ marginTop: 10 }}>Recovery proves it's you with two different things. Then it waits, while every device that still has your HumID can veto.</p>
       <div class="rows" style={{ marginTop: 18 }}>
-        {PROOFS.map((p) => <Row icon={p.icon} tone="mint" chevron={false} title={p.title} sub={p.id === "witness" ? "A majority of the people you chose approve from their own HumID." : p.id === "anchor" ? "Your passport or ID card's chip, read by this phone or at a HumID station." : "The code you wrote down when you created your HumID."} />)}
+        {PROOFS.map((p) => <Row icon={p.icon} tone="mint" chevron={false} title={p.title} sub={PRELUDE_SUB[p.id]} />)}
       </div>
       <div class="section">
         <div class="eyebrow">How long the wait is</div>
@@ -222,12 +229,17 @@ function QuorumWait({ p, st, now }) {
   const [name, setName] = useState("Demo Person");
   const [busy, setBusy] = useState(false);
   const [access, setAccess] = useState(null);
+  const [pin, setPin] = useState("");
+  const [pinProblem, setPinProblem] = useState(null);
   const ended = st && ["expired", "cancelled"].includes(st.status);
   const tier = tierText(kinds, st?.anchorMode);
   const cardOk = (() => { try { parseCard(card); return true; } catch { return false; } })();
   const nfc = S.nfc.value;
   const run = async (fn) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
   const has = (k) => kinds.includes(k);
+  // The key counts only when this device also kept its secret (the server may have counted it
+  // before the app was closed).
+  const keyHere = has("key") && !!p.hasKey;
   return (
     <>
       <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
@@ -236,7 +248,8 @@ function QuorumWait({ p, st, now }) {
         : "Any two different proofs. Open one below to add it."}</p>
       <div style={{ marginTop: 12 }}><ProofMeter have={kinds} /></div>
       {tier && <p class="small t2" style={{ marginTop: 8 }}><Icon name="clock" /> Wait with these proofs: {tier}</p>}
-      {!releaseAt && !ended && (
+      {releaseAt && has("key") && !p.hasKey && !ended && <div style={{ marginTop: 12 }}><Banner tone="amber" icon="seckey" title="One more tap with your security key" text="Your vault counted your key, but this phone didn't keep its secret (the app closed in between). Hold the key here again, or this phone can't open your vault when the wait ends." /></div>}
+      {(!releaseAt || (has("key") && !p.hasKey)) && !ended && (
         <div class="stack" style={{ marginTop: 14 }}>
           <div class="rows">
             <Row icon="users" tone={has("witness") ? "mint" : ""} title="Witnesses" sub={has("witness") ? "Approved" : st?.threshold ? `${st.approvals ?? 0} of ${st.threshold} have approved` : "A majority of your witnesses approve"} trail={has("witness") && <Icon name="check" />} onClick={() => setOpen(open === "witness" ? null : "witness")} />
@@ -268,6 +281,26 @@ function QuorumWait({ p, st, now }) {
                     <button class="btn quiet" disabled={busy} onClick={() => run(() => addChipToJoin(demoChipSource(name)))}>Demo passport</button>
                   </div>
                 )}
+              </div>
+            )}
+            <Row icon="seckey" tone={keyHere ? "mint" : ""} title="Security key" sub={keyHere ? "Verified: your key answered with its PIN" : has("key") ? "Hold your key to this phone once more to finish" : "Type its PIN, then hold it to this phone"} trail={keyHere && <Icon name="check" />} onClick={() => setOpen(open === "key" ? null : "key")} />
+            {open === "key" && !keyHere && (
+              <div style={{ padding: "0 16px 16px" }} class="stack">
+                {nfc?.available ? (
+                  <>
+                    <div class="field" style={{ marginTop: 0 }}>
+                      <label for="join-key-pin">Your security key's PIN</label>
+                      <input id="join-key-pin" class="input code" type="password" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={63} value={pin} onInput={(e) => { setPin(e.currentTarget.value); setPinProblem(null); }} aria-describedby="join-key-hint" />
+                      {pinProblem ? <span id="join-key-hint" class="hint danger" role="alert">{pinProblem.message}</span> : <span id="join-key-hint" class="hint">Only the key checks it. Eight wrong tries lock the key for good.</span>}
+                    </div>
+                    <button class="btn primary" disabled={busy} onClick={() => run(async () => {
+                      if ([...pin].length < 4) { setPinProblem({ code: "missing", message: "Type your key's PIN first." }); document.getElementById("join-key-pin")?.focus(); return; }
+                      const r = await addKeyToJoin(pin);
+                      if (r === true || r === false) setPin("");
+                      else if (r?.pinError) { setPinProblem(r.pinError); if (r.pinError.code === "pin_invalid") setPin(""); }
+                    })}><Icon name="fingerprint" />Hold the key to {nfc.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
+                  </>
+                ) : <p class="small t2">{nfc?.reason || "This device can't reach a security key. Use the HumID app on a phone with NFC."}</p>}
               </div>
             )}
           </div>

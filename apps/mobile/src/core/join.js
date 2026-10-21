@@ -9,7 +9,7 @@ import { toB64, fromB64, toHex } from "@humid/codec";
 import { suite, random } from "@humid/crypto";
 import { adapter as gateAdapter, ASSURANCE } from "@humid/gate";
 import { ml_dsa87, identityId } from "@humid/htp";
-import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, decodeQuorumPart, combineQuorum, QUORUM, accountCheck } from "@humid/recovery";
+import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, openKeyPart, decodeQuorumPart, combineQuorum, QUORUM, KEY_SECRET_BYTES, accountCheck } from "@humid/recovery";
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, CARD, wipe, concat, localChallenge } from "./runtime.js";
@@ -19,6 +19,33 @@ import { connectServer, serverPinned, chooseGate, serverRecord } from "./session
 import { refresh } from "./vault.js";
 import { loadAlerts, demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
+import { readKeyForRecovery } from "./seckey.js";
+
+/*
+ * What a two-proof recovery keeps under this device's lock while it waits (layout 2, 4.0):
+ *   device seed (64) ‖ recovery key seed (64) ‖ card slot (15) ‖ security key slot (32)
+ * A slot is zeros until that proof is added (pending.hasCard / pending.hasKey say which are
+ * real). Layout 1 (3.x): device seed ‖ recovery key seed ‖ card (if any).
+ */
+const QUORUM_LAYOUT = 2;
+function quorumSlots(both, p) {
+  const dseed = both.subarray(0, SEED), x = both.subarray(SEED, 2 * SEED);
+  if (p.layout === QUORUM_LAYOUT) {
+    return {
+      dseed, x,
+      card: p.hasCard ? both.subarray(2 * SEED, 2 * SEED + CARD) : null,
+      key: p.hasKey ? both.subarray(2 * SEED + CARD, 2 * SEED + CARD + KEY_SECRET_BYTES) : null,
+    };
+  }
+  return { dseed, x, card: both.length >= 2 * SEED + CARD ? both.subarray(2 * SEED, 2 * SEED + CARD) : null, key: null };
+}
+function packQuorum({ dseed, x, card, key }) {
+  const out = new Uint8Array(2 * SEED + CARD + KEY_SECRET_BYTES);
+  out.set(dseed, 0); out.set(x, SEED);
+  if (card) out.set(card, 2 * SEED);
+  if (key) out.set(key, 2 * SEED + CARD);
+  return out;
+}
 
 let joinTimer = null;
 // Polling backs off: links every 3 s (a person is waiting on the other phone), long
@@ -51,7 +78,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
     dseed = random(SEED);
     dkeys = Suite.deriveKeys(dseed);
     x = method === "card" ? cardSecret : random(SEED);
-    both = method === "quorum" && cardSecret ? concat(concat(dseed, x), cardSecret) : concat(dseed, x);
+    both = method === "quorum" ? packQuorum({ dseed, x, card: cardSecret }) : concat(dseed, x);
     const wrapped = await Suite.wrapSeed(secret, both, fromB64(e.bindingId));
     showInterrupt({ progress: 0.7, message: method === "link" ? "Getting a code for your other device…" : "Asking your vault to start a recovery…" });
     let pending;
@@ -68,7 +95,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
       const rk = Suite.deriveKeys(x);
       const r = await R.api.startRecovery({ method: "quorum", kemPk: rk.kemPk, xPk: rk.xPk, platform: PLATFORM, ...(cardSecret ? { tag: cardTag(cardSecret) } : {}) });
       Suite.wipeKeys(rk);
-      pending = { method, requestId: r.id, code: r.code, account: r.account, expiresAt: r.expiresAt, hasCard: !!cardSecret };
+      pending = { method, requestId: r.id, code: r.code, account: r.account, expiresAt: r.expiresAt, hasCard: !!cardSecret, hasKey: false, layout: QUORUM_LAYOUT };
     } else {
       const rk = Suite.deriveKeys(x);
       const r = await R.api.startRecovery({ method: "contacts", kemPk: rk.kemPk, xPk: rk.xPk, platform: PLATFORM });
@@ -203,7 +230,9 @@ async function finishJoin(st) {
             for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
             parts.push({ x: QUORUM.witness, y: combine(pieces) });
           }
-          if (st.blob && both.length >= 2 * SEED + CARD) parts.push(await openCardPart(both.subarray(2 * SEED, 2 * SEED + CARD), st.blob, account));
+          const slot = quorumSlots(both, p);
+          if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account));
+          if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account));
           if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart));
           seed = combineQuorum(parts);
           for (const pt of parts) wipe(pt.y);
@@ -283,11 +312,11 @@ export async function addCardToJoin(cardInput) {
     const rel = await gate.release(id.gate.handle, { purpose: "card", prompt: "Add your recovery card", challenge: localChallenge("card") });
     secret = rel.secret;
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
-    next = concat(both.subarray(0, 2 * SEED), cardSecret);
+    next = packQuorum({ ...quorumSlots(both, p), card: cardSecret });
     showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your recovery card…" });
     const r = await R.api.recoveryAddCard(p.requestId, cardTag(cardSecret));
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasCard: true, account: r.account } };
+    const record = { ...id, wrapped, pending: { ...p, hasCard: true, layout: QUORUM_LAYOUT, account: r.account } };
     delete record.schema;
     await R.store.putIdentity(record);
     S.identity.value = { ...record, schema: 4 };
@@ -300,6 +329,57 @@ export async function addCardToJoin(cardInput) {
     return false;
   } finally {
     wipe(secret, both, next, cardSecret);
+    R.busy = false;
+  }
+}
+
+/**
+ * Two proofs, while waiting: a security key (4.0). One tap with its PIN: the key signs the
+ * server's challenge for this recovery and gives this device its secret. Then, inside one
+ * live check, the proof is sent and the matching secret is kept under this device's lock
+ * for the end of the wait. If the app stops between the two, the server counts the key but
+ * this device hasn't kept its secret: the screen then asks for one more tap (pending.hasKey
+ * is what this device has, not what the server counted).
+ * Returns true | { pinError } | false.
+ */
+export async function addKeyToJoin(pin) {
+  const id = S.identity.value;
+  const p = id?.pending;
+  if (p?.method !== "quorum") return false;
+  if (p.hasKey) { toast("Your security key is already part of this recovery.", "warn"); return false; } // kept here; a key the server counted without it may be read again
+  const read = await readKeyForRecovery(p.requestId, pin);
+  if (!read || read.pinError) return read || false;
+  const gate = gateAdapter(id.gate.adapter);
+  const Suite = suite(id.suite);
+  R.busy = true;
+  showInterrupt({ purpose: "key", label: "Add your security key", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  let secret, both, next;
+  try {
+    await waitForHold(gate);
+    const rel = await gate.release(id.gate.handle, { purpose: "key", prompt: "Add your security key", challenge: localChallenge("key") });
+    secret = rel.secret;
+    both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
+    showInterrupt({ needsHold: false, progress: 0.6, message: "Showing your vault that your key answered…" });
+    const r = await R.api.recoveryAddKey(p.requestId, read.candidates);
+    const match = read.candidates.find((c) => c.tag === r.tag);
+    if (!match) throw new Error("Your vault matched a key this phone didn't read. Nothing was kept; try again.");
+    next = packQuorum({ ...quorumSlots(both, p), key: match.secret });
+    const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
+    const record = { ...id, wrapped, pending: { ...p, hasKey: true, layout: QUORUM_LAYOUT, account: r.account } };
+    delete record.schema;
+    await R.store.putIdentity(record);
+    S.identity.value = { ...record, schema: 4 };
+    const { tag: _t, ...status } = r;
+    S.joinStatus.value = { ...(S.joinStatus.value || {}), ...status };
+    await endInterrupt(true, "Security key added.", 600);
+    pollJoin();
+    return true;
+  } catch (e) {
+    await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    return false;
+  } finally {
+    wipe(secret, both, next);
+    for (const c of read.candidates) wipe(c.secret);
     R.busy = false;
   }
 }

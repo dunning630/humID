@@ -1,9 +1,9 @@
 # Devices and recovery
 
 > **Two-proof recovery (v2)** is now the default for new accounts: the seed is
-> split 2-of-3 into witness, ID-anchor and seal-card parts, and any recovery
-> needs two different kinds of proof, with waits set by the evidence. See
-> [CONTINUITY.md](CONTINUITY.md). The v1 card and contacts below still work
+> split into witness, ID-anchor and seal-card parts (and, in 4.0, a security-key
+> part: [SECURITY-KEY.md](SECURITY-KEY.md)), and any recovery needs two different
+> kinds of proof, with waits set by the evidence. See [CONTINUITY.md](CONTINUITY.md). The v1 card and contacts below still work
 > for accounts that set them up earlier, and the app offers to upgrade them.
 
 Status: POC. Code: `packages/recovery`, `services/recovery`, `services/identity`,

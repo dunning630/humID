@@ -55,6 +55,7 @@ const P = {
   pin: <><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" /><circle cx="12" cy="10" r="2.4" /></>,
   turn: <><path d="M18.5 13a6.5 6.5 0 1 1-1.9-4.6" /><path d="M17.5 3.8v4.9h-4.9" /></>,
   rotate: <><path d="M4.5 12a7.5 7.5 0 0 1 13-5.1L19.5 9" /><path d="M19.5 4.5V9H15" /><path d="M19.5 12a7.5 7.5 0 0 1-13 5.1L4.5 15" /><path d="M4.5 19.5V15H9" /></>,
+  seckey: <><rect x="8.5" y="2.5" width="7" height="6" rx="1" /><rect x="6" y="8.5" width="12" height="13" rx="3" /><circle cx="12" cy="15" r="2.4" /><path d="M10.5 5.5h3" /></>,
   nfc: <><path d="M8 7.5a6.5 6.5 0 0 1 0 9M11.5 5a10 10 0 0 1 0 14M15 3a13.5 13.5 0 0 1 0 18" /><circle cx="5" cy="12" r="1.2" /></>,
   // the camera's instructions (3.0.3)
   sun: <><circle cx="12" cy="12" r="3.6" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" /></>,

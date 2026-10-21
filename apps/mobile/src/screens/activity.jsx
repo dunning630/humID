@@ -23,8 +23,8 @@ const VIA = { register: "First device", link: "From another device", card: "Olde
 const proofWords = () => ({ hardware: "proved by this phone's chip", os: "software-protected check", none: "demo check" }[S.session.value?.assurance] || "signed by this device");
 const proofLong = () => ({ hardware: "This phone's secure chip", os: "A software-protected check on this device", none: "A demo check (no sensor)" }[S.session.value?.assurance] || "This device's key");
 
-const KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip" };
-const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport" };
+const KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip", key: "security key" };
+const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport", key: "seckey" };
 const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
@@ -67,6 +67,9 @@ function describe(e, names) {
     case "recovery.contacts_removed": return { icon: "users", tone: "", title: "Witnesses removed", meta: [], proof: d.proof };
     case "recovery.anchor_set": return { icon: "passport", tone: "mint", title: `Linked to your ${d.document || "ID"}'s chip`, meta: [d.country], proof: d.proof };
     case "recovery.anchor_removed": return { icon: "passport", tone: "", title: "ID chip unlinked", meta: [], proof: d.proof };
+    case "recovery.key_added": return { icon: "seckey", tone: "mint", title: "Security key added", meta: d.count ? [`${d.count} in all`] : [], proof: d.proof };
+    case "recovery.key_removed": return { icon: "seckey", tone: "", title: "Security key removed", meta: [], proof: d.proof };
+    case "recovery.key_refused": return { icon: "alert", tone: "danger", title: d.reason === "key_cloned" ? "A copy of your security key was refused" : "A wrong answer from your security key was refused", meta: ["during a recovery; it didn't count"] };
     case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${({ card: "older card", contacts: "older contacts", quorum: "two proofs" })[d.method] || d.method}`, meta: [d.platform] };
     case "recovery.evidence": return { icon: KIND_ICON[d.kind] || "shield", tone: "amber", title: `Recovery proof added · ${KIND[d.kind] || d.kind}${d.anchorMode === "remote" ? " (live)" : ""}`, meta: [d.releaseAt ? `opens ${fmtDate(d.releaseAt)}, ${fmtTime(d.releaseAt)}` : "needs a second proof"] };
     case "recovery.station_verified": return { icon: "station", tone: "amber", title: "ID verified in person at a station", meta: [d.country, d.releaseAt ? `opens ${fmtDate(d.releaseAt)}, ${fmtTime(d.releaseAt)}` : null] };
