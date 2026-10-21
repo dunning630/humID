@@ -63,6 +63,10 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
   runs what an administrator approved on their phone: HumID updates with
   automatic rollback, Windows updates, backups, restarts. See
   [docs/ADMIN.md](../../docs/ADMIN.md).
+- **Backups** are encrypted to a backup key whose private half you keep off the
+  computer (`humid backup-key new -Path E:\humid-backup.key`), with keyshare's
+  data in a separate file you can put on another disk; restoring needs the key
+  file. Without a key, backups wait ([docs/ADMIN.md](../../docs/ADMIN.md), "Backups").
 - **Settings** live in `C:\ProgramData\HumID\humid.env` and are changed with
   `humid set KEY=VALUE`, which validates them and restarts the server. The
   same variables as the Docker deployment ([../README.md](../README.md)),

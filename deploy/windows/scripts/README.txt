@@ -70,8 +70,13 @@ EVERYDAY COMMANDS  (Terminal (Admin))
   humid restart           restart the background task
   humid show              settings (the secret key is hidden)
   humid set KEY=VALUE     change a setting and restart
-  humid backup            stop, copy everything to Documents\HumID-backup-<date>.zip, start
-  humid restore -Path <zip>
+  humid backup-key new -Path E:\humid-backup.key
+                          once: make the backup key. Its private key goes to that
+                          file (a USB drive): keep it off this computer. Without
+                          it, no backup can be restored.
+  humid backup            stop, write two encrypted files to Documents (the backup,
+                          and keyshare's half: put that one on another disk), start
+  humid restore -Path <backup> -KeysharePath <keyshare file> -Key E:\humid-backup.key
   humid console           open the admin console (see below)
 
   Settings worth knowing (humid set ...):
@@ -105,8 +110,9 @@ THE ADMIN CONSOLE
 
 UPDATING
 --------
-  From the admin console: Updates > Update (approved on your phone). It backs
-  up first and goes back to the old version by itself if the new one fails.
+  From the admin console: Updates > Update (approved on your phone). It keeps
+  a copy of the data first and goes back to the old version by itself if the
+  new one fails. It installs only updates signed with the HumID release key.
   Or by hand: unzip the new version and run "Install HumID Server.cmd" again.
   Settings, accounts, documents and the server's identity are kept.
 
@@ -121,9 +127,10 @@ GOOD TO KNOW
 ------------
   * The laptop must be on, awake and online for phones to reach the vault.
     After a Windows update restarts it, the server starts again by itself.
-  * Back up C:\ProgramData\HumID (humid backup). It holds the server's
-    identity: lose it and every app pinned to this server refuses to
-    connect. The backup holds keys, so keep it offline.
+  * Back up (humid backup). It holds the server's identity: lose it and
+    every app pinned to this server refuses to connect. Backups are
+    encrypted to your backup key; keep the key file, the backup and
+    keyshare's half in three different places.
   * Only administrators and the server itself (LOCAL SERVICE account) can
     read C:\ProgramData\HumID.
   * This is a proof of concept. Don't put real customer data in it before

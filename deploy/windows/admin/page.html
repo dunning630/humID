@@ -337,7 +337,9 @@ function backupsSection(s) {
   return `<section>
     <h2>Backups</h2>
     ${s.backups.length ? `<table><tbody>${s.backups.slice(0, 6).map((b) => `<tr><td class="small">${esc(b.name)}</td><td class="num small soft">${gb(b.bytes)}</td><td class="num small soft">${ago(b.at)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">None yet.</p>`}
-    <p class="small soft">In ProgramData\\HumID\\backups, readable by administrators only. Each holds the server keys and every sealed document: copy one somewhere offline now and then.</p>
+    ${s.backupKey?.fingerprint
+      ? `<p class="small soft">Encrypted to backup key <span class="mono">${esc(s.backupKey.fingerprint)}</span>; restoring needs its private key file, which you keep off this computer. In ProgramData\\HumID\\backups (administrators only); keyshare's half of each in ${esc(s.backupKey.keyshareDir)}. Copy both somewhere offline now and then, on different disks.</p>`
+      : `<p class="small" style="color:var(--ember)">No backup key yet, so backups wait. In Terminal (Admin): <span class="mono">humid backup-key new -Path E:\\humid-backup.key</span> (a USB drive), then keep that file off this computer.</p>`}
   </section>`;
 }
 
