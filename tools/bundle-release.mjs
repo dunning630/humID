@@ -108,8 +108,12 @@ const lines = [
 writeFileSync(join(root, "README.txt"), lines.join("\r\n"));
 writeFileSync(join(root, "SHA256SUMS.txt"), placed.map((p) => `${p.sha}  ${p.folder}/${p.name}`).join("\r\n") + "\r\n");
 
-const host = serverUrl ? new URL(serverUrl).hostname.split(".")[0] : "";
+// The artifact name goes into later shell steps and file names: a plain host name only.
+const hostname = serverUrl ? new URL(serverUrl).hostname : "";
+if (hostname && !/^[a-z0-9.-]{1,253}$/.test(hostname)) { console.error(`HUMID_SERVER_URL's host isn't a plain host name: ${JSON.stringify(hostname)}`); process.exit(1); }
+const host = hostname.split(".")[0];
 const name = `HumID-${appVersion}${host ? `-${host}` : ""}`;
+if (!/^[A-Za-z0-9.-]+$/.test(name)) { console.error(`Unexpected artifact name ${JSON.stringify(name)}`); process.exit(1); }
 console.log(`${top}/ -> artifact ${name}`);
 for (const p of placed) console.log(`  ${p.folder}/${p.name}  ${mb(p.bytes)}`);
 if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nfolder=${top}\n`);
