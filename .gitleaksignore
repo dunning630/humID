@@ -1,0 +1,9 @@
+# 4.0.0 merge (PR #56): reviewed false positives. A variable named key (status.js), the
+# setting HUMID_ROLES=keys beside a port number (ci.yml, DEPLOY-VMS.md, windows-server3 test),
+# and the placeholder "-----BEGIN PRIVATE KEY-----x" in a sealing test. No secrets.
+5d06c159d777c3afb34903b59e68f39cb2372e2a:packages/sdjwt/src/status.js:generic-api-key:91
+127fba0cd64442a777ff7d515c104de57833bd71:packages/sdjwt/src/status.js:generic-api-key:91
+bebd7ddf313a4d471293cf70fe930230d3420aec:.github/workflows/ci.yml:generic-api-key:521
+45f6ff5cdf551c111bd93a250fcfb9d8c6ba0d27:docs/DEPLOY-VMS.md:generic-api-key:134
+e9a0da6e9f3406c6cb1a347f7388888ac486f84d:tests/e2e/windows-server3.test.js:generic-api-key:139
+6297d4d58482329109f1de95d597d7d9f8dedf96:tests/server3.test.js:private-key:139

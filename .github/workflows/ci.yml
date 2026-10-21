@@ -40,7 +40,8 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       # Yubico's python-fido2: the reference client the simulated security key is checked against.
-      - run: python3 -m pip install --user fido2==1.2.0
+      # The runner's system cryptography (3.4.8) satisfies fido2's range but is too old for it: pin a current one.
+      - run: python3 -m pip install --user fido2==1.2.0 cryptography==44.0.3
       - name: Tests (crypto compatibility, HTP/1 protocol, services end to end, penetration regression)
         # A failure names the failing tests in an annotation (readable through the API without the log).
         run: |
