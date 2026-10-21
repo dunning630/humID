@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { startStack } from "../tests/e2e/stack.js";
 import { testCsca, testPassport } from "../tests/support/passport.js";
 import { simulatedChip } from "../tests/support/chip.js";
+import { simulatedKey } from "../tests/support/fido-sim.js";
 import { randomBytes } from "node:crypto";
 
 // Local development build: includes demo mode (no sensor) so you can try HumID on a
@@ -31,6 +32,8 @@ const devCsca = testCsca("HumID Dev Country");
 const DEMO_PHOTO = readFileSync(new URL("../tests/fixtures/id/portrait.jpg", import.meta.url));
 const passports = new Map();
 const chips = new Map();
+const devKey = simulatedKey({ pin: "123456" });
+const keySessions = new Map();
 const passportFor = (name) => {
   const key = String(name || "Demo Person").toUpperCase().replace(/[^A-Z ]/g, "").trim().slice(0, 30) || "DEMO PERSON";
   if (!passports.has(key)) {
@@ -100,6 +103,23 @@ http.createServer(async (req, res) => {
     const chip = chips.get(url.searchParams.get("session") || "");
     const apdu = Buffer.from(String(url.searchParams.get("apdu") || ""), "hex");
     const r = chip ? Buffer.from(await chip.transceive(Uint8Array.from(apdu))) : Buffer.from([0x6f, 0x00]);
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ response: r.toString("hex") }));
+  }
+  // One simulated security key for the whole dev server (PIN 123456), so a key added on one
+  // browser "device" recovers on another. Each tap is a fresh session, as on a phone.
+  if (url.pathname === "/dev/key/begin" && req.method === "POST") {
+    devKey.powerCycle();
+    const id = randomBytes(8).toString("hex");
+    keySessions.set(id, devKey);
+    if (keySessions.size > 32) keySessions.delete(keySessions.keys().next().value);
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    return res.end(JSON.stringify({ session: id }));
+  }
+  if (url.pathname === "/dev/key/transceive" && req.method === "POST") {
+    const k = keySessions.get(url.searchParams.get("session") || "");
+    const apdu = Buffer.from(String(url.searchParams.get("apdu") || ""), "hex");
+    const r = k ? Buffer.from(await k.transceive(Uint8Array.from(apdu))) : Buffer.from([0x6f, 0x00]);
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     return res.end(JSON.stringify({ response: r.toString("hex") }));
   }

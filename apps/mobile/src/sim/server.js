@@ -523,11 +523,13 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   route("GET", "/recovery/protecting", () => [200, { shares: [] }], { auth: true });
   route("GET", "/recovery/protecting/alerts", () => [200, { alerts: [] }], { auth: true });
   route("GET", "/recovery/station", () => [200, { station: false, countries: 0 }], { auth: true });
+  route("GET", "/recovery/keys", () => [200, { keys: [], max: 4 }], { auth: true });
   for (const [m, p, what] of [
     ["POST", "/recovery/links", "Adding a device"], ["GET", "/recovery/links/.*", "Adding a device"], ["POST", "/recovery/links/.*", "Adding a device"],
     ["POST", "/recovery/offers", "Being someone's witness"], ["GET", "/recovery/offers/.*", "Choosing witnesses"], ["PUT", "/recovery/contacts", "Choosing witnesses"],
     ["POST", "/recovery/requests.*", "Recovering"], ["GET", "/recovery/requests/.*", "Recovering"], ["GET", "/recovery/help/.*", "Helping someone recover"], ["POST", "/recovery/help/.*", "Helping someone recover"],
     ["PUT", "/recovery/anchor", "Anchoring your ID"],
+    ["POST", "/recovery/keys.*", "Adding a security key"], ["DELETE", "/recovery/keys/.*", "Removing a security key"],
   ]) route(m, p, NOT_HERE(what));
 
   /* ---------- a step-up: both signatures over this exact request ---------- */

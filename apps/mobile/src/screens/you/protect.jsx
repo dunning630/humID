@@ -11,7 +11,7 @@ export function protectionItems(rec, devices) {
   if (!rec || !devices) return [];
   return [
     { done: !!rec.proofs?.card, icon: "idcard", label: "Recovery card", todo: "Make the card that's one of your proofs", target: "recovery", extra: { open: "card" } },
-    { done: !!(rec.proofs?.witness || rec.proofs?.anchor), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, or your ID chip", target: "recovery" },
+    { done: !!(rec.proofs?.witness || rec.proofs?.anchor || rec.proofs?.key), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, your ID chip, or a security key", target: "recovery" },
     { done: devices.length >= 2, icon: "key", label: "A second device", todo: "Another phone, so a lost phone isn't an emergency", target: "devices", extra: { open: "add" } },
   ];
 }
@@ -46,7 +46,7 @@ export function Protect() {
             ))}
             {!duressOn && <Row icon="siren" title="Optional: duress gesture" sub="If you're ever forced to unlock, show only chosen documents" onClick={() => go("duress")} />}
           </div>
-          <p class="fine" style={{ marginTop: 12 }}>If you lose every device, any two of three proofs bring your vault back. HumID never holds a key that opens it, and one proof alone never does.</p>
+          <p class="fine" style={{ marginTop: 12 }}>If you lose every device, any two of four proofs bring your vault back. HumID never holds a key that opens it, and one proof alone never does.</p>
         </section>
       )}
       {S.offline.value && <p class="fine" style={{ marginTop: 16 }}>Offline: nothing here can be set up until you reconnect.</p>}

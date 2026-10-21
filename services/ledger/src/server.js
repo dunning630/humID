@@ -40,6 +40,8 @@ const EVENT_TYPES = new Set([
   // Check-in (docs/CHECKIN.md). Never one per check-in: an hourly heartbeat in the public log
   // would tell anyone watching that an account is armed.
   "checkin.armed", "checkin.disarmed", "checkin.erased",
+  // security keys as a recovery proof (ledger 1.4, docs/SECURITY-KEY.md)
+  "recovery.key_added", "recovery.key_removed", "recovery.key_refused",
 ]);
 
 /**

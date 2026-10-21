@@ -126,6 +126,7 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/cards` | the holder's payment cards: number checks and networks, camera (front and back) and contactless (read-only EMV) capture, the sealed card record ([CARDS.md](CARDS.md)) |
 | `@humid/wallet` | Apple Wallet passes: bounded unzip, manifest hashes, the issuer's CMS signature through Apple's pinned roots ([WALLET-PASSES.md](WALLET-PASSES.md)) |
 | `@humid/pass` | anonymous access passes: RFC 9474 blind signatures (app side; `/issuer` for the server), access codes |
+| `@humid/fido` | a FIDO2 security key as a recovery proof: CTAP 2.1 over NFC (any APDU transport), PIN protocols 1 and 2, `hmac-secret`, `credProtect` ([SECURITY-KEY.md](SECURITY-KEY.md)); loaded only when a key is used |
 
 Each package declares what it `provides` and `requires` in `package.json`
 under `"humid"`. The app build refuses an incompatible combination.
@@ -151,7 +152,7 @@ capabilities dropped.
 | **identity** | gateway | account and device public keys, gate method, liveness keys and their verified proof | public keys only |
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
-| **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
+| **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, security keys' public keys and key-locked parts, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
 | **keyshare** | gateway | one encrypted 256-bit key per split document, under `share-key.bin`; while Check-in is armed, under a per-account fuse key held in memory only | which documents exist and when each was opened; who has Check-in armed and until when. Never an envelope, name or account key. See [SECURITY.md](SECURITY.md#a-compromised-phone) and [CHECKIN.md](CHECKIN.md). |
 | **access** | gateway | access-code hashes, pass keys, spent-pass hashes, all dated by day | which codes were used, and how many passes were spent. Never an account. See [ANONYMITY.md](ANONYMITY.md). |
 
