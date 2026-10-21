@@ -393,22 +393,23 @@ jobs:
             Write-Host "::error title=Encrypted backup step::$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber)). Last humid output: $m"
             exit 1
           }
-          function H { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args 2>&1 | Out-String; $code = $LASTEXITCODE; $script:last = $o; Write-Host $o; return $code }
+          # (not H: in PowerShell that's the Get-History alias, and aliases beat functions)
+          function Invoke-Humid { $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $env:HUMID @args 2>&1 | Out-String; $code = $LASTEXITCODE; $script:last = $o; Write-Host $o; return $code }
           $kid = (Get-Content C:\ProgramData\HumID\server.json | ConvertFrom-Json).kid
           $usb = Join-Path $env:RUNNER_TEMP 'usb'
           New-Item -ItemType Directory -Force -Path $usb | Out-Null
           $b = "$env:RUNNER_TEMP\b.humidbak"; $k = "$usb\keyshare.humidbak"; $key = "$usb\humid-backup.key"
-          if ((H backup -Path "$env:RUNNER_TEMP\early.humidbak") -eq 0) { throw 'a backup ran without a backup key' }
+          if ((Invoke-Humid backup -Path "$env:RUNNER_TEMP\early.humidbak") -eq 0) { throw 'a backup ran without a backup key' }
           if (Test-Path "$env:RUNNER_TEMP\early.humidbak") { throw 'a plain backup was written' }
-          if ((H backup-key new -Path 'C:\ProgramData\HumID\data\k.key') -eq 0 -or (Test-Path 'C:\ProgramData\HumID\data\k.key')) { throw 'the backup key went inside the data folder' }
-          if (H backup-key new -Path $key) { throw 'backup-key new failed' }
+          if ((Invoke-Humid backup-key new -Path 'C:\ProgramData\HumID\data\k.key') -eq 0 -or (Test-Path 'C:\ProgramData\HumID\data\k.key')) { throw 'the backup key went inside the data folder' }
+          if (Invoke-Humid backup-key new -Path $key) { throw 'backup-key new failed' }
           if (Select-String -LiteralPath 'C:\ProgramData\HumID\admin\admin.env' -Pattern '"seed"' -SimpleMatch -Quiet) { throw 'the private key is on the server' }
-          if (H backup -Path $b -KeysharePath $k) { throw 'backup failed' }
+          if (Invoke-Humid backup -Path $b -KeysharePath $k) { throw 'backup failed' }
           if (-not (Test-Path $b) -or -not (Test-Path $k)) { throw 'backup files missing' }
           foreach ($f in $b, $k) { if (Select-String -LiteralPath $f -Pattern 'HUMID_INTERNAL_SK' -SimpleMatch -Quiet) { throw "$f holds the settings in the clear" } }
-          if ((H restore -Path $b -KeysharePath $k -Quiet) -eq 0) { throw 'restored without the backup key file' }
-          if ((H restore -Path $b -Key $key -Quiet) -eq 0) { throw 'restored without keyshare''s half' }
-          if (H restore -Path $b -KeysharePath $k -Key $key -Quiet) { throw 'restore failed' }
+          if ((Invoke-Humid restore -Path $b -KeysharePath $k -Quiet) -eq 0) { throw 'restored without the backup key file' }
+          if ((Invoke-Humid restore -Path $b -Key $key -Quiet) -eq 0) { throw 'restored without keyshare''s half' }
+          if (Invoke-Humid restore -Path $b -KeysharePath $k -Key $key -Quiet) { throw 'restore failed' }
           if (-not (Test-Path 'C:\ProgramData\HumID\data\keyshare\share-key.bin')) { throw 'keyshare''s data not restored' }
           $script:last = & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\pkg\HumID-Server\humid.ps1" install -Quiet 2>&1 | Out-String
           $code = $LASTEXITCODE; Write-Host $script:last
