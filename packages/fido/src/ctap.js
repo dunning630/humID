@@ -121,10 +121,15 @@ export function parseAuthData(ad) {
 export class Authenticator {
   /** Select the FIDO applet on `transport` and read the key's info. */
   static async open(transport) {
+    const ctap1Only = () => new FidoError("ctap1_only", "This is an older U2F-only key. HumID needs a FIDO2 key (most keys made since 2019 are).");
+    // A key that also speaks CTAP1 answers "U2F_V2" here (CTAP 2.1 §11.3.1), as YubiKey 5 NFC
+    // keys do; whether it speaks CTAP2 is what getInfo says.
     const version = await selectFido(transport);
-    if (version !== "FIDO_2_0") throw new FidoError("ctap1_only", "This is an older U2F-only key. HumID needs a FIDO2 key (most keys made since 2019 are).");
+    if (version !== "FIDO_2_0" && version !== "U2F_V2") throw new FidoError("not_fido", "That isn't a FIDO2 security key.");
     const a = new Authenticator(transport);
-    a.info = await a.getInfo();
+    try { a.info = await a.getInfo(); }
+    catch (e) { if (version === "U2F_V2" && ["not_fido2", "invalid_command", "sw"].includes(e.code)) throw ctap1Only(); throw e; }
+    if (!a.info.versions.some((v) => v === "FIDO_2_0" || v === "FIDO_2_1")) throw ctap1Only();
     return a;
   }
 

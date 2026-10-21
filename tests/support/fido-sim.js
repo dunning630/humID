@@ -173,7 +173,6 @@ export function decodeCbor(bytes, { maxDepth = 4 } = {}) {
       if (ai === 20) return false;
       if (ai === 21) return true;
       if (ai === 22) return null;
-      if (ai === 23) return undefined;
       return bad(); // floats and simple values have no place in CTAP2 messages
     }
     const n = arg(ai);
@@ -663,9 +662,8 @@ class SimulatedKey {
   #decryptNewPin(proto, shared, newPinEnc) {
     const padded = PIN_PROTOCOLS[proto].decrypt(shared, newPinEnc);
     if (!padded || padded.length !== 64) fail(S.INVALID_PARAMETER);
-    let end = padded.length;
-    while (end > 0 && padded[end - 1] === 0) end--;
-    const pin = padded.subarray(0, end);
+    const zero = padded.indexOf(0); // the PIN is everything up to the first 0x00 byte
+    const pin = padded.subarray(0, zero < 0 ? padded.length : zero);
     const codePoints = [...new TextDecoder().decode(pin)].length;
     if (codePoints < this.#cfg.minPinLength || pin.length > 63) fail(S.PIN_POLICY_VIOLATION);
     return pin;
