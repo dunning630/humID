@@ -1,0 +1,25 @@
+{
+  "name": "@humid/msg",
+  "version": "0.1.0",
+  "description": "HumID 4.0 (provisional): person-to-person messaging. Per-contact persona IDs, approval with a live check, hybrid post-quantum double ratchet (ML-KEM-1024 + X25519), dual ML-DSA-87 + SLH-DSA handshake signatures, blind live stamps, a relay that sees only padded ciphertext.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "humid": {
+    "provides": {
+      "msg-format": 1
+    },
+    "requires": {
+      "pass": 1,
+      "recovery": 2
+    },
+    "track": "4.0"
+  },
+  "dependencies": {
+    "@humid/pass": "^1.1.0",
+    "@humid/recovery": "^1.3.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@noble/post-quantum": "0.7.1"
+  },
+  "license": "UNLICENSED"
+}

@@ -123,6 +123,9 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/attest` | server only: verifies Android key attestation and Apple App Attest against pinned roots |
 | `@humid/emrtd` | reads passport and ID card chips (ICAO 9303) over any APDU transport: BAC, PACE, secure messaging, Active Authentication; the DG2 photo only for the holder's own vault copy |
 | `@humid/idscan` | reads ID documents into one record: MRZ (OCR-tolerant), AAMVA license barcodes, chip data groups and SOD hashes ([ID-SCANNING.md](ID-SCANNING.md)) |
+| `@humid/mdoc` | mobile IDs (ISO/IEC 18013-5/-7): reader session, Digital Credentials API requests (Annex C, HPKE; OpenID4VP transcripts), issuer data authentication against IACA roots, device authentication, VICAL ([CREDENTIALS.md](CREDENTIALS.md)) |
+| `@humid/sdjwt` | 4.0, provisional: SD-JWT VC with key binding, JWS/x5c/JWE, IETF Token Status List ([CREDENTIALS.md](CREDENTIALS.md)) |
+| `@humid/creds` | 4.0, provisional: one request and one verifier for public credentials, assurance levels, revocation, minimised claims, SSN via eCBSV for permitted entities; `/server` for passport chips and ICAO master lists ([CREDENTIALS.md](CREDENTIALS.md)) |
 | `@humid/cards` | the holder's payment cards: number checks and networks, camera (front and back) and contactless (read-only EMV) capture, the sealed card record ([CARDS.md](CARDS.md)) |
 | `@humid/wallet` | Apple Wallet passes: bounded unzip, manifest hashes, the issuer's CMS signature through Apple's pinned roots ([WALLET-PASSES.md](WALLET-PASSES.md)) |
 | `@humid/pass` | anonymous access passes: RFC 9474 blind signatures (app side; `/issuer` for the server), access codes |
