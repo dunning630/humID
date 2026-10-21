@@ -1,0 +1,31 @@
+# Keeps pinned dependencies current. Actions are pinned to commit SHAs with a
+# "# vX.Y.Z" comment; Dependabot updates both. Every update is a pull request
+# that runs CI and the secret scan like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: cargo
+    directory: /apps/mobile/src-tauri
+    schedule: { interval: weekly }
+
+  - package-ecosystem: cargo
+    directory: /plugins/humid-nfc
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker
+    directory: /services
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker
+    directory: /services/edge
+    schedule: { interval: weekly }
