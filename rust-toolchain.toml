@@ -1,0 +1,5 @@
+# The Rust release every build uses (CI and release workflows install the same
+# version: `toolchain:` on dtolnay/rust-toolchain). Bump both together; Dependabot
+# doesn't. 1.99.1 was the current stable on 2026-10-21.
+[toolchain]
+channel = "1.99.1"

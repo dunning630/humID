@@ -53,7 +53,7 @@ Android apps.
 | `HUMID_IOS_APP_ID` | (empty) | `<Apple Team ID>.app.humid.vault`. Needed to accept iPhones (App Attest). `setup.sh` asks for the Team ID. |
 | `HUMID_APP_ATTEST_ENV` | `production` | `development` only for Xcode debug builds. |
 | `HUMID_ANDROID_PACKAGES` | `app.humid.vault` | Android package names accepted in key attestation. |
-| `HUMID_ANDROID_CERT_DIGESTS` | (empty = any) | SHA-256 of your release / Play signing certificate, comma-separated. Set it so only your signed app can join. |
+| `HUMID_ANDROID_CERT_DIGESTS` | (empty = any) | SHA-256 of your release / Play signing certificate, comma-separated. Set it so only your signed app can join. Revoked certificates (the leaked test key, `REVOKED_ANDROID_CERTS` in `packages/attest/src/roots.js`) are refused whatever this says. |
 | `HUMID_REQUIRE_LOCKED_BOOT` | `1` | Refuse Android phones with an unlocked bootloader or failed verified boot. |
 | `RECOVERY_DELAY_MS` | `259200000` (72 h) | How long a card or contacts recovery waits before release. |
 | `VAULT_QUOTA_BYTES` | `262144000` (250 MB) | Storage per account. |
