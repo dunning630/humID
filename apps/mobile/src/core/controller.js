@@ -21,7 +21,7 @@ import { suite, random, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
 import { adapter as gateAdapter, demoGate, bestHardwareGate, CANCELLED, ASSURANCE } from "@humid/gate";
 import { openStore } from "@humid/store";
 import { saveBytes, readFile } from "@humid/io";
-import { HumidApi, ApiError } from "@humid/api";
+import { HumidApi, ApiError, parseCosigners } from "@humid/api";
 import { ml_dsa87, identityId, sealLiveMessage, b64u } from "@humid/htp";
 import {
   newCard, parseCard, cardTag, sealCard, openCard, formatCode,
@@ -43,7 +43,7 @@ import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { validStamp, REASONS } from "./place.js";
 import { mark } from "./perf.js";
 import { sealDuress, openDuress, isDuress, DEFAULT as DURESS_OFF } from "./duress.js";
-import { SERVER_URL, PINNED_KID, PLATFORM } from "./config.js";
+import { SERVER_URL, PINNED_KID, PLATFORM, TLOG_COSIGNERS } from "./config.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 // Build flags (build.mjs `define`, always a literal true/false; `tools/dev.mjs` sets both):
@@ -597,9 +597,9 @@ export async function saveCard(code) {
  * decoy session reconnecting). Which gesture means duress is sealed on the device
  * (core/duress.js) and opens only inside the live check, so the decision decoy-or-real
  * is made AFTER the check: the session opens exactly the same way, then shows only
- * decoy documents while the server silently locks sensitive changes. Every unlock
- * reports presence, so the two look the same on the wire, and nothing on disk says
- * whether duress is set up or how it's triggered.
+ * decoy documents while the server silently locks sensitive changes. Every sign-in
+ * carries a presence flag signed by the device key inside the check, so the two look the
+ * same on the wire, and nothing on disk says whether duress is set up or how it's triggered.
  *
  * With no connection, the same live check opens the offline copy instead (unlockOffline).
  */
@@ -615,14 +615,16 @@ export async function unlock(used = false) {
       id: id.server.id,
       device: id.device?.id || "dev_" + "0".repeat(24),
       // The secure chip signs the server's sign-in challenge during the live check.
-      sign: (message) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
+      // The duress decision is made inside the check and signed into the sign-in itself,
+      // so it can't be sent, or forged, by anything that only holds a session.
+      sign: (message, { presence }) => withKeys("launch", "Unlock HumID", async ({ dkeys, seed, interrupt, live, Suite }) => {
         sessionKeys(Suite, seed);
         duress = isDuress(await loadDuressSetting(Suite), used, { unreadable: duressUnreadable });
         showInterrupt({ progress: 0.75, message: "Signing in with this device's key…" });
-        return { sig: ml_dsa87.sign(message, dkeys.dsaSk), interrupt, live: live?.sig };
+        const d = duress ? 1 : 0;
+        return { sig: ml_dsa87.sign(presence(d), dkeys.dsaSk), d, interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
-    await reportPresence(duress);
     // online from here on (also when reconnecting from the offline copy), so Check-in can be asked
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
     if (!S.server.value) await connectServer(); // its policy says whether it offers Check-in
@@ -761,12 +763,6 @@ function reloadTab() {
   if (S.tab.value === "you") { loadRecovery(); loadDuress(); }
   loadDevices();
   if (S.tab.value === "vault" && !S.decoy.value) loadRecovery();
-}
-
-async function reportPresence(duress) {
-  for (let i = 0; i < 2; i++) {
-    try { await api.presence(duress); return; } catch { /* try once more; never block the unlock */ }
-  }
 }
 
 export function lock(reason) {
@@ -1028,7 +1024,9 @@ async function fetchPlain(item, purpose, label) {
     showInterrupt({ progress: 0.65, message: "Fetching the sealed copy from your vault…" });
     const { envelope, share } = await api.downloadWithShare(item.id, proof);
     showInterrupt({ progress: 0.85, message: share ? "Checking, then opening with both keys…" : "Checking it's untouched, then opening…" });
-    const out = await Suite.open(envelope, keys);
+    // Only this account seals documents into its vault, so anything signed by another key
+    // is a forgery from whoever served it (PC-03): refused before it's decrypted or shown.
+    const out = await Suite.open(envelope, keys, { signer: keys.dsaPk });
     if (!isSplit(out.meta)) { wipe(share); return out; }
     try { return await splitUnwrap(out.bytes, share); }
     finally { wipe(out.bytes, share); }
@@ -1167,10 +1165,28 @@ function decoyView(l) {
   return { ...l, entries };
 }
 
+/** Cosigners of the public log this build trusts. The server's own list is never used. */
+const COSIGNERS = parseCosigners(TLOG_COSIGNERS);
+
+/**
+ * The ledger's signing key, pinned on this device the first time it verifies (PC-04).
+ * Without the pin a server could present a made-up history under a fresh key of its own;
+ * with it, a changed key fails verification and Activity reports it.
+ */
+async function rememberLedgerKey(fp) {
+  const id = S.identity.value;
+  if (!fp || !id || id.ledgerKeyFp) return;
+  const record = { ...id, ledgerKeyFp: fp };
+  delete record.schema;
+  await store.putIdentity(record);
+  S.identity.value = { ...record, schema: id.schema ?? 4 };
+}
+
 export async function loadLedger() {
   S.ledgerLoading.value = true;
   try {
-    const l = S.offline.value ? (offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await api.ledger({ limit: 300 });
+    const l = S.offline.value ? (offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await api.ledger({ limit: 300, trustedKeyFp: S.identity.value?.ledgerKeyFp || undefined });
+    if (!S.offline.value && l.ok) await rememberLedgerKey(l.keyFp);
     keepOffline({ ledger: l });
     for (const it of S.items.value) knownNames.set(it.id, it.name);
     S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l) : l), names: new Map(knownNames) };
@@ -1187,10 +1203,10 @@ export async function checkContinuity() {
   const id = S.identity.value;
   if (S.offline.value) { S.continuity.value = { ok: false, pending: true, reason: "Checked when you're back online" }; return; }
   try {
-    const r = await api.continuity({ previous: id?.tlog || null });
+    const r = await api.continuity({ previous: id?.tlog || null, trustedKeyFp: id?.ledgerKeyFp || undefined, cosigners: COSIGNERS });
     S.continuity.value = r;
     if (r.ok && (!id.tlog || r.size >= id.tlog.size)) {
-      const record = { ...id, tlog: { size: r.size, root: r.root, at: r.at } };
+      const record = { ...id, ledgerKeyFp: id.ledgerKeyFp || r.keyFp, tlog: { size: r.size, root: r.root, at: r.at } };
       delete record.schema;
       await store.putIdentity(record);
       S.identity.value = { ...record, schema: id.schema ?? 4 };
@@ -1469,7 +1485,8 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
     let pending;
     if (method === "link") {
       const lk = Suite.deriveKeys(x);
-      const r = await api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM });
+      // The link names this device's key: only this device can join with it once it's approved.
+      const r = await api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: dkeys.dsaPk });
       Suite.wipeKeys(lk);
       pending = { method, code: r.code, expiresAt: r.expiresAt };
     } else if (method === "card") {
@@ -1545,7 +1562,7 @@ async function finishJoin(st) {
   const pieces = [];
   try {
     const sess = await api.enrollDevice({
-      account, via: p.method, recoveryId: p.requestId, soleBiometric: !!p.soleBiometric,
+      account, via: p.method, recoveryId: p.requestId, linkCode: p.method === "link" ? p.code : undefined, soleBiometric: !!p.soleBiometric,
       device: { dsaPk: fromB64(p.devicePub), platform: PLATFORM, gateMethod: id.method, assurance: id.assurance },
       // One live check unlocks what arrived, and the secure chip attests a fresh liveness key to this session.
       sign: async (message, th) => {

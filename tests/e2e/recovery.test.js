@@ -32,10 +32,10 @@ after(async () => { await stack?.stop(); });
 const receiveKeys = () => S.deriveKeys(random(64));
 
 /** What a new device does once it holds the seed: check it, then join with its own device key. */
-async function joinWith(seed, account, via, extra = {}) {
+async function joinWith(seed, account, via, { me: given, ...extra } = {}) {
   const keys = S.deriveKeys(seed);
   assert.equal(identityId(keys.dsaPk), account, "seed derives the expected account");
-  const me = anotherDevice({ ...alice, keys, pub: S.publicOf(keys), seed });
+  const me = given || anotherDevice({ ...alice, keys, pub: S.publicOf(keys), seed });
   const api = new HumidApi({ baseUrl: stack.baseUrl });
   const session = await api.enrollDevice({ account, device: me.device, via, sign: me.enrollSign, ...extra });
   return { api, me, session };
@@ -53,8 +53,9 @@ let tablet;
 
 test("link: a new device shows a code; the phone approves; the tablet joins and opens the vault", async () => {
   const lk = receiveKeys();
+  const ipad = anotherDevice(alice); // its device key is made before the link, and the link names it
   const fresh = new HumidApi({ baseUrl: stack.baseUrl });
-  const { code } = await fresh.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "iPad" });
+  const { code } = await fresh.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: ipad.device.dsaPk, platform: "iPad" });
   assert.equal(code, keyCode(LINK_LABEL, lk.kemPk, lk.xPk));
   assert.equal((await fresh.linkResult(code)).status, "waiting");
 
@@ -71,7 +72,7 @@ test("link: a new device shows a code; the phone approves; the tablet joins and 
   assert.equal(r.account, alice.id);
   const opened = await S.open(r.envelope, lk);
   assert.equal(toHex(sha3_256(Buffer.from(opened.manifest.signer.mldsa87Pk, "base64"))), toHex(sha3_256(alice.pub.dsaPk)), "sealed by the account key");
-  tablet = await joinWith(opened.bytes, r.account, "link");
+  tablet = await joinWith(opened.bytes, r.account, "link", { me: ipad, linkCode: code });
   assert.equal(tablet.session.id, alice.id);
   assert.notEqual(tablet.session.device, alice.deviceId);
   assert.equal(await canOpenAlicesDocument(tablet.api, tablet.me), "Alice, born 1990");
@@ -80,7 +81,7 @@ test("link: a new device shows a code; the phone approves; the tablet joins and 
 
 test("link: a code can only be used once", async () => {
   const lk = receiveKeys();
-  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "x" });
+  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: lk.dsaPk, platform: "x" });
   const req = await phone.getLink(code);
   await phone.approveLink(code, await sealBytes(alice, alice.seed, req), alice.stepUp);
   await assert.rejects(phone.getLink(code), (e) => e.code === "already_used");
@@ -88,7 +89,7 @@ test("link: a code can only be used once", async () => {
 
 test("link: a server that swaps in its own keys is caught by the code, before anything is sealed", async () => {
   const lk = receiveKeys();
-  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "x" });
+  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: lk.dsaPk, platform: "x" });
   const evil = receiveKeys();
   const db = new DatabaseSync(`${stack.root}/recovery/recovery.db`);
   db.prepare("UPDATE links SET kem_pk = ?, x_pk = ? WHERE code = ?").run(evil.kemPk, evil.xPk, code);
@@ -98,7 +99,7 @@ test("link: a server that swaps in its own keys is caught by the code, before an
 
 test("link: the seed must be sealed to the waiting device's keys", async () => {
   const lk = receiveKeys();
-  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "x" });
+  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: lk.dsaPk, platform: "x" });
   const wrong = await sealBytes(alice, alice.seed, receiveKeys());
   await assert.rejects(phone.approveLink(code, wrong, alice.stepUp), (e) => e.code === "wrong_recipient");
 });
@@ -107,7 +108,10 @@ test("a device joins only with the account key's signature", async () => {
   const mallory = makeHolder("mallory");
   const api = new HumidApi({ baseUrl: stack.baseUrl });
   // Mallory knows Alice's account id but not her seed: signs with his own "account" key.
-  await assert.rejects(api.enrollDevice({ account: alice.id, device: mallory.device, via: "link", sign: mallory.enrollSign }), /not authorised/);
+  const lk = receiveKeys();
+  const { code } = await api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: mallory.device.dsaPk, platform: "x" });
+  await phone.approveLink(code, await sealBytes(alice, alice.seed, await phone.getLink(code)), alice.stepUp);
+  await assert.rejects(api.enrollDevice({ account: alice.id, device: mallory.device, via: "link", linkCode: code, sign: mallory.enrollSign }), /not authorised/);
 });
 
 /* ---------------- losing a device ---------------- */
@@ -196,17 +200,16 @@ test("card: an unknown card is refused, and a card cannot open someone else's va
   await assert.rejects(openCard(newCard().secret, blob, alice.id), /does not open/);
 });
 
-test("card: a request can't be marked complete before its release time", async () => {
-  // The seed is what lets a device join, and the card blob is only released after the wait.
-  // A device that already had the seed some other way still can't close out an unreleased request.
+test("card: a device can't join on a recovery before its release time, even holding the seed (PC-02)", async () => {
+  // The card blob is only released after the wait. A device that already had the seed some
+  // other way can neither close out the unreleased request nor join on the strength of it.
   const fresh = new HumidApi({ baseUrl: stack.baseUrl });
   const req = await fresh.startRecovery({ method: "card", tag: cardTag(card.secret) });
-  const pending = await joinWith(alice.seed, alice.id, "card", { recoveryId: req.id });
+  await assert.rejects(joinWith(alice.seed, alice.id, "card", { recoveryId: req.id }), (e) => e.code === "not_released");
   const completed = (await phone.ledger()).entries.filter((e) => e.type === "recovery.completed");
   assert.equal(completed.length, 1, "only the released recovery completed");
   assert.equal((await fresh.recoveryStatus(req.id)).status, "waiting");
   await phone.cancelAlert((await phone.alerts())[0].ref, alice.stepUp);
-  await phone.removeDevice(pending.session.device, alice.stepUp);
 });
 
 /* ---------------- 3. recovery contacts ---------------- */
@@ -316,7 +319,7 @@ test("a server that hands back a code for its own keys is caught before the code
   const mine = receiveKeys(), theirs = receiveKeys();
   // adding a device
   const a = lyingServer(new HumidApi({ baseUrl: stack.baseUrl }), LINK_LABEL, theirs.kemPk, theirs.xPk);
-  await assert.rejects(a.startLink({ kemPk: mine.kemPk, xPk: mine.xPk, platform: "x" }), (e) => e.code === "code_mismatch");
+  await assert.rejects(a.startLink({ kemPk: mine.kemPk, xPk: mine.xPk, devicePk: mine.dsaPk, platform: "x" }), (e) => e.code === "code_mismatch");
   // asking for recovery help
   const b = lyingServer(new HumidApi({ baseUrl: stack.baseUrl }), REQUEST_LABEL, theirs.kemPk, theirs.xPk);
   await assert.rejects(b.startRecovery({ method: "contacts", kemPk: mine.kemPk, xPk: mine.xPk, platform: "x" }), (e) => e.code === "code_mismatch");
@@ -326,18 +329,18 @@ test("a server that hands back a code for its own keys is caught before the code
   await assert.rejects(c.offerContact(eve.pub), (e) => e.code === "code_mismatch");
   // an honest server's codes pass
   const honest = receiveKeys();
-  const ok = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: honest.kemPk, xPk: honest.xPk, platform: "x" });
+  const ok = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: honest.kemPk, xPk: honest.xPk, devicePk: honest.dsaPk, platform: "x" });
   assert.equal(ok.code, keyCode(LINK_LABEL, honest.kemPk, honest.xPk));
 });
 
 test("a new device's name for itself is shown plainly: no control or direction-override characters", async () => {
   const lk = receiveKeys();
-  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: "\u202eenohPi\u202c\u200b Alice's\n phone" + "x".repeat(80) });
+  const { code } = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: lk.kemPk, xPk: lk.xPk, devicePk: lk.dsaPk, platform: "\u202eenohPi\u202c\u200b Alice's\n phone" + "x".repeat(80) });
   const req = await phone.getLink(code);
   assert.doesNotMatch(req.platform, /[\u0000-\u001f\u200b-\u200f\u202a-\u202e]/);
   assert.ok(req.platform.length <= 40);
   assert.match(req.platform, /^enohPi Alice's phone/);
   const bk = receiveKeys();
-  const blank = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: bk.kemPk, xPk: bk.xPk, platform: "\u200b\u2066 " });
+  const blank = await new HumidApi({ baseUrl: stack.baseUrl }).startLink({ kemPk: bk.kemPk, xPk: bk.xPk, devicePk: bk.dsaPk, platform: "\u200b\u2066 " });
   assert.equal((await phone.getLink(blank.code)).platform, "a new device");
 });

@@ -81,15 +81,15 @@ step("recovery card set");
 // A second device joins with a link code.
 const link = S.deriveKeys(random(64));
 const tablet = new HumidApi({ baseUrl: base });
-const { code } = await tablet.startLink({ kemPk: link.kemPk, xPk: link.xPk, platform: "smoke-2" });
+const tabletKeys = S.deriveKeys(random(64)); // the link names the device key that will join with it
+const { code } = await tablet.startLink({ kemPk: link.kemPk, xPk: link.xPk, devicePk: tabletKeys.dsaPk, platform: "smoke-2" });
 const req = await api.getLink(code);
 const sealedSeed = (await S.seal({ bytes: seed, name: "account key", type: "application/x-humid-key" }, keys, { kemPk: req.kemPk, xPk: req.xPk }, { identityCommit: commit, interrupt })).envelope;
 await api.approveLink(code, sealedSeed, stepUpBy(phone));
 const r = await tablet.linkResult(code);
 const got = await S.open(r.envelope, link);
 if (toHex(got.bytes) !== toHex(seed)) throw new Error("link handed over the wrong seed");
-const tabletKeys = S.deriveKeys(random(64));
-const t = await tablet.enrollDevice({ account: r.account, via: "link", device: device(tabletKeys), sign: async (m) => ({ sigAccount: sign(m, keys), sigDevice: sign(m, tabletKeys) }) });
+const t = await tablet.enrollDevice({ account: r.account, via: "link", linkCode: code, device: device(tabletKeys), sign: async (m) => ({ sigAccount: sign(m, keys), sigDevice: sign(m, tabletKeys) }) });
 step(`second device ${t.device} joined with code ${code.slice(0, 4)}…`);
 
 const back = await tablet.downloadWithShare(item.id, stepUpBy(tabletKeys));

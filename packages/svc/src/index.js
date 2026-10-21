@@ -6,6 +6,7 @@ import http from "node:http";
 import { mkdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
 /* ---------------- config & logging ---------------- */
@@ -64,6 +65,18 @@ export function signAssertion(skB64, claims, ttlMs = 30_000) {
   const payload = b64u(Buffer.from(JSON.stringify({ iat: now, exp: now + ttlMs, ...claims })));
   const sig = ed25519.sign(new TextEncoder().encode(ASSERT_PREFIX + payload), unb64u(skB64));
   return `${payload}.${b64u(sig)}`;
+}
+
+const sha256hex = (b) => createHash("sha256").update(b || new Uint8Array(0)).digest("hex");
+
+/**
+ * An assertion for exactly one request (PC-08): its method, its target (path and query) and
+ * a hash of its body are signed in with the claims, and createService refuses the assertion
+ * on any other request. Each also carries a fresh `rid` and is accepted once. So one captured
+ * on the internal network can't be replayed, or turned from a read into a delete.
+ */
+export function signRequestAssertion(skB64, claims, { method, path, body }, ttlMs) {
+  return signAssertion(skB64, { ...claims, m: String(method).toUpperCase(), p: String(path), bh: sha256hex(body) }, ttlMs);
 }
 
 export function verifyAssertion(pkB64, token, audience) {
@@ -149,6 +162,19 @@ export const logPath = (route, pathname) => route ? route.pattern : `/${String(p
 
 export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders }) {
   const log = logger(name);
+  // Assertions already used, until they expire (PC-08): each is good for one request.
+  const usedRids = new Map();
+  function bound(claims, req, body) {
+    if (claims.m !== req.method || claims.p !== req.url || claims.bh !== sha256hex(body)) {
+      throw new HttpError(401, "unauthenticated", "Assertion is for a different request");
+    }
+    const rid = typeof claims.rid === "string" ? claims.rid : "";
+    const t = Date.now();
+    if (usedRids.size > 50_000) for (const [k, exp] of usedRids) if (exp < t) usedRids.delete(k);
+    if (!rid || usedRids.has(rid)) throw new HttpError(401, "unauthenticated", "Assertion already used");
+    if (usedRids.size > 200_000) throw new HttpError(503, "busy", "Too many requests in flight");
+    usedRids.set(rid, Number(claims.exp) || t);
+  }
   const compiled = routes.map(([method, pattern, handler, opts = {}]) => {
     const keys = [];
     const re = new RegExp("^" + pattern.replace(/:([a-zA-Z]+)/g, (_, k) => { keys.push(k); return "([^/]+)"; }) + "$");
@@ -187,6 +213,7 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
           catch (e) { closeAfter = true; throw e; }
           finally { release?.(); }
         }
+        if (claims) bound(claims, req, body);
         out = await route.handler({ req, params, query: url.searchParams, body, claims, headers: req.headers });
       }
     } catch (e) {
