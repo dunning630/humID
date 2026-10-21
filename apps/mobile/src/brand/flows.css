@@ -36,7 +36,8 @@
 .toggle input:checked + i::after { transform: translateX(18px); background: var(--mint); }
 .toggle input:focus-visible + i { outline: 2px solid var(--mint); outline-offset: 2px; }
 .toggle input:disabled + i { opacity: .5; }
-.proofmeter { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.proofmeter { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+@media (max-width: 359px) { .proofmeter { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .proofmeter span { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px; border-radius: var(--r-sm); border: 1px dashed var(--line-strong); color: var(--muted); font-size: var(--t-xs); text-align: center; }
 .proofmeter span svg { width: 20px; height: 20px; }
 .proofmeter span[data-on="1"] { border-style: solid; border-color: rgba(111,227,180,.45); background: var(--mint-wash); color: var(--mint); }

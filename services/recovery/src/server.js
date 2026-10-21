@@ -10,9 +10,12 @@
 //              that depends on the evidence, cancellable by the owner's devices
 //   stations   operators who check a person and their ID in person
 //   duress     a silent signal from the owner that doubles every recovery wait
+//   keys       FIDO2 security keys (4.0): the key part under each key's hmac-secret,
+//              and each key's public key, so a recovery counts a key only when the
+//              key itself signs a fresh challenge with its PIN (docs/SECURITY-KEY.md)
 //
-// Two-proof recovery (v2, "quorum"): the seed is split 2-of-3 into a witness,
-// an anchor and a card part. A recovery needs two DIFFERENT kinds of proof, and
+// Two-proof recovery (v2, "quorum"): the seed is split into a witness, an anchor,
+// a card and (4.0) a security-key part; any two different ones rebuild it. A recovery needs two DIFFERENT kinds of proof, and
 // waits longer the weaker they are (see quorumDelay in @humid/recovery).
 //
 // Everything stored here is ciphertext or public keys, except the anchor part,
@@ -20,7 +23,7 @@
 // holder's identity fields (never stored), so a copy of the database alone
 // opens nothing. See docs/RECOVERY.md and docs/CONTINUITY.md.
 
-import { randomBytes, hkdfSync, createCipheriv, createDecipheriv } from "node:crypto";
+import { randomBytes, hkdfSync, createCipheriv, createDecipheriv, createHash, createPublicKey, verify as verifySig } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
@@ -28,8 +31,14 @@ import { isEnvelope } from "@humid/codec";
 import { sha3_256, toHex, identityId, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
-  QUORUM, decodeQuorumPart, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES,
+  QUORUM, decodeQuorumPart, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES,
 } from "@humid/recovery";
+
+/* Security keys (docs/SECURITY-KEY.md). The relying party no website can claim, and what the key signs. */
+const KEY_RP_ID = "recovery.humid.invalid";
+const KEY_RP_HASH = createHash("sha256").update(KEY_RP_ID).digest();
+const KEY_FLAGS = { UP: 0x01, UV: 0x04, AT: 0x40 };
+const keyClientDataHash = (purpose, challenge) => createHash("sha256").update(`HUMID-KEY-v1 ${purpose} `).update(challenge).digest();
 import { passiveAuth, activeAuth, anchorOf, anchorSummary, stableIdentity, loadCscas, AnchorError } from "@humid/anchor";
 
 const HOUR = 3600_000;
@@ -56,6 +65,7 @@ export function createRecovery({
   releasedTtlMs = 7 * 24 * HOUR,  // a released request can be collected for a week
   challengeTtlMs = 5 * 60_000,
   maxOpenPerAccount = 3,
+  maxKeysPerAccount = 4,
 } = {}) {
   const log = logger("recovery");
   const db = openDb(dataDir, "recovery.db", [
@@ -91,6 +101,13 @@ export function createRecovery({
      CREATE TABLE challenges (request_id TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL);
      CREATE TABLE duress (account TEXT PRIMARY KEY, last_at INTEGER NOT NULL, count INTEGER NOT NULL);
      CREATE TABLE settings (account TEXT PRIMARY KEY, duress_alert INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`,
+    // 4.0: security keys. pub is the credential's P-256 point; sign_count its last counter.
+    `CREATE TABLE seckeys (
+       id TEXT PRIMARY KEY, account TEXT NOT NULL, tag TEXT NOT NULL UNIQUE, blob BLOB NOT NULL,
+       pub BLOB NOT NULL, cred_id BLOB NOT NULL, sign_count INTEGER NOT NULL, label BLOB, created_at TEXT NOT NULL);
+     CREATE INDEX seckeys_account ON seckeys(account);
+     CREATE TABLE key_challenges (scope TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL);
+     ALTER TABLE requests ADD COLUMN key_id TEXT`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -183,6 +200,7 @@ export function createRecovery({
     db.prepare("DELETE FROM links WHERE expires_at < ?").run(t);
     db.prepare("DELETE FROM offers WHERE expires_at < ?").run(t);
     db.prepare("DELETE FROM challenges WHERE expires_at < ?").run(t);
+    db.prepare("DELETE FROM key_challenges WHERE expires_at < ?").run(t);
     db.prepare("UPDATE requests SET status = 'expired', closed_at = ? WHERE status IN ('collecting', 'waiting') AND expires_at < ?").run(t, t);
     db.prepare("DELETE FROM approvals WHERE request_id IN (SELECT id FROM requests WHERE status IN ('expired', 'cancelled', 'completed'))").run();
     db.prepare("UPDATE requests SET anchor_blob = NULL WHERE status IN ('expired', 'cancelled', 'completed') AND anchor_blob IS NOT NULL").run();
@@ -206,6 +224,8 @@ export function createRecovery({
     if (q.card_ok) k.push("card");
     if (q.account && q.threshold && approvalCount(q.id) >= q.threshold) k.push("witness");
     if (q.anchor_mode) k.push("anchor");
+    // A key removed during the wait no longer counts: its owner withdrew it.
+    if (q.key_id && db.prepare("SELECT 1 FROM seckeys WHERE id = ? AND account = ?").get(q.key_id, q.account)) k.push("key");
     return k;
   }
 
@@ -221,6 +241,17 @@ export function createRecovery({
     db.prepare("UPDATE requests SET quorum_at = ?, release_at = ?, status = 'waiting', expires_at = ? WHERE id = ?")
       .run(quorumAt, releaseAt, releaseAt + releasedTtlMs, q.id);
     return getRequest.get(id);
+  }
+
+  /**
+   * A proof was withdrawn (a key or card removed): every open recovery of `account` that
+   * no longer has two kinds of proof goes back to collecting, and its wait is gone.
+   */
+  function demote(account) {
+    for (const q of db.prepare("SELECT * FROM requests WHERE account = ? AND method = 'quorum' AND status = 'waiting'").all(account)) {
+      if (kindsOf(q).length >= 2) { evaluate(q.id); continue; }
+      db.prepare("UPDATE requests SET status = 'collecting', release_at = NULL, quorum_at = NULL, expires_at = ? WHERE id = ?").run(now() + collectTtlMs, q.id);
+    }
   }
 
   /** Tie a request to an account the first time a proof names it. Throws if proofs disagree. */
@@ -290,7 +321,10 @@ export function createRecovery({
       db.exec("BEGIN");
       db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub);
       db.prepare("INSERT INTO cards (account, tag, blob, created_at, scheme) VALUES (?, ?, ?, ?, ?)").run(claims.sub, tag, blob, at, scheme);
+      // The old card no longer counts as a proof in a recovery under way.
+      db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
       db.exec("COMMIT");
+      demote(claims.sub);
       return json(200, { createdAt: at, replaced: true, scheme });
     }],
     ["GET", "/card", ({ claims }) => {
@@ -300,6 +334,9 @@ export function createRecovery({
     ["DELETE", "/card", ({ claims }) => {
       needStepUp(claims);
       const n = db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub).changes;
+      // A removed card no longer counts as a proof in a recovery under way.
+      db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
+      demote(claims.sub);
       return json(200, { removed: n > 0 });
     }],
   ];
@@ -332,6 +369,102 @@ export function createRecovery({
       needStepUp(claims);
       const n = db.prepare("DELETE FROM anchors WHERE account = ?").run(claims.sub).changes;
       return json(200, { removed: n > 0 });
+    }],
+  ];
+
+  /* ---------- security keys (4.0) ---------- */
+
+  const keyIdOf = (tag) => toHex(sha3_256(Buffer.from(`HUMID-KEY-ID-v1|${tag}`))).slice(0, 32);
+  const keyIdParam = (s) => { if (!/^[0-9a-f]{32}$/.test(String(s))) throw new HttpError(400, "bad_key_id", "Unknown security key."); return String(s); };
+
+  /** A one-use challenge for `scope` ("add:<account>" or "recover:<request id>"). */
+  function issueKeyChallenge(scope) {
+    const nonce = randomBytes(32);
+    db.prepare("INSERT OR REPLACE INTO key_challenges (scope, nonce, expires_at) VALUES (?, ?, ?)").run(scope, nonce, now() + challengeTtlMs);
+    return { challenge: b64u(nonce), expiresAt: now() + challengeTtlMs };
+  }
+  /** Take the challenge for `scope` (one answer per challenge, whatever the outcome). */
+  function takeKeyChallenge(scope) {
+    const ch = db.prepare("SELECT nonce FROM key_challenges WHERE scope = ? AND expires_at > ?").get(scope, now());
+    db.prepare("DELETE FROM key_challenges WHERE scope = ?").run(scope);
+    if (!ch) throw new HttpError(409, "challenge_expired", "That took too long. Hold your security key to the phone again.");
+    return Buffer.from(ch.nonce);
+  }
+
+  /** A P-256 public key from its 65-byte point; refuses anything that isn't on the curve. */
+  function keyPub(point) {
+    const b = Buffer.from(point);
+    if (b.length !== 65 || b[0] !== 4) throw new HttpError(400, "bad_key", "That security key's public key is malformed.");
+    try {
+      return createPublicKey({ format: "jwk", key: { kty: "EC", crv: "P-256", x: b.subarray(1, 33).toString("base64url"), y: b.subarray(33).toString("base64url") } });
+    } catch { throw new HttpError(400, "bad_key", "That security key's public key is malformed."); }
+  }
+
+  /**
+   * Check a security key's answer to `challenge`: its signature over authenticatorData ‖
+   * clientDataHash, this relying party, present (UP) and PIN-verified (UV). Returns its counter.
+   */
+  function checkKeyAnswer({ pub, authData, signature }, purpose, challenge) {
+    const ad = Buffer.from(authData || []), sig = Buffer.from(signature || []);
+    if (ad.length < 37 || ad.length > 1024 || sig.length < 8 || sig.length > 80) throw new HttpError(400, "bad_key_proof", "The security key's answer is malformed.");
+    if (!ad.subarray(0, 32).equals(KEY_RP_HASH)) throw new HttpError(422, "bad_key_proof", "That answer wasn't made for HumID recovery.");
+    const flags = ad[32];
+    if (!(flags & KEY_FLAGS.UP) || !(flags & KEY_FLAGS.UV)) throw new HttpError(422, "bad_key_proof", "The security key didn't confirm its PIN.");
+    if (flags & KEY_FLAGS.AT) throw new HttpError(422, "bad_key_proof", "The security key's answer is malformed.");
+    const ok = (() => { try { return verifySig("sha256", Buffer.concat([ad, keyClientDataHash(purpose, challenge)]), { key: keyPub(pub), dsaEncoding: "der" }, sig); } catch { return false; } })();
+    if (!ok) throw new HttpError(422, "bad_key_proof", "The security key's signature didn't check out.");
+    return ad.readUInt32BE(33);
+  }
+  /** A counter must move forward, unless the key keeps it at zero. Backwards means a copy. */
+  const counterOk = (stored, next) => (stored === 0 && next === 0) || next > stored;
+
+  const keys = [
+    ["GET", "/keys", ({ claims }) => {
+      const rows = db.prepare("SELECT id, label, created_at FROM seckeys WHERE account = ? ORDER BY created_at, id").all(needUser(claims));
+      return json(200, { keys: rows.map((r) => ({ id: r.id, label: r.label ? b64u(r.label) : null, createdAt: r.created_at })), max: maxKeysPerAccount });
+    }],
+    // Adding a key: the key signs this challenge, with its PIN, in the same step that gives the phone its secret.
+    // `exclude` lists the credentials this account already has, so a key that holds one refuses to make another.
+    ["POST", "/keys/challenge", ({ claims }) => {
+      const sub = needUser(claims);
+      const exclude = db.prepare("SELECT cred_id FROM seckeys WHERE account = ?").all(sub).map((k) => b64u(k.cred_id));
+      return json(200, { ...issueKeyChallenge(`add:${sub}`), exclude });
+    }],
+    ["POST", "/keys", ({ claims, body }) => {
+      needStepUp(claims);
+      const r = parseObject(body);
+      const tag = String(r.tag || "");
+      if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(tag)) throw new HttpError(400, "bad_tag", "Key tag is malformed");
+      const blob = unb64u(String(r.blob || ""));
+      if (blob.length !== KEY_PART_BLOB_BYTES) throw new HttpError(400, "bad_blob", "Key blob has the wrong size");
+      const pub = unb64u(String(r.pub || ""));
+      keyPub(pub);
+      const credId = unb64u(String(r.credentialId || ""));
+      if (credId.length < 16 || credId.length > 1023) throw new HttpError(400, "bad_credential", "That security key's credential id is malformed.");
+      const label = r.label ? unb64u(String(r.label)) : null;
+      if (label && label.length > 512) throw new HttpError(400, "bad_label", "Label too long");
+      const challenge = takeKeyChallenge(`add:${claims.sub}`);
+      const count = checkKeyAnswer({ pub, authData: unb64u(String(r.authData || "")), signature: unb64u(String(r.signature || "")) }, "add", challenge);
+      const mine = db.prepare("SELECT tag, pub, cred_id FROM seckeys WHERE account = ?").all(claims.sub);
+      if (mine.some((k) => k.tag === tag || Buffer.from(k.pub).equals(Buffer.from(pub)) || Buffer.from(k.cred_id).equals(Buffer.from(credId)))) throw new HttpError(409, "key_exists", "This security key is already one of yours.");
+      if (mine.length >= maxKeysPerAccount) throw new HttpError(409, "too_many_keys", `You can keep up to ${maxKeysPerAccount} security keys. Remove one first.`);
+      if (db.prepare("SELECT 1 FROM seckeys WHERE tag = ?").get(tag)) throw new HttpError(409, "key_exists", "This security key is already in use.");
+      const id = keyIdOf(tag), at = new Date().toISOString();
+      db.prepare("INSERT INTO seckeys (id, account, tag, blob, pub, cred_id, sign_count, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, claims.sub, tag, blob, pub, credId, count, label, at);
+      return json(201, { id, createdAt: at, count: mine.length + 1 });
+    }],
+    ["DELETE", "/keys/:id", ({ params, claims }) => {
+      needStepUp(claims);
+      const n = db.prepare("DELETE FROM seckeys WHERE id = ? AND account = ?").run(keyIdParam(params.id), claims.sub).changes;
+      if (!n) throw new HttpError(404, "unknown_key", "That security key isn't one of yours.");
+      demote(claims.sub);
+      return json(200, { removed: true, count: db.prepare("SELECT COUNT(*) AS n FROM seckeys WHERE account = ?").get(claims.sub).n });
+    }],
+    ["DELETE", "/keys", ({ claims }) => {
+      needStepUp(claims);
+      const n = db.prepare("DELETE FROM seckeys WHERE account = ?").run(claims.sub).changes;
+      demote(claims.sub);
+      return json(200, { removed: n });
     }],
   ];
 
@@ -512,14 +645,16 @@ export function createRecovery({
         const shares = db.prepare("SELECT envelope FROM approvals WHERE request_id = ? ORDER BY created_at").all(q.id).map((a) => b64u(a.envelope));
         if (q.method === "contacts") return json(200, { ...v, status: "released", shares });
         // Quorum: every part the request earned. The device needs any two.
-        const out = { ...v, status: "released" };
         const kinds = kindsOf(q);
+        if (kinds.length < 2) { demote(q.account); const d = getRequest.get(q.id); return json(200, { ...requestView(d, { secret: true }), account: d.account }); }
+        const out = { ...v, status: "released" };
         if (kinds.includes("witness")) out.shares = shares;
         if (kinds.includes("card")) {
           const c = db.prepare("SELECT blob, scheme FROM cards WHERE account = ?").get(q.account);
           if (c?.scheme === "quorum") out.blob = b64u(c.blob);
         }
         if (kinds.includes("anchor") && q.anchor_blob) out.anchorPart = b64u(unwrap(`request ${q.id}`, q.ref, q.anchor_blob));
+        if (kinds.includes("key")) out.keyBlob = b64u(db.prepare("SELECT blob FROM seckeys WHERE id = ?").get(q.key_id).blob);
         return json(200, out);
       }
       return json(200, v);
@@ -561,6 +696,39 @@ export function createRecovery({
       const e = evaluate(q.id);
       return json(200, { ...requestView(e), account: e.account, first });
     }, { bodyLimit: 3 * CHIP_MAX }],
+
+    // Two proofs: a fresh challenge for a security key to sign, with its PIN.
+    ["POST", "/requests/:id/key/challenge", ({ params }) => json(200, issueKeyChallenge(`recover:${openQuorum(params.id).id}`))],
+    // Two proofs: the security key, live. It must sign this request's challenge with its PIN
+    // verified; the tag only says which stored key to check the signature with.
+    ["POST", "/requests/:id/key", ({ params, body }) => {
+      const q = openQuorum(params.id);
+      const r = parseObject(body);
+      const list = Array.isArray(r.candidates) ? r.candidates.slice(0, 16) : [];
+      const challenge = takeKeyChallenge(`recover:${q.id}`);
+      if (!list.length) throw new HttpError(400, "no_key_proof", "Hold your security key to the phone.");
+      const rows = [];
+      for (const c of list) {
+        const row = db.prepare("SELECT * FROM seckeys WHERE tag = ?").get(String(c?.tag || ""));
+        if (row) rows.push({ row, c });
+      }
+      if (!rows.length) throw new HttpError(404, "unknown_key", "This security key isn't one added to a HumID on this server.");
+      // One key can hold credentials for two people's HumIDs. Once another proof named the
+      // account, use that one; before that, refuse to guess.
+      const accounts = new Set(rows.map((x) => x.row.account));
+      const pick = q.account ? rows.find((x) => x.row.account === q.account) : accounts.size === 1 ? rows[0] : null;
+      if (!pick) throw new HttpError(409, q.account ? "different_person" : "key_ambiguous", q.account ? "These proofs belong to different people. Nothing was released." : "This security key holds more than one HumID. Add your other proof first, then the key.");
+      // A stored key that answers wrongly is worth telling its owner about (the gateway records it).
+      let count;
+      try { count = checkKeyAnswer({ pub: pick.row.pub, authData: unb64u(String(pick.c.authData || "")), signature: unb64u(String(pick.c.signature || "")) }, "recover", challenge); }
+      catch (e) { if (e instanceof HttpError) e.detail = { account: pick.row.account, ref: q.ref }; throw e; }
+      if (!counterOk(pick.row.sign_count, count)) throw new HttpError(409, "key_cloned", "This security key's counter went backwards, which happens when a key has been copied. It doesn't count as a proof.", { account: pick.row.account, ref: q.ref });
+      const first = bindAccount(q, pick.row.account);
+      db.prepare("UPDATE seckeys SET sign_count = ? WHERE id = ?").run(count, pick.row.id);
+      db.prepare("UPDATE requests SET key_id = ? WHERE id = ?").run(pick.row.id, q.id);
+      const e = evaluate(q.id);
+      return json(200, { ...requestView(e), account: e.account, first, tag: pick.row.tag });
+    }, { bodyLimit: 16 * 1024 }],
 
     // Gateway only: the recovered device has joined the account.
     ["POST", "/requests/:id/complete", ({ params, claims, body }) => {
@@ -733,7 +901,7 @@ export function createRecovery({
 
   log.info("recovery delay", { hours: +(delayMs / HOUR).toFixed(3) });
   return createService({ tls,
-    name: "recovery", port, routes: [...links, ...card, ...anchor, ...contacts, ...requests, ...station, ...duress], bodyLimit: 64 * 1024,
+    name: "recovery", port, routes: [...links, ...card, ...anchor, ...keys, ...contacts, ...requests, ...station, ...duress], bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "recovery"),
   });
 }

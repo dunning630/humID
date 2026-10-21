@@ -18,6 +18,7 @@ const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
+const KEY_RE = "[0-9a-f]{32}";
 /**
  * Which devices may sign in (HUMID_DEVICE_POLICY):
  *   attested   only phones whose secure chip proves every check is a live biometric
@@ -98,6 +99,11 @@ const ROUTES = [
   { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
   { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
   { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  // security keys (4.0, docs/SECURITY-KEY.md): adding or removing one is a guarded change
+  { m: "GET", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true },
+  { m: "POST", p: re("/recovery/keys/challenge"), to: "recovery", path: "/keys/challenge", auth: true },
+  { m: "POST", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_added", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
+  { m: "DELETE", p: re(`/recovery/keys/(${KEY_RE})`), to: "recovery", path: "/keys/$1", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
   { m: "GET", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true },
   { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
   // verification stations
@@ -111,6 +117,8 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/card`), h: "addEvidence", kind: "card", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/challenge`), to: "recovery", path: "/requests/$1/challenge", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key/challenge`), to: "recovery", path: "/requests/$1/key/challenge", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key`), h: "addEvidence", kind: "key", anon: true },
   { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
   { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
@@ -523,6 +531,7 @@ export function createGateway({
       await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
+      await internalJson("recovery", "DELETE", "/keys", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
       const subject = s.subject;
@@ -543,10 +552,16 @@ export function createGateway({
       return { status: 201, json: out };
     },
 
-    // Two-proof recovery: the new device adds its seal card or its live ID chip.
+    // Two-proof recovery: the new device adds its seal card, its live ID chip or its security key.
     async addEvidence(s, body, stepUp, m, route) {
       const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
-      if (r.status !== 200) fail(r);
+      if (r.status !== 200) {
+        // A security key of this account answered wrongly, or looks copied: its owner sees it in Activity.
+        if (route.kind === "key" && r.data?.account && ["key_cloned", "bad_key_proof"].includes(r.data.error)) {
+          await recordQuietly(r.data.account, "recovery.key_refused", { reason: r.data.error, ref: r.data.ref });
+        }
+        fail(r); // fail() passes on only the code and the message
+      }
       const d = r.data;
       if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
       await recordQuietly(d.account, "recovery.evidence", { ref: d.ref, kind: route.kind, anchorMode: d.anchorMode, kinds: d.kinds, releaseAt: d.releaseAt, evidence: d.evidence });

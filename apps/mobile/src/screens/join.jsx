@@ -10,13 +10,13 @@ import { fmtLeft } from "../ui/format.js";
 import { CodeBox, QrCode, ProofMeter, tierText, WAITS, ChipAccess, PROOFS } from "../ui/codes.jsx";
 import { TopBar, ConnectStep, SoleBiometric, BindButtons } from "./create.jsx";
 import * as S from "../core/state.js";
-import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, demoChipSource, nfcChipSource, serverPinned } from "../core/index.js";
+import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned } from "../core/index.js";
 import { parseCard } from "@humid/recovery";
 import { serverHost, DEMO_BUILD } from "../core/config.js";
 
 const ROUTES = [
   { id: "link", icon: "key", title: "From another device", desc: "A phone that already has your HumID approves this one. Takes a minute." },
-  { id: "quorum", icon: "shield", title: "Prove it's me", desc: "Any two of: your witnesses, your ID chip, your recovery card. Opens after a wait your devices can veto." },
+  { id: "quorum", icon: "shield", title: "Prove it's me", desc: "Any two of: your witnesses, your ID chip, your recovery card, your security key. Opens after a wait your devices can veto." },
 ];
 const OLD_ROUTES = [
   { id: "card", icon: "idcard", title: "Older recovery card", desc: "A card made before two-proof recovery. Opens after 72 hours." },
@@ -69,15 +69,22 @@ export function Join() {
   );
 }
 
+const PRELUDE_SUB = {
+  witness: "A majority of the people you chose approve from their own HumID.",
+  anchor: "Your passport or ID card's chip, read by this phone or at a HumID station.",
+  card: "The code you wrote down when you created your HumID.",
+  key: "A security key you added, with its PIN, held to this phone.",
+};
+
 /** Before anything is bound: what two-proof recovery needs, and how long each pair waits. */
 function Prelude({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow} · What you'll need</div>
-      <h1 style={{ marginTop: 8 }}>Any two of these three</h1>
+      <h1 style={{ marginTop: 8 }}>Any two of these four</h1>
       <p class="lede" style={{ marginTop: 10 }}>Recovery proves it's you with two different things. Then it waits, while every device that still has your HumID can veto.</p>
       <div class="rows" style={{ marginTop: 18 }}>
-        {PROOFS.map((p) => <Row icon={p.icon} tone="mint" chevron={false} title={p.title} sub={p.id === "witness" ? "A majority of the people you chose approve from their own HumID." : p.id === "anchor" ? "Your passport or ID card's chip, read by this phone or at a HumID station." : "The code you wrote down when you created your HumID."} />)}
+        {PROOFS.map((p) => <Row icon={p.icon} tone="mint" chevron={false} title={p.title} sub={PRELUDE_SUB[p.id]} />)}
       </div>
       <div class="section">
         <div class="eyebrow">How long the wait is</div>
@@ -214,7 +221,7 @@ function JoinWait({ eyebrow }) {
 
 /** Two-proof recovery while collecting: one proof open at a time; the code to show in a panel. */
 function QuorumWait({ p, st, now }) {
-  const kinds = [...new Set([...(st?.kinds || []), ...(p.hasCard ? ["card"] : [])])];
+  const kinds = [...new Set([...(st?.kinds || []), ...(p.hasCard ? ["card"] : []), ...(p.hasKey ? ["key"] : [])])];
   const releaseAt = st?.releaseAt;
   const [open, setOpen] = useState(null); // which proof is expanded
   const [showCode, setShowCode] = useState(false);
@@ -222,6 +229,8 @@ function QuorumWait({ p, st, now }) {
   const [name, setName] = useState("Demo Person");
   const [busy, setBusy] = useState(false);
   const [access, setAccess] = useState(null);
+  const [pin, setPin] = useState("");
+  const [pinProblem, setPinProblem] = useState(null);
   const ended = st && ["expired", "cancelled"].includes(st.status);
   const tier = tierText(kinds, st?.anchorMode);
   const cardOk = (() => { try { parseCard(card); return true; } catch { return false; } })();
@@ -268,6 +277,25 @@ function QuorumWait({ p, st, now }) {
                     <button class="btn quiet" disabled={busy} onClick={() => run(() => addChipToJoin(demoChipSource(name)))}>Demo passport</button>
                   </div>
                 )}
+              </div>
+            )}
+            <Row icon="seckey" tone={has("key") ? "mint" : ""} title="Security key" sub={has("key") ? "Verified: your key answered with its PIN" : "Type its PIN, then hold it to this phone"} trail={has("key") && <Icon name="check" />} onClick={() => setOpen(open === "key" ? null : "key")} />
+            {open === "key" && !has("key") && (
+              <div style={{ padding: "0 16px 16px" }} class="stack">
+                {nfc?.available ? (
+                  <>
+                    <div class="field" style={{ marginTop: 0 }}>
+                      <label for="join-key-pin">Your security key's PIN</label>
+                      <input id="join-key-pin" class="input code" type="password" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={63} value={pin} onInput={(e) => { setPin(e.currentTarget.value); setPinProblem(null); }} aria-describedby="join-key-hint" />
+                      {pinProblem ? <span id="join-key-hint" class="hint danger" role="alert">{pinProblem.message}</span> : <span id="join-key-hint" class="hint">Only the key checks it. Eight wrong tries lock the key for good.</span>}
+                    </div>
+                    <button class="btn primary" disabled={busy || [...pin].length < 4} onClick={() => run(async () => {
+                      const r = await addKeyToJoin(pin);
+                      if (r === true) setPin("");
+                      else if (r?.pinError) { setPinProblem(r.pinError); if (r.pinError.code === "pin_invalid") setPin(""); }
+                    })}><Icon name="fingerprint" />Hold the key to {nfc.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
+                  </>
+                ) : <p class="small t2">{nfc?.reason || "This device can't reach a security key. Use the HumID app on a phone with NFC."}</p>}
               </div>
             )}
           </div>

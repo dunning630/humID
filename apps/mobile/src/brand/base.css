@@ -185,6 +185,7 @@ button.row:active, a.row:active { background: var(--surface-2); }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label { font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
 .field .hint { font-size: var(--t-xs); color: var(--muted); }
+.field .hint.mint { color: var(--mint); } .field .hint.amber { color: var(--amber); } .field .hint.danger { color: var(--danger); }
 .input {
   width: 100%; min-height: var(--tap); padding: 10px var(--s-4); border-radius: var(--r-md);
   background: var(--surface-3); border: 1px solid var(--line); color: var(--text); font-size: var(--t-md);

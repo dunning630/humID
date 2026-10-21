@@ -1,4 +1,5 @@
-// Recovery, from the owner's side: the recovery card, witnesses, the ID chip anchor;
+// Recovery, from the owner's side: the recovery card, witnesses, the ID chip anchor,
+// security keys (4.0, the flows themselves are in seckey.js);
 // being someone's witness; alerts about recoveries of this account.
 import { fromB64, toHex } from "@humid/codec";
 import { suite } from "@humid/crypto";
@@ -18,7 +19,10 @@ import { keepOffline } from "./session.js";
 
 export async function loadRecovery() {
   if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; return; }
-  const [card, contacts, anchor, settings] = await Promise.all([quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings())]);
+  const [card, contacts, anchor, settings, keyList] = await Promise.all([
+    quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings()),
+    R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
+  ]);
   if (!card || !contacts) return;
   const names = [];
   for (const g of contacts.guardians || []) {
@@ -26,16 +30,24 @@ export async function loadRecovery() {
     try { if (g.label && R.indexKey) name = (await suite().openIndex(R.indexKey, g.label)).name; } catch {}
     names.push(name);
   }
-  // Two-proof recovery is ready when at least two of the three proofs are set up.
+  const keys = [];
+  for (const k of keyList?.keys || []) {
+    let name = "Security key";
+    try { if (k.label && R.indexKey) name = (await suite().openIndex(R.indexKey, k.label)).name || name; } catch {}
+    keys.push({ id: k.id, name, createdAt: k.createdAt });
+  }
+  // Two-proof recovery is ready when at least two different proofs are set up.
   const proofs = {
     witness: contacts.n > 0 && contacts.scheme === "quorum",
     anchor: !!anchor?.exists,
     card: card.exists && card.scheme === "quorum",
+    key: keys.length > 0,
   };
   const legacy = (card.exists && card.scheme !== "quorum") || (contacts.n > 0 && contacts.scheme !== "quorum");
   S.recovery.value = {
     card, anchor: anchor || { available: false, exists: false }, settings: settings || {},
     contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names, scheme: contacts.scheme },
+    keys: { available: !!keyList, max: keyList?.max || 4, list: keys },
     proofs, ready: Object.values(proofs).filter(Boolean).length >= 2, legacy,
   };
   keepOffline({ recovery: S.recovery.value });
