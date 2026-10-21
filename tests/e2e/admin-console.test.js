@@ -5,7 +5,7 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, renameSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -193,6 +193,43 @@ test("a forged approval written by a compromised server process is rejected", as
   assert.equal(st.requests.find((x) => x.code === r.body.code).state, "rejected");
   assert.equal(fake.ran.length, ranBefore, "nothing ran");
   assert.ok(st.audit.some((a) => a.type === "approval.rejected" && a.reason === "bad_signature"));
+});
+
+test("the console never reads approvals through a link the server's account could have planted", async () => {
+  const approvals = join(root, "data", "admin", "approvals");
+  // 1. A real approval, moved away and linked back: not read through the link.
+  const r = await web("/api/requests", { body: { type: "defender-update" } });
+  const req = await admin.api.adminRequest(r.body.code);
+  await admin.api.approveAdmin(r.body.code, req.digest, admin.stepUp);
+  const elsewhere = mkdtempSync(join(tmpdir(), "humid-elsewhere-"));
+  renameSync(join(approvals, `${r.body.code}.json`), join(elsewhere, "approval.json"));
+  symlinkSync(join(elsewhere, "approval.json"), join(approvals, `${r.body.code}.json`));
+  const ranBefore = fake.ran.length;
+  con.takeApprovals();
+  assert.equal(con.state().requests.find((x) => x.code === r.body.code).state, "rejected", "a linked approval reads as nothing");
+  assert.equal(fake.ran.length, ranBefore, "nothing ran");
+  assert.ok(existsSync(join(elsewhere, "approval.json")), "only the link was removed, not what it pointed to");
+
+  // 2. The approvals folder itself swapped for a link (a junction on Windows): the console doesn't look inside.
+  const r2 = await web("/api/requests", { body: { type: "defender-update" } });
+  const req2 = await admin.api.adminRequest(r2.body.code);
+  await admin.api.approveAdmin(r2.body.code, req2.digest, admin.stepUp);
+  const planted = join(elsewhere, "approvals");
+  renameSync(approvals, planted);
+  symlinkSync(planted, approvals, "junction");
+  con.takeApprovals();
+  const st = con.state();
+  assert.equal(st.requests.find((x) => x.code === r2.body.code).state, "waiting", "not taken through the link");
+  assert.equal(fake.ran.length, ranBefore);
+  assert.ok(st.alerts.some((a) => a.title === "Approvals can't be read safely"));
+  assert.ok(st.audit.some((a) => a.type === "bridge.refused"));
+  assert.ok(existsSync(join(planted, `${r2.body.code}.json`)), "nothing behind the link was touched");
+  rmSync(approvals);
+  renameSync(planted, approvals);
+  con.takeApprovals();
+  assert.equal(con.state().requests.find((x) => x.code === r2.body.code).state, "running", "the same approval counts once the folder is real again");
+  assert.equal(con.state().alerts.some((a) => a.title === "Approvals can't be read safely"), false);
+  rmSync(elsewhere, { recursive: true, force: true });
 });
 
 test("break-glass: a restart without the phone only while the server is down", async () => {

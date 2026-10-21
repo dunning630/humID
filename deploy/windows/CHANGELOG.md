@@ -5,6 +5,7 @@
 Security hardening from the pre-certification audit. Installing over 2.1.0 keeps all data and settings.
 
 - **Updates must be signed by the HumID release key** (PC-07). The admin console installs a HumID update only if its zip carries a signature (`.sig`) by an ML-DSA-87 key the maintainer keeps offline and the console pins, for exactly that file name and version; GitHub's digest is checked as well. The update job checks the signature again, as SYSTEM, right before it unpacks the zip. Pre-releases are skipped unless `humid set HUMID_UPDATE_PRERELEASES=on`. **This build pins no key yet, so its console refuses every update**: install the next release by hand (docs/ADMIN.md, *Signed releases*).
+- **The server's account can no longer redirect SYSTEM** (PC-09). LOCAL SERVICE used to have Modify on all of `C:\ProgramData\HumID`, including the folders the SYSTEM console and its jobs read, write and unpack into, so it could plant a junction there. Now it reads the data root but writes only `data\<service>`, `logs\`, its two status files and new files in `data\admin\approvals`. The console won't read approvals through a junction or symbolic link, jobs check every folder they use, and a restore unpacks into a new folder only SYSTEM and Administrators can open before it's swapped in. Installing over 2.1.0 applies the new permissions, makes Administrators the owner of what SYSTEM uses, and removes any junction or symbolic link under the data root (the link only). The console's log moves to `admin\logs\humid-admin.log`.
 
 ## 2.1.0
 

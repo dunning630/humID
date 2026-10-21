@@ -86,7 +86,8 @@ sample a minute for 24 hours.
   digest so you can see they agree.
 - **The console doesn't trust the server.** The HumID server is the part that
   faces the internet. It relays requests and approvals through
-  `data\admin\`, which it can write. So the console re-checks every approval
+  `data\admin\`: it reads the requests and drops approvals into
+  `approvals\`. So the console re-checks every approval
   itself: the signature against the device key **it pinned** for that phone at
   enrolment, the chip signature against the pinned liveness key, the path naming
   this code, the body naming this digest, and the time (signed after the request
@@ -116,6 +117,21 @@ sample a minute for 24 hours.
 - **Separate rights.** The console and its jobs run as SYSTEM, because installing
   updates needs it. The HumID server still runs as LOCAL SERVICE, and can't open
   `C:\ProgramData\HumID\admin` or `backups` (SYSTEM and Administrators only).
+  Everywhere else under `C:\ProgramData\HumID` it can read, but it changes only
+  its own databases and keys (`data\<service>`), its log (`logs\`), its two
+  status files (`server.json`, `server-status.json`), and new files in the
+  approvals drop box (`data\admin\approvals`, where it can't make folders). It
+  can't change `humid.env`, what the console writes, or any folder SYSTEM reads,
+  writes or unpacks into, so it can't plant a junction there to redirect SYSTEM.
+  On top of that, SYSTEM refuses to follow a link: the console won't read
+  approvals through a junction or symbolic link (it says so under alerts), jobs
+  check every folder from the data root down before they read or write, backups
+  refuse a link anywhere in the data, and a restore unpacks into a new folder
+  under `admin\` and is checked before it's swapped in. Installing (or updating)
+  re-applies these permissions, makes Administrators the owner of what SYSTEM
+  uses, and removes any junction or symbolic link under the data root (only the
+  link, never what it points to), so installs of 2.1.0 and earlier, where the
+  server's account could write everywhere, are put right.
 
 ## Signed releases
 
@@ -160,10 +176,10 @@ CI. Its public key is pinned in the console itself
 |---|---|
 | `C:\Program Files\HumID Server\humid-admin.mjs` | the console (one file, its page inside) |
 | `C:\ProgramData\HumID\admin\` | `admins.json` (pinned phones), `audit.jsonl`, `history.json`, `admin.env` (token, repository), `jobs\`, `downloads\`, `os-updates.json`, `logins\` — SYSTEM and Administrators only |
-| `C:\ProgramData\HumID\data\admin\` | the shared folder: `requests\`, `approvals\`, `summary.json` |
+| `C:\ProgramData\HumID\data\admin\` | the shared folder: `requests\`, `summary.json` (the console writes, the server reads), `approvals\` (the server drops files in, the console reads) |
 | `C:\ProgramData\HumID\server-status.json` | the server's own report, every 15 s |
 | `C:\ProgramData\HumID\backups\` | backups, newest 10 kept |
-| `C:\ProgramData\HumID\logs\humid-admin.log` | the console's log |
+| `C:\ProgramData\HumID\admin\logs\humid-admin.log` | the console's log (in 2.1.0 and earlier it was in `logs\`, which the server writes) |
 | `HUMID_ADMIN_PORT` in `humid.env` | the console's port (8490) |
 
 ## Trying it without Windows

@@ -436,7 +436,7 @@ jobs:
           Get-ScheduledTaskInfo -TaskName 'HumID Admin' -ErrorAction SilentlyContinue | Format-List
           Get-ScheduledTaskInfo -TaskName 'HumID Admin Job' -ErrorAction SilentlyContinue | Format-List
           Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
-          Get-Content C:\ProgramData\HumID\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\HumID\admin\logs\humid-admin.log -Tail 80 -ErrorAction SilentlyContinue
           Get-ChildItem C:\ProgramData\HumID\admin\jobs -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; Get-Content $_.FullName }
       - uses: actions/upload-artifact@v4
         with:

@@ -118,3 +118,14 @@ test("edge: a gateway that's down gives 502 / 503, not a crash", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the installer lets the server's account write exactly the data folders the services use", () => {
+  // humid.ps1 Set-DataAcl grants LOCAL SERVICE modify on data\<service> only (PC-09); a new
+  // service needs its folder added there, or it can't create its database.
+  const ps1 = readFileSync(new URL("../deploy/windows/scripts/humid.ps1", import.meta.url), "utf8");
+  const listed = /^\$ServerDataDirs = @\(([^)]*)\)/m.exec(ps1)[1].match(/'([a-z]+)'/g).map((x) => x.slice(1, -1)).sort();
+  const server = readFileSync(new URL("../deploy/windows/src/server.mjs", import.meta.url), "utf8");
+  const used = [...new Set([...server.matchAll(/data\("([a-z]+)"\)/g)].map((m) => m[1]))].sort();
+  assert.ok(used.length >= 7);
+  assert.deepEqual(listed, used);
+});

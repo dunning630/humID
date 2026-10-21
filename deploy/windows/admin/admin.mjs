@@ -55,7 +55,9 @@ switch (command) {
   }
   case "run": {
     const service = has("--service");
-    teeToFile(join(root, "logs", "humid-admin.log"), { quiet: service });
+    // In admin\logs, not logs\: the server's account writes there, and SYSTEM must never
+    // append to a file it could have swapped for a link.
+    teeToFile(join(root, "admin", "logs", "humid-admin.log"), { quiet: service });
     const log = (level, msg, extra = {}) => process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level, service: "admin", msg, ...extra }) + "\n");
     process.on("uncaughtException", (e) => { log("error", "uncaught", { err: e.stack }); process.exit(1); });
     process.on("unhandledRejection", (e) => { log("error", "unhandled rejection", { err: e?.stack || String(e) }); process.exit(1); });

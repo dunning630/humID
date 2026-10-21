@@ -76,10 +76,14 @@ $PackageDir  = $PSScriptRoot
 $AdminJs     = Join-Path $InstallDir 'humid-admin.mjs'
 $AdminDir    = Join-Path $DataRoot 'admin'        # the console's own records: SYSTEM and Administrators only
 $BackupDir   = Join-Path $DataRoot 'backups'      # SYSTEM and Administrators only
-$AdminLog    = Join-Path $DataRoot 'logs\humid-admin.log'
+$AdminLog    = Join-Path $DataRoot 'admin\logs\humid-admin.log'   # beside the console's records, not in logs\ (the server writes there)
 $PrevDir     = "$InstallDir.previous"             # the version before the last update, for rollback
 $AdminTask   = 'HumID Admin'
 $JobTask     = 'HumID Admin Job'
+$BridgeDir   = Join-Path $DataRoot 'data\admin'   # where the console and the server meet (docs/ADMIN.md)
+# Where the server (LOCAL SERVICE) keeps its own databases and keys: data\<service>. The only
+# folders under the data root it may change, with logs\ (Set-DataAcl).
+$ServerDataDirs = @('identity', 'vault', 'ledger', 'recovery', 'access', 'keyshare', 'gateway')
 
 # Well-known SIDs, so this works on every Windows language.
 $SidSystem       = 'S-1-5-18'
@@ -241,16 +245,123 @@ function Stop-Server {
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+# HumID never makes a junction or a symbolic link under its data root. One there would let
+# whoever made it point something HumID does as SYSTEM (a restore, an update, a backup, setting
+# permissions) at another place. These check the path and every folder above it, up to the data root.
+function Test-Reparse([string]$P) {
+  $i = Get-Item -LiteralPath $P -Force -ErrorAction SilentlyContinue
+  return [bool]($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint))
+}
+
+function Assert-NoReparse([string]$Path) {
+  $top = [IO.Path]::GetFullPath($DataRoot).TrimEnd('\')
+  $p = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  if (-not ($p -eq $top -or $p.StartsWith("$top\", [StringComparison]::OrdinalIgnoreCase))) { throw "$Path isn't under $DataRoot." }
+  while ($true) {
+    if (Test-Reparse $p) {
+      throw "$p is a link (a junction or symbolic link). HumID never makes one there: something on this computer did, perhaps to redirect what HumID does as SYSTEM. Nothing was changed. Remove the link (rmdir `"$p`"), check this computer, then try again."
+    }
+    if ($p.Length -le $top.Length) { break }
+    $p = [IO.Path]::GetDirectoryName($p)
+  }
+}
+
+# Up to 2.1.0 the server's account could write anywhere under the data root, so it could have
+# left links there. Take out every junction and symbolic link below $Dir: the link only, never
+# what it points to, and never following one. (Other reparse points, such as a deduplicated
+# file, are data and stay.)
+function Remove-ReparsePoints([string]$Dir) {
+  if (-not (Test-Path -LiteralPath $Dir)) { return }
+  $stack = New-Object System.Collections.Stack
+  $stack.Push((Get-Item -LiteralPath $Dir -Force))
+  while ($stack.Count -gt 0) {
+    $d = $stack.Pop()
+    foreach ($i in $d.GetFileSystemInfos()) {
+      if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if (@('Junction', 'SymbolicLink') -contains [string]$i.LinkType) {
+          Warn "Removing a link HumID didn't make: $($i.FullName)"
+          if ($i -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($i.FullName, $false) } else { [IO.File]::Delete($i.FullName) }
+        }
+        continue   # never walk into a reparse point
+      }
+      if ($i -is [IO.DirectoryInfo]) { $stack.Push($i) }
+    }
+  }
+}
+
+# Refuse if there is any junction or symbolic link below $Dir (for anything that would follow one).
+function Assert-NoReparseBelow([string]$Dir) {
+  Assert-NoReparse $Dir
+  $stack = New-Object System.Collections.Stack
+  $stack.Push((Get-Item -LiteralPath $Dir -Force))
+  while ($stack.Count -gt 0) {
+    foreach ($i in $stack.Pop().GetFileSystemInfos()) {
+      if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if (@('Junction', 'SymbolicLink') -contains [string]$i.LinkType) { throw "$($i.FullName) is a link (a junction or symbolic link). HumID never makes one; nothing was backed up. Run humid install again to remove it, and check this computer." }
+        continue
+      }
+      if ($i -is [IO.DirectoryInfo]) { $stack.Push($i) }
+    }
+  }
+}
+
+function Invoke-Icacls([string[]]$Arguments) {
+  $code = Run-Native 'icacls.exe' $Arguments -Silent
+  if ($code -ne 0) { throw "Couldn't set permissions on $($Arguments[0])." }
+}
+
 function Set-DataAcl {
-  # Only SYSTEM and Administrators (full) and the LOCAL SERVICE account the server runs as (modify).
-  $code = Run-Native 'icacls.exe' @($DataRoot, '/inheritance:r', '/grant:r', "*$($SidSystem):(OI)(CI)F", "*$($SidAdmins):(OI)(CI)F", "*$($SidLocalService):(OI)(CI)M") -Silent
-  if ($code -ne 0) { Die "Couldn't set permissions on $DataRoot." }
+  # SYSTEM and Administrators: full. The server's account (LOCAL SERVICE) reads everything here
+  # (not admin\ or backups\, see Set-PrivateAcl) and changes only what it must:
+  #   data\<service>          its own databases and keys
+  #   logs\                   its log
+  #   the data root           new files, no folders: it replaces server.json and server-status.json
+  #   data\admin\approvals    new files, no folders: the drop box for approvals the console checks
+  # So it can't make a folder (or a junction) anywhere SYSTEM reads, writes or unpacks into, and
+  # it can't change humid.env or what the console writes. Making a symbolic link needs a right
+  # it doesn't have. Run with the server stopped.
+  $data = Join-Path $DataRoot 'data'
+  $logs = Join-Path $DataRoot 'logs'
+  $approvals = Join-Path $BridgeDir 'approvals'
+  New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
+  Assert-NoReparse $DataRoot
+  Remove-ReparsePoints $DataRoot
+  $dirs = @($data, $logs, $BridgeDir, (Join-Path $BridgeDir 'requests'), $approvals) + @($ServerDataDirs | ForEach-Object { Join-Path $data $_ })
+  foreach ($d in $dirs) { Assert-NoReparse $d; New-Item -ItemType Directory -Force -Path $d | Out-Null }
+
+  $sys = "*$($SidSystem)"; $adm = "*$($SidAdmins)"; $ls = "*$($SidLocalService)"; $creator = '*S-1-3-0'
+  # Administrators own what SYSTEM uses: an owner can always rewrite permissions, and in
+  # 2.1.0 and earlier the server's account made some of these folders itself.
+  Invoke-Icacls @($DataRoot, '/setowner', $adm, '/C', '/Q')
+  Invoke-Icacls @($DataRoot, '/inheritance:r', '/grant:r', "$($sys):(OI)(CI)F", "$($adm):(OI)(CI)F", "$($ls):(OI)(CI)RX", "$($creator):(OI)(NP)(IO)M")
+  Invoke-Icacls @($DataRoot, '/grant', "$($ls):(WD)")
+  # Everything else inherits from the data root again: an older version's permissions (and
+  # any the server's account added as an owner) are dropped. admin\ and backups\ keep their own.
+  foreach ($i in Get-ChildItem -LiteralPath $DataRoot -Force) {
+    if (@('admin', 'backups') -contains $i.Name) { continue }
+    Invoke-Icacls @($i.FullName, '/setowner', $adm, '/C', '/Q')
+    Invoke-Icacls @($i.FullName, '/reset', '/C', '/Q')
+  }
+  Invoke-Icacls @($BridgeDir, '/setowner', $adm, '/T', '/C', '/Q')   # small, and free of links (above)
+  Invoke-Icacls @($BridgeDir, '/reset', '/T', '/C', '/Q')
+  foreach ($d in @($ServerDataDirs | ForEach-Object { Join-Path $data $_ }) + @($logs)) {
+    Invoke-Icacls @($d, '/setowner', $adm, '/C', '/Q')
+    Invoke-Icacls @($d, '/reset', '/C', '/Q')
+    Invoke-Icacls @($d, '/grant:r', "$($ls):(OI)(CI)M")
+  }
+  Invoke-Icacls @($approvals, '/grant', "$($ls):(WD)", "$($creator):(OI)(NP)(IO)M")
+  foreach ($n in @('server.json', 'server-status.json')) {
+    $f = Join-Path $DataRoot $n
+    if (Test-Path -LiteralPath $f) { Invoke-Icacls @($f, '/grant', "$($ls):M") }
+  }
 }
 
 function Set-PrivateAcl([string]$Dir) {
   # SYSTEM and Administrators only: the HumID server's own account (LOCAL SERVICE) can't read it.
+  Assert-NoReparse $Dir
   New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-  $code = Run-Native 'icacls.exe' @($Dir, '/inheritance:r', '/grant:r', "*$($SidSystem):(OI)(CI)F", "*$($SidAdmins):(OI)(CI)F") -Silent
+  $code = Run-Native 'icacls.exe' @($Dir, '/setowner', "*$($SidAdmins)", '/C', '/Q') -Silent
+  if ($code -eq 0) { $code = Run-Native 'icacls.exe' @($Dir, '/inheritance:r', '/grant:r', "*$($SidSystem):(OI)(CI)F", "*$($SidAdmins):(OI)(CI)F") -Silent }
   if ($code -ne 0) { throw "Couldn't set permissions on $Dir." }
 }
 
@@ -288,8 +399,10 @@ function Make-Backup([string]$Target) {
   # A consistent copy needs the databases closed: stop, zip settings + data, start again.
   New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
   Stop-Server
-  try { Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $Target -Force }
-  finally { Start-Server | Out-Null }
+  try {
+    Assert-NoReparseBelow (Join-Path $DataRoot 'data')   # Compress-Archive would follow a link
+    Compress-Archive -Path (Join-Path $DataRoot 'humid.env'), (Join-Path $DataRoot 'data') -DestinationPath $Target -Force
+  } finally { Start-Server | Out-Null }
 }
 
 function Find-Tool([string]$Name, [string[]]$Candidates) {
@@ -384,9 +497,8 @@ function Do-Install {
   Run-Native 'icacls.exe' @($InstallDir, '/grant', "*$($SidLocalService):(OI)(CI)RX") -Silent | Out-Null
 
   # Data, settings, keys
-  Step "Preparing $DataRoot (readable only by administrators and the server)"
-  New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
-  Set-DataAcl
+  Step "Preparing $DataRoot (readable only by administrators and the server; the server writes only its own data)"
+  try { Set-DataAcl } catch { Die $_.Exception.Message }
   $sets = @()
   if ($DevicePolicy) { $sets += @('--set', "HUMID_DEVICE_POLICY=$DevicePolicy") }
   if ($AppleTeamId) {
@@ -396,9 +508,11 @@ function Do-Install {
   }
   if ($Port) { $sets += @('--set', "HUMID_PORT=$Port") }
   Invoke-Server (@('init', '--root', $DataRoot) + $sets)
-  Set-DataAcl
-  Set-PrivateAcl $AdminDir
-  Set-PrivateAcl $BackupDir
+  try {
+    Set-DataAcl
+    Set-PrivateAcl $AdminDir
+    Set-PrivateAcl $BackupDir
+  } catch { Die $_.Exception.Message }
 
   # Background task: at startup, as LOCAL SERVICE, restarted if it stops.
   Step "Registering the '$TaskName' task (starts with Windows, runs as LOCAL SERVICE)"
@@ -467,6 +581,8 @@ function Do-Uninstall {
   if (Test-Path $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue; Good "Removed $InstallDir" }
   if ($RemoveData) {
     if ($Quiet -or (Confirm-Yes "Delete $DataRoot for good? Every account, sealed document and the server's identity will be gone." $false)) {
+      # Windows PowerShell's Remove-Item -Recurse follows junctions into what they point to: take the links out first.
+      try { Assert-NoReparse $DataRoot; Remove-ReparsePoints $DataRoot } catch { Die $_.Exception.Message }
       Remove-Item -LiteralPath $DataRoot -Recurse -Force
       Good "Deleted $DataRoot"
     }
@@ -535,15 +651,43 @@ function Do-Restore {
   if (-not $Path -or -not (Test-Path $Path)) { Die 'Usage: humid restore -Path <backup.zip>' }
   Confirm-ArmedErase 'restoring a backup'
   if (-not $Quiet -and -not (Confirm-Yes "Replace the current data in $DataRoot with $($Path)?" $false)) { return }
-  Stop-Server
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $old = Join-Path $DataRoot "before-restore-$stamp"
-  New-Item -ItemType Directory -Force -Path $old | Out-Null
-  foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
-  Expand-Archive -LiteralPath $Path -DestinationPath $DataRoot -Force
-  Set-DataAcl
+  try { $old = Restore-Data $Path } catch { Start-Server | Out-Null; Die $_.Exception.Message }
   Good "Restored. The previous data is in $old"
   Start-Server | Out-Null
+}
+
+# Unpack a backup into a new folder only SYSTEM and Administrators can open (under admin\),
+# check it, and only then swap it in for humid.env and data\. Nothing is ever unpacked into a
+# folder the server's account can write. Stops the server; returns where the old data went.
+function Restore-Data([string]$Zip) {
+  $workRoot = Join-Path $AdminDir 'work'
+  Set-PrivateAcl $AdminDir
+  Assert-NoReparse $workRoot
+  New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $work = Join-Path $workRoot "restore-$stamp"
+  if (Test-Path -LiteralPath $work) { throw "$work already exists." }
+  New-Item -ItemType Directory -Path $work | Out-Null
+  try {
+    Expand-Archive -LiteralPath $Zip -DestinationPath $work
+    if (-not (Test-Path -LiteralPath (Join-Path $work 'data') -PathType Container) -or -not (Test-Path -LiteralPath (Join-Path $work 'humid.env') -PathType Leaf)) {
+      throw "$(Split-Path $Zip -Leaf) isn't a HumID backup (no humid.env and data folder inside). Nothing was changed."
+    }
+    Stop-Server
+    $old = Join-Path $DataRoot "before-restore-$stamp"
+    Assert-NoReparse $old
+    New-Item -ItemType Directory -Force -Path $old | Out-Null
+    foreach ($n in @('humid.env', 'data')) {
+      $f = Join-Path $DataRoot $n
+      Assert-NoReparse $f
+      if (Test-Path -LiteralPath $f) { Move-Item -LiteralPath $f -Destination $old }
+    }
+    foreach ($n in @('humid.env', 'data')) { Move-Item -LiteralPath (Join-Path $work $n) -Destination $DataRoot }
+  } finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  Set-DataAcl
+  return $old
 }
 
 function Do-Expose {
@@ -761,6 +905,7 @@ function Job-Step([string]$Msg) {
 function Do-JobRun {
   $dir = Join-Path $AdminDir 'jobs'
   if (-not (Test-Path $dir)) { return }
+  Assert-NoReparse $dir
   # A job left "running" by a process that's gone (a crash, a power cut) failed.
   foreach ($f in Get-ChildItem -LiteralPath $dir -Filter '*.json' | Where-Object { $_.Name -notlike '*.request.json' }) {
     try {
@@ -858,12 +1003,7 @@ function Copy-Program([string]$From, [string]$To) {
 }
 
 function Restore-Quietly([string]$Zip) {
-  Stop-Server
-  $old = Join-Path $DataRoot "before-restore-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-  New-Item -ItemType Directory -Force -Path $old | Out-Null
-  foreach ($n in @('humid.env', 'data')) { $f = Join-Path $DataRoot $n; if (Test-Path $f) { Move-Item -LiteralPath $f -Destination $old } }
-  Expand-Archive -LiteralPath $Zip -DestinationPath $DataRoot -Force
-  Set-DataAcl
+  Restore-Data $Zip | Out-Null
 }
 
 # Switch the program to the package in $Pkg; on any failure, put $Fallback back (and the data, if needed).
@@ -915,6 +1055,8 @@ function Job-Update($A) {
   $file = [string]$A.file
   if ($file -notmatch '^HumID-Server-Windows-\d+\.\d+\.\d+\.zip$') { throw 'Bad update file name.' }
   $zip = Join-Path $AdminDir "downloads\$file"
+  Assert-NoReparse $zip
+  Assert-NoReparse "$zip.sig"
   if (-not (Test-Path $zip)) { throw "$file isn't in the console's downloads." }
   Job-Step 'Checking the file against the approved SHA-256'
   $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
@@ -922,6 +1064,7 @@ function Job-Update($A) {
   Job-Step 'Checking its HumID release signature'
   Job-Step (Assert-ReleaseSignature $zip ([string]$A.version))
   $work = Join-Path $AdminDir "work\$($script:Job.id)"
+  Assert-NoReparse $work
   if (Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force }
   Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
   $pkg = Join-Path $work 'HumID-Server'
