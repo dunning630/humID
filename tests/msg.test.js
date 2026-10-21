@@ -494,6 +494,27 @@ test("delete for both, after delivery: erased on the contact's phone too", async
   assert.equal(A.messages(T0).length, 0);
 });
 
+test("media through a conversation: kept, shown, survives a save, and delete for both covers it", async () => {
+  const { A, B, relay } = await conv();
+  const bytes = rnd(300);
+  const body = M.encodeMedia({ bytes, kind: "voice", mime: "audio/mp4", capturedAt: T0 });
+  const sent = await A.sendMedia(body, { now: T0 });
+  postTo(relay, sent);
+  const [got] = await deliver(relay, B);
+  assert.equal(got.kind, "media");
+  const [shown] = B.messages(T0);
+  assert.equal(shown.kind, "media");
+  assert.deepEqual(M.decodeMedia(shown).bytes, bytes);
+  const saved = await B.store.seal(T0);
+  assert.equal((await M.MessageStore.open(saved.key, saved.blob, { convId: B.session.convId })).size, 1);
+  const r = await A.delete(sent.id, { forBoth: true, now: T0 });
+  postTo(relay, r.send);
+  const [del] = await deliver(relay, B);
+  assert.equal(del.deleted, 1);
+  assert.equal(B.messages(T0).length, 0);
+  assert.throws(() => A.sendMedia("not bytes"), (e) => e.code === "bad_media");
+});
+
 test("a contact can never delete what you sent", async () => {
   const { A, B, relay } = await conv();
   const mine = await A.send("my words", { now: T0 });
