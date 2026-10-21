@@ -2,8 +2,9 @@
 
 Status: 4.0 (provisional). Code: `packages/fido` (CTAP 2 over NFC), `packages/recovery`
 (the key part), `services/recovery`, `services/gateway`, `apps/mobile`. Tests:
-`tests/fido.test.js`, `tests/recovery.test.js`, `tests/e2e/continuity.test.js`,
-`tests/browser/seckey.mjs`.
+`tests/fido.test.js` (the client), `tests/fido-sim.test.js` and `tests/fido-crosscheck.test.js`
+(the simulated key, and the simulated key against Yubico's python-fido2), `tests/seckey-part.test.js`
+(the key part), `tests/e2e/seckey.test.js` (real services), `tests/browser/seckey.mjs` (two phones).
 
 ## What it adds
 
@@ -12,9 +13,9 @@ account seed `A` so that any two different kinds of proof rebuild it on a new ph
 witnesses, the ID chip, the recovery card. 4.0 adds a fourth kind: a **FIDO2 security key**
 (a YubiKey 5 NFC, a Feitian or Token2 NFC key, any CTAP 2 key with NFC and `hmac-secret`).
 
-A security key is the most convenient strong proof there is: it can't be copied, it can't
-be phished, it locks itself after eight wrong PINs, and it works for decades on a keyring.
-It is the physical proof a person keeps, and a natural pair for any of the other three.
+A security key is a convenient strong proof: its secrets never leave it, no website can ask
+it for HumID's credential, and it locks itself after eight wrong PINs. It is the physical
+proof a person keeps on a keyring, and a natural pair for any of the other three.
 
 ## What it is not
 
@@ -77,9 +78,16 @@ key  = HKDF-SHA3-256(S, "HUMID-KEY-v1 key")                   32 bytes
 blob = nonce(12) ‖ AES-256-GCM(key, encode(part x=4), aad = "HUMID-KEY-v1|" ‖ accountId)
 ```
 
-The server stores `(account, tag, blob, the credential's public key, its signature counter,
-a label sealed under the index key)`. It cannot open the blob: `S` is 256 bits that exist only
-inside the key and, briefly, in the phone's memory.
+The server stores `(account, tag, blob, the credential's public key, its credential id, its
+signature counter, a label sealed under the index key)`. It cannot open the blob: `S` is 256
+bits it never receives.
+
+Where `S` lives: inside the key; in the adding phone's memory for the one live check that
+seals the part; and on a recovering phone, under that phone's own lock (its secure chip and
+your face or fingerprint), for the length of the wait, so the vault can open when the wait
+ends. The salt is fixed, so `S` doesn't change while the credential exists: if you ever
+suspect a phone that held it, remove the key from HumID and add it again, which makes a new
+credential and a new `S`.
 
 ### The key proves itself to the server, too
 
@@ -94,8 +102,11 @@ the key signs   authenticatorData ‖ clientDataHash  (ECDSA P-256, ES256)
 
 The server checks, against the public key stored when the key was added: the signature;
 `rpIdHash = SHA-256("recovery.humid.invalid")`; the **UP** and **UV** flags (present, PIN
-verified); and the signature counter, which must move forward unless the key keeps it at
-zero. A counter that goes backwards is refused: it's the sign of a cloned key.
+verified); that the **BE/BS** flags are clear (a credential that can be backed up or synced,
+like a cloud passkey, isn't a physical key and is refused); and the signature counter, which
+must move forward unless the key keeps it at zero. A counter that goes backwards is refused:
+it's the sign of a cloned key. (A key that keeps its counter at zero gets no clone check; a
+key used so often that its counter wraps past 2³² must be added again.)
 
 So a recovery counts the key as a proof only when **the key itself** answered the server's
 challenge, with its PIN, in that recovery, like the ID chip's Active Authentication. Knowing a
@@ -119,7 +130,8 @@ key during the wait also voids it as a proof** for every recovery under way.
 
 ## The PIN
 
-CTAP's PIN never reaches HumID's server and is never stored. It travels from the phone to
+You type the PIN into HumID on your phone; the app hands it straight to the key and forgets
+it. It never reaches HumID's server and is never stored. It travels from the phone to
 the key encrypted under the PIN protocol's shared secret (protocol 2, or 1 for older keys),
 and only as a hash prefix (`LEFT(SHA-256(PIN), 16)`, encrypted) when unlocking. The key
 counts wrong tries itself: three in a row until it is touched again, eight in total before it
@@ -137,7 +149,8 @@ reason, before anything is stored.
 | Steal the key and the recovery card together | Two proofs, no people: the 7-day wait, alerts on every device, a veto. Keep them apart, as with the card and your passport. |
 | Copy the key | FIDO keys don't export credentials. A clone would have to keep the counter moving forward on both copies. |
 | Phishing site asks the key | The relying party is `recovery.humid.invalid`: no site can ever claim it. |
-| Malicious app on the same phone | Needs the PIN, and gets one proof at most. |
+| Malicious app (on your phone or a computer you plug into) | A native app can talk CTAP to the key directly. With the key and its PIN typed into it, it could read the key's answer: one proof, never a vault on its own. Type the PIN only into HumID. |
+| A software "key" (a modified app registers keys made in memory) | Adding a key takes a live check on one of your devices, and a synced passkey is refused by its flags. The server can't yet tell a hardware key from a well-made software one: that needs attestation checked against the FIDO Metadata Service, which is next. Until then, a software key is as good as the device it was made on. |
 | Compromised server | Holds a public key, a counter, a tag and a blob under a 256-bit secret it never sees. It can deny service, or skip the wait (as for every proof: the waits are server rules), never open a vault alone. |
 | Tag guessed or leaked | Not accepted without the key's own signature over a fresh challenge. |
 | Replay a captured key answer | Each challenge is used once, lasts 5 minutes, and is bound to one recovery. |
@@ -145,6 +158,15 @@ reason, before anything is stored.
 | Lost key | Remove it from any device (one live check). Its part stays useless without the key. Add a new one. |
 
 **Left, and said plainly:**
+
+- *Attestation.* The server doesn't check which make and model a key is (see above).
+- *Which accounts share a key.* Every recovery tap sends the tags of every HumID credential
+  on the key, so a server sees that two HumIDs share one physical key if they do.
+- *Recording.* Adding and removing a key are recorded in Activity, but like the recovery
+  card, the ID chip and witnesses, the change isn't refused when the record can't be
+  written (fail-closed recording for every recovery setting is a follow-up).
+- *Older keys.* A CTAP 2.0 key without `credProtect` shows, without its PIN, that it holds a
+  HumID credential (it still can't be used without the PIN). The app says so when it's added.
 
 - *Where it works.* iPhone (7 or later) and Android phones with NFC, and computers with a
   USB contactless card reader (the same reader as for ID chips). A key **plugged into a

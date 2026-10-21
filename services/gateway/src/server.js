@@ -233,6 +233,7 @@ export function createGateway({
   const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source address
   const loginFailAll = new Buckets(200, 300_000);   // failed proofs, whole server (ledger-write budget)
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
+  const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
@@ -556,8 +557,9 @@ export function createGateway({
     async addEvidence(s, body, stepUp, m, route) {
       const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
       if (r.status !== 200) {
-        // A security key of this account answered wrongly, or looks copied: its owner sees it in Activity.
-        if (route.kind === "key" && r.data?.account && ["key_cloned", "bad_key_proof"].includes(r.data.error)) {
+        // A stored security key's signature checked and failed, or its counter went backwards: its
+        // owner sees it in Activity, at most once an hour, so a stranger can't flood the record.
+        if (route.kind === "key" && r.data?.account && ["key_cloned", "bad_key_proof"].includes(r.data.error) && keyRefusedNote.take(`${r.data.account}:${r.data.error}`)) {
           await recordQuietly(r.data.account, "recovery.key_refused", { reason: r.data.error, ref: r.data.ref });
         }
         fail(r); // fail() passes on only the code and the message
@@ -828,7 +830,15 @@ export function createGateway({
     for (const k of FORWARD_REQ_HEADERS) if (meta.h?.[k]) headers[k] = String(meta.h[k]);
     const path = url.pathname.replace(route.p, route.path) + url.search;
     const claims = s.subject ? claimsFor(s, stepUp ? { stepUp } : {}) : { sid: s.sidText.slice(0, 8) };
-    const res = await internal(route.to, meta.m, path, { claims, body, headers });
+    let res = await internal(route.to, meta.m, path, { claims, body, headers });
+    // An error passed straight through carries only its code and message: nothing a service
+    // added for the gateway's own use (an account, a reference) reaches the caller.
+    if (res.status >= 400) {
+      const e = safeJson(res.body);
+      if (e && typeof e === "object" && Object.keys(e).some((k) => k !== "error" && k !== "message")) {
+        res = { ...res, body: Buffer.from(JSON.stringify({ error: e.error, message: e.message })) };
+      }
+    }
 
     if (route.event) {
       const objectId = url.pathname.match(new RegExp(OBJ_RE))?.[0];

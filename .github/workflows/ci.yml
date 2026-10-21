@@ -36,6 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      # Yubico's python-fido2: the reference client the simulated security key is checked against.
+      - run: python3 -m pip install --user fido2==1.2.0
       - name: Tests (crypto compatibility, HTP/1 protocol, services end to end, penetration regression)
         # A failure names the failing tests in an annotation (readable through the API without the log).
         run: |
@@ -43,7 +45,7 @@ jobs:
           { npm test && npm run test:e2e && npm run test:pen; } 2>&1 | tee tests.log && exit 0
           echo "::error title=tests failed::$(grep -A14 '^not ok' tests.log | grep -E 'not ok|error:|expected|actual|code:|at .*test\.js' | head -30 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-3800)"
           exit 1
-        env: { NODE_NO_WARNINGS: "1" }
+        env: { NODE_NO_WARNINGS: "1", HUMID_REQUIRE_FIDO2: "1" }
       - name: Build the app bundle (module contract check included)
         run: npm run build:app
       - name: Work out what this change affects

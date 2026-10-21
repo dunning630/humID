@@ -230,3 +230,11 @@ test("a hostile key is refused: no UV flag, another relying party, a public key 
   const offCurve = tampered(k, (m) => { const c = m.get(1); if (!(c instanceof Map) || c.get(3) !== -25) return null; const y = c.get(-3).slice(); y[31] ^= 1; c.set(-3, y); return m; });
   await assert.rejects(readRecoveryKey(offCurve, { pin: PIN, challenge: challenge() }), (e) => /curve/.test(e.message));
 });
+
+test("from the review: a PIN with a zero character is refused (a key would cut it short), and credProtect is reported", async () => {
+  await assert.rejects(addRecoveryKey(simulatedKey(), { pin: "1234\u000056", newPin: true, challenge: challenge() }), (e) => e.code === "pin_policy");
+  const hidden = await addRecoveryKey(simulatedKey({ pin: PIN }), { pin: PIN, challenge: challenge() });
+  assert.equal(hidden.hidden, true);
+  const old = await addRecoveryKey(simulatedKey({ pin: PIN, credProtect: false }), { pin: PIN, challenge: challenge() });
+  assert.equal(old.hidden, false, "a key without credProtect is reported, so the app can say so");
+});

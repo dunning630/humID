@@ -90,11 +90,14 @@ export async function addRecoveryKey(transport, { pin, newPin = false, challenge
     onStep("reading");
     token = await a.pinToken(pin, { permissions: PERMISSION.getAssertion, rpId: RP_ID });
     const got = await a.getAssertion({ rpId: RP_ID, clientDataHash: cdh, allowList: [made.parsed.credentialId], salt: SALT, token });
-    checkFlags(got.parsed, "first use");
     secret = got.secret;
+    checkFlags(got.parsed, "first use");
+    // credProtect 3 hides the credential from anyone without the PIN. A key without it still
+    // can't be used without the PIN, but shows that a HumID credential is on it.
+    const hidden = made.parsed.extensions?.get("credProtect") === 3;
     return {
       credentialId: made.parsed.credentialId, publicKey: made.parsed.publicKey, aaguid: made.parsed.aaguid,
-      authData: got.authData, signature: got.signature, signCount: got.parsed.signCount, secret,
+      authData: got.authData, signature: got.signature, signCount: got.parsed.signCount, secret, hidden,
     };
   } catch (e) {
     wipe(secret);
@@ -120,7 +123,7 @@ export async function readRecoveryKey(transport, { pin, challenge, max = MAX_CAN
     if (!a.pinSet) throw new FidoError("no_credentials", "This key has no PIN, so it isn't one you added to HumID.");
     token = await a.pinToken(pin, { permissions: PERMISSION.getAssertion, rpId: RP_ID });
     const first = await a.getAssertion({ rpId: RP_ID, clientDataHash: cdh, salt: SALT, token });
-    const take = (g) => { checkFlags(g.parsed, "recovery"); out.push({ credentialId: g.credentialId, authData: g.authData, signature: g.signature, signCount: g.parsed.signCount, secret: g.secret }); };
+    const take = (g) => { out.push({ credentialId: g.credentialId, authData: g.authData, signature: g.signature, signCount: g.parsed.signCount, secret: g.secret }); checkFlags(g.parsed, "recovery"); };
     take(first);
     for (let i = 1; i < Math.min(first.count, max); i++) take(await a.nextAssertion());
     return out;

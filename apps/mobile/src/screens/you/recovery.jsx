@@ -114,11 +114,12 @@ function SecurityKeySheet({ onClose }) {
       if (r.pinError.code === "pin_not_set") { setNewPin(true); setAgain(""); }
       if (r.pinError.code === "pin_already_set") { setNewPin(false); setPin(""); setAgain(""); }
       if (r.pinError.code === "pin_invalid") setPin("");
-    }
+    } else { setPin(""); setAgain(""); } // any other failure: the PIN doesn't linger in the form
   };
   return (
     <Sheet onClose={onClose} eyebrow="Security key · one of four proofs" title={keys.length ? (keys.length === 1 ? "Your security key" : `Your ${keys.length} security keys`) : "Add a security key"}>
-      <p class="t2 small">A FIDO2 security key with NFC, like a YubiKey 5 NFC, on your keyring. It can't be copied, it answers only with its PIN, and it locks itself after eight wrong tries. With any one other proof it brings your vault back. HumID never stores a fingerprint or a face, and can't open what your key locks.</p>
+      <p class="t2 small">A FIDO2 security key with NFC, like a YubiKey 5 NFC, on your keyring. Its secret never leaves it, it answers only with its PIN, and it locks itself after eight wrong tries. With any one other proof it brings your vault back. HumID never stores a fingerprint or a face, and can't open what your key locks.</p>
+      <p class="fine" style={{ marginTop: 6 }}>Type its PIN only into HumID, and hold it only to your own phone: an app that has your key and its PIN can read the key's answer.</p>
       {!available && <Banner tone="amber" icon="globe" title="Not available on this server yet" text="Your vault server needs HumID Server 4.0. Use witnesses, your ID chip and a recovery card for now." />}
       {keys.length > 0 && (
         <div class="rows" style={{ marginTop: 12 }}>
@@ -141,7 +142,7 @@ function SecurityKeySheet({ onClose }) {
             <label for="key-pin">{newPin ? "Choose a PIN for the key (6 or more characters)" : "The key's PIN"}</label>
             <input id="key-pin" class="input code" type="password" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={63} value={pin} onInput={(e) => { setPin(e.currentTarget.value); setProblem(null); }} aria-describedby="key-pin-hint" />
             {problem && <span id="key-pin-hint" class="hint danger" role="alert">{problem.message}</span>}
-            {!problem && <span id="key-pin-hint" class="hint">{newPin ? "The key checks it itself. HumID never stores it." : "Only the key checks it. HumID never sees or stores it."}</span>}
+            {!problem && <span id="key-pin-hint" class="hint">{newPin ? "The key keeps it and checks it. HumID never stores it." : "Only the key checks it. It goes to the key encrypted, never to HumID's server, and isn't stored."}</span>}
           </div>
           {newPin && (
             <div class="field">
