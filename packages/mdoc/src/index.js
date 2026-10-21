@@ -19,7 +19,8 @@
 
 import { encode, decode, get, Encoded, Tagged, plain } from "./cbor.js";
 import { parse1, verifySign1, x5chain } from "./cose.js";
-import { parseCertificate, issuedBy, curveOf } from "./x509.js";
+import { parseCertificate, issuedBy, curveOf, OIDS } from "./x509.js";
+import { MdocError, coded } from "./verify.js";
 
 export { encode, decode, get, plain, Encoded, Tagged, CborError } from "./cbor.js";
 export { coseKey, ecCoseKey, parse1, verifySign1, verifyMac0, signSign1, macMac0, x5chain, ALG, CoseError } from "./cose.js";
@@ -30,7 +31,7 @@ export {
   annexCRequest, annexCOpen, annexCTranscript, openid4vpDcApiTranscript, openid4vpRedirectTranscript, transcriptBytes,
   signedDeviceRequest, readEncryptionInfo, serializeOrigin, base64url, fromBase64url,
 } from "./dcapi.js";
-export { verifyIssuerSigned, verifyDeviceResponse, deviceAuthenticationBytes, encodeIssuerSigned, MdocError } from "./verify.js";
+export { verifyIssuerSigned, verifyDeviceResponse, deviceAuthenticationBytes, encodeIssuerSigned, MdocError, coded } from "./verify.js";
 
 export const MDL_DOCTYPE = "org.iso.18013.5.1.mDL";
 export const MDL_NS = "org.iso.18013.5.1";
@@ -81,29 +82,51 @@ export function deviceRequest(docTypes = [MDL_DOCTYPE], { intentToRetain = true,
 
 /**
  * A VICAL (ISO 18013-5 Annex C): a signed list of issuing-authority roots.
- * Its own signature is checked under the provider certificate in its x5chain,
- * and, when `providerRoots` are given, that certificate must chain to one of them.
- * Returns { provider, date, nextUpdate, certificates: [{ der, docTypes, country, state, authority }] }.
+ * Checked before anything in it is trusted:
+ *   - the signer certificate (x5chain) chains to one of `providerRoots`, is valid
+ *     now, isn't a CA, and carries the VICAL signer key usage (1.0.18013.5.1.8)
+ *   - the signature verifies
+ *   - the list isn't dated in the future or past its nextUpdate, and, when
+ *     `minIssueId` is given (the last one seen), isn't older than it
+ * Returns { provider, date, nextUpdate, issueId, certificates: [{ der, docTypes, country, state, authority }] }.
  */
-export function readVical(bytes, { providerRoots } = {}) {
+export function readVical(bytes, { providerRoots, now = new Date(), minIssueId, maxAgeDays = 400 } = {}) {
+  return coded(() => readVicalInner(bytes, { providerRoots, now, minIssueId, maxAgeDays }), "bad_vical", "The VICAL can't be read.");
+}
+
+function readVicalInner(bytes, { providerRoots, now, minIssueId, maxAgeDays }) {
+  const bad = (code, m) => { throw new MdocError(code, m); };
+  if (!providerRoots?.length) bad("no_trust", "A VICAL is only as good as its provider: pass the provider's root.");
   const sign1 = parse1(bytes instanceof Uint8Array ? decode(bytes) : bytes);
   const chain = x5chain(sign1);
-  if (!chain.length) throw new Error("The VICAL has no signer certificate.");
+  if (!chain.length) bad("bad_vical", "The VICAL has no signer certificate.");
   const signer = parseCertificate(chain[0]);
-  if (!verifySign1(sign1, { curve: curveOf(signer), publicKey: signer.publicKey })) throw new Error("The VICAL's signature doesn't verify.");
-  if (providerRoots) {
-    const roots = providerRoots.map((r) => (r?.tbs ? r : parseCertificate(r)));
-    if (!roots.some((r) => issuedBy(signer, r) || (r.der.length === signer.der.length && r.der.every((x, i) => x === signer.der[i])))) throw new Error("The VICAL isn't signed by a trusted provider.");
-  }
+  if (!signer._curve || !verifySign1(sign1, { curve: curveOf(signer), publicKey: signer.publicKey })) bad("bad_signature", "The VICAL's signature doesn't verify.");
+  if (signer.isCa || !signer.eku.includes(OIDS.ekuVicalSigner)) bad("bad_signature", "The VICAL isn't signed by a VICAL signing certificate.");
+  if (now < signer.notBefore || now > signer.notAfter) bad("bad_signature", "The VICAL's signing certificate isn't valid now.");
+  const roots = providerRoots.map((r) => (r?.tbs ? r : parseCertificate(r)));
+  const root = roots.find((r) => r.isCa && r.keyCertSign !== false && issuedBy(signer, r));
+  if (!root) bad("untrusted_issuer", "The VICAL isn't signed by a trusted provider.");
+  if (now < root.notBefore || now > root.notAfter) bad("untrusted_issuer", "The VICAL provider's root isn't valid now.");
+
   let v = decode(sign1.payload);
   if (v instanceof Encoded) v = v.value;
-  const date = (x) => (x instanceof Tagged ? String(x.value) : x ? String(x) : null);
+  const when = (x) => { if (x == null) return null; const d = new Date(x instanceof Tagged ? x.value : x); if (Number.isNaN(d.getTime())) bad("bad_vical", "The VICAL's dates can't be read."); return d; };
+  const date = when(get(v, "date")), nextUpdate = when(get(v, "nextUpdate"));
+  if (!date) bad("bad_vical", "The VICAL has no date.");
+  if (date > new Date(now.getTime() + 86400e3)) bad("bad_vical", "The VICAL is dated in the future.");
+  if (nextUpdate && now > nextUpdate) bad("stale_vical", "The VICAL is past its next update. Fetch a fresh one.");
+  if (!nextUpdate && now - date > maxAgeDays * 86400e3) bad("stale_vical", "The VICAL is too old. Fetch a fresh one.");
+  const issueId = get(v, "vicalIssueID") ?? null;
+  if (minIssueId != null && (typeof issueId !== "number" || issueId < minIssueId)) bad("stale_vical", "This VICAL is older than one already seen (a rollback).");
+  const infos = get(v, "certificateInfos");
+  if (!Array.isArray(infos)) bad("bad_vical", "The VICAL lists no certificates.");
   return {
-    provider: get(v, "vicalProvider"), date: date(get(v, "date")), nextUpdate: date(get(v, "nextUpdate")), issueId: get(v, "vicalIssueID") ?? null,
-    certificates: (get(v, "certificateInfos") || []).map((c) => ({
+    provider: get(v, "vicalProvider"), date: date.toISOString(), nextUpdate: nextUpdate?.toISOString() || null, issueId,
+    certificates: infos.map((c) => ({
       der: get(c, "certificate"), docTypes: get(c, "docType") || [], country: get(c, "issuingCountry") || null,
       state: get(c, "stateOrProvinceName") || null, authority: get(c, "issuingAuthority") || null,
-    })),
+    })).filter((c) => c.der instanceof Uint8Array),
   };
 }
 

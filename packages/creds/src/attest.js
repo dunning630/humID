@@ -8,7 +8,7 @@
 // unless the holder files their own ID in their vault.
 //
 // `commitment` binds the minimised claims to one persona (HumID 4.0): it is a
-// SHA3-256 over a canonical encoding, the same shape a live stamp commits to,
+// SHA3-256 over a canonical encoding that includes a random 32-byte salt, the same shape a live stamp commits to,
 // so a stamped message can carry "a live human approved sharing: over 21,
 // valid US-IL license" without the credential or the person.
 
@@ -16,6 +16,7 @@ import { sha3_256 } from "@noble/hashes/sha3.js";
 import { CredsError, fail } from "./request.js";
 
 const te = new TextEncoder();
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 export const CLAIM_SCHEMA = "humid.idclaim/1";
 
 /** Facts minimise can produce. Identifying ones need `identifying: true`. */
@@ -78,8 +79,10 @@ export function minimise(result, { share, identifying = false, persona, now = ne
       continue;
     }
     if (f === "portrait") fail("bad_request", "A photo can't go into a claim; keep it in the vault record.");
-    if (c[f] == null) fail("not_available", `The credential didn't share ${f.replace(/_/g, " ")}.`);
-    facts[f] = c[f];
+    // The issuing country comes from the issuer's trusted certificate when there is one.
+    const v = f === "issuing_country" ? result.issuer?.country ?? c.issuing_country : Object.hasOwn(c, f) ? c[f] : null;
+    if (v == null) fail("not_available", `The credential didn't share ${f.replace(/_/g, " ")}.`);
+    facts[f] = v;
   }
   const claim = {
     schema: CLAIM_SCHEMA, type: result.type, assurance: result.assurance,
@@ -89,6 +92,9 @@ export function minimise(result, { share, identifying = false, persona, now = ne
   if (persona !== undefined) {
     if (typeof persona !== "string" || !/^HC-[0-9A-Z]{4}(-[0-9A-Z]{4}){4}$/.test(persona)) fail("bad_request", "That isn't a persona ID.");
     claim.persona = persona;
+    // A random salt, so a commitment seen without its claim can't be brute-forced
+    // back to low-entropy facts such as a birth date.
+    claim.salt = hex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
     claim.commitment = commit(claim);
   }
   return claim;

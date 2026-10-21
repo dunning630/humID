@@ -15,13 +15,30 @@
 
 import { sha256, sha384, sha512 } from "@noble/hashes/sha2.js";
 import { decode, encode, get, plain, Encoded, Tagged } from "./cbor.js";
-import { parse1, verifySign1, verifyMac0, x5chain, coseKey } from "./cose.js";
-import { parseCertificate, issuedBy, curveOf, OIDS } from "./x509.js";
+import { parse1, verifySign1, verifyMac0, x5chain, coseKey, CoseError } from "./cose.js";
+import { parseCertificate, issuedBy, curveOf, OIDS, X509Error } from "./x509.js";
+import { CborError } from "./cbor.js";
 
 export class MdocError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 const fail = (code, m) => { throw new MdocError(code, m); };
+
+/** Anything a hostile document can make the parsers throw becomes a coded refusal. */
+export function coded(fn, code = "bad_document", message = "The document is malformed.") {
+  try { return fn(); } catch (e) {
+    if (e instanceof MdocError) throw e;
+    if (e instanceof CoseError || e instanceof CborError || e instanceof X509Error || e instanceof TypeError || e instanceof RangeError) throw new MdocError(code, message);
+    throw e;
+  }
+}
+
+/** Where each document type keeps issuing_country / issuing_jurisdiction. */
+const COUNTRY_NS = {
+  "org.iso.18013.5.1.mDL": "org.iso.18013.5.1",
+  "eu.europa.ec.eudi.pid.1": "eu.europa.ec.eudi.pid.1",
+  "org.iso.23220.photoid.1": "org.iso.23220.1",
+};
 
 const DIGESTS = { "SHA-256": sha256, "SHA-384": sha384, "SHA-512": sha512 };
 const same = (a, b) => a instanceof Uint8Array && b instanceof Uint8Array && a.length === b.length && a.every((x, i) => x === b[i]);
@@ -44,7 +61,11 @@ const asCerts = (roots) => (roots || []).flatMap((r) => {
  * roots: trusted IACA certificates; none means "signature checked, issuer
  * not yet checked" (chain: "unchecked"), never "trusted".
  */
-export function verifyIssuerSigned(issuerSigned, { docType, roots, now = new Date() } = {}) {
+export function verifyIssuerSigned(issuerSigned, opts = {}) {
+  return coded(() => verifyIssuerSignedInner(issuerSigned, opts));
+}
+
+function verifyIssuerSignedInner(issuerSigned, { docType, roots, now = new Date() } = {}) {
   const auth = get(issuerSigned, "issuerAuth");
   if (!auth) fail("bad_document", "The document has no issuer signature.");
   const sign1 = parse1(auth);
@@ -72,7 +93,9 @@ export function verifyIssuerSigned(issuerSigned, { docType, roots, now = new Dat
   if (now < validFrom) fail("not_yet_valid", "The document's signature isn't valid yet.");
   if (now > validUntil) fail("signature_expired", "The issuer's signature on this document has lapsed. Refresh it in the wallet, then share again.");
   if (signed < ds.notBefore || signed > ds.notAfter) fail("bad_signature", "The document was signed outside its signer certificate's validity.");
-  if (ds.eku.length && !ds.eku.includes(OIDS.ekuMdlDs)) fail("bad_signature", "The signing certificate isn't allowed to sign mobile IDs.");
+  // ISO 18013-5 Annex B: a Document Signer carries the mdlDS extended key usage and digitalSignature.
+  if (!ds.eku.includes(OIDS.ekuMdlDs)) fail("bad_signature", "The signing certificate isn't allowed to sign mobile IDs.");
+  if (ds.digitalSignature !== true || ds.isCa) fail("bad_signature", "The signing certificate isn't a document signing certificate.");
 
   // Every element shared matches its signed digest.
   const valueDigests = get(mso, "valueDigests");
@@ -91,7 +114,8 @@ export function verifyIssuerSigned(issuerSigned, { docType, roots, now = new Dat
       const want = get(digests, id);
       if (!same(hash(item.encoded), want)) fail("data_altered", `"${get(it, "elementIdentifier")}" doesn't match the issuer's signature.`);
       const name = get(it, "elementIdentifier");
-      if (name in values[ns]) fail("bad_document", `"${name}" appears twice.`);
+      if (typeof name !== "string") fail("bad_document", "A data element has no name.");
+      if (Object.hasOwn(values[ns], name)) fail("bad_document", `"${name}" appears twice.`);
       values[ns][name] = get(it, "elementValue");
       items[ns].push(item);
     }
@@ -107,21 +131,26 @@ export function verifyIssuerSigned(issuerSigned, { docType, roots, now = new Dat
     const anchorFor = (cert, depth = 0) => {
       for (const r of iacas) if (issuedBy(cert, r)) return r;
       if (depth > 2) return null;
-      for (const mid of path) if (mid.isCa && issuedBy(cert, mid)) { const r = anchorFor(mid, depth + 1); if (r) return r; }
+      for (const mid of path) {
+        if (!mid.isCa || mid.keyCertSign === false || now < mid.notBefore || now > mid.notAfter || !issuedBy(cert, mid)) continue;
+        const r = anchorFor(mid, depth + 1); if (r) return r;
+      }
       return null;
     };
     const root = anchorFor(ds);
     if (!root) fail("untrusted_issuer", "This document's issuer isn't in HumID's trusted list.");
-    if (!root.isCa) fail("untrusted_issuer", "The issuer's root certificate isn't a certificate authority.");
+    if (!root.isCa || root.keyCertSign === false) fail("untrusted_issuer", "The issuer's root certificate isn't a certificate authority.");
     if (now < ds.notBefore || now > ds.notAfter) fail("untrusted_issuer", "The issuer's signing certificate isn't valid now.");
     if (now < root.notBefore || now > root.notAfter) fail("untrusted_issuer", "The issuing authority's root certificate isn't valid now.");
-    const country = values["org.iso.18013.5.1"]?.issuing_country ?? values["eu.europa.ec.eudi.pid.1"]?.issuing_country;
-    if (country && root.subject.C && String(country).toUpperCase() !== root.subject.C.toUpperCase()) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
+    // The country the document claims must be its issuing authority's, in the document type's own namespace.
+    const own = values[COUNTRY_NS[msoDocType]] || {};
+    const country = own.issuing_country;
+    if (country != null && root.subject.C && String(country).toUpperCase() !== root.subject.C.toUpperCase()) fail("untrusted_issuer", "The document's country doesn't match its issuing authority.");
     // The state, when both sides name it as a code ("US-IL" / "IL"); free-text names aren't compared.
     const code = (v) => { const m = /^(?:[A-Z]{2}-)?([A-Z0-9]{1,3})$/.exec(String(v || "").toUpperCase().trim()); return m ? m[1] : null; };
-    const juris = code(values["org.iso.18013.5.1"]?.issuing_jurisdiction), st = code(root.subject.ST);
+    const juris = code(own.issuing_jurisdiction), st = code(root.subject.ST);
     if (juris && st && juris !== st) fail("untrusted_issuer", "The document's state doesn't match its issuing authority.");
-    trust = { chain: "trusted", root: { subject: root.subject, notAfter: root.notAfter.toISOString() } };
+    trust = { chain: "trusted", root: { subject: root.subject, notAfter: root.notAfter.toISOString(), fingerprint: root.fingerprint }, issuerCountry: root.subject.C ? root.subject.C.toUpperCase() : null };
   }
 
   const dki = get(mso, "deviceKeyInfo");
@@ -144,11 +173,16 @@ export function deviceAuthenticationBytes(transcript, docType, deviceNameSpacesB
  * eMacKey }) to require mdoc authentication; leave it out only when
  * re-checking stored data (device: "unchecked").
  */
-export function verifyDeviceResponse(response, { session, roots, now = new Date(), docType } = {}) {
+export function verifyDeviceResponse(response, opts = {}) {
+  return coded(() => verifyDeviceResponseInner(response, opts), "bad_response", "The wallet's answer is malformed.");
+}
+
+function verifyDeviceResponseInner(response, { session, roots, now = new Date(), docType } = {}) {
   let r;
   try { r = response instanceof Uint8Array ? decode(response) : response; } catch { fail("bad_response", "The wallet's answer can't be read."); }
   const status = get(r, "status");
-  const docs = get(r, "documents") || [];
+  const docs = get(r, "documents") ?? [];
+  if (!Array.isArray(docs)) fail("bad_response", "The wallet's answer is malformed.");
   const errors = get(r, "documentErrors");
   if (!docs.length) fail(status === 0 || status == null ? "nothing_shared" : "wallet_error", status ? `The wallet reported an error (${status}).` : "No document was shared.");
   return docs.map((d) => {
@@ -172,7 +206,9 @@ export function verifyDeviceResponse(response, { session, roots, now = new Date(
         device = { method: "mac", ok: true };
       } else fail("device_not_present", "The wallet didn't authenticate itself.");
     }
-    return { ...issuer, device, errors: errors ? plain(errors) : null, issuerSigned: get(d, "issuerSigned") };
+    let errs = null;
+    if (errors) { try { errs = plain(errors); } catch { errs = { unreadable: true }; } }
+    return { ...issuer, device, errors: errs, issuerSigned: get(d, "issuerSigned") };
   });
 }
 

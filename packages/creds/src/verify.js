@@ -14,7 +14,7 @@
 // A request's state is used once and expires (REQUEST_TTL_MS). Anything that
 // doesn't check out throws CredsError with a code and a plain-words message.
 
-import { annexCOpen, verifyDeviceResponse, openid4vpDcApiTranscript, fromBase64url, MdocError, get } from "@humid/mdoc";
+import { annexCOpen, verifyDeviceResponse, openid4vpDcApiTranscript, fromBase64url, MdocError, CborError, CoseError, X509Error, HpkeError, get } from "@humid/mdoc";
 import { verifySdJwtVc, decryptJwe, checkStatusJwt, checkStatusCwt, statusReference, SdJwtError, JoseError, StatusError } from "@humid/sdjwt";
 import { parseAamva } from "@humid/idscan";
 import { TYPES } from "./catalog.js";
@@ -23,10 +23,12 @@ import { CredsError, fail } from "./request.js";
 const td = new TextDecoder("utf-8", { fatal: true });
 const MDOC_TYPE_BY_DOCTYPE = Object.fromEntries(Object.entries(TYPES).filter(([, t]) => t.docType).map(([k, t]) => [t.docType, k]));
 
-/** Run a lower layer, turning its errors into CredsError with the same code. */
+/** Run a lower layer, turning its errors into CredsError with the same code. Parser errors on hostile input become "bad_response". */
 const wrap = (fn) => {
   try { return fn(); } catch (e) {
-    if (e instanceof MdocError || e instanceof SdJwtError || e instanceof JoseError || e instanceof StatusError) throw new CredsError(e.code, e.message);
+    if (e instanceof CredsError) throw e;
+    if (e instanceof MdocError || e instanceof SdJwtError || e instanceof JoseError || e instanceof StatusError || e instanceof HpkeError) throw new CredsError(e.code, e.message);
+    if (e instanceof CborError || e instanceof CoseError || e instanceof X509Error || e instanceof TypeError || e instanceof RangeError) throw new CredsError("bad_response", "The wallet's answer is malformed.");
     throw e;
   }
 };
@@ -57,11 +59,13 @@ function fromMdoc(doc, protocol) {
     address: street || v.resident_city ? { street, city: text(pick("resident_city", "resident_city_unicode")), region: text(v.resident_state), postal_code: text(v.resident_postal_code), country: text(v.resident_country) } : null,
   };
   const trusted = doc.chain === "trusted", holder = !!doc.device?.ok;
+  // The issuing country is the trusted root's (the verifier already refused a document claiming another).
+  const country = (trusted && doc.issuerCountry) || claims.issuing_country || null;
   return {
     type, format: "mso_mdoc", protocol, docType: doc.docType,
     assurance: trusted ? (holder ? "issuer+holder" : "issuer") : "signature-only",
     holderBound: holder,
-    issuer: { country: claims.issuing_country, jurisdiction: claims.issuing_jurisdiction, root: doc.root?.subject || null, signer: doc.signer?.subject || null },
+    issuer: { country, jurisdiction: claims.issuing_jurisdiction, root: doc.root?.subject || null, rootFingerprint: doc.root?.fingerprint || null, signer: doc.signer?.subject || null, keySource: "certificate" },
     claims: prune(claims), values: doc.values, validUntil: doc.validity.validUntil,
     statusRef: wrap(() => statusReference(doc.mso)), status: null,
     // What the holder's own ID record keeps, so the issuer check can be repeated later.
@@ -90,7 +94,10 @@ function fromSdJwt(r, protocol) {
     type, format: "dc+sd-jwt", protocol, vct: r.vct,
     assurance: holder ? "issuer+holder" : "issuer",
     holderBound: holder,
-    issuer: { country: claims.issuing_country, jurisdiction: null, root: r.issuer.root?.subject || null, signer: r.issuer.leaf?.subject || null, iss: r.iss },
+    issuer: {
+      country: r.issuer.country || claims.issuing_country, jurisdiction: null, root: r.issuer.root?.subject || null, rootFingerprint: r.issuer.root?.fingerprint || null,
+      signer: r.issuer.leaf?.subject || null, iss: r.iss, keySource: r.issuer.keySource,
+    },
     claims: prune(claims), values: c, validUntil: r.validity.exp ? new Date(r.validity.exp * 1000).toISOString() : null,
     statusRef: wrap(() => statusReference(r)), status: null,
   };
@@ -111,8 +118,12 @@ function useState(state, now) {
  *   allowUntrustedIssuer: accept "signature-only" (for a holder filing their own ID before trust lists are set up)
  * Returns an array of results (normally one).
  */
-export function verifyCredentialResponse(state, credential, { trust = {}, now = new Date(), allowUntrustedIssuer = false } = {}) {
-  useState(state, now.getTime());
+export function verifyCredentialResponse(state, credential, opts = {}) {
+  useState(state, (opts.now || new Date()).getTime());
+  return wrap(() => verifyAnswer(state, credential, opts));
+}
+
+function verifyAnswer(state, credential, { trust = {}, now = new Date(), allowUntrustedIssuer = false } = {}) {
   const protocol = credential?.protocol;
   let data = credential?.data;
   if (typeof data === "string") { try { data = JSON.parse(data); } catch { fail("bad_response", "The wallet's answer can't be read."); } }
@@ -180,8 +191,8 @@ export async function checkStatus(result, { fetchList, trust = {}, now = new Dat
   const token = await fetchList(result.statusRef.uri);
   try {
     result.status = typeof token === "string"
-      ? await checkStatusJwt(token, result.statusRef, { trust: result.format === "dc+sd-jwt" ? trust.sdjwt || {} : { roots: trust.iaca || [] }, now, maxAgeSeconds })
-      : await checkStatusCwt(token, result.statusRef, { roots: trust.iaca || [], now, maxAgeSeconds });
+      ? await checkStatusJwt(token, result.statusRef, { trust: result.format === "dc+sd-jwt" ? trust.sdjwt || {} : { roots: trust.iaca || [] }, now, maxAgeSeconds, root: result.issuer?.rootFingerprint || undefined })
+      : await checkStatusCwt(token, result.statusRef, { roots: (result.format === "dc+sd-jwt" ? trust.sdjwt?.roots : trust.iaca) || [], now, maxAgeSeconds, root: result.issuer?.rootFingerprint || undefined });
   } catch (e) { if (e instanceof StatusError || e instanceof JoseError) throw new CredsError(e.code, e.message); throw e; }
   return result.status;
 }

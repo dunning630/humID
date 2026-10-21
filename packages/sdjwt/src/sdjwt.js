@@ -9,8 +9,10 @@
 // the key the issuer put in `cnf`, over this verifier's nonce and audience and
 // a hash of exactly what was presented. HumID checks, in order:
 //
-//   1. the issuer's signature, with a key from a trusted x5c chain or a key
-//      the caller vouches for (pinned, or from the issuer's metadata)
+//   1. the issuer's signature, with a key from a trusted x5c chain (whose leaf
+//      certificate must name `iss` and the issuing country), or a key the
+//      caller vouches for (pinned, or from the issuer's metadata) for an
+//      issuer the caller has explicitly allowed to issue this type
 //   2. every disclosure is referenced exactly once by a signed digest, and no
 //      digest appears twice; disclosed names can't overwrite signed ones
 //   3. SD-JWT VC rules: typ, vct, validity window, cnf
@@ -106,8 +108,12 @@ export function resolveDisclosures(payload, disclosures) {
 /**
  * Verify an SD-JWT VC presentation.
  *
- *   trust:   { roots: [IACA-style certificates for x5c], issuers?: [allowed iss],
- *              resolveKey?: ({ iss, header }) => JWK }   (pinned keys or issuer metadata)
+ *   trust:   { roots:      [CA certificates for x5c chains],
+ *              issuers:    { [iss]: [allowed vct, …] }   (required for resolveKey;
+ *                          optional for x5c, where it further restricts),
+ *              resolveKey: ({ iss, header }) => JWK }    (pinned keys or issuer metadata)
+ *   A key from resolveKey is only ever used for an issuer and type listed in
+ *   `issuers`: anyone can publish metadata, so fetched metadata alone is never trust.
  *   binding: { nonce, aud } — required unless requireKeyBinding is false
  *
  * Returns { iss, vct, claims, disclosed, issuer, cnf, status, validity, keyBinding }.
@@ -120,15 +126,31 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
   if (typeof payload.vct !== "string" || !payload.vct) fail("bad_type", "The credential has no type (vct).");
   if (vcts && !vcts.includes(payload.vct)) fail("bad_type", `A ${payload.vct} credential wasn't asked for.`);
   if (payload.iss !== undefined && typeof payload.iss !== "string") fail("malformed", "The issuer isn't text.");
-  if (trust.issuers && !trust.issuers.includes(payload.iss)) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+  // An explicit allowlist: issuer → the credential types it may issue.
+  const allowed = trust.issuers && !Array.isArray(trust.issuers) && typeof trust.issuers === "object" ? trust.issuers : null;
+  if (trust.issuers && !allowed) fail("bad_request", "trust.issuers must map each issuer to the credential types it may issue.");
+  if (allowed) {
+    const list = Object.hasOwn(allowed, payload.iss ?? "") ? allowed[payload.iss] : null;
+    if (!Array.isArray(list)) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
+    if (!list.includes(payload.vct)) fail("untrusted_issuer", "This issuer isn't trusted to issue this kind of credential.");
+  }
 
   // 1. The issuer's key, then its signature.
   let issuer;
-  if (header.x5c) issuer = jose(() => x5cKey(header.x5c, { roots: trust.roots, now }));
-  else if (trust.resolveKey) {
+  if (header.x5c) {
+    issuer = jose(() => x5cKey(header.x5c, { roots: trust.roots, now }));
+    issuer.keySource = "certificate";
+    // The certificate must name the issuer: iss is one of its URIs, or an https URL on one of its DNS names.
+    if (typeof payload.iss !== "string") fail("untrusted_issuer", "The credential doesn't name its issuer.");
+    const san = issuer.leaf.san || { dns: [], uri: [] };
+    let host = null;
+    try { const u = new URL(payload.iss); if (u.protocol === "https:") host = u.hostname.toLowerCase(); } catch { /* not a URL */ }
+    if (!san.uri.includes(payload.iss) && !(host && san.dns.includes(host))) fail("untrusted_issuer", "The credential's issuer isn't the one its certificate was issued to.");
+  } else if (trust.resolveKey) {
+    if (!allowed) fail("untrusted_issuer", "A key without a certificate is only trusted for issuers listed explicitly.");
     const jwk = trust.resolveKey({ iss: payload.iss, header });
     if (!jwk) fail("untrusted_issuer", "No trusted key for this credential's issuer.");
-    issuer = { key: jose(() => jwkKey(jwk)), leaf: null, root: null, pinned: true };
+    issuer = { key: jose(() => jwkKey(jwk)), leaf: null, root: null, keySource: "pinned" };
   } else fail("untrusted_issuer", "The credential doesn't say how to find its issuer's key, and none is pinned.");
   jose(() => verifyJwsWith(jws, issuer.key));
 
@@ -143,6 +165,10 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
   // 3. Disclosures.
   const { claims, disclosed } = resolveDisclosures(payload, parts.disclosures);
   // (Registered claims can't be disclosed and disclosed names can't shadow signed ones: resolveDisclosures refuses both.)
+
+  // The country a certificate-backed credential claims must be its certificate's.
+  const certCountry = (issuer.leaf?.subject?.C || issuer.root?.subject?.C || "").toUpperCase() || null;
+  if (claims.issuing_country != null && certCountry && String(claims.issuing_country).toUpperCase() !== certCountry) fail("untrusted_issuer", "The credential's issuing country doesn't match its issuer's certificate.");
 
   // 4. Key binding.
   let keyBinding = { ok: false };
@@ -164,7 +190,7 @@ export function verifySdJwtVc(presentation, { trust = {}, nonce, aud, now = new 
 
   return {
     iss: payload.iss ?? null, vct: payload.vct, typ: header.typ, claims, disclosed,
-    issuer: { leaf: issuer.leaf, root: issuer.root, pinned: !!issuer.pinned },
+    issuer: { leaf: issuer.leaf, root: issuer.root, keySource: issuer.keySource, pinned: issuer.keySource === "pinned", country: certCountry },
     cnf: payload.cnf ?? null, status: payload.status ?? null,
     validity: { iat: iat ?? null, nbf: nbf ?? null, exp: exp ?? null },
     keyBinding,
@@ -189,7 +215,7 @@ export function keyFromIssuerMetadata(metadata, { iss, kid }) {
   if (metadata.jwks_uri && metadata.jwks) fail("bad_issuer", "The issuer's metadata has both jwks and jwks_uri.");
   const keys = metadata.jwks?.keys;
   if (!Array.isArray(keys)) fail("bad_issuer", "The issuer's metadata has no inline keys (fetch jwks_uri first).");
-  const usable = keys.filter((k) => !k.use || k.use === "sig");
+  const usable = keys.filter((k) => isObj(k) && (!k.use || k.use === "sig"));
   const k = kid ? usable.find((x) => x.kid === kid) : usable.length === 1 ? usable[0] : null;
   if (!k) fail("untrusted_issuer", "The issuer's metadata doesn't name the key this credential was signed with.");
   return k;

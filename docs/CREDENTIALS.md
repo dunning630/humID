@@ -71,7 +71,7 @@ holder's wallet speaks:
 | Protocol string | Standard | Used by | Encryption | What the wallet signs |
 |---|---|---|---|---|
 | `openid4vp-v1-unsigned` | OpenID4VP 1.0 + DCQL | Chrome 141+ (Android, desktop via phone), wallets with OpenID4VP | JWE, ECDH-ES + A128GCM/A256GCM to a fresh key | mdoc: `["OpenID4VPDCAPIHandover", SHA-256([origin, nonce, key thumbprint])]`; SD-JWT: key binding with `aud = "origin:" + origin`, the nonce, and a hash of exactly what was shown |
-| `org-iso-mdoc` | ISO/IEC TS 18013-7 Annex C | Safari 26 / iOS 26 and Apple Wallet, Chrome 141+ | HPKE (RFC 9180): DHKEM P-256, HKDF-SHA256, AES-128-GCM | `["dcapi", SHA-256([EncryptionInfo, origin])]` |
+| `org-iso-mdoc` | ISO/IEC TS 18013-7 Annex C | Safari 26 / iOS 26 and Apple Wallet, Chrome 141+ | HPKE (RFC 9180): DHKEM P-256, HKDF-SHA256, AES-128-GCM; `info` is the transcript's plain CBOR (checked byte for byte against the OpenWallet Foundation's `@owf/mdoc`) | `["dcapi", SHA-256([EncryptionInfo, origin])]` |
 
 What that buys:
 
@@ -123,8 +123,10 @@ that answer the question:
 - Names, birth date, document number and address only with
   `identifying: true`; a photo never goes into a claim.
 
-With a `persona` (a 4.0 contact ID, `HC-…`), the claim gets a `commitment`:
-SHA3-256 over a label and the canonical claim. It's the same shape a 4.0 live
+With a `persona` (a 4.0 contact ID, `HC-…`), the claim gets a random 32-byte
+`salt` and a `commitment`: SHA3-256 over a label and the canonical claim,
+salt included, so a commitment seen on its own can't be brute-forced back to a
+birth date. It's the same shape a 4.0 live
 stamp commits to, so a stamped message can say *a live human approved sharing
 "over 21, valid US-IL license"* while carrying neither the credential nor
 anything that identifies the person. `checkCommitment` recomputes it. (The
@@ -137,7 +139,9 @@ List), so fetching it tells them nothing about which credential is being
 checked. `checkStatus(result, { fetchList })` reads the reference in the SD-JWT
 or the mdoc's signed object, and checks:
 
-- the list's signature, under the same trust as the credential;
+- the list's signature, with the same chain rules as the credential's issuer,
+  and, through `checkStatus`, under the credential's own root (one trusted
+  issuer can't publish statuses for another's credentials);
 - that it is the list the credential named (`sub` equals the `uri`);
 - that it's fresh (`exp`, `ttl`, and a 24-hour default ceiling);
 - the entry, least significant bit first, 1, 2, 4 or 8 bits wide;
@@ -148,11 +152,34 @@ can't back a `valid_document` claim. Tested with JWT and CWT lists.
 
 ## Trust lists
 
+**How an issuer earns trust.** A certificate-backed issuer (mdoc, or SD-JWT
+with `x5c`) must chain to a configured root, and every certificate on the way
+is checked: valid now, CAs above with certificate-signing rights, a signing
+(not CA) leaf. A mobile ID's Document Signer must carry the mobile-ID key
+usage and the signing bit, and the country the document claims must be its
+root's. An SD-JWT issuer certificate must name the issuer (`iss` is one of its
+URIs, or an https URL on one of its DNS names), and a disclosed
+`issuing_country` must be the certificate's. A key *without* a certificate
+(pinned, or from the issuer's published metadata) is used only for issuers the
+operator lists explicitly, with the credential types each may issue:
+
+```js
+trust.sdjwt = {
+  roots: [pidProviderRootsPem],                       // certificate-backed issuers
+  issuers: { "https://pid.example.eu": ["urn:eudi:pid:1"] },  // required for pinned/metadata keys
+  resolveKey: ({ iss, header }) => keyFromIssuerMetadata(fetched[iss], { iss, kid: header.kid }),
+}
+```
+
+Anyone can publish issuer metadata on their own domain, so metadata alone is
+never trust. Results say which kind of key vouched for them
+(`issuer.keySource`: `certificate` or `pinned`).
+
 | For | Load with | Where real roots come from |
 |---|---|---|
-| Mobile licenses and IDs (US, Canada) | `iacaFromVical(bytes, { providerRoots })` | AAMVA's Digital Trust Service publishes a signed VICAL free to relying parties, under its terms and conditions. Apple's guidance is to take each state's root from its DMV. |
+| Mobile licenses and IDs (US, Canada) | `iacaFromVical(bytes, { providerRoots, minIssueId })`: signed by a VICAL signing certificate (key usage 1.0.18013.5.1.8) under the provider's root, valid now, not past `nextUpdate`, not older than the last issue seen | AAMVA's Digital Trust Service publishes a signed VICAL free to relying parties, under its terms and conditions. Apple's guidance is to take each state's root from its DMV. |
 | EU PID | `trust.sdjwt.roots`, `trust.iaca` | Member-state PID providers, through the EU's trusted lists |
-| Passports and ID cards | `cscasFromMasterList(bytes, { publisherCscas })`, `loadCscas(dir)` | ICAO master lists (for example Germany's BSI publishes one), or the ICAO PKD |
+| Passports and ID cards | `cscasFromMasterList(bytes, { publisherCscas })`: signed by a master list signer (key usage 2.23.136.1.1.3, so the publisher's passport signers can't), no SHA-1; or `loadCscas(dir)` | ICAO master lists (for example Germany's BSI publishes one), or the ICAO PKD |
 | SD-JWT issuers without certificates | `trust.sdjwt.resolveKey` + `issuerMetadataUrl` / `keyFromIssuerMetadata` | The issuer's `/.well-known/jwt-vc-issuer` metadata, fetched by the app |
 
 A master list or VICAL is only as good as its publisher: each loader insists
@@ -167,6 +194,34 @@ on the publisher's own root.
 | **A HumID contact** (4.0, with a minimised claim) | the facts shared, e.g. "over 21, valid US-IL license", and that a live human approved them | the credential, the name, the number, the person |
 | **The issuer** | that its status list was downloaded | which credential was checked, by whom, or why |
 | **SSA** (eCBSV, permitted entities only) | the number, name and birth date the holder consented to check | anything else about HumID |
+
+## Independent security review (2026-10-21)
+
+A reviewer who hadn't seen the code being written went through the whole
+change (`d221f8c..`) and confirmed each finding with a test. All are fixed,
+each with a regression test that fails on the old code
+(`tests/review-fixes.test.js`, plus additions to `tests/creds.test.js`,
+`tests/sdjwt.test.js` and `tests/mdoc.test.js`).
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| F3 | High | An SD-JWT signed with a key from issuer metadata on *any* domain verified as an EU PID | Keys without a certificate only for issuers listed explicitly with their credential types; results show `keySource` |
+| F1 | Medium | Any signing certificate under a publisher's CSCA (such as its passport Document Signers) could sign a master list and add a CSCA for any country | Master list signer key usage (2.23.136.1.1.3) required |
+| F4 | Medium | An SD-JWT's `iss` and `issuing_country` weren't tied to its certificate | `iss` must match the certificate's SAN; the country must be the certificate's |
+| F6 | Medium | A VICAL's signer validity, key usage, freshness and issue order weren't checked | All four checked; `minIssueId` refuses rollbacks |
+| F9 | Medium | A photo ID's country wasn't compared with its root | Compared in each document type's own namespace; the reported country is the root's |
+| F2 | Low | A master list could be signed with SHA-1 | SHA-1 refused; the signature hash must equal the digest |
+| F7 | Low | The mobile-ID chain checked intermediates and the Document Signer too loosely | Intermediate validity and signing rights; Document Signer key usage and signing bit required |
+| F8 | Low | Status-list chains were checked loosely and not tied to the credential's issuer | Same chain rules as issuers; `checkStatus` pins the credential's own root |
+| F5 | Low | Some malformed (but properly encrypted) answers threw raw exceptions | Everything from hostile input becomes a coded refusal |
+| F10 | Low | Commitments were unsalted | 32-byte random salt |
+| I1 | Info | Annex C decryption used the tag-24-wrapped transcript; real wallets use the plain one | Plain CBOR, and checked against `@owf/mdoc` |
+
+Also from the review: a mobile ID anchoring recovery must share full name,
+birth date and issuing country (a surname and birth date alone made a weak
+anchor). Noted and left as is: a request's state is marked used before its
+answer is checked, which fails closed but means the caller must keep the
+mutated state.
 
 ## Built and tested
 
@@ -192,7 +247,8 @@ it doesn't share.
 ## Limits
 
 - **Real wallets haven't answered yet.** Everything is tested against
-  standards-conformant simulated wallets. Before launch: Apple's sample
+  standards-conformant simulated wallets, and the session transcripts against
+  the OpenWallet Foundation's `@owf/mdoc`. Before launch: Apple's sample
   responses (Apple Wallet developer resources), the EU reference wallet,
   Google's test wallet, and a state's test mDL.
 - **EU PID claim names** follow the PID Rulebook as published; check them

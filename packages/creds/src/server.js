@@ -25,6 +25,9 @@ function mrzDate(yymmdd, kind, now = new Date()) {
  *   active: { nonce, signature, hash? } — required when the chip has an AA key
  */
 export function verifyPassportChip(chip, { cscas, active, now = new Date() } = {}) {
+  const bytes = (v) => v == null || v instanceof Uint8Array;
+  if (!chip || typeof chip !== "object" || !["dg1", "sod", "dg15"].every((k) => bytes(chip[k]))) fail("bad_request", "The chip data must be bytes.");
+  if (active && (!bytes(active.nonce) || !bytes(active.signature))) fail("bad_request", "The chip's answer must be bytes.");
   const pa = wrap(() => passiveAuth(chip, { cscas, now }));
   let holder = false;
   if (pa.aaRequired) {

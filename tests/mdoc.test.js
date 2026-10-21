@@ -163,9 +163,9 @@ test("an EU digital identity (PID) document verifies through the same path", () 
 test("VICAL: a signed list of issuing-authority roots is read and its signature checked", () => {
   const a = issuingAuthority({ ST: "IL" }), b = issuingAuthority({ ST: "UT" });
   const provider = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const providerAuthority = issuingAuthority({ name: "Test VICAL Provider" });
+  const providerAuthority = issuingAuthority({ name: "Test VICAL Provider", dsEku: ["1.0.18013.5.1.8"], dsKu: [6, 0x40] });
   // Sign the VICAL with the provider's DS key; its certificate is in x5chain.
-  const vical = new Map([["version", "1.0"], ["vicalProvider", "Test DTS"], ["date", new Tagged(0, "2026-10-01T00:00:00Z")],
+  const vical = new Map([["version", "1.0"], ["vicalProvider", "Test DTS"], ["date", new Tagged(0, new Date(Date.now() - 86400e3).toISOString().replace(/\.\d+Z$/, "Z"))], ["vicalIssueID", 7],
     ["certificateInfos", [a, b].map((x) => new Map([["certificate", x.rootDer], ["docType", [MDL_DOCTYPE]], ["issuingCountry", "US"], ["stateOrProvinceName", x.ST]]))]]);
   const payload = encode(vical);
   const prot = encode(new Map([[1, -7]]));
@@ -177,7 +177,14 @@ test("VICAL: a signed list of issuing-authority roots is read and its signature 
   assert.equal(parseCertificate(list.certificates[0].der).subject.ST, "IL");
   assert.throws(() => readVical(signed, { providerRoots: [a.rootDer] }), /trusted provider/);
   const bad = decode(signed); bad[3][3] ^= 1;
-  assert.throws(() => readVical(encode(bad)), /doesn't verify/);
+  assert.throws(() => readVical(encode(bad), { providerRoots: [providerAuthority.rootDer] }), (e) => e.code === "bad_signature");
+  assert.throws(() => readVical(signed), (e) => e.code === "no_trust");
+  // Rollback, staleness, and a Document Signer (not a VICAL signer) signing the list.
+  assert.throws(() => readVical(signed, { providerRoots: [providerAuthority.rootDer], minIssueId: 8 }), (e) => e.code === "stale_vical");
+  assert.throws(() => readVical(signed, { providerRoots: [providerAuthority.rootDer], now: new Date(Date.now() + 500 * 86400e3) }), (e) => ["stale_vical", "bad_signature"].includes(e.code));
+  const sigByDs = sign("sha256", encode(["Signature1", prot, new Uint8Array(0), payload]), { key: a.ds.privateKey, dsaEncoding: "ieee-p1363" });
+  const byDs = encode([prot, new Map([[33, a.dsDer]]), payload, new Uint8Array(sigByDs)]);
+  assert.throws(() => readVical(byDs, { providerRoots: [a.rootDer] }), (e) => e.code === "bad_signature" && /VICAL signing certificate/.test(e.message));
   void provider;
 });
 

@@ -111,16 +111,21 @@ export function verifyJwsWith(jws, key, { algs = SUPPORTED_ALGS } = {}) {
   return true;
 }
 
+/** Trusted roots as parsed certificates (DER, PEM bundle or already parsed). */
+export const parseRoots = (roots) => (roots || []).flatMap((r) => (r?.tbs ? [r] : typeof r === "string" ? (r.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || []).map((p) => parseCertificate(p)) : [parseCertificate(r)]));
+
 /**
- * Check a JWS header's x5c chain against trusted roots and return the leaf's key.
- * roots: certificates (DER, PEM or parsed). The chain is leaf first; the root
- * may be omitted from it. Every certificate must be valid at `now`.
+ * Validate a certificate chain (leaf first, DER) against trusted roots:
+ * every certificate valid now; each issuer a CA allowed to sign certificates;
+ * the leaf a signing (not CA) certificate; the top issued by, or identical to,
+ * a trusted root, which must itself be valid now. Returns the leaf's key and
+ * names, and the root (with its fingerprint, so callers can require the same one).
  */
-export function x5cKey(x5c, { roots, now = new Date() }) {
-  if (!Array.isArray(x5c) || !x5c.length || x5c.length > 5) fail("bad_chain", "The token's certificate chain is missing or too long.");
+export function chainKey(ders, { roots, now = new Date() }) {
+  if (!Array.isArray(ders) || !ders.length || ders.length > 5) fail("bad_chain", "The certificate chain is missing or too long.");
   let chain;
-  try { chain = x5c.map((c) => parseCertificate(unb64(c))); } catch (e) { if (e instanceof JoseError) throw e; fail("bad_chain", "A certificate in the token's chain can't be read."); }
-  const anchors = (roots || []).flatMap((r) => (r?.tbs ? [r] : typeof r === "string" ? (r.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || []).map((p) => parseCertificate(p)) : [parseCertificate(r)]));
+  try { chain = ders.map((d) => parseCertificate(d)); } catch { fail("bad_chain", "A certificate in the chain can't be read."); }
+  const anchors = parseRoots(roots);
   if (!anchors.length) fail("no_trust", "No trusted issuer roots are configured for this kind of credential.");
   const valid = (c) => now >= c.notBefore && now <= c.notAfter;
   for (const c of chain) if (!valid(c)) fail("bad_chain", "A certificate in the issuer's chain isn't valid now.");
@@ -128,13 +133,25 @@ export function x5cKey(x5c, { roots, now = new Date() }) {
     const up = chain[i + 1];
     if (!up.isCa || up.keyCertSign === false || !issuedBy(chain[i], up)) fail("bad_chain", "The issuer's certificate chain is broken.");
   }
-  if (chain[0].isCa) fail("bad_chain", "The issuer signed with a certificate authority's key, not a signing certificate.");
+  const leaf = chain[0];
+  if (leaf.isCa) fail("bad_chain", "The issuer signed with a certificate authority's key, not a signing certificate.");
+  if (leaf.digitalSignature === false) fail("bad_chain", "The issuer's certificate isn't allowed to sign.");
   const top = chain[chain.length - 1];
   const sameDer = (a, b) => a.der.length === b.der.length && a.der.every((x, i) => x === b.der[i]);
-  const root = anchors.find((r) => sameDer(r, top)) || anchors.find((r) => r.isCa && issuedBy(top, r));
+  const root = anchors.find((r) => sameDer(r, top) && chain.length > 1 && r.isCa) || anchors.find((r) => r.isCa && r.keyCertSign !== false && issuedBy(top, r));
   if (!root) fail("untrusted_issuer", "This credential's issuer isn't in HumID's trusted list.");
   if (!valid(root)) fail("untrusted_issuer", "The trusted root for this issuer isn't valid now.");
-  return { key: certKey(chain[0]), leaf: { subject: chain[0].subject, notAfter: chain[0].notAfter.toISOString() }, root: { subject: root.subject } };
+  return {
+    key: certKey(leaf),
+    leaf: { subject: leaf.subject, notAfter: leaf.notAfter.toISOString(), san: leaf.san },
+    root: { subject: root.subject, fingerprint: root.fingerprint },
+  };
+}
+
+/** A JWS header's x5c (base64 DER, leaf first) through chainKey. */
+export function x5cKey(x5c, { roots, now = new Date() }) {
+  if (!Array.isArray(x5c) || x5c.some((c) => typeof c !== "string")) fail("bad_chain", "The token's certificate chain is malformed.");
+  return chainKey(x5c.map(unb64), { roots, now });
 }
 
 /* ---------------- JWE (decrypt) ---------------- */
@@ -164,6 +181,7 @@ export function decryptJwe(token, keyPair, { encs = ["A128GCM", "A256GCM"] } = {
   const parts = token.split(".");
   if (parts.length !== 5) fail("malformed", "The encrypted response isn't a compact JWE.");
   const header = jsonOf(parts[0], "encrypted response header");
+  if (!isObj(header)) fail("malformed", "The encrypted response header isn't an object.");
   if (header.alg !== "ECDH-ES") fail("unsupported_alg", `Key agreement ${header.alg} isn't accepted.`);
   if (!ENC[header.enc] || !encs.includes(header.enc)) fail("unsupported_alg", `Content encryption ${header.enc} isn't accepted.`);
   if (header.zip !== undefined || header.crit !== undefined) fail("unsupported", "Compressed or critical-header responses aren't accepted.");
