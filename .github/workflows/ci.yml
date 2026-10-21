@@ -18,6 +18,9 @@ on:
     branches: [main]
   workflow_dispatch: # manual run: everything
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -48,8 +51,12 @@ jobs:
         run: npm run build:app
       - name: Work out what this change affects
         id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          BASE=${{ github.event_name == 'workflow_dispatch' && 'none' || github.event.pull_request.base.sha || 'HEAD~1' }}
+          BASE="${PR_BASE:-HEAD~1}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then BASE=none; fi
           OUT=$(node tools/affected.mjs "$BASE")
           echo "$OUT" | jq .
           echo "apps=$(echo "$OUT" | jq -c .appMatrix)" >> "$GITHUB_OUTPUT"
@@ -115,7 +122,9 @@ jobs:
         with: { ndk-version: r27c }
       - name: Android NDK toolchain on PATH
         if: matrix.platform == 'android'
-        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+        env:
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
+        run: echo "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
       - run: npm run build:app
       - name: Compile (desktop)
         if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
