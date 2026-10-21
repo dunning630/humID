@@ -897,6 +897,20 @@ function Switch-Program([string]$Pkg, [string]$Want, [string]$FallbackDir, [stri
   throw "$Want failed ($problem). $FallbackVersion is running again; nothing was lost."
 }
 
+# The zip must carry a signature by a HumID release key that the installed console pins
+# (release-keys.mjs), for exactly this file and version. GitHub's digest and the phone's
+# approval prove which bytes; this proves who made them. Checked right before unpacking.
+function Assert-ReleaseSignature([string]$Zip, [string]$Want) {
+  $out = Capture-Native $NodeExe @('--no-warnings', $AdminJs, 'verify-release', '--zip', $Zip, '--version', $Want)
+  $code = $LASTEXITCODE
+  $line = @(("$out" -split "`n") | Where-Object { $_.Trim() }) | Select-Object -Last 1
+  if ($code -ne 0) {
+    if (-not $line) { $line = "The release signature couldn't be checked (exit $code). Nothing was installed." }
+    throw $line
+  }
+  return $line
+}
+
 function Job-Update($A) {
   $file = [string]$A.file
   if ($file -notmatch '^HumID-Server-Windows-\d+\.\d+\.\d+\.zip$') { throw 'Bad update file name.' }
@@ -905,6 +919,8 @@ function Job-Update($A) {
   Job-Step 'Checking the file against the approved SHA-256'
   $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
   if ($got -ne ([string]$A.sha256).ToLower()) { throw "The file changed since it was approved (SHA-256 $($got.Substring(0, 16))...). Nothing was installed." }
+  Job-Step 'Checking its HumID release signature'
+  Job-Step (Assert-ReleaseSignature $zip ([string]$A.version))
   $work = Join-Path $AdminDir "work\$($script:Job.id)"
   if (Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force }
   Expand-Archive -LiteralPath $zip -DestinationPath $work -Force

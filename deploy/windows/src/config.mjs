@@ -27,6 +27,7 @@ export const DEFAULTS = [
   ["VAULT_QUOTA_BYTES", "262144000", "Storage per account (250 MB)."],
   ["HUMID_SHARE_RELEASES_PER_HOUR", "120", "Split keys: how many documents one account can open per hour, so a hijacked phone can't drain the vault."],
   ["HUMID_CHECKIN", "off", "on = holders can arm Check-in: their vault is erased for good unless they check in every hour or two (docs/CHECKIN.md). While anyone is armed, stopping the server (a restart, an update, a backup, restarting Windows) erases their vault too: its keys live in memory only. off until push reminders exist."],
+  ["HUMID_UPDATE_PRERELEASES", "off", "on = the admin console also offers HumID Server releases marked pre-release on GitHub (still only ones signed with a HumID release key). off for anything holding real data."],
   ["HUMID_ADMIN_PORT", "8490", "Local port of the admin console (HumID Admin). Only this computer can open it; the tunnel never forwards it. Open it with `humid console`."],
 ];
 
@@ -83,6 +84,7 @@ export function validate(cfg) {
   if (cfg.HUMID_DEVICE_POLICY && !VALID_POLICIES.includes(cfg.HUMID_DEVICE_POLICY)) problems.push(`HUMID_DEVICE_POLICY must be one of ${VALID_POLICIES.join(", ")}.`);
   if (cfg.HUMID_REGISTRATION && !["pass", "open"].includes(cfg.HUMID_REGISTRATION)) problems.push("HUMID_REGISTRATION must be pass or open.");
   if (cfg.HUMID_CHECKIN && !["on", "off"].includes(cfg.HUMID_CHECKIN)) problems.push("HUMID_CHECKIN must be on or off.");
+  if (cfg.HUMID_UPDATE_PRERELEASES && !["on", "off"].includes(cfg.HUMID_UPDATE_PRERELEASES)) problems.push("HUMID_UPDATE_PRERELEASES must be on or off.");
   if (cfg.HUMID_PASS_BUY_URL && !/^https:\/\//.test(cfg.HUMID_PASS_BUY_URL)) problems.push("HUMID_PASS_BUY_URL must start with https://.");
   const port = Number(cfg.HUMID_PORT || 8480);
   if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push("HUMID_PORT must be a port number.");

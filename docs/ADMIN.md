@@ -65,7 +65,7 @@ sample a minute for 24 hours.
 
 | Change | How |
 |---|---|
-| **Update HumID Server** | Downloads the release zip; it must match the SHA-256 that GitHub publishes for it, and the phone approves that exact SHA-256. The job checks it again, checks the zip's version and contents, takes a backup (`backups\pre-update-…zip`), keeps the current version in `C:\Program Files\HumID Server.previous`, installs, and checks the server comes up healthy **with the same server key id** (phones refuse a changed one). Otherwise it reinstalls the previous version by itself, and if that doesn't come up either, restores the data from the backup it just took. |
+| **Update HumID Server** | Downloads the release zip and its signature (`.sig`). The zip must be signed by a HumID release key the console pins, for exactly that file name and version (see *Signed releases* below), and match the SHA-256 that GitHub publishes for it; the phone approves that exact SHA-256. The job checks the SHA-256 and the signature again right before it unpacks the zip, checks the zip's version and contents, takes a backup (`backups\pre-update-…zip`), keeps the current version in `C:\Program Files\HumID Server.previous`, installs, and checks the server comes up healthy **with the same server key id** (phones refuse a changed one). Otherwise it reinstalls the previous version by itself, and if that doesn't come up either, restores the data from the backup it just took. |
 | **Roll back** | The same, the other way; the version you left is kept, so you can roll forward again. Only to 2.0.0 or later (older versions have no console). |
 | **Install Windows updates** | The ones you tick from the last scan; their titles are in what the phone approves. Windows Update downloads and installs them (accepting their licence terms); a restart is a separate approval. |
 | **Restart this computer** | `shutdown /r` 60 seconds after approval. HumID starts again by itself. |
@@ -117,6 +117,31 @@ sample a minute for 24 hours.
   updates needs it. The HumID server still runs as LOCAL SERVICE, and can't open
   `C:\ProgramData\HumID\admin` or `backups` (SYSTEM and Administrators only).
 
+## Signed releases
+
+GitHub's digest proves only that a file was uploaded to a release; anyone who
+could create a `server-win-v*` release could otherwise make every console install
+their zip as SYSTEM. So the console also requires a signature by **the HumID
+release key**, an ML-DSA-87 key the maintainer keeps offline, never in GitHub or
+CI. Its public key is pinned in the console itself
+(`deploy/windows/admin/release-keys.mjs`, one or two keys while rotating).
+
+- The signature (`HumID-Server-Windows-<version>.zip.sig`) covers the label
+  `HUMID-SERVER-RELEASE-v1`, the file name, the version, the size, and the
+  zip's SHA-256 and SHA3-512. A signature for another file or version, or one
+  made for anything but a server release, doesn't count.
+- The console checks it before anything else: no `.sig`, a bad one, a key it
+  doesn't pin, or a version that doesn't match the release tag, and nothing is
+  downloaded or offered for approval. The update job checks it again (as
+  SYSTEM, with the installed console's keys) right before it unpacks the zip.
+- Drafts are never offered. Releases marked pre-release are offered only with
+  `humid set HUMID_UPDATE_PRERELEASES=on` (off by default), and must be signed
+  all the same.
+- **While no key is pinned, the console refuses every update** and says so under
+  Updates; install releases by hand. A console learns a new key only from a
+  release installed by hand or signed by a key it already pins. How the
+  maintainer makes, uses and rotates the key: [RELEASING.md](../RELEASING.md).
+
 ## Break-glass
 
 - **The server is down.** Your phone can't reach a server that's down, so after
@@ -154,6 +179,6 @@ server**. `node tests/browser/admin.mjs` walks the whole thing in Chromium.
   beside the containers yet.
 - Notifications leave the console only through the HumID app (the **This server**
   card); there's no push or email (the same gap as in [SECURITY.md](SECURITY.md)).
-- Release zips are checked against GitHub's digest, not against a HumID signing key
-  of their own; a compromised GitHub account could publish a release. Signing
-  releases with a key the console pins is the next step.
+- The release key is a single offline key with no threshold: whoever holds it can
+  sign an update every console accepts. Two-of-three signing, or a transparency
+  log of release signatures, would remove that single point.

@@ -1,5 +1,11 @@
 # HumID Server for Windows
 
+## Unreleased
+
+Security hardening from the pre-certification audit. Installing over 2.1.0 keeps all data and settings.
+
+- **Updates must be signed by the HumID release key** (PC-07). The admin console installs a HumID update only if its zip carries a signature (`.sig`) by an ML-DSA-87 key the maintainer keeps offline and the console pins, for exactly that file name and version; GitHub's digest is checked as well. The update job checks the signature again, as SYSTEM, right before it unpacks the zip. Pre-releases are skipped unless `humid set HUMID_UPDATE_PRERELEASES=on`. **This build pins no key yet, so its console refuses every update**: install the next release by hand (docs/ADMIN.md, *Signed releases*).
+
 ## 2.1.0
 
 Security hardening from the October 18 2026 audit, paired with **HumID 2.1.0**. Installing over 2.0.0 keeps all data and settings.
