@@ -44,7 +44,10 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
 });
 
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
-  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js"]);
+  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
+    // 4.0: the Messages screens load the messaging kernel with their own chunk, so the
+    // protocol code never reaches the first paint (core/index.js says so)
+    "messaging.js"]);
   const bad = [];
   for (const f of [...screens, ...ui]) {
     for (const m of noComments(read(f)).matchAll(/from "((?:\.\.\/)+core\/[^"]+)"/g)) {
@@ -76,10 +79,11 @@ test("every pushed-screen type and every sheet type is rendered in exactly one p
   for (const f of faces) assert.doesNotMatch(noComments(read(f)), /\bAddSheet\b|\bIdSheet\b|type: "id"|type: "card"/, `${f} still names a 1.x add sheet`);
 });
 
-test("three tabs: Vault, Activity, You; and the add flow asks what it is first", () => {
+test("tabs: Vault, Messages (only with a relay), Activity, You; and the add flow asks what it is first", () => {
   const kit = read("ui/kit.jsx");
   const tabs = [...kit.matchAll(/\{ id: "([a-z]+)", label: "([A-Za-z]+)"/g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(tabs, [["vault", "Vault"], ["activity", "Activity"], ["you", "You"]]);
+  assert.deepEqual(tabs, [["vault", "Vault"], ["messages", "Messages"], ["activity", "Activity"], ["you", "You"]]);
+  assert.match(kit, /id: "messages"[^\n]*when: \(\) => S\.messagingOn\.value/, "Messages shows only when the server runs a relay");
   assert.match(kit, /role="tablist"/);
   assert.match(kit, /role="tab" aria-selected=/);
   for (const f of [...faces, ...all.filter((x) => x.startsWith("core/"))]) {

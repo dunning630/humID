@@ -1,7 +1,9 @@
 // Person to person (4.0), in a real browser: two phones meet and talk, and nothing happens
 // without a live check. Checks, on a common phone (390×844):
 //   - Messages appears as a tab only because the server runs a relay
-//   - invite → ask to connect → see who's asking → approve → chat, each step one check
+//   - invite → ask to connect → see who's asking → approve → chat, each step one check, and two
+//     people together never leave the screen they're on (the invite turns into the request; the
+//     asker's screen opens the conversation when they're approved); both phones show one safety code
 //   - a message arrives marked live; the reader sees content only while their check is fresh
 //   - when the check lapses, the thread seals itself and one check opens it again
 //   - every control is at least 44 px; nothing on these screens throws
@@ -75,22 +77,24 @@ try {
   await shot(alice, "alice-empty");
   await targets(alice, "Messages (empty)");
 
-  step("Alice makes an invite: one check");
+  step("Alice makes an invite: one check; the screen stays with her");
   await alice.getByRole("button", { name: "Invite someone" }).click();
   await alice.fill("#inv-label", "Bob");
   await shot(alice, "alice-invite-form");
-  await alice.getByRole("button", { name: "Make an invite" }).click();
+  await alice.getByRole("button", { name: "Make invite with a live check" }).click();
   await hold(alice);
-  await alice.locator(".invite-code").waitFor({ timeout: 30_000 });
+  await alice.getByText("Waiting for Bob to scan it").waitFor({ timeout: 30_000 });
+  await shot(alice, "alice-invite-made");
+  await alice.getByText("Not together? Use the code").click();
   const code = "HI-" + (await alice.locator(".invite-code span").allInnerTexts()).join("-");
   assert.match(code, /^HI-([0-9A-Z]{4}-){10}[0-9A-Z]{4}$/);
-  await shot(alice, "alice-invite-made");
-  await alice.getByRole("button", { name: "Done" }).click();
+  await shot(alice, "alice-invite-code");
+  await targets(alice, "the invite");
 
-  step("Bob types the code, names her, asks to connect: one check");
+  step("Bob types the code, names her, asks: one check; then waits on the same screen");
   await tab(bob, "Messages");
   await bob.getByText("Talk only with people you've approved").waitFor({ timeout: 20_000 });
-  await bob.getByRole("button", { name: "I have an invite code" }).click();
+  await bob.getByRole("button", { name: "Someone invited me" }).click();
   await bob.fill("#inv-code", code.toLowerCase());
   await shot(bob, "bob-enter-code");
   await bob.getByRole("button", { name: "Find invite" }).click();
@@ -98,36 +102,36 @@ try {
   await bob.fill("#ct-label", "Alice");
   await bob.fill("#ct-intro", "Bob, from the workshop");
   await shot(bob, "bob-found");
-  await bob.getByRole("button", { name: "Ask to connect" }).click();
+  await bob.getByRole("button", { name: "Ask with a live check" }).click();
   await hold(bob);
   await bob.getByText("Asked Alice to connect").waitFor({ timeout: 30_000 });
-  await shot(bob, "bob-sent");
-  await bob.getByRole("button", { name: "Done" }).click();
-  await bob.getByText("Waiting for them to approve you").first().waitFor();
+  const bobSafety = (await bob.locator(".safety span").allInnerTexts()).join("-");
+  await shot(bob, "bob-waiting");
 
-  step("Alice sees the request, opens it with a check, approves with another");
-  await alice.getByText("Someone asked to connect").waitFor({ timeout: 40_000 });
-  await shot(alice, "alice-request-listed");
-  await alice.getByText("Someone asked to connect").click();
+  step("Alice's invite screen turns into Bob's request; she opens it, compares, approves");
+  await alice.getByText("Bob is asking to connect").waitFor({ timeout: 30_000 });
+  await shot(alice, "alice-request-arrived");
   await alice.getByRole("button", { name: "See who's asking" }).click();
   await hold(alice);
-  await alice.getByText("Made with a live check").waitFor({ timeout: 30_000 });
+  await alice.getByText("Asked with a live check").waitFor({ timeout: 30_000 });
   await alice.getByText("Bob, from the workshop").waitFor();
+  const aliceSafety = (await alice.locator(".safety span").allInnerTexts()).join("-");
+  assert.equal(aliceSafety, bobSafety, "both phones show the same safety code");
+  await alice.getByRole("button", { name: "It matches" }).click();
+  await bob.getByRole("button", { name: "It matches" }).click();
   await shot(alice, "alice-request-shown");
-  await alice.getByRole("button", { name: "Approve" }).click();
+  await alice.getByRole("button", { name: "Approve with a live check" }).click();
   await hold(alice);
   await alice.locator(".composer textarea").waitFor({ timeout: 30_000 });
   await shot(alice, "alice-chat-new");
-  assert.equal(await alice.locator(".live-state").getAttribute("data-live"), "true", "Bob's stamped request proves him live");
+  assert.equal(await alice.locator(".presence").getAttribute("data-live"), "true", "Bob's live request and Alice's approval: live together");
 
-  step("Bob is connected once the acceptance arrives (stamped)");
-  await bob.locator(".row", { hasText: "Alice" }).click();
+  step("Bob's screen opens the conversation by itself when the stamped acceptance arrives");
   await bob.locator(".composer textarea").waitFor({ timeout: 40_000 });
   await bob.getByText("They approved you with a live check").waitFor({ timeout: 10_000 });
   await shot(bob, "bob-chat-connected");
-  const st = await bob.locator(".live-state").evaluate((el) => ({ ...el.dataset, now: Date.now() }));
-  console.log("  bob live state after the acceptance:", JSON.stringify(st));
-  assert.equal(st.live, "true", "the stamped acceptance proves Alice live, and Bob's own ask proved him");
+  const st = await bob.locator(".presence").getAttribute("data-live");
+  assert.equal(st, "true", "the stamped acceptance proves Alice live, and Bob's own ask proved him");
 
   step("Bob sends: one check; Alice receives it marked live");
   await bob.fill(".composer textarea", "Hi Alice, it's really me.");
@@ -136,17 +140,17 @@ try {
   await bob.locator(".bubble.out", { hasText: "it's really me" }).waitFor({ timeout: 30_000 });
   await shot(bob, "bob-sent-message");
   await alice.locator(".bubble.in", { hasText: "it's really me" }).waitFor({ timeout: 40_000 });
-  assert.ok(await alice.locator(".bubble.in .lv").count() >= 1, "marked live");
+  assert.equal(await alice.locator(".presence").getAttribute("data-live"), "true", "Bob's live message keeps them live together");
   await shot(alice, "alice-received");
   await targets(alice, "a conversation");
 
   step("the reader's check lapses: the thread seals itself; one check opens it");
   // Six minutes of reading without a check (activity keeps the idle lock away meanwhile).
   for (let i = 0; i < 4; i++) { await alice.clock.fastForward("01:30"); await alice.keyboard.press("Shift"); }
-  await alice.getByText("Sealed until you verify").waitFor({ timeout: 10_000 });
+  await alice.locator(".sealed h3", { hasText: "Sealed" }).waitFor({ timeout: 10_000 });
   assert.equal(await alice.locator(".bubble").count(), 0, "no content on screen once the check lapsed");
   await shot(alice, "alice-lapsed");
-  await alice.getByRole("button", { name: "Verify it's you" }).click();
+  await alice.getByRole("button", { name: "Open with a live check" }).click();
   await hold(alice);
   await alice.locator(".bubble.in", { hasText: "it's really me" }).waitFor({ timeout: 20_000 });
   await shot(alice, "alice-reopened");

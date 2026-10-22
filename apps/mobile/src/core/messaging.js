@@ -33,6 +33,8 @@ import { toast, friendly, cancelled } from "./notify.js";
 import { withKeys, withStepUp, needVault } from "./interrupt.js";
 
 const POLL_MS = 12_000;
+const FAST_POLL_MS = 2_500;   // while a screen is waiting on the other phone (an invite on show, a request out)
+let fastUntil = 0;
 const MAX_LABEL = 40;
 const te = new TextEncoder(), td = new TextDecoder();
 
@@ -194,7 +196,7 @@ function showThread(id) {
   const c = convs.get(id);
   const ct = contactOf(id);
   if (!c || !ct) { S.thread.value = null; return; }
-  if (!fresh()) { S.thread.value = { id, locked: true, waiting: pendingCount.get(id) || 0 }; return; }
+  if (!fresh()) { S.thread.value = { id, locked: true, waiting: pendingCount.get(id) || 0, count: Math.min(12, c.messages(now()).length) }; return; }
   const msgs = c.messages(now()).map((m) => ({
     id: m.id, dir: m.dir, kind: m.kind, at: m.at, expiresAt: m.expiresAt, live: m.dir === "out" ? true : m.live === true, duress: !!m.duress,
     text: m.kind === "text" ? td.decode(m.body) : null,
@@ -265,7 +267,7 @@ export function poll() {
     } catch { /* offline or busy: next time */ }
     finally {
       polling = null;
-      if (started) { publish(); timer = setTimeout(poll, POLL_MS); }
+      if (started) { publish(); timer = setTimeout(poll, now() < fastUntil ? FAST_POLL_MS : POLL_MS); }
     }
   })();
   return polling;
@@ -340,6 +342,15 @@ async function expireInvites() {
 const report = (e) => { if (!cancelled(e)) toast(friendly(e), "error"); return null; };
 const cleanLabel = (s) => String(s || "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
 
+/**
+ * Two people mid-connection: poll every few seconds while a screen waits on the other phone
+ * (an invite on show, a request out), so the next step appears by itself. Stops after 3 minutes.
+ */
+export function waitingOnOther(on) {
+  fastUntil = on ? now() + 3 * 60_000 : 0;
+  if (on) poll();
+}
+
 /** Read: one live check, then everything waiting opens and stays readable for the window. */
 export async function verifyToRead() {
   try {
@@ -413,7 +424,7 @@ export async function askToConnect(found, { label, intro = "" }) {
     await addConv(made.session, { label: cleanLabel(label) || "New contact", role: "b", personaSalt: salt, createdAt: now(), reqBox: made.box, retract: made.retract, peerId: found.id });
     await post([{ box: made.box, wire: made.wire, retractTag: made.retractTag }]);
     publish();
-    return true;
+    return { id: hex(made.session.convId), safetyCode: made.session.safetyCode };
   } catch (e) { return report(e); }
 }
 
@@ -457,7 +468,7 @@ export async function reviewRequest(reqId) {
 }
 
 /** Approve: one live check; the acceptance carries its stamp. */
-export async function approveRequest(reqId, { label }) {
+export async function approveRequest(reqId, { label, safetyVerified = false }) {
   const rv = reviews.get(reqId);
   if (!rv) return null;
   try {
@@ -470,7 +481,7 @@ export async function approveRequest(reqId, { label }) {
     reviews.delete(reqId);
     requests.delete(reqId); await R.store.delMsg(reqId);
     if (rv.invite.state.closed) list.invites = list.invites.filter((i) => i !== rv.invite);
-    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from }, { peerAt: rv.peerAt });
+    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from, safetyVerified: !!safetyVerified }, { peerAt: rv.peerAt });
     await post([sent]);
     publish();
     return hex(session.convId);
@@ -596,10 +607,13 @@ export function liveStateOf(id) {
   return M.liveState({ ownAt: S.liveAt.value || null, peerAt: c?.peerLiveAt ?? null, now: now() });
 }
 
-/** Network-wide: how many messages a live human approved today. */
+/** Network-wide: how many messages a live human sent today. */
 export async function humanToday() {
   try { const days = await R.api.msgStats(); return days?.[0]?.stamps ?? 0; } catch { return null; }
 }
 
 export const LIVE_WINDOW_MS = M.LIVE_WINDOW_MS;
+/** Requests that arrived for one invite (the invite screen turns into "they're asking"). */
+export const requestsForInvite = (inviteId) => [...requests.values()].filter((r) => r.invite === inviteId).map((r) => r.id);
+
 export const TIMERS = [[0, "Off"], [3600_000, "1 hour"], [86_400_000, "1 day"], [7 * 86_400_000, "1 week"]];
