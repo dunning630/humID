@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 
 const APPS = ["ios", "android", "macos", "windows", "linux"];
-const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery", "access", "keyshare"];
+const NODE_SERVICES = ["gateway", "identity", "vault", "ledger", "recovery", "access", "keyshare", "relay"];
 const SERVICES = [...NODE_SERVICES, "edge"];
 
 // Which shared package feeds which service image. Every package also feeds the
@@ -17,7 +17,7 @@ const SERVICES = [...NODE_SERVICES, "edge"];
 const SERVER_ONLY = new Set(["svc", "attest", "anchor"]);
 // Modules no app or service imports yet (HumID 3.0 and 4.0 work in progress).
 // Remove a name from here in the same change that wires it into the app.
-const NOT_SHIPPED = new Set(["backup", "msg", "sdjwt", "creds"]);
+const NOT_SHIPPED = new Set(["backup", "sdjwt", "creds"]); // msg ships from 4.1 (person to person)
 const PKG_SERVICES = {
   svc: NODE_SERVICES,
   attest: ["identity", "vault", "gateway", "recovery"],
@@ -29,7 +29,7 @@ const PKG_SERVICES = {
   audit: ["ledger"],
   recovery: ["recovery"],
   pass: ["access"],
-  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [], backup: [], msg: [], sdjwt: [], creds: [], fido: [],
+  api: [], gate: [], store: [], io: [], emrtd: [], idscan: [], cards: [], wallet: [], backup: [], msg: ["relay", "gateway"], sdjwt: [], creds: [], fido: [],
 };
 
 // [pattern, apps, services] — first match wins.

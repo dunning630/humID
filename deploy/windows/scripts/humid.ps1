@@ -141,7 +141,7 @@ $PathText    = (@($Path) | Where-Object { $_ } | ForEach-Object { ([string]$_).T
 $BridgeDir   = Join-Path $DataRoot 'data\admin'   # where the console and the server meet (docs/ADMIN.md)
 # Where the server (LOCAL SERVICE) keeps its own databases and keys: data\<service>. The only
 # folders under the data root it may change, with logs\ (Set-DataAcl).
-$ServerDataDirs = @('identity', 'vault', 'ledger', 'recovery', 'access', 'keyshare', 'gateway')
+$ServerDataDirs = @('identity', 'vault', 'ledger', 'recovery', 'access', 'keyshare', 'relay', 'gateway')
 
 # Well-known SIDs, so this works on every Windows language.
 $SidSystem       = 'S-1-5-18'
