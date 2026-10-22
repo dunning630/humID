@@ -97,7 +97,7 @@ jobs:
           WANT="${WANT/all/ios,android,macos,windows,linux}"
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os, sys
-          runners = {"ios": "macos-14", "macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
+          runners = {"ios": "macos-26", "macos": "macos-26", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
           want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
           server = "server-windows" in want
           apps = [p for p in want if p != "server-windows"]
@@ -309,6 +309,13 @@ jobs:
       - name: macOS · unsigned build (Touch ID needs a signed build)
         if: matrix.platform == 'macos' && env.HAS_APPLE != 'true'
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app --no-sign
+      # Since 28 Apr 2026 App Store Connect refuses uploads not built with Xcode 26 / the iOS 26 SDK.
+      - name: Apple · use Xcode 26
+        if: matrix.platform == 'ios' || matrix.platform == 'macos'
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] || { echo "::error::no Xcode 26 on this runner; App Store Connect would refuse the upload"; exit 1; }
+          sudo xcode-select -s "$X/Contents/Developer"; xcodebuild -version
       - name: iOS · generate Xcode project
         if: matrix.platform == 'ios'
         run: npm run tauri -- ios init --ci
