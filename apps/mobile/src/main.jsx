@@ -68,6 +68,8 @@ const Join = chunk(() => import("./screens/join.jsx"), "Join");
 const Add = chunk(() => import("./screens/add/index.jsx"), "Add", null);
 const Activity = chunk(() => import("./screens/activity.jsx"), "Activity");
 const You = chunk(() => import("./screens/you/index.jsx"), "You");
+// 4.0 person to person: the screens and the protocol load together, the first time Messages opens.
+const Messages = chunk(() => import("./screens/messages/index.jsx"), "Messages");
 
 /**
  * Once the vault is open, fetch the other tabs' code in idle time, so they open at once
@@ -98,6 +100,7 @@ function App() {
       {v === "app" && (
         <>
           {S.tab.value === "vault" && <Vault />}
+          {S.tab.value === "messages" && S.messagingOn.value && <Messages />}
           {S.tab.value === "activity" && <Activity />}
           {S.tab.value === "you" && <You />}
           <TabBar />

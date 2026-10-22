@@ -1,0 +1,44 @@
+/* HumID 4.0 person to person: the Messages tab and a conversation. Loaded with its chunk. */
+
+/* the live state: a dot and a few words, never a colour alone */
+.live-state { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
+.live-state .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.live-state[data-live="true"] { color: var(--mint); }
+.live-state[data-live="true"] .dot { background: var(--mint); box-shadow: 0 0 0 4px var(--mint-wash); }
+.live-state[data-needs="own"], .live-state[data-needs="both"] { color: var(--amber); }
+.live-state[data-needs="own"] .dot, .live-state[data-needs="both"] .dot { background: var(--amber); }
+
+/* the thread */
+.thread { display: flex; flex-direction: column; gap: 6px; padding: var(--s-3) 0 var(--s-4); }
+.day-sep { align-self: center; font-size: var(--t-xs); color: var(--muted); padding: var(--s-2) 0; }
+.bubble { max-width: 82%; padding: 9px 13px; border-radius: 18px; font-size: var(--t-md); line-height: 1.38; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble.in { align-self: flex-start; background: var(--surface-2, var(--surface)); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
+.bubble.out { align-self: flex-end; background: var(--mint-wash); border: 1px solid var(--mint-deep); border-bottom-right-radius: 6px; }
+.bubble .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: var(--t-xs); color: var(--muted); }
+.bubble.out .meta { justify-content: flex-end; }
+.bubble .meta .ico { width: 13px; height: 13px; }
+.bubble .meta .lv { color: var(--mint); display: inline-flex; align-items: center; gap: 3px; }
+.bubble.duress { border-color: var(--danger); }
+.notice { align-self: center; max-width: 90%; text-align: center; font-size: var(--t-xs); color: var(--text-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 5px 12px; }
+
+/* the composer sits above the bottom edge, like the primary action everywhere else */
+.composer { position: sticky; bottom: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: var(--s-3) 0 calc(var(--safe-b) + var(--s-3)); background: var(--ground); border-top: 1px solid var(--line); }
+.composer textarea { width: 100%; min-height: var(--tap); max-height: 140px; resize: none; padding: 11px 14px; border-radius: 22px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-md); line-height: 1.35; }
+.composer textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+.composer .send { width: var(--tap); height: var(--tap); border-radius: 50%; display: grid; place-items: center; background: var(--amber-hi, var(--amber)); color: var(--amber-ink); }
+.composer .send:disabled { background: var(--surface-3); color: var(--muted); }
+.composer .send .ico { width: 22px; height: 22px; }
+.composer .hint { grid-column: 1 / -1; font-size: var(--t-xs); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.composer .hint .ico { width: 14px; height: 14px; }
+
+/* a locked thread: content stays sealed until a fresh check */
+.sealed { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-8) var(--s-4); }
+.sealed .ico { width: 40px; height: 40px; color: var(--amber); }
+
+/* the safety code: five groups of four, big enough to compare across a table */
+.safety { font-family: var(--f-mono); font-size: var(--t-xl); letter-spacing: 0.08em; display: flex; flex-wrap: wrap; gap: 10px 14px; justify-content: center; padding: var(--s-4); border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line); }
+.persona { font-family: var(--f-mono); font-size: var(--t-sm); color: var(--text-2); letter-spacing: 0.02em; }
+
+/* invite code: long, so it wraps in groups */
+.invite-code { font-family: var(--f-mono); font-size: var(--t-md); letter-spacing: 0.06em; display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: center; padding: var(--s-3); border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); }
+.unread { min-width: 22px; height: 22px; padding: 0 7px; border-radius: var(--r-pill); background: var(--amber-hi, var(--amber)); color: var(--amber-ink); font-size: var(--t-xs); font-weight: 700; line-height: 22px; text-align: center; }

@@ -63,6 +63,9 @@ const P = {
   zoomout: <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />,
   move: <path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" />,
   phone: <><rect x="7" y="2.5" width="10" height="19" rx="2.5" /><path d="M11 18.5h2" /></>,
+  // 4.0 person to person: a speech bubble; send, an arrow up
+  chat: <><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.5L6 19.5V16h0A2.5 2.5 0 0 1 4.5 13.5v-7Z" /><path d="M8.5 9h7M8.5 12h4.5" /></>,
+  send: <path d="M12 19V5M6.5 10.5 12 5l5.5 5.5" />,
   wifi_off: <><path d="M4 4.5 20 19.5M8.5 15.5a5.5 5.5 0 0 1 6.3-.8M5 12.3a10 10 0 0 1 3.2-2M19 12.3a10 10 0 0 0-6.3-2.7" /><circle cx="12" cy="18.5" r="1" /></>,
 };
 

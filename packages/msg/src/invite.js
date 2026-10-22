@@ -301,3 +301,30 @@ export function closeInvite(state) {
   state.used = state.uses;
   state.closed = true;
 }
+
+/* ---------- invite QR codes ----------
+ * The same code you could type, and when it expires, in a form the camera reads and nothing
+ * else accepts: HUMID-INVITE:1:<44 characters>:<expiry, seconds, base 36>. What's scanned is
+ * checked exactly like a typed code (check characters, then the persona pin when it opens).
+ */
+const QR_PREFIX = "HUMID-INVITE:1:";
+const QR_RE = /^HUMID-INVITE:1:([0-9A-HJKMNP-TV-Z]{44}):([0-9A-Z]{1,9})$/;
+
+export function inviteQrPayload(code, expiresAt) {
+  const { secret, pin } = parseInviteCode(code);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new MsgError("bad_invite_code", "Nothing to put in a QR code");
+  return `${QR_PREFIX}${formatInviteCode(secret, pin).slice(3).replace(/-/g, "")}:${Math.ceil(expiresAt / 1000).toString(36).toUpperCase()}`;
+}
+
+/** { code, expiresAt } from scanned text, or null for anything that isn't exactly a HumID invite QR. */
+export function parseInviteQr(text) {
+  if (typeof text !== "string" || text.length > 80) return null;
+  const m = QR_RE.exec(text);
+  if (!m) return null;
+  try {
+    const { secret, pin } = parseInviteCode(m[1]);
+    const expiresAt = parseInt(m[2], 36) * 1000;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return null;
+    return { code: formatInviteCode(secret, pin), expiresAt };
+  } catch { return null; }
+}

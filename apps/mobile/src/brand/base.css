@@ -265,12 +265,14 @@ textarea.input { min-height: 96px; resize: vertical; }
 .tabbar {
   position: fixed; z-index: 30; left: 50%; bottom: 0; transform: translateX(-50%); width: 100%; max-width: var(--col);
   height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
-  display: grid; grid-template-columns: repeat(3, 1fr); background: var(--ground); border-top: 1px solid var(--line);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--ground); border-top: 1px solid var(--line);
 }
 @media (min-width: 600px) { .tabbar { bottom: 24px; border-radius: 0 0 32px 32px; } }
 .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--muted); font-size: var(--t-xs); font-weight: 600; min-height: var(--tabbar-h); }
 .tabbar button[aria-selected="true"] { color: var(--mint); }
 .tabbar .ico { width: 24px; height: 24px; }
+.tabbar .tab-ico { position: relative; display: inline-flex; }
+.tabbar .badge { position: absolute; top: -4px; left: 16px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--amber-hi, var(--amber)); color: var(--amber-ink); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
 
 /* ---------- toasts ---------- */
 /* Toasts drop in at the top, under the status bar: the bottom of every screen is where the
