@@ -5,7 +5,7 @@
 // stamp that proves a live human sent them without saying which one.
 // See docs/MESSAGING.md.
 
-export { VERSION, MsgError } from "./util.js";
+export { VERSION, MsgError, toPlain, fromPlain } from "./util.js";
 export { backend, useBackend, checkBackend, resetBackend, SIZES, isValidKemPk } from "./backend.js";
 export {
   newPersona, personaFromSalt, personaId, personaFingerprint, safetyCode, publicOf, wipePersona,
@@ -13,7 +13,7 @@ export {
 } from "./persona.js";
 export {
   createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite, cancelInvite,
-  formatInviteCode, parseInviteCode, inviteBoxOf, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
+  formatInviteCode, parseInviteCode, inviteBoxOf, inviteQrPayload, parseInviteQr, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
 export {
   Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS,

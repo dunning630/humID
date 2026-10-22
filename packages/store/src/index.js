@@ -21,7 +21,15 @@ export async function openStore() {
       return record;
     },
     putIdentity: (rec) => backend.put("identity", "self", { ...rec, schema: IDENTITY_SCHEMA }),
-    clearIdentity: () => backend.clear("identity"),
+    // Messages belong to the identity: forgetting it forgets them (sealed under keys from its seed anyway).
+    clearIdentity: async () => { await backend.clear("identity"); await backend.clear("msg"); },
+
+    // HumID 4.0 messaging (docs/MESSAGING.md): every record is sealed or ciphertext.
+    getMsg: (id) => backend.get("msg", id).then((r) => r || null),
+    putMsg: (rec) => backend.put("msg", rec.id, rec),
+    delMsg: (id) => backend.del("msg", id),
+    listMsg: () => backend.all("msg"),
+    clearMsg: () => backend.clear("msg"),
 
     listVault: () => backend.all("vault"),
     putItem: (item) => backend.put("vault", item.id, item),
