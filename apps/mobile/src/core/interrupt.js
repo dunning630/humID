@@ -24,6 +24,12 @@ export function gateLabel(method) {
   })[method] || "your face or fingerprint";
 }
 
+/**
+ * Checks that are part of a conversation's rhythm (sending, opening a conversation) show as a
+ * compact card over the composer and get out of the way quickly. It is the same live check;
+ * only less of the screen is taken while the sensor does its work.
+ */
+export const COMPACT = new Set(["send", "read"]);
 export function showInterrupt(patch) { S.interrupt.value = { ...(S.interrupt.value || {}), ...patch }; }
 export const holdMessage = "Demo mode has no sensor. Press and hold to stand in for it.";
 
@@ -91,7 +97,7 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     const interrupt = { method: rel.interrupt.method, assurance: rel.interrupt.assurance };
     const out = await fn({ keys, dkeys, seed, interrupt, rec: rel.interrupt, live: rel.live, Suite });
     if (keepOpen) showInterrupt({ progress: 0.85, message: "Keys wiped from memory. Waiting for your vault to confirm…" });
-    else await endInterrupt(true, "Verified. Keys wiped from memory.", 620);
+    else await endInterrupt(true, "Verified. Keys wiped from memory.", COMPACT.has(purpose) ? 180 : 620);
     return out;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1600);

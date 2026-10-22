@@ -53,7 +53,14 @@ let lapseTimer = null;
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const rid = () => hex(crypto.getRandomValues(new Uint8Array(12)));
 const now = () => Date.now();
-const fresh = () => M.canRead({ ownAt: S.liveAt.value || null, now: now() });
+/* global __HUMID_ALLOW_DEMO__ */
+// The freshness window (live.js). Development builds only may shorten it (localStorage
+// humidLiveWindowMs, 30 s to 5 min) so a browser test can watch it lapse in real time;
+// release builds fold this to the constant and carry no override.
+const WINDOW = (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)
+  ? (() => { try { const w = Number(globalThis.localStorage?.getItem("humidLiveWindowMs")); return w >= M.MIN_LIVE_WINDOW_MS && w <= M.LIVE_WINDOW_MS ? w : M.LIVE_WINDOW_MS; } catch { return M.LIVE_WINDOW_MS; } })()
+  : M.LIVE_WINDOW_MS;
+const fresh = () => M.canRead({ ownAt: S.liveAt.value || null, now: now(), windowMs: WINDOW });
 
 /* ---------------- sealing under R.msgKey ---------------- */
 
@@ -172,7 +179,7 @@ function publish() {
     const unreadIn = msgs.filter((m) => m.dir === "in" && m.at > (ct.lastRead || 0)).length;
     return {
       id: ct.id, label: ct.label, peerId: c?.session.peerId || ct.peerId || "", status,
-      created: ct.createdAt, safetyVerified: !!ct.safetyVerified, duressAlert: !!ct.duressAlert, duressAt: ct.duressAt || 0,
+      created: ct.createdAt, safetyVerified: ct.safetyVerified || false, duressAlert: !!ct.duressAlert, duressAt: ct.duressAt || 0, showHere: ct.showHere !== false,
       peerAt: c?.peerLiveAt ?? null, timer: c?.timer ?? 0,
       waiting: pendingBy.get(ct.id) || 0, unread: unreadIn,
       last: last ? { at: last.at, dir: last.dir, text: last.kind === "text" ? td.decode(last.body) : "Voice note or photo" } : null,
@@ -207,7 +214,7 @@ function showThread(id) {
 /** Re-render when the holder's check lapses, so content disappears on time. */
 function scheduleLapse() {
   clearTimeout(lapseTimer);
-  const until = (S.liveAt.value || 0) + M.LIVE_WINDOW_MS - now();
+  const until = (S.liveAt.value || 0) + WINDOW - now();
   if (until > 0) lapseTimer = setTimeout(() => publish(), until + 50);
 }
 
@@ -351,10 +358,21 @@ export function waitingOnOther(on) {
   if (on) poll();
 }
 
-/** Read: one live check, then everything waiting opens and stays readable for the window. */
+/**
+ * Read: one live check, then everything waiting opens and stays readable for the window.
+ * With a conversation on screen (and "show them when you're here" on, the default), the same
+ * check stamps an empty "I'm here" for that one contact, so they see you live while you read.
+ */
 export async function verifyToRead() {
   try {
-    await withKeys("read", "Read your messages", async () => {});
+    const id = openThread, c = id && convs.get(id), ct = id && contactOf(id);
+    let sent = null;
+    if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value) {
+      await live("read", `Open ${ct.label}`, async ({ stamper }) => { sent = await c.here({ stamper, now: now() }); });
+    } else {
+      await withKeys("read", "Open your messages", async () => {});
+    }
+    if (sent) await post([sent]);
     await readWaiting();
     publish();
     scheduleLapse();
@@ -481,7 +499,7 @@ export async function approveRequest(reqId, { label, safetyVerified = false }) {
     reviews.delete(reqId);
     requests.delete(reqId); await R.store.delMsg(reqId);
     if (rv.invite.state.closed) list.invites = list.invites.filter((i) => i !== rv.invite);
-    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from, safetyVerified: !!safetyVerified }, { peerAt: rv.peerAt });
+    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from, safetyVerified: typeof safetyVerified === "string" ? `${safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!safetyVerified }, { peerAt: rv.peerAt });
     await post([sent]);
     publish();
     return hex(session.convId);
@@ -588,8 +606,10 @@ export async function updateContact(id, patch) {
   const ct = contactOf(id);
   if (!ct) return;
   if ("label" in patch) ct.label = cleanLabel(patch.label) || ct.label;
-  if ("safetyVerified" in patch) ct.safetyVerified = !!patch.safetyVerified;
+  // what the holder said about the comparison: false, or how they compared ("in person", "on a video call")
+  if ("safetyVerified" in patch) ct.safetyVerified = typeof patch.safetyVerified === "string" ? `${patch.safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!patch.safetyVerified;
   if ("duressAlert" in patch) ct.duressAlert = !!patch.duressAlert;
+  if ("showHere" in patch) ct.showHere = !!patch.showHere;
   if (patch.clearNotices) ct.notices = [];
   await saveList();
   publish();
@@ -604,7 +624,7 @@ export function safetyOf(id) {
 /** The validated human-to-human state of a conversation (live.js). */
 export function liveStateOf(id) {
   const c = convs.get(id);
-  return M.liveState({ ownAt: S.liveAt.value || null, peerAt: c?.peerLiveAt ?? null, now: now() });
+  return M.liveState({ ownAt: S.liveAt.value || null, peerAt: c?.peerLiveAt ?? null, now: now(), windowMs: WINDOW });
 }
 
 /** Network-wide: how many messages a live human sent today. */
@@ -612,7 +632,7 @@ export async function humanToday() {
   try { const days = await R.api.msgStats(); return days?.[0]?.stamps ?? 0; } catch { return null; }
 }
 
-export const LIVE_WINDOW_MS = M.LIVE_WINDOW_MS;
+export const LIVE_WINDOW_MS = WINDOW;
 /** Requests that arrived for one invite (the invite screen turns into "they're asking"). */
 export const requestsForInvite = (inviteId) => [...requests.values()].filter((r) => r.invite === inviteId).map((r) => r.id);
 

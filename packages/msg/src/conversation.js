@@ -177,6 +177,17 @@ export class Conversation {
     return this.#serial(async () => this.#saved(post(await this.session.encrypt("accept", "", { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
   }
 
+  /**
+   * "I'm here": a stamped receipt with no content, sent when the holder opens the conversation
+   * with a live check. It makes the human-to-human state mutual for READING too: without it,
+   * someone who only reads is live on their own phone but invisible to the contact until they
+   * send something. The contact's phone counts it like any live message (peerLiveAt) and shows
+   * nothing else. Returns what to post.
+   */
+  here({ now = Date.now(), stamper = null } = {}) {
+    return this.#serial(async () => this.#saved(post(await this.session.encrypt("receipt", '{"here":1}', { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
+  }
+
   /** Turn disappearing messages on (ms) or off (0) for both of you. Returns what to post. */
   setTimer(ms, { now = Date.now(), stamper = null } = {}) {
     return this.#serial(async () => this.#saved(post(await this.session.encrypt("timer", String(ms), { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
