@@ -1,15 +1,98 @@
 # Person to person (HumID 4.0, provisional)
 
-> **Status:** 4.0 track (`v4/p2p-comms`, with "Proving it's you" from
-> `v4/prove-its-me`), in the apps 3.2.1 code base (no app screens yet). The protocol, formats,
-> delete and relay rules are built and tested (`packages/msg`, `tests/msg.test.js`,
-> `tools/timing-msg.mjs`); the relay service, the gateway's stamp route and the
-> app screens are not. Like the rest of HumID, it needs an independent
-> cryptographic review before real conversations go through it.
+> **Status:** 4.0 track. Built and tested: the protocol and formats (`packages/msg`,
+> `tests/msg.test.js`, `tests/msg-live.test.js`), the human-to-human rule below, the relay
+> service (`services/relay`), the gateway's stamp and relay routes, and the app's Messages tab
+> (`apps/mobile/src/core/messaging.js`, `screens/messages`), end to end
+> (`tests/e2e/messaging.test.js`, `tests/browser/messages.mjs`). Like the rest of HumID, it
+> needs an independent cryptographic review before real conversations go through it.
 
 Two HumID holders approve each other and talk directly. Each knows the other
 only by an ID. Every message is end-to-end encrypted with post-quantum keys,
-and can carry proof that a live human sent it, without saying which human.
+and carries proof that a live human sent it, without saying which human.
+
+## The human-to-human rule
+
+Nobody interacts on HumID without a live check. The rule lives in the protocol
+(`packages/msg/src/live.js`, the `requireLive` option), so an app can't skip it by accident,
+and the app turns it on for every conversation.
+
+| Step | What it takes | What happens without it |
+|---|---|---|
+| Make an invite | the inviter's live check (it releases the account seed the persona is made from) | no invite |
+| Ask to connect | a live check; the request carries a live stamp | `readRequest` refuses it (`not_live`): never shown |
+| See who's asking | the inviter's live check (the request opens only with the invite's persona keys) | it stays sealed |
+| Approve | a live check; the "accept" carries a live stamp | the requester's phone discards it and stays unconnected |
+| Every message (text, media, delete, timer, end, "I'm here") | a live check; a stamp over its exact bytes | discarded unread; nothing it says is applied; its key is still used up |
+| Read | the reader's own live check within the freshness window | what arrived stays ciphertext on the phone, counted, never opened |
+
+One action is one check: deleting a whole conversation for both sends a delete and an end,
+and both are stamped in the same check (`stamper.many`; the gateway signs 1 to 4 blinded
+values per step-up, and its signature covers exactly those values).
+
+**Here, away, and both here.** A conversation is validated human to human ("Both here")
+only while, within one freshness window (5 minutes):
+
+1. this phone has verified a live stamp from the contact (their latest message, acceptance,
+   request, or an empty "I'm here"), and
+2. this phone's own holder has passed a live check.
+
+Either lapsing ends it: the app shows the contact as "away", and when the holder's own window
+ends the conversation locks itself on the phone until the next check. The contact's time is
+the moment their message says it was sent, never later than it arrived, so a fast clock can't
+stretch it. "I'm here" is a stamped receipt with no content, sent when someone opens a
+conversation with a live check (per contact, on by default), so reading counts as being here,
+not only writing.
+
+What it proves, exactly: a face or fingerprint on a proven phone approved those bytes (the
+stamp), and only the contact's persona could have sent them (the ratchet). It does not prove
+who wrote the words, or that the person wasn't coerced. The app says "confirmed by its
+sender's face or fingerprint", never "verified human".
+
+## In the app
+
+```
+ Alice                                                   Bob
+ Messages → Invite someone → [live check]
+ QR on screen, "Waiting for Bob to scan it…"   ──scan──► I have their code → name, note → [live check]
+                                                         "Waiting for Alice", safety code shown
+ the same screen becomes "Bob is asking"  ◄── request (stamped) ──
+ See who's asking → [live check]
+ note, safety code: Same / Different
+ Approve → [live check]  ───────────── accept (stamped) ──► opens the conversation by itself
+ conversation: "You · here  Bob · here  Both here"         same, on his phone
+ Send → [compact live check] per message
+ away 5 min → "Locked" → Open with a live check (sends "I'm here" to that contact)
+```
+
+- Two people together never leave the screen they're on: the invite turns into the request,
+  the asker's screen opens the conversation when approved (both poll every few seconds while
+  one waits on the other).
+- The safety code is on both phones while they connect, compared out loud. "Different" blocks
+  approval. What's recorded is what one person can know: "you marked this the same (in person)".
+- Remote invites: the code sits behind "Not together?", with a share option and a warning that
+  anyone who sees it can use it once.
+- Storage: the contact list is sealed under a key derived from the account seed inside the
+  unlock check; each conversation under a new random key every save, kept wrapped under that
+  key; ciphertext from the relay waits unread for a fresh check; anything to post goes through
+  an outbox so a dropped connection loses nothing. Locking forgets everything decrypted.
+- The relay is reached from a separate session that never signs in. Stamps come from the
+  signed-in session inside a live step-up, so the issuer learns that an account asked for a
+  stamp, never for what.
+- A duress unlock sends with the encrypted duress flag; a contact who turned on "Tell me if
+  they may be under duress" sees a quiet warning.
+- The Messages tab appears only when the server runs a relay.
+
+### How the flow was arrived at
+
+Three rounds, each reviewed by someone who hadn't seen it built, each checked in a real
+browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=dir`):
+
+| Round | Found | Changed |
+|---|---|---|
+| v1 → v2 | The mutual state didn't read as mutual right after connecting; "live" unexplained; an empty inbox asked for a check; the composer floated; every bubble said "live" (redundant under strict mode); people standing together had to go back to the list between steps; two lines claimed more than the cryptography proves | presence pips with an explanation; the contact's request or acceptance counts as their check; together flow on one screen per person; safety code on both phones; copy limited to what's proven |
+| v2 → v3 | The invite screen didn't update when the request arrived (a bug); a one-tap "it matches" was recorded as "compared in person"; "live" read as alarming to a non-technical user; the reader was invisible to the contact | Same / Different with how it was compared; "here / away"; "I'm here" receipts; locked placeholders; compact check card for sending |
+| v3 | each message is still one check | the check is a card over the composer, gone in a moment; on a phone it's the system's face or fingerprint prompt, so a glance or a touch. The rule stays |
 
 ## The promise, stated exactly
 
@@ -407,36 +490,30 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 
 ## What is not built yet
 
-1. **`services/relay`**: the reference relay as a service (same rules as
-   `memoryRelay`), no accounts, behind the edge.
-2. **Gateway stamp route**: `POST /msg/stamp` inside a live step-up, one blinded
-   value per check, a separate stamp key, daily totals published.
-3. **App screens**: Contacts tab (invite by QR or code, requests with the live
-   badge and safety code, approve with a check), conversations, missing-message
-   notices, duress alerts opt-in per contact.
-4. **Contact list and conversation storage**, sealed under keys from the
-   account seed, with the rollback counter and the newest history key kept in
-   the device's secure storage; Check-in and the duress erase extended to
-   messaging (destroying those keys erases every conversation at once).
-5. **Attachments**: sealed with a random key, uploaded as padded objects, key
-   sent in a `file-key` message.
-6. **HQC** as a third KEM, once standardised.
-7. **Multi-device**, cover traffic, delivery receipts, rotating the mailbox
-   and wire keys with the root key, Elligator-encoded request keys, one size
-   class for invites and requests.
-8. **Proving it's you, in the app**: the "Is this really you?" button on every
-   contact and on incoming-call screens, the spoken-code screen, the locker
-   capture screen, a public persona with its ID shown for publishing, and an
-   independent timestamp (RFC 3161 or a transparency log) on media
-   credentials and releases.
-9. **Independent review** of the handshake and ratchet, and a machine-checked
-   model (Tamarin or ProVerif), as the audit recommends for the rest of HumID.
+1. **Native secure storage** for the newest conversation key and the rollback counter
+   (Keychain / Keystore). Today they're kept wrapped under the account-derived key in the
+   app's own storage, which protects them at rest but doesn't give flash-level erasure.
+2. **Check-in and the duress erase extended to messaging** (destroying the storage key erases
+   every conversation at once).
+3. **Push notifications** for new messages (the app polls while open).
+4. **Attachments**: sealed with a random key, uploaded as padded objects, key sent in a
+   `file-key` message. Relay objects are limited to what fits an anonymous call (512 KiB).
+5. **HQC** as a third KEM, once standardised.
+6. **Multi-device**, cover traffic, rotating the mailbox and wire keys with the root key,
+   Elligator-encoded request keys, one size class for invites and requests.
+7. **Proving it's you, in the app**: the "Is this really you?" button, the spoken-code screen,
+   the locker capture screen.
+8. **The Windows server**: it runs no relay yet, so messaging is off there.
+9. **Independent review** of the handshake, the ratchet and the human-to-human rule, and a
+   machine-checked model (Tamarin or ProVerif), as the audit recommends for the rest of HumID.
 
 ## Try it
 
 ```bash
-node --test tests/msg.test.js                    # 55 tests: meeting, ratchet, stamps, delete, relay, rollback, fuzz
-MSG_FUZZ_CASES=3000 node --test tests/msg.test.js
-node --test tests/prove.test.js                  # 17 tests: challenge verdicts, spoken code, stamped media, locker, release
-npm run test:timing                              # timing check of the current backend
+node --test tests/msg.test.js tests/msg-live.test.js   # protocol, and the human-to-human rule
+node --test tests/e2e/messaging.test.js                # two holders through the real services
+node tests/browser/messages.mjs                        # two phones in a browser (needs playwright)
+node --test tests/prove.test.js                        # challenge verdicts, spoken code, stamped media, locker
+npm run test:timing                                    # timing check of the current backend
+npm run dev                                            # open two browser windows and try it
 ```
