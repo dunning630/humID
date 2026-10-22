@@ -11,6 +11,7 @@ import { createService, env, json, bytes, parseJson, signRequest, internalReques
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
+import { rateKey, isBox, TAG_RE } from "@humid/msg/relay-rules";
 
 const ID_RE = "hid_[0-9a-f]{40}";
 const DEV_RE = "dev_[0-9a-f]{24}";
@@ -141,6 +142,19 @@ const ROUTES = [
   { m: "POST", p: re("/checkin/arm"), h: "checkinArm", auth: true },
   { m: "POST", p: re("/checkin/check"), h: "checkinCheck", auth: true },
   { m: "POST", p: re("/checkin/disarm"), h: "checkinDisarm", auth: true },
+
+  // Person to person (HumID 4.0, docs/MESSAGING.md), when the server runs a relay.
+  // Stamp keys and the network-wide daily totals: public.
+  { m: "GET", p: re("/msg/keys"), h: "msgKeys", msg: true },
+  { m: "GET", p: re("/msg/stats"), h: "msgStats", msg: true },
+  // A live stamp: blind values, signed only inside a live step-up over exactly these values.
+  // Not guarded by lockdown: a duress session must look like any other.
+  { m: "POST", p: re("/msg/stamp"), h: "msgStamp", auth: true, msg: true },
+  // The relay: ONLY from a session that never signs in, so nothing here links an account to a
+  // mailbox. Its own per-network limits apply instead of the anonymous-session limit.
+  { m: "POST", p: re("/msg/relay/put"), h: "relayPut", relay: true, msg: true },
+  { m: "POST", p: re("/msg/relay/take"), h: "relayTake", relay: true, msg: true },
+  { m: "POST", p: re("/msg/relay/retract"), h: "relayRetract", relay: true, msg: true },
 ];
 
 /** Check-in settings, as keyshare accepts them (CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS). Published in the policy hint. */
@@ -180,6 +194,8 @@ export function createGateway({
     recovery: env("RECOVERY_URL", "http://recovery:8084"),
     access: env("ACCESS_URL", "http://access:8085"),
     keyshare: env("KEYSHARE_URL", "http://keyshare:8086"),
+    // the messaging relay (services/relay); without one, messaging is off on this server
+    ...(env("RELAY_URL", "") ? { relay: env("RELAY_URL", "") } : {}),
   },
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
@@ -255,7 +271,8 @@ export function createGateway({
   /* ---------- internal calls ---------- */
 
   // Which role each service belongs to, for the certificate the gateway expects when it's on another machine.
-  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys" };
+  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys", relay: "core" };
+  const MESSAGING = !!upstreams.relay;
   const agents = {};
   for (const [svcName, base] of Object.entries(upstreams)) {
     if (!/^https:/.test(base)) continue;
@@ -676,6 +693,55 @@ export function createGateway({
       return json(200, { nonce: b64u(nonce), exp, device: s.deviceId });
     },
 
+    /* ---- person to person (4.0): stamps and the relay ---- */
+
+    // The stamp keys, and the pass key ids beside them so the app can refuse a server that
+    // stamps with its pass key (a blind signer signs whatever it's handed).
+    async msgKeys() {
+      const [st, pk] = await Promise.all([internalJson("access", "GET", "/internal/stamp/keys"), internalJson("access", "GET", "/internal/keys")]);
+      if (st.status !== 200) fail(st);
+      if (pk.status !== 200) fail(pk);
+      return { status: 200, json: { stamp: st.data, passKeyIds: (pk.data.keys || []).map((k) => k.id) } };
+    },
+
+    async msgStats() {
+      const r = await internalJson("access", "GET", "/internal/stamp/stats");
+      if (r.status !== 200) fail(r);
+      return { status: 200, json: r.data };
+    },
+
+    // One live check → the stamps it approved. The step-up's signature covers this request's
+    // body, so the device's secure chip approved exactly these blinded values. The issuer is
+    // told nothing about the account; it signs blind and counts.
+    async msgStamp(s, body, stepUp) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "A live stamp needs a fresh live check.");
+      const r = parseJson(body) || {};
+      if (!Array.isArray(r.blinded) || r.blinded.length < 1 || r.blinded.length > 4) throw new HttpError(400, "bad_request", "One check approves 1 to 4 stamps");
+      const out = await internalJson("access", "POST", "/internal/stamp/sign", { json: { kid: r.kid, blinded: r.blinded } });
+      if (out.status !== 200) fail(out);
+      return { status: 200, json: out.data };
+    },
+
+    async relayPut(s, body, stepUp, m, route, meta) {
+      relaySession(s);
+      const h = meta.h || {};
+      const box = String(h["x-humid-box"] || ""), tag = h["x-humid-tag"] ? String(h["x-humid-tag"]) : "";
+      if (!isBox(box)) throw new HttpError(400, "bad_box", "Bad mailbox id");
+      if (tag && !TAG_RE.test(tag)) throw new HttpError(400, "bad_tag", "Bad unsend tag");
+      const res = await internal("relay", "POST", "/internal/put", { claims: relayClaims(s), body, headers: { "x-humid-box": box, ...(tag ? { "x-humid-tag": tag } : {}) } });
+      return { status: res.status, headers: { "content-type": "application/json" }, body: res.body };
+    },
+    async relayTake(s, body) {
+      relaySession(s);
+      const res = await internal("relay", "POST", "/internal/take", { claims: relayClaims(s), body, headers: { "content-type": "application/json" } });
+      return { status: res.status, headers: { "content-type": "application/json" }, body: res.body };
+    },
+    async relayRetract(s, body) {
+      relaySession(s);
+      const res = await internal("relay", "POST", "/internal/retract", { claims: relayClaims(s), body, headers: { "content-type": "application/json" } });
+      return { status: res.status, headers: { "content-type": "application/json" }, body: res.body };
+    },
+
     // Older apps reported presence here, after the sign-in. The flag in this request is
     // ignored (PC-01): it was a bare request any signed-in session could send, and a duress
     // signal locks the account down and, with Check-in armed, erases the vault. Duress now
@@ -829,6 +895,13 @@ export function createGateway({
     },
   };
 
+  /** The relay is reached only from a session that never signed in: no account ever touches a mailbox. */
+  function relaySession(s) {
+    if (s.subject) throw new HttpError(400, "signed_in", "Use the relay from a session that isn't signed in.");
+  }
+  /** What the relay is told about the caller: a rate key (IPv4 address or IPv6 /64), for limits only. */
+  const relayClaims = (s) => ({ rk: rateKey(s.clientIp || "") });
+
   /* ---------- the encrypted call ---------- */
 
   async function dispatch(s, seq, meta, body) {
@@ -836,7 +909,8 @@ export function createGateway({
     const route = ROUTES.find((r) => r.m === meta.m && r.p.test(url.pathname));
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
-    if (!s.subject && meta.m !== "GET" && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
+    if (route.msg && !MESSAGING) throw new HttpError(404, "not_found", "No such endpoint");
+    if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
     // Step-up: a fresh biometric signature over exactly this request, by this session's device key.
     let stepUp = null;
@@ -1044,7 +1118,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 4 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

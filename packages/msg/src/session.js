@@ -234,23 +234,29 @@ export class Session {
    * own records { id, pos, ttlMs, retract } (retract: the unsend token; keep it, never send it
    * except to unsend).
    */
-  encrypt(kind, body, { now = Date.now(), stamper = null, duress = false, ttlMs } = {}) {
+  encrypt(kind, body, { now = Date.now(), stamper = null, duress = false, ttlMs, requireLive = false, nonce: given = null } = {}) {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       if (!KINDS.includes(kind)) throw new MsgError("bad_kind", `Unknown message kind "${kind}"`);
       const s0 = this.s;
       if (s0.status === "erased") throw new MsgError("erased", "This conversation was deleted");
       if (s0.status === "closed") throw new MsgError("closed", "This conversation was closed");
       if (s0.status === "requested") throw new MsgError("not_accepted", "Your contact hasn't accepted yet");
+      // The human-to-human rule (live.js): nothing goes out without a live stamp.
+      if (requireLive && typeof stamper !== "function") throw new MsgError("stamp_required", "Sending needs a live check");
       const bodyBytes = typeof body === "string" ? utf8(body) : body;
       if (!(bodyBytes instanceof Uint8Array) || bodyBytes.length > MAX_BODY) throw new MsgError("too_large", "Message too large");
       const ttl = ttlMs ?? (kind === "text" || kind === "file-key" ? s0.timer ?? 0 : 0);
       if (!isTtl(ttl)) throw new MsgError("bad_timer", "Timer must be off, or between 30 seconds and a year");
       const newTimer = kind === "timer" ? parseTimer(bodyBytes) : null;
       if (kind === "delete") parseDelete(bodyBytes);
-      const nonce = random(NONCE);
+      // A caller may pick the nonce (the message id) so it can stamp several messages in one
+      // live check (Conversation stamps a whole "delete for both" that way). It must be fresh.
+      if (given !== null && (!(given instanceof Uint8Array) || given.length !== NONCE)) throw new MsgError("bad_nonce", "A message id is 16 random bytes");
+      const nonce = given ? given.slice() : random(NONCE);
       const stamp = stamper
         ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes }))
         : null;
+      if (requireLive && !stamp) throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
 
       const s = track(cloneState(this.s));
       const b = backend();
@@ -311,11 +317,15 @@ export class Session {
    *   for "timer": timer (ms); for "delete": ids (the contact's messages to erase) and destroyed
    *   (how many not-yet-arrived messages can now never be opened).
    *   live: true (valid stamp), false (stamp present but invalid), null (no stamp, or no keys to check).
-   * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased.
+   * opts.requireLive: the human-to-human rule (live.js). A message without a valid live stamp is
+ *   discarded: { kind, id, at, n, refused: "not_live" } and nothing it says is applied.
+ * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys.
    */
-  decrypt(wire, { now = Date.now(), stampKeys = null } = {}) {
+  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false } = {}) {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       checkWire(wire);
+      // The human-to-human rule needs the issuer's keys to check a stamp; without them nothing moves.
+      if (requireLive && !stampKeys) throw new MsgError("no_stamp_keys", "Can't check live stamps yet");
       const s0 = this.s;
       if (s0.status === "erased") throw new MsgError("erased", "This conversation was deleted");
       const s = track(cloneState(s0));
@@ -365,6 +375,15 @@ export class Session {
       let live = null;
       if (p.st && stampKeys) {
         live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body }), { now });
+      }
+      if (requireLive && live !== true) {
+        // Not approved live: discarded. The key is still used up (the ratchet moves on, so
+        // forward secrecy holds and the message can't be opened again), but nothing it says
+        // is applied: no text, no accept, no timer, no delete, no end.
+        wipe(body);
+        s.version += 1;
+        await this.#commit(s0, s);
+        return { kind: p.k, id: p.nonce, at: p.at, n: h.n, refused: "not_live", stamped: !!p.st, live, duress: false };
       }
       const text = p.k === "text" ? fromUtf8(body) : undefined; // decode before committing: bad text moves nothing
       const sent = p.x ?? 0;
