@@ -18,6 +18,7 @@
 // it is told about the caller: a rate key (an IPv4 address or an IPv6 /64), used for limits
 // in memory and never written down.
 
+import { createHash } from "node:crypto";
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, verifyAssertion, HttpError, isMain, b64u, unb64u } from "@humid/svc";
 import { isBox, isWireSize, retractTag, MAX_WIRE, TAG_RE, RETRACT_BYTES, RELAY_DEFAULTS } from "@humid/msg/relay-rules";
 
@@ -36,7 +37,8 @@ export function createRelay({
   maxBoxBytes = Number(env("HUMID_RELAY_MAX_BOX_BYTES", String(RELAY_DEFAULTS.maxBoxBytes))),
   maxTotalBytes = Number(env("HUMID_RELAY_MAX_TOTAL_BYTES", String(RELAY_DEFAULTS.maxTotalBytes))),
   /** Bytes one network may deposit per day (PC-27: one address must not fill the relay for everyone). */
-  maxNetBytesPerDay = Number(env("HUMID_RELAY_MAX_NET_BYTES_DAY", String(256 * 1024 * 1024))),
+  // well under maxTotalBytes / 8, counted per IPv4 address or IPv6 /48 (security review M1)
+  maxNetBytesPerDay = Number(env("HUMID_RELAY_MAX_NET_BYTES_DAY", String(48 * 1024 * 1024))),
   depositsPerMinute = Number(env("HUMID_RELAY_DEPOSITS_PER_MIN", String(RELAY_DEFAULTS.depositsPerMinute))),
   fetchesPerMinute = Number(env("HUMID_RELAY_FETCHES_PER_MIN", String(RELAY_DEFAULTS.fetchesPerMinute))),
   maxRateKeys = RELAY_DEFAULTS.maxRateKeys,
@@ -84,7 +86,28 @@ export function createRelay({
   }
   const canDeposit = limiter(depositsPerMinute, MINUTE);
   const canFetch = limiter(fetchesPerMinute, MINUTE);
-  const netBytes = limiter(maxNetBytesPerDay, DAY);
+  const netBytes = dailySketch(maxNetBytesPerDay);
+
+  /**
+   * Bytes per network per day, in a fixed-size count-min sketch (security review M1): it never
+   * fills up and never forgets a heavy sender, so cycling through addresses can neither reset a
+   * network's count nor lock everyone else out. It can only over-count (a rare false "quota").
+   */
+  function dailySketch(limit, rows = 4, width = 1 << 15) {
+    let day = -1, t = null;
+    const idx = (key) => { const h = createHash("sha256").update(key).digest(); return Array.from({ length: rows }, (_, r) => h.readUInt32BE(r * 4) % width); };
+    return (key, bytes) => {
+      const d = Math.floor(now() / DAY);
+      if (d !== day || !t) { day = d; t = Array.from({ length: rows }, () => new Float64Array(width)); }
+      const ix = idx(key);
+      const est = Math.min(...ix.map((i, r) => t[r][i]));
+      if (est + bytes > limit) return false;
+      ix.forEach((i, r) => { t[r][i] += bytes; });
+      return true;
+    };
+  }
+  // IPv6 counted per /48 for the daily quota: one site's allocation, not one of its 65,536 /64s
+  const quotaKey = (k) => (k.startsWith("v6:") ? `${k.split(":").slice(0, 4).join(":")}::/48` : k);
 
   const gatewayOnly = (claims) => { if (claims?.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only"); };
   const rk = (claims) => (typeof claims.rk === "string" && claims.rk.length <= 64 ? claims.rk : "unknown");
@@ -105,7 +128,7 @@ export function createRelay({
       const use = q.boxUse.get(b);
       if (Number(use.c) >= maxPerBox || Number(use.n) + body.length > maxBoxBytes) throw new HttpError(507, "box_full", "Mailbox is full");
       if (total + body.length > maxTotalBytes) throw new HttpError(507, "relay_full", "Relay is full");
-      if (!netBytes(key, body.length)) throw new HttpError(429, "quota", "This network has sent too much today");
+      if (!netBytes(quotaKey(key), body.length)) throw new HttpError(429, "quota", "This network has sent too much today");
       q.insert.run(b, minute(), tag, body.length, Buffer.from(body));
       total += body.length;
       return json(201, { ok: true });

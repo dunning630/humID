@@ -18,12 +18,14 @@
 //            (R.msgKey, derived inside the unlock check and wiped on lock)
 //   "c:<id>" one conversation (ratchet + history), sealed under a NEW random key every save;
 //            that key is kept only wrapped under R.msgKey, in the same record, replaced each save
-//   "p:<id>" ciphertext from the relay, waiting for a fresh check to be read
-//   "r:<id>" a contact request waiting for review
-//   "o:<id>" something to post that hasn't reached the relay yet (retried on every poll)
+//   "w:<id>" ciphertext from the relay waiting for a fresh check, or a contact request waiting
+//            for review; which conversation or invite, and when it came, sealed with it
+//   "o:<id>" something to post that hasn't reached the relay yet (sent a few seconds later,
+//            retried on every poll)
 //
-// The relay is reached from its own session that never signs in, so the server can't link
-// this account to any mailbox. Stamps come from the signed-in session, inside a live step-up
+// The relay is reached from its own session that never signs in (replaced every few minutes),
+// so no account is ever attached to a mailbox; the server still sees the network address that
+// posts, and a VPN or Tor is how to hide that. Stamps come from the signed-in session, inside a live step-up
 // over exactly the blinded values, so the issuer learns that this account asked, never for what.
 import * as M from "@humid/msg";
 import { batch } from "@preact/signals";
@@ -127,15 +129,27 @@ async function addConv(session, contact, { peerAt = null } = {}) {
 
 /* ---------------- posting: through an outbox, so nothing is lost to a dropped connection ---------------- */
 
+// What the server could still put together (security review M2): it sees the address that asks for
+// a stamp and the address that posts to a mailbox. Posts therefore go out a few seconds later, on
+// their own, and the relay session is replaced every few minutes; a VPN or Tor hides the address.
+const JITTER_MS = [1500, 6000];
+const RELAY_SESSION_MS = 5 * 60_000;
+let relayBorn = 0, flushTimer = null;
+function freshRelay() {
+  if (!relay || now() - relayBorn > RELAY_SESSION_MS) { relay?.close(); relay = R.api.relay(); relayBorn = now(); }
+  return relay;
+}
 async function post(items) {
   const recs = items.map((x) => ({ id: `o:${rid()}`, at: now(), box: x.box, wire: x.wire, tag: x.retractTag || null }));
   for (const r of recs) await R.store.putMsg(r);
-  await flush();
+  clearTimeout(flushTimer);
+  const [lo, hi] = JITTER_MS;
+  flushTimer = setTimeout(() => { if (started) flush().catch(() => {}); }, lo + Math.floor(Math.random() * (hi - lo)));
 }
 async function flush() {
   const out = (await R.store.listMsg()).filter((r) => r.id.startsWith("o:")).sort((a, b) => a.at - b.at);
   for (const r of out) {
-    try { await relay.put(r.box, r.wire, r.tag); await R.store.delMsg(r.id); }
+    try { await freshRelay().put(r.box, r.wire, r.tag); await R.store.delMsg(r.id); }
     catch (e) {
       // a refusal that won't change on retry (a malformed or oversized object): drop it
       if (e?.status >= 400 && e?.status < 500 && e?.status !== 429) await R.store.delMsg(r.id);
@@ -151,6 +165,7 @@ function stampWith(proof) {
   let used = false;
   const many = async (commits) => {
     if (used) throw Object.assign(new Error("That live check was already used. Try again."), { code: "stamp_used" });
+    if (commits.length > (S.server.value?.policy?.messaging?.stampsPerCheck || 1)) throw Object.assign(new Error("That's more than one live check can approve. Try a smaller step."), { code: "too_many_stamps" });
     used = true;
     const drafts = commits.map((c) => M.blindStamp(keyset, c));
     const sigs = await R.api.stamp({ kid: keyset.issuing.id, blinded: drafts.map((d) => d.blinded) }, proof);
@@ -195,6 +210,27 @@ function publish() {
   if (openThread) showThread(openThread);
 }
 const pendingCount = new Map(); // conversation id → ciphertexts waiting to be read
+
+/*
+ * What arrived and waits for a fresh check: one record per object, with an opaque id. Which
+ * conversation or invite it belongs to, and when it came, are sealed with it (security review L3).
+ */
+async function putWaiting(meta, wire) {
+  const id = `w:${rid()}`;
+  const body = te.encode(JSON.stringify(M.toPlain({ ...meta, wire })));
+  await R.store.putMsg({ id, blob: await seal(body, `HUMID-MSG-v1 waiting ${id}`) });
+  return id;
+}
+async function openWaiting(rec) {
+  if (!rec?.id?.startsWith("w:")) return null;
+  try { return { id: rec.id, ...M.fromPlain(JSON.parse(td.decode(await unseal(rec.blob, `HUMID-MSG-v1 waiting ${rec.id}`)))) }; }
+  catch { return null; }
+}
+async function listWaiting() {
+  const out = [];
+  for (const r of await R.store.listMsg()) { const w = await openWaiting(r); if (w) out.push(w); }
+  return out.sort((a, b) => a.at - b.at);
+}
 const requests = new Map();     // request id → { id, invite, at }
 const requestsFor = (inviteId) => [...requests.values()].filter((r) => r.invite === inviteId).length;
 
@@ -220,14 +256,26 @@ function scheduleLapse() {
 
 /* ---------------- start, stop, poll ---------------- */
 
-/** After unlock, when the server offers messaging. */
+/**
+ * After unlock, when the server offers messaging.
+ *
+ * A duress unlock (security review H2) opens nothing real: no conversation is loaded, nothing is
+ * fetched or decrypted, nothing is sent. The tab shows an ordinary empty inbox, and anything
+ * tried there answers the way a busy server would, like the vault's decoy session. What arrives
+ * meanwhile waits at the relay (14 days) for the next real unlock.
+ */
 export async function start() {
   if (started || !S.messagingOn.value || !R.msgKey) return;
   started = true;
+  if (S.decoy.value) {
+    R.hooks.stopMessaging = stop;
+    S.msg.value = { ready: true, error: null, contacts: [], invites: [], requests: [], newCount: 0 };
+    return;
+  }
   try {
     const k = await R.api.msgKeys();
     keyset = M.importStampKeys(k.stamp.keys, { passKeys: (k.passKeyIds || []).map((id) => ({ id })) });
-    relay = R.api.relay();
+    freshRelay();
     list = await loadList();
     for (const ct of list.contacts) { try { await openConv(ct.id); } catch { /* a conversation that won't open is shown as ended */ } }
     await countWaiting();
@@ -245,8 +293,11 @@ export async function start() {
 export function stop() {
   started = false;
   clearTimeout(timer); clearTimeout(lapseTimer);
+  clearTimeout(flushTimer);
   relay?.close(); relay = null;
   for (const r of reviews.values()) r.shown?._accept && wipe(r.shown._accept.rk0);
+  // Ratchet keys and message bodies are overwritten in memory, not left for the garbage collector (L4).
+  for (const c of convs.values()) c.unload().catch(() => {});
   reviews.clear(); convs.clear(); pendingCount.clear(); requests.clear();
   list = null; keyset = null; openThread = null;
   batch(() => { S.msg.value = null; S.thread.value = null; });
@@ -254,9 +305,9 @@ export function stop() {
 
 async function countWaiting() {
   pendingCount.clear(); requests.clear();
-  for (const r of await R.store.listMsg()) {
-    if (r.id.startsWith("p:")) pendingCount.set(r.conv, (pendingCount.get(r.conv) || 0) + 1);
-    if (r.id.startsWith("r:")) requests.set(r.id, { id: r.id, invite: r.invite, at: r.at });
+  for (const w of await listWaiting()) {
+    if (w.conv) pendingCount.set(w.conv, (pendingCount.get(w.conv) || 0) + 1);
+    if (w.invite) requests.set(w.id, { id: w.id, invite: w.invite, at: w.at });
   }
 }
 
@@ -291,13 +342,13 @@ async function fetchAll() {
   for (const inv of list.invites) if (!inv.closed && inv.expires > t) want.set(inv.state.replyBox, { invite: inv.id });
   const boxes = [...want.keys()];
   for (let i = 0; i < boxes.length; i += 64) {
-    const { got } = await relay.take(boxes.slice(i, i + 64));
+    const { got } = await freshRelay().take(boxes.slice(i, i + 64));
     for (const [box, wires] of Object.entries(got)) {
       const to = want.get(box);
       for (const wire of wires) {
         // Stored before anything else, as ciphertext: the relay no longer has it.
-        if (to.conv) { await R.store.putMsg({ id: `p:${rid()}`, conv: to.conv, wire, at: now() }); pendingCount.set(to.conv, (pendingCount.get(to.conv) || 0) + 1); }
-        else { const id = `r:${rid()}`; await R.store.putMsg({ id, invite: to.invite, wire, at: now() }); requests.set(id, { id, invite: to.invite, at: now() }); }
+        if (to.conv) { await putWaiting({ conv: to.conv, at: now() }, wire); pendingCount.set(to.conv, (pendingCount.get(to.conv) || 0) + 1); }
+        else { const at = now(); const id = await putWaiting({ invite: to.invite, at }, wire); requests.set(id, { id, invite: to.invite, at }); }
       }
     }
   }
@@ -306,18 +357,19 @@ async function fetchAll() {
 /** Open what's waiting. Only with a fresh check: the holder is proven live right now. */
 async function readWaiting() {
   if (!fresh()) return;
-  const waiting = (await R.store.listMsg()).filter((r) => r.id.startsWith("p:")).sort((a, b) => a.at - b.at);
+  const waiting = (await listWaiting()).filter((w) => w.conv);
   let changed = false;
   for (const r of waiting) {
     const c = convs.get(r.conv);
     const ct = contactOf(r.conv);
     if (c && ct && c.status !== "erased") {
       try {
-        const m = await c.receive(r.wire, { stampKeys: keyset, now: now() });
+        // receivedAt: when it came off the relay, so reading late doesn't make an old check look fresh (H1)
+        const m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at });
         if (m.refused) note(ct, "A message arrived without a live check. It was discarded unread.");
         else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent from a duress unlock."); }
-        if (m.kind === "close") note(ct, "They ended this conversation.");
-        if (m.kind === "delete" && m.deleted) note(ct, `They deleted ${m.deleted === 1 ? "a message" : `${m.deleted} messages`} for both of you.`);
+        if (m.kind === "close" && !m.refused) note(ct, "They ended this conversation.");
+        if (m.kind === "delete" && !m.refused && m.deleted) note(ct, `They deleted ${m.deleted === 1 ? "a message" : `${m.deleted} messages`} for both of you.`);
         if (m.kind === "accept" && !m.refused) note(ct, "They approved you with a live check. You're connected.");
         if (!m.refused) ct.lastAt = Math.max(ct.lastAt || 0, m.at || 0);
         changed = true;
@@ -346,6 +398,9 @@ async function expireInvites() {
 
 /* ---------------- the actions ---------------- */
 
+const decoyBusy = () => { if (S.decoy.value) throw Object.assign(new Error("Messages are busy right now. Try again in a few minutes."), { code: "busy" }); };
+
+
 const report = (e) => { if (!cancelled(e)) toast(friendly(e), "error"); return null; };
 const cleanLabel = (s) => String(s || "").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
 
@@ -365,6 +420,7 @@ export function waitingOnOther(on) {
  */
 export async function verifyToRead() {
   try {
+    decoyBusy();
     const id = openThread, c = id && convs.get(id), ct = id && contactOf(id);
     let sent = null;
     if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value) {
@@ -384,6 +440,7 @@ export async function verifyToRead() {
 export async function makeInvite({ label = "" } = {}) {
   needVault();
   try {
+    decoyBusy();
     let made = null;
     await withKeys("invite", "Make an invite", async ({ seed }) => {
       const inv = await M.createInvite(seed, { now: now() });
@@ -411,7 +468,7 @@ export async function cancelInvite(id) {
   list.invites = list.invites.filter((i) => i !== inv);
   for (const r of [...requests.values()].filter((x) => x.invite === id)) { requests.delete(r.id); await R.store.delMsg(r.id); }
   await saveList();
-  if (retract) await relay.retract(box, retract).catch(() => {});
+  if (retract) await freshRelay().retract(box, retract).catch(() => {});
   publish();
 }
 
@@ -419,9 +476,10 @@ export async function cancelInvite(id) {
 export async function openCode(code) {
   needVault();
   try {
+    decoyBusy();
     const parsed = M.parseInviteCode(code);
     const box = M.inviteBoxOf(parsed.secret);
-    const { got } = await relay.take([box], { keep: true });
+    const { got } = await freshRelay().take([box], { keep: true });
     const wire = got[box]?.[0];
     if (!wire) throw Object.assign(new Error("No invite with that code. It may have expired or been cancelled. Ask for a new one."), { code: "no_invite" });
     const opened = await M.openInvite(parsed, wire, { now: now() });
@@ -433,6 +491,7 @@ export async function openCode(code) {
 /** Ask to connect: one live check; the request carries its stamp. */
 export async function askToConnect(found, { label, intro = "" }) {
   try {
+    decoyBusy();
     let made = null;
     await live("connect", "Ask to connect", async ({ seed, stamper }) => {
       made = await M.requestContact(seed, found._opened, { intro: String(intro || "").slice(0, 280), stamper, requireLive: true, now: now() });
@@ -450,7 +509,7 @@ export async function askToConnect(found, { label, intro = "" }) {
 export async function withdrawRequest(id) {
   const ct = contactOf(id);
   if (!ct?.retract) return false;
-  const removed = await relay.retract(ct.reqBox, ct.retract).catch(() => false);
+  const removed = await freshRelay().retract(ct.reqBox, ct.retract).catch(() => false);
   if (removed) await forgetLocal(id);
   else toast("They've already seen your request. Delete the conversation instead.", "warn");
   publish();
@@ -460,7 +519,7 @@ export async function withdrawRequest(id) {
 /** See who's asking: one live check (the request opens only with this invite's persona keys). */
 export async function reviewRequest(reqId) {
   const r = requests.get(reqId);
-  const rec = await R.store.getMsg(reqId);
+  const rec = await openWaiting(await R.store.getMsg(reqId));
   const inv = list.invites.find((i) => i.id === r?.invite);
   if (!r || !rec || !inv) return null;
   try {
@@ -534,7 +593,7 @@ export async function send(id, text) {
     let r = null;
     await live("send", `Send to ${ct.label}`, async ({ stamper }) => {
       await readWaiting(); // the check makes this holder live: read what's waiting first
-      r = await c.send(body, { stamper, duress: !!S.decoy.value, now: now() });
+      r = await c.send(body, { stamper, now: now() });
     });
     ct.lastAt = now(); ct.lastRead = now();
     await saveList();
@@ -552,7 +611,7 @@ export async function deleteMessage(id, msgId, { forBoth = false } = {}) {
     if (!forBoth) { await c.delete(msgId); publish(); return true; }
     let r = null;
     await live("delete", "Delete for both of you", async ({ stamper }) => { r = await c.delete(msgId, { forBoth: true, stamper, now: now() }); });
-    if (r.unsend) await relay.retract(r.unsend.box, r.unsend.retract).catch(() => false);
+    if (r.unsend) await freshRelay().retract(r.unsend.box, r.unsend.retract).catch(() => false);
     await post([r.send]);
     publish();
     return true;
@@ -583,7 +642,7 @@ export async function deleteConversation(id, { forBoth = false } = {}) {
     let r = null;
     if (forBoth && c.status === "connected") await live("delete", "Delete for both of you", async ({ stamper }) => { r = await c.forget({ forBoth: true, stamper, now: now() }); });
     else r = await c.forget({ now: now() });
-    for (const u of r.unsend) await relay.retract(u.box, u.retract).catch(() => false);
+    for (const u of r.unsend) await freshRelay().retract(u.box, u.retract).catch(() => false);
     if (r.send.length) await post(r.send);
     await forgetLocal(id);
     publish();
@@ -594,7 +653,7 @@ export async function deleteConversation(id, { forBoth = false } = {}) {
 async function forgetLocal(id) {
   convs.delete(id);
   list.contacts = list.contacts.filter((c) => c.id !== id);
-  for (const r of (await R.store.listMsg()).filter((x) => x.id.startsWith("p:") && x.conv === id)) await R.store.delMsg(r.id);
+  for (const w of (await listWaiting()).filter((x) => x.conv === id)) await R.store.delMsg(w.id);
   pendingCount.delete(id);
   await R.store.delMsg(`c:${id}`);
   await saveList();

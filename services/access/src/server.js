@@ -24,8 +24,8 @@ import {
 import { newIssuerKey, issuerKey, blindSign, KEY_BITS } from "@humid/pass/issuer";
 
 const DAY = 86_400_000;
-/** Stamps one live check may approve: one action that sends a few messages (a delete and an end). */
-export const MAX_STAMPS_PER_CHECK = 4;
+/** Stamps one live check may approve: one message, or one action that is two (a delete and the end). */
+export const MAX_STAMPS_PER_CHECK = 2;
 const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10); // dates only: no times to correlate
 
 export function createAccess({

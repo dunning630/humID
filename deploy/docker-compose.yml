@@ -180,7 +180,7 @@ services:
       <<: *env
       PORT: "8087"
       HUMID_RELAY_MAX_TOTAL_BYTES: ${HUMID_RELAY_MAX_TOTAL_BYTES:-2147483648}
-      HUMID_RELAY_MAX_NET_BYTES_DAY: ${HUMID_RELAY_MAX_NET_BYTES_DAY:-268435456}  # per network (IPv4 address or IPv6 /64)
+      HUMID_RELAY_MAX_NET_BYTES_DAY: ${HUMID_RELAY_MAX_NET_BYTES_DAY:-50331648}  # per network (IPv4 address or IPv6 /48)
     volumes: [relay-data:/data]
     healthcheck:
       <<: *health

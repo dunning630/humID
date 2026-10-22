@@ -88,8 +88,8 @@ test("a step-up approves exactly the blinded values it signed, once", async () =
   await assert.rejects(aApi.stamp({ kid: keyset.issuing.id, blinded: [a.blinded] }, proof), (e) => /step_up_unknown|session_changed|ticket|replay/.test(e.code));
 });
 
-test("one check approves at most four stamps", async () => {
-  const five = Array.from({ length: 5 }, (_, i) => M.blindStamp(keyset, new Uint8Array(32).fill(i)).blinded);
+test("one check approves at most two stamps (one message, or a delete and the end)", async () => {
+  const five = Array.from({ length: 3 }, (_, i) => M.blindStamp(keyset, new Uint8Array(32).fill(i)).blinded);
   const t = await aApi.ticket("stamp");
   await assert.rejects(aApi.stamp({ kid: keyset.issuing.id, blinded: five }, { ticket: t, sign: (message) => alice.stepUp({ message, live: t.live }) }), (e) => e.code === "bad_request");
 });

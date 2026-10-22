@@ -16,7 +16,7 @@ export {
   formatInviteCode, parseInviteCode, inviteBoxOf, inviteQrPayload, parseInviteQr, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
 export {
-  Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS,
+  Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS, STAMP_MAX_AGE_MS, MAX_STAMPS_SEEN,
   MIN_TTL_MS, MAX_TTL_MS, MAX_DELETE, deleteBody, parseDelete, isTtl,
 } from "./session.js";
 export { MessageStore, TOMBSTONE_TTL_MS, MAX_TOMBSTONES } from "./history.js";

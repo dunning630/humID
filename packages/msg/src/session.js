@@ -22,6 +22,7 @@
 import { backend, SIZES, checkKemPk } from "./backend.js";
 import { personaFingerprint, personaId, safetyCode, encodePub, decodePub } from "./persona.js";
 import { messageCommitment, verifyStamp } from "./stamp.js";
+import { LIVE_SKEW_MS } from "./live.js";
 import {
   MsgError, kdf, mac, label, concat, u32, readU32, random, wipe, equal, toHex, b64u, unb64u,
   encodeJSON, decodeJSON, aeadSeal, aeadOpen, dayOf, utf8, fromUtf8, guard, toPlain, fromPlain,
@@ -29,6 +30,10 @@ import {
 import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays, newRetract } from "./wire.js";
 
 export const MAX_SKIP = 1000;        // per chain step
+// A stamped message older than the relay's retention (plus a day of clock skew) can't be a real
+// delivery, and the message ids of stamps already seen are kept that long, so no stamp counts twice.
+export const STAMP_MAX_AGE_MS = 15 * 24 * 3600_000;
+export const MAX_STAMPS_SEEN = 20_000;
 export const MAX_SKIPPED_TOTAL = 2000;
 const SALT = 16;
 export const HEADER_BYTES = SIZES.x + SIZES.kemCt + SIZES.kemPk + SALT + 8; // dh | kem ct | next kem ek | salt | pn | n
@@ -238,7 +243,7 @@ export class Session {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       if (!KINDS.includes(kind)) throw new MsgError("bad_kind", `Unknown message kind "${kind}"`);
       const s0 = this.s;
-      if (s0.status === "erased") throw new MsgError("erased", "This conversation was deleted");
+      if (s0.status === "erased" || s0.status === "unloaded") throw new MsgError("erased", "This conversation was deleted");
       if (s0.status === "closed") throw new MsgError("closed", "This conversation was closed");
       if (s0.status === "requested") throw new MsgError("not_accepted", "Your contact hasn't accepted yet");
       // The human-to-human rule (live.js): nothing goes out without a live stamp.
@@ -253,8 +258,11 @@ export class Session {
       // live check (Conversation stamps a whole "delete for both" that way). It must be fresh.
       if (given !== null && (!(given instanceof Uint8Array) || given.length !== NONCE)) throw new MsgError("bad_nonce", "A message id is 16 random bytes");
       const nonce = given ? given.slice() : random(NONCE);
+      // A change you make is always newer than the one you last saw, even if the clocks disagree.
+      const timerAt = Math.max(now, (s0.timerAt ?? 0) + 1);
+      const ta = newTimer !== null ? timerAt : 0;
       const stamp = stamper
-        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes }))
+        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes, at: now, x: ttl, ta }))
         : null;
       if (requireLive && !stamp) throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
 
@@ -285,8 +293,6 @@ export class Session {
       s.Ns += 1;
 
       const payload = { k: kind, b: b64u(bodyBytes), at: now, nonce: b64u(nonce), x: ttl };
-      // A change you make is always newer than the one you last saw, even if the clocks disagree.
-      const timerAt = Math.max(now, (s0.timerAt ?? 0) + 1);
       if (newTimer !== null) payload.ta = timerAt;
       if (stamp) payload.st = stamp;
       payload.d = duress ? 1 : 0; // always present, same width: a duress message is the same size
@@ -321,13 +327,13 @@ export class Session {
  *   discarded: { kind, id, at, n, refused: "not_live" } and nothing it says is applied.
  * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys.
    */
-  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false } = {}) {
+  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false, receivedAt = now } = {}) {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       checkWire(wire);
       // The human-to-human rule needs the issuer's keys to check a stamp; without them nothing moves.
       if (requireLive && !stampKeys) throw new MsgError("no_stamp_keys", "Can't check live stamps yet");
       const s0 = this.s;
-      if (s0.status === "erased") throw new MsgError("erased", "This conversation was deleted");
+      if (s0.status === "erased" || s0.status === "unloaded") throw new MsgError("erased", "This conversation was deleted");
       const s = track(cloneState(s0));
       expireSkipped(s, now);
       const inner = unpad(await aeadOpen(s.recvWire, wire.subarray(1, 13), wire.subarray(13), concat(label("wire"), s.convId), "not_for_us"));
@@ -374,7 +380,12 @@ export class Session {
       const nonce = unb64u(p.nonce, NONCE);
       let live = null;
       if (p.st && stampKeys) {
-        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body }), { now });
+        const ta = p.k === "timer" && Number.isSafeInteger(p.ta) ? p.ta : 0;
+        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body, at: p.at, x: p.x ?? 0, ta }), { now });
+        // One stamp, one message, once (security review H1): a stamp dated outside what the relay
+        // could still be holding, or one this conversation has already seen, is not live.
+        if (live && (p.at > receivedAt + LIVE_SKEW_MS || p.at < receivedAt - STAMP_MAX_AGE_MS)) live = false;
+        if (live && (s.stampSeen || []).some((e) => e[0] === p.nonce)) live = false;
       }
       if (requireLive && live !== true) {
         // Not approved live: discarded. The key is still used up (the ratchet moves on, so
@@ -384,6 +395,11 @@ export class Session {
         s.version += 1;
         await this.#commit(s0, s);
         return { kind: p.k, id: p.nonce, at: p.at, n: h.n, refused: "not_live", stamped: !!p.st, live, duress: false };
+      }
+      if (live === true) {
+        const keep = (s.stampSeen || []).filter((e) => e[1] >= receivedAt - STAMP_MAX_AGE_MS);
+        keep.push([p.nonce, p.at]);
+        s.stampSeen = keep.slice(-MAX_STAMPS_SEEN);
       }
       const text = p.k === "text" ? fromUtf8(body) : undefined; // decode before committing: bad text moves nothing
       const sent = p.x ?? 0;
@@ -444,6 +460,20 @@ export class Session {
       if (s.status === "erased") return;
       wipeState(s);
       this.s = { v: 1, status: "erased", convId: s.convId, version: s.version + 1 };
+    });
+  }
+
+  /**
+   * Forget this conversation's secrets from MEMORY (the app is locking), leaving any saved copy
+   * untouched: every key in the state is overwritten and this object refuses further use.
+   * Unlike erase(), it's not a delete; the conversation opens again from storage after unlock.
+   */
+  unload() {
+    return this.#serial(() => {
+      const s = this.s;
+      if (s.status === "erased" || s.status === "unloaded") return;
+      wipeState(s);
+      this.s = { v: 1, status: "unloaded", convId: s.convId, version: s.version };
     });
   }
 
