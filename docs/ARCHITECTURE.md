@@ -52,10 +52,10 @@ check · your recovery card · you're in) or *I already have HumID* (connect ·
 choose: another device, or prove it's you with two proofs · the first check ·
 wait) → Lock → three tabs. **Vault** (search; a chip row of the *kinds* that
 exist: All · IDs · Cards · Passes · Photos · Files, with a secondary tag row
-once any item carries a tag; one **Add** flow, camera first: the photo routes
-itself to the ID flow, the card review or the photo review, with File, Type a
-card and Tap a card on the camera's own bar and "It's something else" for the
-picker; every kind then goes through one shared *Review* (name, kind, the kind's
+once any item carries a tag; one **Add** flow, what it is first: "What are you
+adding?" lists each kind (each ID kind on its own, payment card, document page,
+photo, pass, file) and opens that kind's camera, with its template, at once;
+every kind then goes through one shared *Review* (name, kind, the kind's
 fields, tags, location stamp, Seal). Tapping a row pushes the **Item** screen:
 the preview first (one Open = one check), the facts, and a ··· menu with Rename
 · Pin · Show in decoy · Export sealed · Delete; Save a copy lives in the opened
@@ -123,9 +123,13 @@ app locks after 5 minutes idle and when it goes to the background.
 | `@humid/attest` | server only: verifies Android key attestation and Apple App Attest against pinned roots |
 | `@humid/emrtd` | reads passport and ID card chips (ICAO 9303) over any APDU transport: BAC, PACE, secure messaging, Active Authentication; the DG2 photo only for the holder's own vault copy |
 | `@humid/idscan` | reads ID documents into one record: MRZ (OCR-tolerant), AAMVA license barcodes, chip data groups and SOD hashes ([ID-SCANNING.md](ID-SCANNING.md)) |
+| `@humid/mdoc` | mobile IDs (ISO/IEC 18013-5/-7): reader session, Digital Credentials API requests (Annex C, HPKE; OpenID4VP transcripts), issuer data authentication against IACA roots, device authentication, VICAL ([CREDENTIALS.md](CREDENTIALS.md)) |
+| `@humid/sdjwt` | 4.0, provisional: SD-JWT VC with key binding, JWS/x5c/JWE, IETF Token Status List ([CREDENTIALS.md](CREDENTIALS.md)) |
+| `@humid/creds` | 4.0, provisional: one request and one verifier for public credentials, assurance levels, revocation, minimised claims, SSN via eCBSV for permitted entities; `/server` for passport chips and ICAO master lists ([CREDENTIALS.md](CREDENTIALS.md)) |
 | `@humid/cards` | the holder's payment cards: number checks and networks, camera (front and back) and contactless (read-only EMV) capture, the sealed card record ([CARDS.md](CARDS.md)) |
 | `@humid/wallet` | Apple Wallet passes: bounded unzip, manifest hashes, the issuer's CMS signature through Apple's pinned roots ([WALLET-PASSES.md](WALLET-PASSES.md)) |
 | `@humid/pass` | anonymous access passes: RFC 9474 blind signatures (app side; `/issuer` for the server), access codes |
+| `@humid/fido` | a FIDO2 security key as a recovery proof: CTAP 2.1 over NFC (any APDU transport), PIN protocols 1 and 2, `hmac-secret`, `credProtect` ([SECURITY-KEY.md](SECURITY-KEY.md)); loaded only when a key is used |
 
 Each package declares what it `provides` and `requires` in `package.json`
 under `"humid"`. The app build refuses an incompatible combination.
@@ -151,7 +155,7 @@ capabilities dropped.
 | **identity** | gateway | account and device public keys, gate method, liveness keys and their verified proof | public keys only |
 | **vault** | gateway | sealed envelopes, encrypted index blobs | sizes, timestamps, object ids. No names, no content. |
 | **ledger** | gateway | per-account hash chain, signed heads | event types and proof hashes |
-| **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
+| **recovery** | gateway | sealed seeds for new devices, card-locked backups, contacts' sealed pieces, security keys' public keys and key-locked parts, recovery requests | who protects whom (account ids), when a recovery releases. Never a usable key. |
 | **keyshare** | gateway | one encrypted 256-bit key per split document, under `share-key.bin`; while Check-in is armed, under a per-account fuse key held in memory only | which documents exist and when each was opened; who has Check-in armed and until when. Never an envelope, name or account key. See [SECURITY.md](SECURITY.md#a-compromised-phone) and [CHECKIN.md](CHECKIN.md). |
 | **access** | gateway | access-code hashes, pass keys, spent-pass hashes, all dated by day | which codes were used, and how many passes were spent. Never an account. See [ANONYMITY.md](ANONYMITY.md). |
 

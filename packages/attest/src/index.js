@@ -13,7 +13,7 @@ import { verifyAppAttest } from "./apple.js";
 export { verifyAndroidKey, readAndroidAttestation, checkAndroidPolicy, parseKeyDescription, AttestationError, KEY_DESCRIPTION_OID, serialKey } from "./android.js";
 export { revocationList, parseStatusList, STATUS_URL } from "./status.js";
 export { verifyAppAttest } from "./apple.js";
-export { GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, HUMID_ANDROID_RELEASE_CERT } from "./roots.js";
+export { GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, HUMID_ANDROID_RELEASE_CERT, REVOKED_ANDROID_CERTS } from "./roots.js";
 export { decodeCbor } from "./cbor.js";
 
 /** A P-256 public key as SPKI DER, or throws. */

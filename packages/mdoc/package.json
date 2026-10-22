@@ -1,0 +1,20 @@
+{
+  "name": "@humid/mdoc",
+  "version": "1.0.0",
+  "description": "Mobile IDs (ISO/IEC 18013-5 mdoc): reader-side proximity session, DeviceRequest, issuer data authentication against IACA roots, mdoc device authentication, VICAL. US mobile driver's licenses and IDs, EU PID, other countries' mDLs. No platform code.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "humid": {
+    "provides": {
+      "mdoc": 1
+    }
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "license": "UNLICENSED"
+}

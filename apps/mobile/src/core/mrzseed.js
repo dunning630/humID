@@ -1,5 +1,5 @@
 // Reading a still's MRZ after the live loop already has a valid, not yet confirmed, reading
-// (screens/ids.jsx readStill, seed): the live reads vote with the still's, and the still's
+// (screens/add/camera.jsx readStill, seed): the live reads vote with the still's, and the still's
 // own reading has to be valid and the same as what the vote settled on. Otherwise the vote
 // could be carried by earlier frames alone and the stored page never checked.
 

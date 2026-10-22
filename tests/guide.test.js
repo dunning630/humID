@@ -2,8 +2,8 @@
 // the metrics read off a synthetic camera view, the verdict they give, the hold timer, the templates.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, SAY_AFTER, TH, motionOf } from "../apps/mobile/src/core/guide.js";
-import { begin, step, describe, STEP_LISTS } from "../apps/mobile/src/core/scanflow.js";
+import { measure, judge, templateFor, holdTracker, liveConstraints, previewTurned, stillMapping, rectInStill, agree, RATIO, MESSAGES, TH, motionOf, quadFromEdges, zoomFor } from "../apps/mobile/src/core/guide.js";
+import { begin, step, view, SAY_AFTER } from "../apps/mobile/src/core/capture.js";
 import { SCAN_MODE } from "../apps/mobile/src/core/addroute.js";
 import { scene, pgm, blur } from "./support/guideview.js";
 
@@ -76,18 +76,45 @@ test("sharpness is relative: a blurred picture scores lower than the same one sh
   assert.ok(measure(b, s.guide).focus < measure(s.im, s.guide).focus);
 });
 
-test("holdTracker: 0.6 s of ready fires once; one bad look under the grace doesn't restart; a longer gap does", () => {
-  const T = 1000; // performance.now() is never 0
+test("holdTracker: TH.holdMs of ready fires once; one bad look under the grace doesn't restart; a longer gap does", () => {
+  const T = 1000, H = TH.holdMs, G = TH.graceMs; // performance.now() is never 0
+  assert.ok(H <= 400, "3.1.1: a short hold: the sharpest moment, not a long wait for stillness");
   let h = holdTracker(), r;
-  for (let t = 0; t <= 500; t += 100) { r = h.feed(true, T + t); assert.equal(r.fire, false); }
+  for (let t = 0; t < H; t += 50) { r = h.feed(true, T + t); assert.equal(r.fire, false); }
   assert.ok(r.progress > 0.7 && r.progress < 1);
-  assert.equal(h.feed(true, T + 600).fire, true);
-  assert.equal(h.feed(true, T + 700).fire, false, "only once");
-  h = holdTracker(); h.feed(true, T); h.feed(true, T + 300); h.feed(false, T + 400); // 100 ms gap: within grace
-  assert.equal(h.feed(true, T + 600).fire, true);
-  h = holdTracker(); h.feed(true, T); h.feed(true, T + 300); h.feed(false, T + 400); h.feed(false, T + 700); // past grace
-  assert.equal(h.feed(true, T + 800).fire, false); assert.equal(h.feed(true, T + 1300).fire, false);
-  assert.equal(h.feed(true, T + 1400).fire, true);
+  assert.equal(h.feed(true, T + H).fire, true);
+  assert.equal(h.feed(true, T + H + 50).fire, false, "only once");
+  h = holdTracker(); h.feed(true, T); h.feed(true, T + 100); h.feed(false, T + 150); // a gap within grace
+  assert.equal(h.feed(true, T + H).fire, true);
+  h = holdTracker(); h.feed(true, T); h.feed(true, T + 100); h.feed(false, T + 150); h.feed(false, T + 100 + G + 50); // past grace
+  assert.equal(h.feed(true, T + 100 + G + 100).fire, false);
+  assert.equal(h.feed(true, T + 100 + G + 100 + H).fire, true);
+});
+
+test("3.1.1: the document's corners from its four measured edges (one missing is mirrored); nonsense is refused", () => {
+  const { im, guide } = scene({ ...GOOD, size: 0.8 });
+  const q = quadFromEdges(measure(im, guide).edges, guide);
+  assert.ok(q, "found");
+  const w = (q[1].x - q[0].x + q[2].x - q[3].x) / 2, h = (q[3].y - q[0].y + q[2].y - q[1].y) / 2;
+  assert.ok(Math.abs(w / guide.w - 0.8) < 0.03, `width ${(w / guide.w).toFixed(3)} of the outline`);
+  assert.ok(Math.abs(w / h - RATIO.id1) < 0.06, `card proportions ${(w / h).toFixed(3)}`);
+  const cx = (q[0].x + q[2].x) / 2, cy = (q[0].y + q[2].y) / 2;
+  assert.ok(Math.abs(cx - (guide.x + guide.w / 2)) < 3 && Math.abs(cy - (guide.y + guide.h / 2)) < 3, "centred where it lies");
+  const e = (off, slope = 0) => ({ found: true, off, slope });
+  const three = quadFromEdges({ top: e(-0.1), bottom: e(-0.1), left: e(-0.1), right: { found: false } }, { x: 0, y: 0, w: 100, h: 60 });
+  assert.ok(Math.abs(three[1].x - 90) < 1e-6, "the missing right side mirrors the left");
+  assert.equal(quadFromEdges({ top: e(0), bottom: { found: false }, left: e(0), right: { found: false } }, { x: 0, y: 0, w: 100, h: 60 }), null);
+  assert.equal(quadFromEdges({ top: e(-0.9), bottom: e(-0.9), left: e(0), right: e(0) }, { x: 0, y: 0, w: 100, h: 60 }), null, "top below bottom");
+});
+
+test("3.1.1: zoom so the phone is held far enough to focus, only where the camera offers zoom", () => {
+  const card = templateFor({ kind: "card" }), page = templateFor({ kind: "page" });
+  assert.equal(zoomFor(LIC, {}), 1, "no zoom offered: none");
+  assert.equal(zoomFor(LIC, { zoom: { min: 1, max: 1 } }), 1);
+  assert.equal(zoomFor(LIC, { zoom: { min: 1, max: 8, step: 0.1 } }), 2);
+  assert.equal(zoomFor(card, { zoom: { min: 1, max: 1.6, step: 0.1 } }), 1.6, "as far as it goes");
+  assert.equal(zoomFor(PP, { zoom: { min: 1, max: 8, step: 0.5 } }), 1.5);
+  assert.equal(zoomFor(page, { zoom: { min: 1, max: 8 } }), 1, "a page is held far enough already");
 });
 
 test("the template follows the kind: ID-1 for cards and licences, ID-3 for passports; zones; forbid", () => {
@@ -103,11 +130,14 @@ test("the template follows the kind: ID-1 for cards and licences, ID-3 for passp
   }
 });
 
-test("live constraints ask for 1080p (1440p for a passport), turned to the screen; a wrong-way preview is noticed", () => {
+test("live constraints ask for the long side only, never a crop (1080p; 1440p for a passport); a wrong-way preview is noticed and re-asked in the screen's orientation", () => {
   const c = liveConstraints(LIC, { portrait: true }), p = liveConstraints(PP, { portrait: true });
-  assert.equal(c.width.ideal, 1080); assert.equal(c.height.ideal, 1920);
-  assert.equal(p.width.ideal, 1440); assert.equal(p.height.ideal, 2560);
-  assert.equal(liveConstraints(LIC, { portrait: false }).width.ideal, 1920);
+  assert.equal(c.width.ideal, 1920); assert.equal(c.height, undefined); assert.equal(c.resizeMode, "none");
+  assert.equal(p.width.ideal, 2560); assert.equal(p.height, undefined);
+  const e = liveConstraints(LIC, { portrait: true, exact: true }), q = liveConstraints(PP, { portrait: true, exact: true });
+  assert.equal(e.width.ideal, 1080); assert.equal(e.height.ideal, 1920);
+  assert.equal(q.width.ideal, 1440); assert.equal(q.height.ideal, 2560);
+  assert.equal(liveConstraints(LIC, { portrait: false, exact: true }).width.ideal, 1920);
   assert.equal(previewTurned(1920, 1080, true), true); assert.equal(previewTurned(1080, 1920, true), false);
   assert.equal(previewTurned(1920, 1080, false), false); assert.equal(previewTurned(1080, 1080, true), true);
 });
@@ -127,14 +157,34 @@ test("the still: mapping of the preview into a photo of another shape, and the f
   assert.equal(agree(a, { w: 10, h: 10, g: new Uint8ClampedArray(100) }).score, -1);
 });
 
-test("scanflow in guided mode: its steps, its words, and problems are shown after their own delay", () => {
-  assert.equal(STEP_LISTS.guidedPhoto[0].label ?? STEP_LISTS.guidedPhoto[0], STEP_LISTS.guidedRead[0].label ?? STEP_LISTS.guidedRead[0]);
-  let s = begin({ codes: true, guided: true, now: 0 });
+test("the camera's machine on guided verdicts: aiming says the frame; a problem is said after its own delay", () => {
+  let s = begin({ expect: "barcode", now: 0 });
   s = step(s, { t: "ready" }, 100);
-  assert.match(describe(s, { guided: true, noun: "licence" }).title + describe(s, { guided: true, noun: "licence" }).detail, /outline/i);
+  assert.match(view(s, { noun: "license" }).headline, /frame/i);
   assert.ok(SAY_AFTER.blur > 700 && SAY_AFTER.dark < SAY_AFTER.blur);
-  s = step(s, { t: "look", look: { found: true, guide: { key: "closer", detail: "x", present: true }, hint: "x" }, progress: 0 }, 200);
-  assert.notEqual(describe(s, { guided: true, noun: "card" }).title, "Move closer", "not at once");
-  s = step(s, { t: "look", look: { found: true, guide: { key: "closer", detail: "x", present: true }, hint: "x" }, progress: 0 }, 1200);
-  assert.equal(describe(s, { guided: true, noun: "card" }).title, "Move closer");
+  const v = { key: "closer", detail: "x", present: true, aligned: false };
+  s = step(s, { t: "look", v, progress: 0 }, 200);
+  assert.notEqual(view(s).headline, "Move closer", "not at once");
+  s = step(s, { t: "look", v, progress: 0 }, 1200);
+  assert.equal(view(s).headline, "Move closer");
+});
+
+test("3.0.1: a paper page's outline stands up between US Letter and A4, and both line up in it", () => {
+  const PAGE = templateFor({ kind: "page" });
+  assert.equal(PAGE.shape, "page"); assert.equal(PAGE.ratio, RATIO.page); assert.equal(PAGE.noun, "page");
+  assert.ok(RATIO.page > 11 / 8.5 && RATIO.page < 297 / 210);
+  const letter = pgm("page-letter"), a4 = pgm("page-a4");
+  for (const [name, page, size] of [["Letter", letter, 0.97], ["A4", a4, 0.94]]) {
+    const o = { card: page, ratio: 1 / RATIO.page, size, table: 62 };
+    const { im, guide } = scene(o), prev = scene({ ...o, seed: 9 }).im;
+    const v = judge(measure(im, guide, { prev }), PAGE, {});
+    assert.ok(v.ready, `${name} in the page outline: ${JSON.stringify({ key: v.key, scale: v.scale })}`);
+  }
+});
+
+test("3.0.1: a page bright all over isn't glare; a bright patch on it still is", () => {
+  const PAGE = templateFor({ kind: "page" });
+  const m = { n: 1, sides: 4, p95: 255, mean: 230, p50: 245, patch: 20, sat: 0.7, energy: 12, scale: 0.97, edges: {}, dx: 0, dy: 0, rot: 0, rotSpread: 0, flatH: 0, flatV: 0, aspect: 0, focus: 2, motion: 0 };
+  assert.notEqual(judge(m, PAGE, {}).key, "glare");
+  assert.equal(judge({ ...m, sat: 0.2 }, PAGE, {}).key, "glare");
 });

@@ -12,13 +12,15 @@
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, openDb, env, json, bytes, parseJson, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, openDb, env, json, bytes, parseJson, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
 import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
 export function createVault({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
   port = Number(env("PORT", "8082")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -194,7 +196,7 @@ export function createVault({
     }],
   ];
 
-  return createService({
+  return createService({ tls,
     name: "vault", port, routes, bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "vault"),
   });

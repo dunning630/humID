@@ -13,11 +13,15 @@
 
 import { toB64, fromB64 } from "@humid/codec";
 
-export const DEFAULT = Object.freeze({ enabled: false, gesture: "hold" });
+export const DEFAULT = Object.freeze({ enabled: false, gesture: "taps" });
 const GESTURES = new Set(["hold", "taps"]);
+// Every sealed setting is the same length (the JSON is padded to this many characters
+// before sealing), so the ciphertext's size says nothing about what it holds.
+const SEALED_CHARS = 96;
 
 /** A setting as the app uses it, whatever was stored. */
-export const normalize = (s) => ({ enabled: !!s?.enabled, gesture: GESTURES.has(s?.gesture) ? s.gesture : "hold" });
+export const normalize = (s) => ({ enabled: !!s?.enabled, gesture: GESTURES.has(s?.gesture) ? s.gesture : "taps" });
+const padded = (setting) => { const base = JSON.stringify({ ...setting, pad: "" }); return { ...setting, pad: "x".repeat(Math.max(0, SEALED_CHARS - base.length)) }; };
 
 /**
  * The record with `setting` sealed into it (`duressSealed`), and any plaintext
@@ -25,8 +29,8 @@ export const normalize = (s) => ({ enabled: !!s?.enabled, gesture: GESTURES.has(
  */
 export async function sealDuress(Suite, key, record, setting) {
   if (!key || !Suite.sealSetting) throw Object.assign(new Error(""), { code: "locked" });
-  const blob = await Suite.sealSetting(key, normalize(setting));
-  const next = { ...record, duressSealed: toB64(blob) };
+  const blob = await Suite.sealSetting(key, padded(normalize(setting)));
+  const next = { ...record, duressSealed: toB64(blob), duressSealedAt: record.duressSealedAt || new Date().toISOString().slice(0, 10) };
   delete next.duress;
   return next;
 }
@@ -34,9 +38,11 @@ export async function sealDuress(Suite, key, record, setting) {
 /**
  * The setting from a record, after a live check: { setting, record, unreadable } where
  * record is non-null when the stored record should be replaced (a plaintext setting from
- * an earlier release, sealed now). A sealed setting that won't open reads as "off" with
- * `unreadable: true`: isDuress then treats a duress gesture as duress (failing toward the
- * decoy is the safe direction for a coercion feature, and with Check-in armed it erases).
+ * an earlier release, sealed now; or a record with no sealed setting yet, which gets "off"
+ * sealed into it so that from then on a MISSING setting is tampering, not a default). A
+ * sealed setting that won't open, or one that is missing from a record that should have
+ * one, reads as "off" with `unreadable: true`: isDuress then treats a duress gesture as
+ * duress (failing toward the decoy is the safe direction for a coercion feature).
  */
 export async function openDuress(Suite, key, record) {
   if (!key || !record) return { setting: { ...DEFAULT }, record: null };
@@ -46,7 +52,13 @@ export async function openDuress(Suite, key, record) {
     try { return { setting, record: await sealDuress(Suite, key, record, setting) }; }
     catch { return { setting, record: null }; }
   }
-  if (!record.duressSealed) return { setting: { ...DEFAULT }, record: null };
+  if (!record.duressSealed) {
+    // Never sealed on this device: seal "off" now. A record from an earlier release has no
+    // setting either; it's told apart from a deleted one by the marker the seal adds.
+    let sealed = null;
+    try { sealed = await sealDuress(Suite, key, record, DEFAULT); } catch { /* next unlock tries again */ }
+    return { setting: { ...DEFAULT }, record: sealed, unreadable: !!record.duressSealedAt };
+  }
   try { return { setting: normalize(await Suite.openSetting(key, fromB64(record.duressSealed))), record: null }; }
   catch { return { setting: { ...DEFAULT }, record: null, unreadable: true }; }
 }

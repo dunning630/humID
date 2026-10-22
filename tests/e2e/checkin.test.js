@@ -15,7 +15,7 @@ import { HumidApi } from "@humid/api";
 import { splitUnwrap } from "@humid/crypto";
 import { makeHolder, sealFor, sealSplitFor } from "./holder.js";
 import { createLedger } from "../../services/ledger/src/server.js";
-import { signRequestAssertion } from "@humid/svc";
+import { signRequest } from "@humid/svc";
 import { CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS } from "../../services/keyshare/src/server.js";
 
 const H = 3_600_000, MIN = 60_000;
@@ -290,7 +290,7 @@ test("a sweep never takes a document uploaded after the erase", async () => {
   const fresh = await split(a, "after.txt", "sealed after the erase");
   // the race: a sweep that listed what to keep before this upload's key reached keyshare
   const body = JSON.stringify({ keep: [], before: erasedAt });
-  const assertion = signRequestAssertion(stack.internalSk, { iss: "gateway", aud: "vault", rid: crypto.randomUUID(), sub: a.h.id }, { method: "DELETE", path: "/internal/objects", body: Buffer.from(body) });
+  const assertion = signRequest(stack.internalSk, { aud: "vault", method: "DELETE", path: "/internal/objects", body: Buffer.from(body), claims: { sub: a.h.id } });
   const res = await fetch(`${stack.upstreams.vault}/internal/objects`, { method: "DELETE", headers: { "x-humid-assertion": assertion, "content-type": "application/json" }, body });
   assert.equal(res.status, 200);
   assert.deepEqual(await vaultIds(a.api), [fresh], "the erased envelope went; the new one stayed");

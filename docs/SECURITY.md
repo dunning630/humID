@@ -160,8 +160,14 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
    (AES-256-GCM, bound to account and document) under `share-key.bin`. In the
    Docker deployment, keep `keyshare-data` on different storage from
    `vault-data`, ideally another host, and move `share-key.bin` into an HSM or
-   KMS before real data. On HumID Server for Windows both sit on one PC, so a
-   stolen disk has both halves.
+   KMS before real data. Since server 3.0, `share-key.bin` is sealed under the
+   machine's seal key (DPAPI with BitLocker's TPM protector on Windows, a TPM2
+   systemd credential on Linux), and the keys role can run on its own machine
+   and storage over mutual TLS (docs/DEPLOY-VMS.md). On a single PC both halves
+   still share one machine, but a copy of its data folder opens neither. Its
+   backups keep them apart too (server 3.1): each is encrypted to a backup key
+   kept off the computer, with keyshare's half in a separate file that can go
+   to another disk ([ADMIN.md](ADMIN.md), *Backups*).
 
 **Limits:**
 
@@ -308,7 +314,10 @@ storage). What it costs, and why IDs are kept off it:
    is not fetched yet).
 3. Native apps only, signed, with the server key pinned at build time.
 4. Server keys in an HSM or cloud KMS (including keyshare's `share-key.bin`), keyshare on
-   separate storage from the vault; encrypted, tested backups of every volume.
+   separate storage from the vault; encrypted, tested backups of every volume. Server 3.0
+   covers the middle of this: every server secret sealed at rest under a TPM-bound machine
+   key, the keys role on its own machine over mutual TLS, and (3.1) backups encrypted to a key
+   held offline, with the key-share data in its own file (docs/DEPLOY-VMS.md, docs/ADMIN.md). An HSM is still the step after.
 5. Push and email alerts for new devices and recoveries.
 6. Account-key rotation after a device is removed.
 7. Penetration test of the deployed stack, including the admin console (docs/ADMIN.md).
@@ -317,6 +326,36 @@ storage). What it costs, and why IDs are kept off it:
    to do: hold the install key in the platform's secret store (a non-biometric Keychain,
    Keystore, DPAPI or Secret Service slot via a new gate-plugin command) rather than in
    the WebView's key store, and seal the `pending` join record while a join waits.
+
+## Server 3.0: the server's own hardening
+
+- **Internal requests are bound and single-use (SEC-S-01, fixed).** The gateway's signed
+  assertion to a service now names the service, the method, the exact path and query and
+  the SHA-256 of the body, and carries a random id that the service accepts once. A service
+  also refuses assertions minted before it started. One captured assertion (from a download,
+  say) authorises nothing else: not `DELETE /objects`, not the same request twice. Tests:
+  `tests/server3.test.js`.
+- **Server secrets are sealed at rest.** The HTP identity keys, the ledger's signing key, the
+  recovery anchor secret, keyshare's master key, the pass issuer keys, the internal signing
+  key and the role certificates' keys are AES-256-GCM-sealed under a seal key the machine
+  protects (DPAPI on Windows; a key file the operator provides elsewhere, e.g. a TPM2
+  systemd credential). Each sealed file names itself in its associated data, so files can't
+  be swapped. A plain secret from an older install is sealed in place with the same key
+  material: the server's kid doesn't change.
+- **Mutual TLS between roles.** When front, core and keys run on separate machines, each
+  hop is TLS 1.3 with Ed25519 certificates from the server's own CA; core and keys accept
+  only `humid-front`, and the gateway accepts only the role it meant to reach.
+- **Encrypted backups (server 3.1, PC-10).** `humid backup` writes chunked AES-256-GCM files
+  whose file keys are sealed (HUMID-PQ1: ML-KEM-1024 + X25519) to a backup key the
+  administrator makes with `humid backup-key new -Path <file>`. Its private half goes only to
+  that file, kept off the computer; the server keeps the public half, so it can make backups
+  but can't open them. The key-share data goes to its own file (another disk), and the seal key
+  travels only inside the encrypted stream, so a restore on a new machine seals it again under
+  that machine's DPAPI. A cut, reordered, swapped or altered backup is refused before anything
+  changes. (3.0 test builds kept a DPAPI-sealed backup key on the server; 3.1 removes it.)
+- **Still open:** the hypervisor of a VM can read its memory (use confidential VMs where
+  possible); restarting the keys role erases Heartbeat-armed vaults; an HSM for the seal
+  key; one process per role (no scale-out yet).
 
 ## The access pass at rest
 

@@ -3,11 +3,17 @@
 // plus noble for Ed25519 internal assertions.
 
 import http from "node:http";
-import { mkdirSync } from "node:fs";
+import https from "node:https";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { createHash } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { roleOf, serverTls } from "./pki.js";
+import { sealerFromEnv } from "./seal.js";
+
+export { makeCa, issueRoleCert, serverTls, clientTls, roleOf, roleName, daysLeft, ROLES } from "./pki.js";
+export { sealer, sealerFromEnv, secretFile, writeAtomic, isSealedFile, isSealedText, parseKeyText } from "./seal.js";
 
 /* ---------------- config & logging ---------------- */
 
@@ -51,53 +57,100 @@ export const unb64u = (s) => {
 // others who is calling with a short-lived Ed25519-signed assertion, so a
 // service never trusts a bare header and an attacker inside the network
 // cannot impersonate a user without the gateway's key.
+//
+// Version 2 (server 3.0, SEC-S-01): an assertion is bound to ONE request. It names the
+// service (aud), the method (m), the exact path and query (p) and the SHA-256 of the body
+// (bh), carries a random id (rid), and a service accepts each id once. One captured
+// assertion (from a download, say) therefore authorises nothing else: not another route,
+// not another body, not the same request again. A service also refuses assertions minted
+// before it started, so a restart doesn't reopen the window its memory of ids covered.
 
 const ASSERT_PREFIX = "HUMID-ASSERT-v1.";
 export const ASSERTION_HEADER = "x-humid-assertion";
+export const ASSERTION_VERSION = 2;
+const ASSERT_TTL_MS = 30_000;
+const CLOCK_SKEW_MS = 5_000;    // between the gateway's clock and a service's on another machine
+const RESTART_GRACE_MS = 2_000; // assertions minted this long before a service started are still taken
 
 export function newInternalKeys() {
   const sk = ed25519.utils.randomSecretKey();
   return { sk: b64u(sk), pk: b64u(ed25519.getPublicKey(sk)) };
 }
 
-export function signAssertion(skB64, claims, ttlMs = 30_000) {
+/** SHA-256 of a request body (empty for none), base64url: what an assertion's `bh` must equal. */
+export const bodyHash = (body) => createHash("sha256").update(body && body.length ? body : new Uint8Array(0)).digest("base64url");
+
+/** Low level: sign arbitrary claims. Services refuse anything not made by signRequest (below). */
+export function signAssertion(skB64, claims, ttlMs = ASSERT_TTL_MS) {
   const now = Date.now();
   const payload = b64u(Buffer.from(JSON.stringify({ iat: now, exp: now + ttlMs, ...claims })));
   const sig = ed25519.sign(new TextEncoder().encode(ASSERT_PREFIX + payload), unb64u(skB64));
   return `${payload}.${b64u(sig)}`;
 }
 
-const sha256hex = (b) => createHash("sha256").update(b || new Uint8Array(0)).digest("hex");
-
 /**
- * An assertion for exactly one request (PC-08): its method, its target (path and query) and
- * a hash of its body are signed in with the claims, and createService refuses the assertion
- * on any other request. Each also carries a fresh `rid` and is accepted once. So one captured
- * on the internal network can't be replayed, or turned from a read into a delete.
+ * The assertion for one internal request. `path` is the origin-form target exactly as it
+ * is sent (path and query, already percent-encoded); `body` the exact bytes (or none).
  */
-export function signRequestAssertion(skB64, claims, { method, path, body }, ttlMs) {
-  return signAssertion(skB64, { ...claims, m: String(method).toUpperCase(), p: String(path), bh: sha256hex(body) }, ttlMs);
+export function signRequest(skB64, { aud, method, path, body, claims = {}, ttlMs = ASSERT_TTL_MS }) {
+  return signAssertion(skB64, { iss: "gateway", ...claims, v: ASSERTION_VERSION, aud, m: String(method).toUpperCase(), p: path, bh: bodyHash(body), rid: randomUUID() }, ttlMs);
 }
 
+/** Check an assertion's signature, audience and time. The binding to the request is checked by createService once the body is in. */
 export function verifyAssertion(pkB64, token, audience) {
   if (!token) throw new HttpError(401, "unauthenticated", "Missing assertion");
   const [payload, sig] = String(token).split(".");
   let ok = false;
   try { ok = ed25519.verify(unb64u(sig), new TextEncoder().encode(ASSERT_PREFIX + payload), unb64u(pkB64)); } catch {}
   if (!ok) throw new HttpError(401, "unauthenticated", "Bad assertion signature");
-  const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+  let claims;
+  try { claims = JSON.parse(Buffer.from(payload, "base64url").toString()); } catch { throw new HttpError(401, "unauthenticated", "Bad assertion"); }
+  if (!claims || typeof claims !== "object") throw new HttpError(401, "unauthenticated", "Bad assertion");
   if (claims.aud !== audience) throw new HttpError(401, "unauthenticated", "Assertion not for this service");
-  if (Date.now() > claims.exp) throw new HttpError(401, "unauthenticated", "Assertion expired");
+  const now = Date.now();
+  if (!(now <= claims.exp)) throw new HttpError(401, "unauthenticated", "Assertion expired");
+  if (!(claims.iat <= now + CLOCK_SKEW_MS) || !(claims.exp - claims.iat <= 5 * 60_000)) throw new HttpError(401, "unauthenticated", "Assertion times out of range");
   return claims;
+}
+
+/**
+ * Each service's memory of the assertion ids it has accepted, until they expire. Bounded: if
+ * it ever fills with live ids the service refuses (503) rather than forget one, because
+ * forgetting would let that one be replayed.
+ */
+export function replayGuard({ max = 200_000, now = () => Date.now() } = {}) {
+  const startedAt = now();
+  const seen = new Map(); // rid -> exp
+  const prune = () => { const t = now(); for (const [k, exp] of seen) if (exp < t) seen.delete(k); };
+  return {
+    startedAt,
+    get size() { return seen.size; },
+    /** Bind `claims` to this request and spend its id. Throws 401 on any mismatch or reuse. */
+    check(claims, { method, url, body }) {
+      const bad = (why) => new HttpError(401, "unauthenticated", why);
+      if (claims.v !== ASSERTION_VERSION) throw bad("Assertion not bound to a request");
+      if (claims.m !== method) throw bad("Assertion is for another method");
+      if (claims.p !== url) throw bad("Assertion is for another path");
+      if (claims.bh !== bodyHash(body)) throw bad("Assertion is for another body");
+      if (typeof claims.rid !== "string" || claims.rid.length < 16 || claims.rid.length > 64) throw bad("Assertion has no id");
+      if (claims.iat < startedAt - RESTART_GRACE_MS) throw bad("Assertion is older than this service");
+      if (seen.has(claims.rid)) throw bad("Assertion already used");
+      if (seen.size >= max) { prune(); if (seen.size >= max) throw new HttpError(503, "busy", "Too many requests in flight"); }
+      seen.set(claims.rid, claims.exp);
+      if (seen.size % 1024 === 0) prune();
+    },
+  };
 }
 
 /* ---------------- HTTP ---------------- */
 
 export class HttpError extends Error {
-  constructor(status, code, message) {
+  /** detail: extra fields for the JSON body, for internal callers (the gateway strips what the app mustn't see). */
+  constructor(status, code, message, detail) {
     super(message || code);
     this.status = status;
     this.code = code;
+    if (detail && typeof detail === "object") this.detail = detail;
   }
 }
 
@@ -160,21 +213,9 @@ export const parseObject = (buf) => {
  */
 export const logPath = (route, pathname) => route ? route.pattern : `/${String(pathname).split("/")[1] || ""}/…`.replace(/[^\w/…-]/g, "");
 
-export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders }) {
+export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders, tls = null }) {
   const log = logger(name);
-  // Assertions already used, until they expire (PC-08): each is good for one request.
-  const usedRids = new Map();
-  function bound(claims, req, body) {
-    if (claims.m !== req.method || claims.p !== req.url || claims.bh !== sha256hex(body)) {
-      throw new HttpError(401, "unauthenticated", "Assertion is for a different request");
-    }
-    const rid = typeof claims.rid === "string" ? claims.rid : "";
-    const t = Date.now();
-    if (usedRids.size > 50_000) for (const [k, exp] of usedRids) if (exp < t) usedRids.delete(k);
-    if (!rid || usedRids.has(rid)) throw new HttpError(401, "unauthenticated", "Assertion already used");
-    if (usedRids.size > 200_000) throw new HttpError(503, "busy", "Too many requests in flight");
-    usedRids.set(rid, Number(claims.exp) || t);
-  }
+  const replay = replayGuard();
   const compiled = routes.map(([method, pattern, handler, opts = {}]) => {
     const keys = [];
     const re = new RegExp("^" + pattern.replace(/:([a-zA-Z]+)/g, (_, k) => { keys.push(k); return "([^/]+)"; }) + "$");
@@ -213,13 +254,14 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
           catch (e) { closeAfter = true; throw e; }
           finally { release?.(); }
         }
-        if (claims) bound(claims, req, body);
+        // SEC-S-01: the assertion must be for exactly this request, and unused
+        if (claims) replay.check(claims, { method: req.method, url: req.url, body });
         out = await route.handler({ req, params, query: url.searchParams, body, claims, headers: req.headers });
       }
     } catch (e) {
       try {
         if (!(e instanceof HttpError)) log.error("unhandled", { err: e?.stack });
-        out = onError?.(e) || json(e?.status || 500, { error: e?.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
+        out = onError?.(e) || json(e?.status || 500, { ...(e instanceof HttpError && e.detail ? e.detail : {}), error: e?.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" });
       } catch (e2) {
         log.error("unhandled", { err: e2?.stack });
         out = json(500, { error: "internal", message: "Internal error" });
@@ -234,12 +276,23 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
     if (pathname !== "/healthz") log.info("req", { m: req.method, p: logPath(route, pathname), s: out.status, ms: Date.now() - started });
   }
 
-  const server = http.createServer((req, res) => {
+  const onRequest = (req, res) => {
     handle(req, res).catch((e) => {
       try { log.error("unhandled", { err: e?.stack }); } catch {}
       try { if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" }); res.end(res.headersSent ? undefined : '{"error":"internal","message":"Internal error"}'); } catch { try { res.destroy(); } catch {} }
     });
-  });
+  };
+  // Calls from another machine (server 3.0, split roles): mutual TLS with the server's own CA
+  // (pki.js), and only the roles in tls.allow (the gateway's humid-front) may connect at all.
+  const server = tls ? https.createServer(tls, onRequest) : http.createServer(onRequest);
+  if (tls) {
+    const allow = tls.allow || ["front"];
+    server.on("secureConnection", (sock) => {
+      const role = roleOf(sock.getPeerCertificate?.());
+      if (!sock.authorized || !allow.includes(role)) { log.warn("refused a connection", { role: role || "none" }); sock.destroy(); }
+    });
+    server.on("tlsClientError", () => {}); // a handshake that fails is the client's problem, not a crash
+  }
   server.on("clientError", (err, socket) => { try { if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"); else socket.destroy(); } catch {} });
   server.requestTimeout = 120_000;
   server.headersTimeout = 15_000;
@@ -248,12 +301,54 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
   const start = () => new Promise((resolve, reject) => {
     const host = process.env.HUMID_BIND_HOST || undefined;
     server.once("error", reject);
-    server.listen(port, host, () => { server.off("error", reject); log.info("listening", { port: server.address().port, ...(host ? { host } : {}) }); resolve(server); });
+    server.listen(port, host, () => { server.off("error", reject); log.info("listening", { port: server.address().port, ...(host ? { host } : {}), ...(tls ? { tls: "mutual" } : {}) }); resolve(server); });
   });
   const stop = () => new Promise((resolve) => server.close(() => resolve()));
   for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => { log.info("shutdown", { sig }); stop().then(() => process.exit(0)); });
-  return { server, start, stop, log };
+  return { server, start, stop, log, tls: !!tls };
 }
+
+/* ---------------- calls between services ---------------- */
+
+/**
+ * One HTTP(S) request to another service: { status, headers: Map-like get(), body: Uint8Array }.
+ * `agent` carries the TLS settings for a role on another machine (an https.Agent made with
+ * clientTls()); without one, plain HTTP on this machine's loopback.
+ */
+export function internalRequest(url, { method = "GET", headers = {}, body, agent, timeoutMs = 120_000 } = {}) {
+  const u = new URL(url);
+  const lib = u.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request({
+      method, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path: u.pathname + u.search, agent,
+      headers: { ...headers, ...(body && body.length ? { "content-length": body.length } : {}) },
+      timeout: timeoutMs,
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode, headers: { get: (h) => { const v = res.headers[h.toLowerCase()]; return Array.isArray(v) ? v.join(", ") : v ?? null; } }, body: new Uint8Array(Buffer.concat(chunks)) }));
+      res.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+    if (body && body.length) req.end(Buffer.from(body)); else req.end();
+  });
+}
+
+/**
+ * A service's TLS when it takes calls from another machine: HUMID_TLS_CA, HUMID_TLS_CERT and
+ * HUMID_TLS_KEY (files; the key may be sealed). null = plain HTTP (one machine, loopback only).
+ */
+export function serviceTlsFromEnv(env = process.env) {
+  const { HUMID_TLS_CA: ca, HUMID_TLS_CERT: cert, HUMID_TLS_KEY: key } = env;
+  if (!ca && !cert && !key) return null;
+  if (!ca || !cert || !key) throw new Error("Internal TLS needs all of HUMID_TLS_CA, HUMID_TLS_CERT and HUMID_TLS_KEY");
+  const seal = sealerFromEnv(env);
+  return serverTls({ ca: readFileSync(ca, "utf8"), cert: readFileSync(cert, "utf8"), key: seal.open("tls/key", readFileSync(key)).toString("utf8") });
+}
+
+/** An https.Agent for calls to `role` on another machine, from pki.js clientTls() settings. */
+export const roleAgent = (tlsOpts) => new https.Agent({ keepAlive: true, maxSockets: 64, ...tlsOpts });
 
 /* ---------------- storage ---------------- */
 

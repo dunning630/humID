@@ -1,9 +1,10 @@
 // Managing the server, in a real browser: the admin console (on a simulated Windows)
 // and the HumID app side by side, as an administrator would use them.
 //   1. the console's one-time sign-in link; read-only until a phone is added
-//   2. Add a phone: the console shows a code and QR; the app looks it up, approves with
-//      a live check, and shows an admin check; the console shows the same one; They match
-//   3. the app's You tab now shows This server
+//   2. Add a phone: the console shows a code and QR; the app (You › About › Manage this
+//      server) looks it up, approves with a live check, and shows an admin match code; the
+//      console shows the same one; They match
+//   3. the app's About screen now shows This server
 //   4. Restart on the console: a code; the app approves exactly that; the console runs it
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
@@ -14,6 +15,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { confirmCard, youScreen, backOut } from "./_v3.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const PORT = Number(process.env.PORT || 5199);
@@ -60,18 +62,17 @@ try {
   await app.goto(BASE);
   await app.getByRole("button", { name: "Create my HumID" }).click();
   await app.getByRole("button", { name: "Trust this server" }).click();
-  await app.getByLabel(/Only I use/).waitFor({ timeout: 30_000 });
-  await app.getByLabel(/Only I use/).check();
+  await app.getByText("Your body becomes the key").waitFor({ timeout: 30_000 });
+  await app.getByRole("checkbox").first().click();
   await app.getByRole("button", { name: /Use demo mode/ }).click();
   await hold();
-  await app.getByText("Save your recovery card").waitFor({ timeout: 30_000 });
-  const ask = await app.locator('label[for="card-check"]').innerText();
-  const groups = await app.locator(".cardcode span").allInnerTexts();
-  await app.fill("#card-check", groups[Number(/group (\d+)/.exec(ask)[1]) - 1]);
-  await app.getByRole("button", { name: "I've saved it" }).click();
+  await app.getByText("Your recovery card").first().waitFor({ timeout: 30_000 });
+  await confirmCard(app);
+  await app.getByRole("button", { name: "I've written it down" }).click();
   await app.getByRole("button", { name: "Open my vault" }).click();
-  await app.locator(".tabbar button", { hasText: "You" }).click();
-  step("app: a new HumID, on the You tab");
+  await app.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 15_000 });
+  await youScreen(app, "About");
+  step("app: a new HumID, on About");
 
   /* ---- enrol ---- */
   await desk.getByRole("button", { name: "Add a phone" }).click();
@@ -81,16 +82,17 @@ try {
   assert.ok(await desk.locator(".seal .qr svg").isVisible(), "a QR code to scan");
   await shot(desk, "console-enrol-code");
 
-  await app.getByRole("button", { name: /Manage this server/ }).click();
+  await app.locator(".pushed").getByText("Manage this server").click(); // a disclosure under About (3.0)
+  await app.getByRole("button", { name: "Enter a console code" }).click();
   await app.fill("#admin-code", code);
   await app.getByRole("button", { name: "Look it up" }).click();
   await app.getByText("Become an administrator of this server?").waitFor();
-  assert.ok(await app.getByText(`Check ${check}`).isVisible(), "the app shows the same short check as the console");
+  assert.ok(await app.getByText(`Match code ${check}`).isVisible(), "the app shows the same short match code as the console");
   await shot(app, "app-enrol-request");
   await app.getByRole("button", { name: "Become an administrator" }).click();
   await hold();
   await app.getByText("Compare this with the console").waitFor({ timeout: 20_000 });
-  const appCheck = (await app.locator(".codebox, .code-box, [aria-label='Admin check']").first().innerText()).replace(/[^0-9A-Z]/g, "");
+  const appCheck = (await app.locator("[aria-label='Admin match code'] .code").first().innerText()).replace(/[^0-9A-Z]/g, "");
   await shot(app, "app-admin-check");
 
   await desk.getByText("Compare the admin check").waitFor({ timeout: 10_000 });
@@ -104,12 +106,13 @@ try {
 
   /* ---- the app now shows the server ---- */
   await app.locator(".sheet").getByRole("button", { name: "Done" }).click();
+  await backOut(app);
   await app.locator(".tabbar button", { hasText: "Vault" }).click();
-  await app.locator(".tabbar button", { hasText: "You" }).click();
+  await youScreen(app, "About");
   await app.getByRole("heading", { name: "This server" }).waitFor({ timeout: 10_000 });
   await app.getByRole("heading", { name: "This server" }).scrollIntoViewIfNeeded();
   await shot(app, "app-this-server");
-  step("app: This server appears for its administrator");
+  step("app: This server appears under About for its administrator");
 
   /* ---- a change ---- */
   await desk.locator('button[data-req="restart-server"]').click();

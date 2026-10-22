@@ -8,8 +8,6 @@
 		protocols tls1.3
 	}
 
-	encode zstd gzip
-
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -44,11 +42,17 @@
 	handle {
 		root * /srv/app
 		header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; worker-src 'self'; connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-		@sw path /sw.js /manifest.webmanifest
-		header @sw Cache-Control "no-cache"
+		# The shell is always fresh; everything under /assets/ carries a content hash in its
+		# name (apps/mobile/build.mjs) and is immutable. The build also writes .br and .gz
+		# siblings, so nothing is compressed on the fly here (and /htp frames, which are
+		# random bytes, are never compressed at all).
+		@shell path / /index.html /sw.js /manifest.webmanifest /boot-guard.js
+		header @shell Cache-Control "no-cache"
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
 		try_files {path} /index.html
-		file_server
+		file_server {
+			precompressed br gzip
+		}
 	}
 }

@@ -1,0 +1,16 @@
+# gitleaks: the secret scan run by .github/workflows/secret-scan.yml.
+# Gitleaks' built-in rules, plus: no signing key or key store file is ever committed
+# (PC-05: tools/android-test.keystore). Binary key stores have no text for the
+# built-in rules to match, so they are caught by their file name.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "signing-key-file"
+description = "Signing key or key store file (.keystore, .jks, .p12, .pfx, .p8, keystore.properties)"
+path = '''(?i)(\.(keystore|jks|p12|pfx|p8)|(^|/)keystore\.properties)$'''
+
+# Not secrets: the app's local-storage key names ("humid.prefs.v1", ...).
+[[allowlists]]
+description = "local-storage key names"
+regexes = ['''^humid\.[a-z0-9.-]+\.v[0-9]+$''']

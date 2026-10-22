@@ -4,7 +4,7 @@
 // took, in milliseconds, by name: never a picture, never text read from one, never a size
 // that could say what a document was.
 //
-// The same list the camera screen writes to (screens/ids.jsx trace()): globalThis.__humidTrace.ev,
+// The same list the camera screen writes to (screens/add/camera.jsx trace()): globalThis.__humidTrace.ev,
 // entries [name, performance.now() rounded, extra]. A span is recorded when it ends, as
 // ["span:<name>", end time, duration ms], so the list reads in order.
 //

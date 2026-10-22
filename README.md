@@ -1,4 +1,4 @@
-# HumID — safe, secure, simple personal-data vault (POC v2)
+# HumID — safe, secure, simple personal-data vault (3.0)
 
 Your documents are sealed on your phone with post-quantum encryption, stored
 on a vault server that can't read them, and opened again only after a live
@@ -10,16 +10,18 @@ face or fingerprint check. Three parts:
 | **Transit** | `packages/htp` | HTP/1: hybrid ML-KEM-1024 + X25519 handshake, AES-256-GCM frames, biometric step-up proofs, inside TLS 1.3. |
 | **Server** | `services/` | Eight small services: edge, gateway, identity, vault, ledger, recovery, access, keyshare. Docker compose. |
 
-Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
+Start with [docs/V3.md](docs/V3.md) (the 3.0 app: its shape, the brand as meaning, what changed for the person, the security and weight changes, the communication boundary), then [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Then
 [docs/CONTINUITY.md](docs/CONTINUITY.md) (proving it's the same person: two-proof recovery, duress, the public log),
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol),
 [docs/RECOVERY.md](docs/RECOVERY.md) (devices and getting your vault back),
 [docs/ANONYMITY.md](docs/ANONYMITY.md) (paying without being identified, and who can know what),
 [docs/SECURITY.md](docs/SECURITY.md) (what it protects against, and what it
-doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC),
+doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux with Docker or on a Windows PC), [docs/DEPLOY-VMS.md](docs/DEPLOY-VMS.md) (server 3.0 on VMs and shared storage: roles on separate machines over mutual TLS, sealed secrets, encrypted backups),
 [docs/ADMIN.md](docs/ADMIN.md) (the Windows server's admin console: health, updates and backups, each change approved on an administrator's phone),
-[docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in), and
-[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups).
+[docs/CHECKIN.md](docs/CHECKIN.md) (Check-in: a timer that erases your vault for good unless you check in),
+[docs/BACKUP.md](docs/BACKUP.md) (HumID 3.0, provisional: whole-computer backups),
+[docs/MESSAGING.md](docs/MESSAGING.md) (HumID 4.0, provisional: person to person, known only by an ID), and
+[docs/CREDENTIALS.md](docs/CREDENTIALS.md) (HumID 4.0, provisional: asking for and checking mobile licenses, digital IDs, passports; what an SSN check can and can't be).
 
 ## Try it on your machine
 
@@ -100,6 +102,10 @@ packages/            independently versioned modules
   cards                            payment cards: number checks, camera (both sides) + contactless capture, sealed record (no PIN, no back photo)
   wallet                           Apple Wallet passes: bounded unzip, manifest hashes, issuer signature through Apple's pinned roots
   backup                           (3.0, provisional) computer backups: sealed pieces, 2-of-3 key parts (HumID, sheet, contact)
+  msg                              (4.0, provisional) person to person: persona IDs, PQ double ratchet, live stamps, relay rules
+  mdoc                             mobile IDs (ISO 18013-5/-7): in person and online (Digital Credentials API, HPKE), issuer + device authentication
+  sdjwt                            (4.0, provisional) SD-JWT VC with key binding, JOSE, token status lists (revocation)
+  creds                            (4.0, provisional) one request and one verifier for public credentials; minimised claims; SSN (eCBSV)
 plugins/humid-gate/  native biometric gate (Swift, Kotlin, Rust)
 plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/SC)
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare

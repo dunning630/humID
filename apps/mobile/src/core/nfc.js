@@ -1,11 +1,11 @@
 // The chip reader transport in the app: tauri-plugin-humid-nfc (humid-nfc@1)
-// moves APDUs; @humid/emrtd does ICAO 9303. iPhone and Android use the
+// moves APDUs; @humid/emrtd does ICAO 9303, @humid/fido does CTAP 2 for security keys. iPhone and Android use the
 // phone's NFC; Windows and Mac use a USB contactless reader (PC/SC).
 import { fromB64, toB64, toHex } from "@humid/codec";
 import { SERVER_URL } from "./config.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
-// The development-build flag is tested inline (see controller.js): release builds fold
+// The development-build flag is tested inline (see core/config.js DEMO_BUILD): release builds fold
 // it to false and the simulated chip below, with its /dev/chip endpoints, is dropped.
 
 const inTauri = () => typeof globalThis.__TAURI_INTERNALS__?.invoke === "function";
@@ -27,10 +27,32 @@ export async function probeNfc() {
 }
 
 /**
+ * Wait for a security key (4.0, docs/SECURITY-KEY.md), then return the same kind of
+ * transport for @humid/fido. Development builds in a browser get the dev server's
+ * simulated key (PIN 123456), one per server, so a key added on one "device" can be
+ * used to recover on another.
+ */
+export async function openKey({ prompt, timeoutMs = 60_000 } = {}) {
+  if (!inTauri() && (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) {
+    const s = await (await fetch(`${SERVER_URL}/dev/key/begin`, { method: "POST" })).json();
+    return {
+      kind: "demo",
+      transceive: async (apdu) => {
+        const r = await (await fetch(`${SERVER_URL}/dev/key/transceive?session=${s.session}&apdu=${toHex(apdu)}`, { method: "POST" })).json();
+        return Uint8Array.from(r.response.match(/../g), (h) => parseInt(h, 16));
+      },
+      message: async () => {},
+      end: async () => {},
+    };
+  }
+  return openChip({ prompt, timeoutMs, lostMessage: "Lost contact with the key. Hold it still against the phone and try again." });
+}
+
+/**
  * Wait for a document, then return a transport for @humid/emrtd:
  * { transceive(bytes), message(text), end({ message?, error? }) }.
  */
-export async function openChip({ prompt, timeoutMs = 60_000 } = {}) {
+export async function openChip({ prompt, timeoutMs = 60_000, lostMessage = null } = {}) {
   if (!inTauri() && (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true)) {
     const s = await (await fetch(`${SERVER_URL}/dev/chip/begin?name=${encodeURIComponent(demoHolder)}`, { method: "POST" })).json();
     return {
@@ -45,12 +67,12 @@ export async function openChip({ prompt, timeoutMs = 60_000 } = {}) {
   }
   let s;
   try { s = await invoke("begin", { prompt, timeoutMs }); }
-  catch (e) { const m = msg(e); throw Object.assign(new Error(/cancel/i.test(m) ? "Chip reading cancelled." : m), { code: /cancel/i.test(m) ? "cancelled" : "nfc" }); }
+  catch (e) { const m = msg(e); throw Object.assign(new Error(/cancel/i.test(m) ? "Cancelled." : m), { code: /cancel/i.test(m) ? "cancelled" : "nfc" }); }
   return {
     kind: s.kind,
     async transceive(apdu) {
       try { return fromB64((await invoke("transceive", { session: s.session, apdu: toB64(apdu) })).response); }
-      catch (e) { throw Object.assign(new Error(msg(e)), { code: "lost" }); }
+      catch (e) { throw Object.assign(new Error(lostMessage || msg(e)), { code: "lost" }); }
     },
     message: (text) => invoke("message", { session: s.session, message: text }).catch(() => {}),
     end: ({ message, error } = {}) => invoke("end", { session: s.session, message, error }).catch(() => {}),

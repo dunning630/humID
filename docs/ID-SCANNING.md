@@ -31,7 +31,7 @@ held still, lit and in focus, for about a second, and the camera's focus has set
 read is photographed anyway after the card has sat steady in view for twelve seconds,
 but never while a barcode is in view.
 
-**What it says while it works** (`core/scanflow.js`, `screens/scanui.jsx`). A card above
+**What it says while it works** (`core/scanflow.js`, `screens/add/camera.jsx`). A card above
 the shutter shows one state at a time: *Looking for the document → Hold steady →
 Reading → Verifying → Done*, with the steps as a row and a progress bar. Anything the
 person can fix is said in a few words and held back until it has lasted 0.7 s, so it
@@ -120,8 +120,8 @@ with its photos.
 | `apps/mobile/src/core/barcodefind.js` | Finding barcodes anywhere in view, their tilt, and the spot to hand the reader |
 | `apps/mobile/src/core/scanclean.js` | The clean scan: even light, white paper, crisp ink |
 | `apps/mobile/src/core/scanflow.js`, `scancore.js`, `analyzer.js`, `scanworker.js` | The visible scan state machine; the per-frame analysis; running it in a worker (or here); the worker |
-| `apps/mobile/src/screens/scanui.jsx` | The state card on the camera |
-| `apps/mobile/src/screens/ids.jsx` | The camera (`DocCamera`), the flow (`IdSheet`) and the card view (`IdView`) |
+| `apps/mobile/src/screens/add/camera.jsx` | The camera (`DocCamera`, guided and free-form) and its state card (`ScanState`) |
+| `apps/mobile/src/screens/add/ids.jsx` | The ID flow (`IdFlow`) and the card view (`IdView`) |
 | `apps/mobile/src/core/docscan.js`, `plugins/humid-docscan` | Android: the phone's document scanner takes the photo (below) |
 
 The engines ship in the app (about 5.5 MB in `assets/ocr` and `assets/scan`)
@@ -152,12 +152,100 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
 
+## The capture screen, rebuilt (apps 3.1.0)
+
+What 3.0.x got wrong, from testing on a phone: you couldn't tell whether the camera saw the
+document, whether it had taken the picture, or whether the picture had what it needed. Nothing
+was read until after the photo (a license's barcode, a passport's lines were read from the still
+only), so a miss showed up as a short error and a silent restart; instructions lagged the camera
+by up to two seconds (a 0.7-2.2 s delay before a problem was said, then a 1.2 s hold on ordinary
+steps); the only feedback on the document itself was the colour of four corners, with the words
+200 px further down; and the moment of capture was a 0.2 s tick before the next screen.
+
+The frame stays (2.2.0's fixed outline, which never moves, so the crop never moves). Around it:
+
+| | 3.1.0 |
+|---|---|
+| **Does it see it?** | A **lock box** inside the frame follows the document the camera actually sees (four edges and an angle from `measure()`, eased, `core/capture.js docBox`), amber, and settles onto the frame when it's lined up; the frame and its corners go amber, then mint. Not a free four-point outline: four numbers and an angle can't jump about. |
+| **What do I change?** | One instruction in a **panel right under the frame**: problems are said after 0.35 s (blur 1.5 s, the wrong side 1.2 s, dark 0.6 s), a new problem replacing another after 0.55 s, and good news at once. A row of **live chips** (Framed · Sharp · Steady · Light, and Barcode or ID lines where the side has them) shows each condition; a chip moves only when two looks agree. While lined up, a **ring** fills round the frame. A blur while lined up is "Focusing…" first, and the camera is asked to focus on the frame again (`focusAt`, where the phone allows it); tapping the picture focuses there. |
+| **Is it reading?** | A license back's barcode is read **live** from the full-size video the moment it's in the frame (in the scan worker, one read at a time); a passport's lines are read live too (two agreeing reads, `MrzConsensus`). The chip goes Barcode → reading → ✓ and the panel says "Barcode read ✓". The photo is taken the moment the details are in (lined up, or 2.5 s later at most), not on a timer. The still is still read when nothing was read live (the hold fires as before). |
+| **Did it take it?** | A flash, the photo **frozen in the frame**, "Captured", a line sweeping it while it's read. |
+| **Did it get what it needs?** | Before moving on, the panel **says back what it read** (Name, Date of birth, Number, Expires, the city; a card's brand and last four, expiry and name) for 1.3 s, with Continue. If a side had something to read and nothing usable was read, it says so in plain words ("Couldn't read the barcode") with **Try again** or **Keep the photo** (and type the details). Taken by itself, it looks again once without asking first. |
+| **Wrong side** | A license or state ID **back** held up when the front is asked for is read and kept as the back ("That was the back"), and the front's camera opens ("Back saved. Now the front."). |
+
+The live lines of a passport are checked against the photo's own lines before they're kept
+(`readStill` seeded with the live vote, `core/mrzseed.js`): if the photo doesn't confirm them they're
+kept for review, not as a consensus. A barcode read live is a decoded PDF417 (error-corrected), kept as read.
+
+`core/capture.js` is the machine (pure, `tests/doccam.test.js`): phases starting → aim ⇄ adjust ⇄ hold →
+capture → check → done | fail, the chips, the timings (`SAY_AFTER`, `SWITCH_AFTER`, `TIMING`), the lock box
+and `summarize()` (what was read, in the words the panel uses). It replaces `scanflow.js`. A hand that is
+nearly still (within 1.5x the steadiness threshold) and sharp for 1.5 s now counts as still. The scan stops
+looking after 40 s (Try again starts it again; the round button always works).
+
+**Check on a phone** (beyond the list below): that live barcode reads keep up on a mid-range Android (the
+worker reads one crop at a time); that `focusAt` refocuses on Chrome Android (pointsOfInterest, single-shot)
+and does nothing harmful elsewhere; that the lock box is calm on a real table; the panel's fit on a short
+screen (under 700 px it tightens).
+
+## Crop, focus and the security code (apps 3.1.1)
+
+**The photo is the document.** The guided still is the frame plus a 4% margin; `fitDocument`
+(`core/guidecap.js`) now cuts the document itself out of it: its four edges from `measure()` on a
+360 px grey copy (`quadFromEdges` in `core/guide.js`, a missing side mirrored from its opposite),
+refined by the corner finder near them, checked for size (at least 45% of the frame each way) and
+proportions (within 12%), then straightened at the document's ratio (1600 px for a card). No table
+is left round it; a card the guidance called small still fills the picture. When the edges can't be
+told it falls back to the frame without the margin. The read uses the cut-out, and the uncut crop
+if the cut-out doesn't read.
+
+**Focus.** Most phones can't focus closer than 10-20 cm, and a card filling the frame at 1x sits about
+12 cm away, so they never came sharp. Now:
+- where the track offers `zoom`, cards are scanned at 2x and passport pages at 1.5x (`zoomFor`), so the
+  phone is held about twice as far away; pages stay at 1x;
+- the camera is asked to focus on the frame from the start (`pointsOfInterest`), and again after 0.6 s
+  of blur while lined up (not more often than every 1.8 s);
+- without zoom, a document that is lined up and never sharp for 2.6 s gets a smaller frame (70%) and
+  "Move back a little: too close for the camera to focus";
+- the photo is taken at the sharpest lined-up moment instead of waiting for stillness: `TH.steady`
+  0.0075 (about 1.5% of the document between looks; the measure saturates near 0.01, and 2.2.0's
+  0.004 was about 0.3%), a 0.3 s hold with 0.3 s grace, and "sharp" means sharp enough and within 70%
+  of the sharpest look of the last 1.2 s; without a full-resolution still, the sharpest of three
+  frames 70 ms apart is kept.
+
+**The security code.** Card chips never give out the printed code (by design, so a chip read can't
+be used to make a card-not-present payment). So after the number is in, from the front or a tap, the
+back's camera opens by itself (with Skip), and the back is read whole and then, if the code isn't
+found, its signature-strip band at twice the size. The camera says it back masked; it is sealed
+with the card and shown only when revealed, as before; the photo of the back isn't kept.
+
+Tests: `tests/guide.test.js` (corners from edges, zoom choice, the shorter hold); `tests/browser/guided.mjs`
+scenes *tremor* (a new fixture, a hand trembling a few pixels: taken by itself, cut out) and
+*too-close*; every crop check now asserts the document fills the picture. `tests/browser/cards.mjs`:
+the back's camera opens after the front.
+
 ## The guided scan (apps 2.2.0)
 
 Cards, licences, ID cards and passports are scanned the way a bank's app does it:
 a fixed outline, plain-word guidance, an automatic or manual still, a crop to the outline.
 The camera no longer tracks a free-form quadrilateral live (that outline jumped, and the photo
 depended on it). Add > Photo and the Android document scanner are unchanged.
+
+**3.0.1.** What it is comes first: Add opens "What are you adding?", listing each kind directly
+(Passport, Driver's license, State ID or ID card, Green card or residence permit, Another card,
+Payment card, Document, Photo, Wallet pass, File; the last one used on top), and picking one opens
+its camera at once, with no "Start camera" step. The readers for that kind (the barcode reader for
+a license, the reader for the lines of <<< for a passport) start loading from the touch, so they are
+ready when the camera is. A **Document** is a page: an outline standing up at 1:1.35, between US Letter
+(1:1.294) and A4 (1:1.414), so either lines up; an evenly bright page isn't called glare. **Photo** is the
+whole view with nothing drawn over it. No four-point outline is drawn anywhere: the template's corners go
+amber when close and green when lined up, and the outline stays green, with a green line sweeping it,
+while the photo is read. **Which way up:** the guided photo is kept the way up it was lined up in the
+preview. No guess from the print turns it any more (`uprightOf` had turned real license fronts upside
+down), and a still the phone hands back turned 180° from the preview (a sensor mounted the other way up)
+is recognised by comparing it with the preview both ways and turned back (`takeStill`, `turned`). A
+passport page whose lines read only turned is still turned by its lines; the review's Rotate turns a card
+half round.
 
 **The template.** `templateFor` (`core/guide.js`) gives the outline for the kind chosen on "What are you
 adding?" (`SCAN_MODE` in `addroute.js`): ID-1, 85.6 x 54 mm, for licences, ID cards and payment cards (front and
@@ -182,8 +270,7 @@ released on exit, Back or background.
 
 Edges come from five-run profiles per side with a robust line fit; the shape is checked against the
 template's aspect (> 7% off: nothing is said about size and nothing is taken by itself, the round button
-works). A problem is said after 0.7 s (`SAY_AFTER` for the slower ones); the scan-state card (`scanflow.js`,
-`scanui.jsx`) shows it, as a live region.
+works). How and when it is said is the capture screen's (above, 3.1.0).
 
 **Capture.** Lined up, steady and sharp for 0.6 s (`holdTracker`, 0.22 s grace) fires the shot with a short
 vibration; the round button is always there. `takeStill` (`core/guidecap.js`) asks `ImageCapture.takePhoto` for up to
@@ -194,8 +281,9 @@ the outline plus a 4% margin, at most 2400 px wide, deskewed when the card is tu
 upright from the guide orientation and the print, and handed to `develop()` as before, so reading and
 sealing are unchanged. The Rotate control stays on the review. Nothing is logged and no raw frame is kept.
 
-**Preview size.** 1080 x 1920 (portrait; 1440 x 2560 for a passport), orientation-aware; if the browser
-returns the other way round the camera asks again (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
+**Preview size.** The long side only (1920 px; 2560 for a passport), with `resizeMode: "none"`, never a width and a height
+together: those make a browser cut the frame to that shape and lose the top and bottom of the page. If the preview
+comes back the other way round for the screen, the camera asks once more with both sizes in the screen's orientation (`previewTurned`). Not 4K (a 4K preview made the WebView unsteady
 in 2.1.1). Evidence, on synthetic specimens in Chromium: the PDF417 reads from frames 540, 720 and 1080 px
 wide; the MRZ reads at 720 and 1080 but misread a character at 540. So 1080 px is about 1.5x the width
 that was proven, and the passport asks for more. Real print and real optics need the device check below.
@@ -237,9 +325,15 @@ The seal screen offers three versions:
 The first two can be turned by hand in case the guess is wrong. Only the version
 chosen is sealed; the others are discarded.
 
-## Android: the phone's document scanner (apps 2.1.1; IDs off it since 2.1.2)
+## Android: the phone's document scanner (apps 2.1.1; IDs off it since 2.1.2; not used to add since 3.0.1)
 
-On Android, **Add ▸ Photo** and **Another card** open the phone's own document scanner
+**3.0.1: nothing opens the scanner any more.** Its screen draws its own four-point outline
+around whatever it finds, before the person has said what they're adding; since 3.0.1 the
+kind is picked first and every kind gets HumID's own camera with the template made for it
+(a page included). The plugin and `core/docscan.js` stay in the build, unused by Add;
+`tests/browser/docscan.mjs` checks that no kind opens it. What follows is how it worked.
+
+Until 3.0.1, on Android, **Add ▸ Photo** and **Another card** opened the phone's own document scanner
 instead of HumID's live view. Driver's licenses, passports, ID cards, permits and payment
 cards stay on HumID's camera, whose screen blocks screenshots and the recents thumbnail
 (the scanner's screen is Google's and isn't covered; see

@@ -22,6 +22,8 @@ test("a stamp: rounded coordinates, accuracy, the fix's time", () => {
   assert.deepEqual(s, { lat: 41.912346, lon: -88.311235, accuracy: 12, at: "2026-10-16T21:30:00.000Z", altitude: 222 });
   assert.ok(validStamp(s));
   assert.equal(formatCoords(s), "41.91235° N, 88.31123° W");
+  // a coarse 3.0 stamp (about 110 m) shows only the digits it holds
+  assert.equal(formatCoords({ lat: 41.915, lon: -88.309, accuracy: 110 }), "41.915° N, 88.309° W");
   assert.equal(formatAccuracy(12), "within 12 m");
   assert.equal(formatAccuracy(1400), "within 1.4 km");
   for (const bad of [null, {}, { ...s, lat: 91 }, { ...s, lon: "x" }, { ...s, accuracy: 0 }, { ...s, at: "not a date" }]) assert.equal(validStamp(bad), false);

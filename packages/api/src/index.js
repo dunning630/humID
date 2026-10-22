@@ -34,6 +34,8 @@ const STEP_UP = {
   help: (code) => ["POST", `/recovery/help/${codeOf(code)}`],
   cancelAlert: (ref) => ["POST", `/recovery/alerts/${ref}/cancel`],
   setAnchor: () => ["PUT", "/recovery/anchor"],
+  addKey: () => ["POST", "/recovery/keys"],
+  removeKey: (id) => ["DELETE", `/recovery/keys/${keyIdOf(id)}`],
   removeAnchor: () => ["DELETE", "/recovery/anchor"],
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
@@ -57,6 +59,11 @@ function checkCode(code, label, ...keys) {
     throw new ApiError(409, "code_mismatch", "The server returned different keys for this code. Nothing was shared. Don't continue, and report this.");
   }
 }
+/** A security key's id on the server: 32 lowercase hex characters. */
+const keyIdOf = (id) => {
+  if (!/^[0-9a-f]{32}$/.test(String(id))) throw new ApiError(400, "bad_key_id", "Unknown security key.");
+  return String(id);
+};
 const codeOf = (input) => {
   const c = parseCode(input);
   if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 letters and numbers.");
@@ -384,6 +391,27 @@ export class HumidApi {
   removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
   settings() { return this.#json("GET", "/recovery/settings"); }
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
+  /* ---------------- security keys (4.0, docs/SECURITY-KEY.md) ---------------- */
+
+  /** { keys: [{ id, label (sealed index bytes) | null, createdAt }], max } */
+  async keys() {
+    const r = await this.#json("GET", "/recovery/keys");
+    return { max: r.max, keys: (r.keys || []).map((k) => ({ ...k, label: k.label ? unb64u(k.label) : null })) };
+  }
+  /**
+   * For adding a key: { challenge (32 bytes) for it to sign, exclude: [credential ids this
+   * account already has] } — a key holding one of those refuses to make another.
+   */
+  async keyChallenge() {
+    const r = await this.#json("POST", "/recovery/keys/challenge");
+    return { challenge: unb64u(r.challenge), exclude: (r.exclude || []).map(unb64u) };
+  }
+  /** Store the key part under a key: { tag, blob, pub, credentialId, authData, signature, label? } (bytes, except tag). */
+  addKey({ tag, blob, pub, credentialId, authData, signature, label }, stepUp) {
+    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}) }, stepUp });
+  }
+  removeKey(id, stepUp) { return this.#json("DELETE", `/recovery/keys/${keyIdOf(id)}`, { stepUp }); }
+
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
 
@@ -430,13 +458,23 @@ export class HumidApi {
   recoveryAddAnchor(id, { chip, signature, hash }) {
     return this.#json("POST", `/recovery/requests/${id}/anchor`, { body: { chip: chipBody(chip), signature: b64u(signature), ...(hash ? { hash } : {}) } });
   }
+  /** Two proofs: a fresh 32-byte challenge for a security key to sign. */
+  async recoveryKeyChallenge(id) { return unb64u((await this.#json("POST", `/recovery/requests/${id}/key/challenge`)).challenge); }
+  /** Two proofs: the security key's answers, one per HumID credential on it: [{ tag, authData, signature }]. */
+  recoveryAddKey(id, candidates) {
+    return this.#json("POST", `/recovery/requests/${id}/key`, { body: { candidates: candidates.map((c) => ({ tag: c.tag, authData: b64u(c.authData), signature: b64u(c.signature) })) } });
+  }
   /**
-   * New device: poll. When released: { status: "released", blob?, shares?, anchorPart? }:
-   * the card blob, the contacts' or witnesses' shares, the anchor part — whichever this request earned.
+   * New device: poll. When released: { status: "released", blob?, shares?, anchorPart?, keyBlob? }:
+   * the card blob, the contacts' or witnesses' shares, the anchor part, the key part's blob —
+   * whichever this request earned.
    */
   async recoveryStatus(id) {
     const r = await this.#json("GET", `/recovery/requests/${id}`);
-    return { ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined, anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined };
+    return {
+      ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined,
+      anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined, keyBlob: r.keyBlob ? unb64u(r.keyBlob) : undefined,
+    };
   }
   /** A contact looks up the recovery code someone sent them. */
   async getHelp(input) {

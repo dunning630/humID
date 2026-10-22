@@ -16,3 +16,22 @@ plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
 plugins/humid-docscan/target/
 plugins/humid-docscan/android/.tauri/
+
+# Secrets: never commit signing keys, key stores or environment files (PC-05).
+# deploy/.gitignore also keeps deploy/.env out.
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.p8
+keystore.properties
+**/.env
+# tools/tlog-cosign.mjs: the cosigner's key pair and its last-signed checkpoint
+tlog-cosigner*.json
+*.state.json
+/data/
+# The operator's trust configuration and downloaded lists (tools/trust.mjs)
+deploy/trust/trust-config.json
+deploy/trust/*.pem
+deploy/trust/*.ml
+deploy/trust/*.vical
