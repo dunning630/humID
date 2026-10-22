@@ -268,3 +268,18 @@ test("receiving under the rule needs the issuer's keys; without them nothing mov
   const r = await b.receive(w, { now: T0, stampKeys });
   assert.equal(r.text, "hi", "the same wire still opens once the keys are there: nothing was consumed");
 });
+
+test("'I'm here': a stamped, empty receipt makes reading mutual; unstamped, it counts for nothing", async () => {
+  const { a, b, relay } = await meetStrict();
+  const t = T0 + 4 * MIN;
+  relay.put(...(await a.here({ now: t, stamper }).then((r) => [r.box, r.wire])));
+  const [r] = await deliver(relay, b, t);
+  assert.equal(r.kind, "receipt");
+  assert.equal(b.peerLiveAt, t, "the contact is proven live by opening, not only by sending");
+  assert.equal(b.messages(t).length, 0, "nothing is shown");
+  await code(a.here({ now: t }), "stamp_required");
+  await a.session.encrypt("receipt", '{"here":1}', { now: t + 1000 }).then((x) => relay.put(x.box, x.wire));
+  const [r2] = await deliver(relay, b, t + 1000);
+  assert.equal(r2.refused, "not_live");
+  assert.equal(b.peerLiveAt, t, "an unstamped one moves nothing");
+});

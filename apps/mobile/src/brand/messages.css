@@ -26,7 +26,7 @@
 .pushed.chat .thread { padding-bottom: 150px; }
 .composer textarea { width: 100%; min-height: var(--tap); max-height: 140px; resize: none; padding: 11px 14px; border-radius: 22px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-md); line-height: 1.35; }
 .composer textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
-.composer .send { width: var(--tap); height: var(--tap); border-radius: 50%; display: grid; place-items: center; background: var(--amber-hi, var(--amber)); color: var(--amber-ink); }
+.composer .send { min-width: var(--tap); height: var(--tap); padding: 0 14px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 6px; font-weight: 700; background: var(--amber-hi, var(--amber)); color: var(--amber-ink); }
 .composer .send:disabled { background: var(--surface-3); color: var(--muted); }
 .composer .send .ico { width: 22px; height: 22px; }
 .composer .hint { grid-column: 1 / -1; font-size: var(--t-xs); color: var(--muted); display: flex; align-items: center; gap: 6px; }
@@ -46,7 +46,8 @@
 .presence .pip .dot { width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; }
 .presence .pip[data-on="true"] { color: var(--mint); }
 .presence .pip[data-on="true"] .dot { background: currentColor; }
-.presence .what { margin-left: auto; font-size: var(--t-xs); color: var(--text-2); }
+.presence .what { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--text-2); }
+.presence .what .ico { width: 15px; height: 15px; }
 .presence[data-live="true"] .what { color: var(--mint); font-weight: 600; }
 
 /* waiting on the other phone */
@@ -56,7 +57,8 @@
 @media (prefers-reduced-motion: reduce) { .waiting-line .dot { animation: none; } }
 
 /* a sealed thread keeps its shape: placeholders where messages are, never their content */
-.sealed-thread .ghost { display: block; height: 34px; border-radius: 18px; background: var(--surface-2, var(--surface)); border: 1px solid var(--line); }
+.sealed-thread .ghost { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 18px; background: var(--surface-2, var(--surface)); border: 1px solid var(--line); color: var(--muted); font-size: var(--t-sm); }
+.sealed-thread .ghost .ico { width: 14px; height: 14px; }
 .sealed-thread .ghost.in { align-self: flex-start; }
 .sealed-thread .ghost.out { align-self: flex-end; background: var(--mint-wash); }
 

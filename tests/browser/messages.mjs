@@ -45,7 +45,9 @@ async function phone(name) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
-  await page.clock.install();
+  // Alice's phone (a development build) uses a 40-second freshness window, so the test can
+  // watch her check lapse in real time instead of moving a clock the server would refuse.
+  if (name === "alice") await page.addInitScript(() => localStorage.setItem("humidLiveWindowMs", "40000"));
   await page.goto(BASE);
   return page;
 }
@@ -94,7 +96,7 @@ try {
   step("Bob types the code, names her, asks: one check; then waits on the same screen");
   await tab(bob, "Messages");
   await bob.getByText("Talk only with people you've approved").waitFor({ timeout: 20_000 });
-  await bob.getByRole("button", { name: "Someone invited me" }).click();
+  await bob.getByRole("button", { name: "I have their code" }).click();
   await bob.fill("#inv-code", code.toLowerCase());
   await shot(bob, "bob-enter-code");
   await bob.getByRole("button", { name: "Find invite" }).click();
@@ -109,7 +111,8 @@ try {
   await shot(bob, "bob-waiting");
 
   step("Alice's invite screen turns into Bob's request; she opens it, compares, approves");
-  await alice.getByText("Bob is asking to connect").waitFor({ timeout: 30_000 });
+  // the invite screen itself turns into the request (not just a row in the list behind it)
+  await alice.locator(".pushed").getByText("Bob is asking to connect").waitFor({ timeout: 30_000 });
   await shot(alice, "alice-request-arrived");
   await alice.getByRole("button", { name: "See who's asking" }).click();
   await hold(alice);
@@ -117,8 +120,8 @@ try {
   await alice.getByText("Bob, from the workshop").waitFor();
   const aliceSafety = (await alice.locator(".safety span").allInnerTexts()).join("-");
   assert.equal(aliceSafety, bobSafety, "both phones show the same safety code");
-  await alice.getByRole("button", { name: "It matches" }).click();
-  await bob.getByRole("button", { name: "It matches" }).click();
+  await alice.getByRole("button", { name: "Same" }).click();
+  await bob.getByRole("button", { name: "Same" }).click();
   await shot(alice, "alice-request-shown");
   await alice.getByRole("button", { name: "Approve with a live check" }).click();
   await hold(alice);
@@ -136,6 +139,8 @@ try {
   step("Bob sends: one check; Alice receives it marked live");
   await bob.fill(".composer textarea", "Hi Alice, it's really me.");
   await bob.getByRole("button", { name: "Send with a live check" }).click();
+  await bob.locator(".interrupt[data-compact]").waitFor({ timeout: 10_000 });
+  await shot(bob, "bob-send-check");
   await hold(bob);
   await bob.locator(".bubble.out", { hasText: "it's really me" }).waitFor({ timeout: 30_000 });
   await shot(bob, "bob-sent-message");
@@ -145,15 +150,19 @@ try {
   await targets(alice, "a conversation");
 
   step("the reader's check lapses: the thread seals itself; one check opens it");
-  // Six minutes of reading without a check (activity keeps the idle lock away meanwhile).
-  for (let i = 0; i < 4; i++) { await alice.clock.fastForward("01:30"); await alice.keyboard.press("Shift"); }
-  await alice.locator(".sealed h3", { hasText: "Sealed" }).waitFor({ timeout: 10_000 });
+  // Reading on, without a check, past the window (activity keeps the idle lock away meanwhile).
+  for (let i = 0; i < 9; i++) { await alice.waitForTimeout(5000); await alice.keyboard.press("Shift"); }
+  await alice.locator(".sealed h3", { hasText: "Locked" }).waitFor({ timeout: 20_000 });
   assert.equal(await alice.locator(".bubble").count(), 0, "no content on screen once the check lapsed");
   await shot(alice, "alice-lapsed");
   await alice.getByRole("button", { name: "Open with a live check" }).click();
   await hold(alice);
   await alice.locator(".bubble.in", { hasText: "it's really me" }).waitFor({ timeout: 20_000 });
   await shot(alice, "alice-reopened");
+
+  step("opening with a live check tells Bob she's here, without a word sent");
+  await bob.locator('.presence .pip[data-on="true"]', { hasText: "Alice · here" }).waitFor({ timeout: 40_000 });
+  await shot(bob, "bob-sees-alice-here");
 
   step("details: safety code, timer, duress alerts, delete");
   await alice.getByRole("button", { name: "Details" }).click();

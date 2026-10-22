@@ -23,6 +23,8 @@ export function useNow(ms = 1000) {
 }
 
 /* ---------- the check (the biological interrupt) ---------- */
+// Sending and opening a conversation: the same check, shown as a compact card (core/interrupt.js COMPACT).
+const COMPACT_CHECKS = new Set(["send", "read"]);
 export function Interrupt() {
   const it = S.interrupt.value;
   const [holding, setHolding] = useState(false);
@@ -36,9 +38,9 @@ export function Interrupt() {
   const stop = () => { clearTimeout(timer.current); setHolding(false); };
   const title = it.state === "verified" ? "It's you" : it.state === "failed" ? "Not verified" : "Checking it's you";
   return (
-    <div class="interrupt" data-state={it.state} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite" tabIndex={-1} ref={root}>
+    <div class="interrupt" data-state={it.state} data-compact={COMPACT_CHECKS.has(it.purpose) ? "" : undefined} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite" tabIndex={-1} ref={root}>
       <div class="eyebrow">{title}</div>
-      <Mark state={it.state} progress={it.progress} size={168} />
+      <Mark state={it.state} progress={it.progress} size={COMPACT_CHECKS.has(it.purpose) ? 72 : 168} />
       <h2 id="int-title">{it.label}</h2>
       <p>{it.message}</p>
       {it.needsHold && (
