@@ -147,7 +147,8 @@ const ROUTES = [
   // Stamp keys and the network-wide daily totals: public.
   { m: "GET", p: re("/msg/keys"), h: "msgKeys", msg: true },
   { m: "GET", p: re("/msg/stats"), h: "msgStats", msg: true },
-  // A live stamp: blind values, signed only inside a live step-up over exactly these values.
+  // A live stamp: blind values, signed only inside a live step-up over exactly these values
+  // (one message, or one action that is two: deleting a conversation for both is a delete and the end).
   // Not guarded by lockdown: a duress session must look like any other.
   { m: "POST", p: re("/msg/stamp"), h: "msgStamp", auth: true, msg: true },
   // The relay: ONLY from a session that never signs in, so nothing here links an account to a
@@ -716,7 +717,7 @@ export function createGateway({
     async msgStamp(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "A live stamp needs a fresh live check.");
       const r = parseJson(body) || {};
-      if (!Array.isArray(r.blinded) || r.blinded.length < 1 || r.blinded.length > 4) throw new HttpError(400, "bad_request", "One check approves 1 to 4 stamps");
+      if (!Array.isArray(r.blinded) || r.blinded.length < 1 || r.blinded.length > 2) throw new HttpError(400, "bad_request", "One check approves 1 or 2 stamps");
       const out = await internalJson("access", "POST", "/internal/stamp/sign", { json: { kid: r.kid, blinded: r.blinded } });
       if (out.status !== 200) fail(out);
       return { status: 200, json: out.data };
@@ -1118,7 +1119,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 4 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

@@ -56,16 +56,17 @@ export class Conversation {
 
   /**
    * Stamp several messages with ONE live check, when the stamper offers it
-   * (stamper.many(commitments) → stamps, in order): one action the holder approves once,
+   * (stamper.many(commitments) → stamps, in order; servers sign at most 2 per check): one action the holder approves once,
    * such as deleting a whole conversation for both, is one check, not one per message.
    * Returns [{ kind, body, nonce, stamper }] to encrypt in order.
    */
-  async #plan(items, stamper) {
+  async #plan(items, stamper, now) {
     const nonces = items.map(() => random(16));
     if (!stamper) return items.map((it, i) => ({ ...it, nonce: nonces[i], stamper: null }));
     if (typeof stamper.many !== "function") return items.map((it, i) => ({ ...it, nonce: nonces[i], stamper }));
     const me = this.session.s.me.fp, convId = this.session.convId;
-    const commits = items.map((it, i) => messageCommitment({ convId, senderFp: me, nonce: nonces[i], kind: it.kind, body: typeof it.body === "string" ? utf8(it.body) : it.body }));
+    // what Session.encrypt will commit to for these (protocol messages: no disappearing time, no timer change)
+    const commits = items.map((it, i) => messageCommitment({ convId, senderFp: me, nonce: nonces[i], kind: it.kind, body: typeof it.body === "string" ? utf8(it.body) : it.body, at: now, x: 0, ta: 0 }));
     const stamps = await stamper.many(commits);
     if (!Array.isArray(stamps) || stamps.length !== items.length || (this.requireLive && stamps.some((x) => !x))) {
       throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
@@ -121,12 +122,13 @@ export class Conversation {
    *     how many it named that were yours (refused: a contact can't delete what you sent)
    * Disappearing messages count down from when they arrive (the shorter of the sender's timer and yours).
    */
-  receive(wire, { now = Date.now(), stampKeys = null } = {}) {
+  receive(wire, { now = Date.now(), stampKeys = null, receivedAt = now } = {}) {
     return this.#serial(async () => {
-      const m = await this.session.decrypt(wire, { now, stampKeys, requireLive: this.requireLive });
+      // receivedAt: when the wire came off the relay (the app may read it later)
+      const m = await this.session.decrypt(wire, { now, stampKeys, requireLive: this.requireLive, receivedAt });
       let out = m;
       if (m.refused) return this.#saved(m, now); // not approved live: nothing kept, nothing applied
-      const pAt = peerLiveAt({ live: m.live, sentAt: m.at, receivedAt: now });
+      const pAt = peerLiveAt({ live: m.live, sentAt: m.at, receivedAt });
       if (pAt !== null && !(this.live.peerAt >= pAt)) this.live.peerAt = pAt;
       if (SHOWN.has(m.kind)) {
         const added = this.store.add({
@@ -220,7 +222,7 @@ export class Conversation {
           for (let i = 0; i < recallable.length; i += MAX_DELETE) items.push({ kind: "delete", body: deleteBody(recallable.slice(i, i + MAX_DELETE)) });
           if (notify) items.push({ kind: "close", body: "" });
           if (items.length) {
-            for (const it of await this.#plan(items, stamper)) {
+            for (const it of await this.#plan(items, stamper, now)) {
               send.push(post(await this.session.encrypt(it.kind, it.body, { now, ttlMs: 0, nonce: it.nonce, stamper: it.stamper, requireLive: this.requireLive })));
             }
           }
@@ -231,6 +233,17 @@ export class Conversation {
       }
       return { send, unsend };
     });
+  }
+
+  /**
+   * Lock: forget everything this object holds in memory (message bodies and every ratchet
+   * key), leaving the saved copy as it is. Anything queued finishes first; nothing runs after.
+   */
+  unload() {
+    const run = this.queue.then(async () => { this.store.deleteAll(); await this.session.unload(); });
+    this.dead = true;
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   /**

@@ -27,8 +27,17 @@ and the app turns it on for every conversation.
 | Read | the reader's own live check within the freshness window | what arrived stays ciphertext on the phone, counted, never opened |
 
 One action is one check: deleting a whole conversation for both sends a delete and an end,
-and both are stamped in the same check (`stamper.many`; the gateway signs 1 to 4 blinded
+and both are stamped in the same check (`stamper.many`; the gateway signs 1 or 2 blinded
 values per step-up, and its signature covers exactly those values).
+
+**One stamp, one message, once.** A stamp commits to the conversation, the sender's persona,
+the message id, kind and body, and also to when it was sent, its disappearing time and (for a
+timer change) the change's time. A receiver counts a stamp only if its message is dated no
+later than a couple of minutes after it came off the relay and no earlier than the relay could
+still be holding it (15 days), and only once: the ids of stamps already seen are kept, sealed
+with the conversation, for that long. So nobody can keep one old check "live" by re-sending it,
+or replay an old timer change. Freshness counts from when the message came off the relay, not
+when the phone got round to opening it.
 
 **Here, away, and both here.** A conversation is validated human to human ("Both here")
 only while, within one freshness window (5 minutes):
@@ -79,8 +88,14 @@ sender's face or fingerprint", never "verified human".
 - The relay is reached from a separate session that never signs in. Stamps come from the
   signed-in session inside a live step-up, so the issuer learns that an account asked for a
   stamp, never for what.
-- A duress unlock sends with the encrypted duress flag; a contact who turned on "Tell me if
-  they may be under duress" sees a quiet warning.
+- A duress unlock opens nothing real: Messages shows an ordinary empty inbox, nothing is
+  fetched, decrypted or sent, and anything tried there answers like a busy server, as the
+  vault's decoy does. What arrives meanwhile waits at the relay for the next real unlock.
+  (Messages from an older app that carry the encrypted duress flag still raise the quiet
+  warning for a contact who turned on "Tell me if they may be under duress".)
+- What the server can still put together: the address that asks for a stamp and the address
+  that posts to a mailbox. Posts go out a few seconds later, on their own, and the relay
+  session is replaced every few minutes, but only a VPN or Tor hides the address.
 - The Messages tab appears only when the server runs a relay.
 
 ### How the flow was arrived at
@@ -93,6 +108,7 @@ browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=d
 | v1 → v2 | The mutual state didn't read as mutual right after connecting; "live" unexplained; an empty inbox asked for a check; the composer floated; every bubble said "live" (redundant under strict mode); people standing together had to go back to the list between steps; two lines claimed more than the cryptography proves | presence pips with an explanation; the contact's request or acceptance counts as their check; together flow on one screen per person; safety code on both phones; copy limited to what's proven |
 | v2 → v3 | The invite screen didn't update when the request arrived (a bug); a one-tap "it matches" was recorded as "compared in person"; "live" read as alarming to a non-technical user; the reader was invisible to the contact | Same / Different with how it was compared; "here / away"; "I'm here" receipts; locked placeholders; compact check card for sending |
 | v3 | each message is still one check | the check is a card over the composer, gone in a moment; on a phone it's the system's face or fingerprint prompt, so a glance or a touch. The rule stays |
+| v4 (security review) | a stamp wasn't tied to its time or to one use (one old check could keep a bot "here"); a duress unlock opened the real conversations; the relay could be filled by a few networks; one check could stamp up to four unrelated messages; some metadata sat unsealed; ratchet keys stayed in memory after lock | stamps cover time and count once; a duress unlock opens nothing real; per-network daily quota per IPv6 /48 in a fixed-size sketch; at most two stamps per check; waiting records sealed with opaque ids; conversations wiped from memory on lock; posts jittered |
 
 ## The promise, stated exactly
 

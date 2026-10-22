@@ -283,3 +283,64 @@ test("'I'm here': a stamped, empty receipt makes reading mutual; unstamped, it c
   assert.equal(r2.refused, "not_live");
   assert.equal(b.peerLiveAt, t, "an unstamped one moves nothing");
 });
+
+/* ---------- one stamp, one message, once (security review H1) ---------- */
+
+const HOUR = 60 * MIN, DAY = 24 * HOUR;
+const recording = () => { const log = []; return { log, s: async (c) => { const st = await stamper(c); log.push(st); return st; } }; };
+
+test("H1: a stamp can't be reused on a later copy of the same message to look live again", async () => {
+  const { a, b } = await meetStrict();
+  const rec = recording(), nonce = rnd(16);
+  const w1 = await a.session.encrypt("receipt", '{"here":1}', { now: T0, ttlMs: 0, nonce, stamper: rec.s, requireLive: true });
+  await b.receive(w1.wire, { now: T0, stampKeys });
+  assert.equal(b.peerLiveAt, T0);
+  // same id and body, same stamp, a fresh `at`: the stamp covers `at`, so it doesn't verify
+  const t = T0 + DAY;
+  const w2 = await a.session.encrypt("receipt", '{"here":1}', { now: t, ttlMs: 0, nonce, stamper: async () => rec.log[0], requireLive: true });
+  const r = await b.receive(w2.wire, { now: t, stampKeys });
+  assert.equal(r.refused, "not_live");
+  assert.equal(b.peerLiveAt, T0, "freshness not refreshed");
+});
+
+test("H1: the very same stamped payload re-sent under a new ratchet position counts once", async () => {
+  const { a, b } = await meetStrict();
+  const rec = recording(), nonce = rnd(16);
+  const w1 = await a.session.encrypt("receipt", '{"here":1}', { now: T0, ttlMs: 0, nonce, stamper: rec.s, requireLive: true });
+  await b.receive(w1.wire, { now: T0, stampKeys });
+  // identical payload (same at), new wire: the stamp verifies but its id was already seen
+  const w2 = await a.session.encrypt("receipt", '{"here":1}', { now: T0, ttlMs: 0, nonce, stamper: async () => rec.log[0], requireLive: true });
+  const r = await b.receive(w2.wire, { now: T0 + 4 * MIN, stampKeys, receivedAt: T0 + 4 * MIN });
+  assert.equal(r.refused, "not_live");
+  // and the seen ids survive a save
+  const { blob, key } = await b.seal(T0 + 5 * MIN);
+  const back = await M.Conversation.open(key, blob, { convId: b.session.convId, requireLive: true });
+  const w3 = await a.session.encrypt("receipt", '{"here":1}', { now: T0, ttlMs: 0, nonce, stamper: async () => rec.log[0], requireLive: true });
+  assert.equal((await back.receive(w3.wire, { now: T0 + 6 * MIN, stampKeys })).refused, "not_live");
+});
+
+test("H1: an old stamped timer change can't be replayed with a newer change time", async () => {
+  const { a, b } = await meetStrict();
+  const rec = recording(), nonce = rnd(16);
+  const w1 = await a.session.encrypt("timer", String(HOUR), { now: T0, ttlMs: 0, nonce, stamper: rec.s, requireLive: true });
+  await b.receive(w1.wire, { now: T0, stampKeys });
+  const off = await b.setTimer(0, { now: T0 + MIN, stamper });
+  await a.receive(off.wire, { now: T0 + MIN, stampKeys });
+  const t = T0 + 10 * DAY;
+  const w2 = await a.session.encrypt("timer", String(HOUR), { now: t, ttlMs: 0, nonce, stamper: async () => rec.log[0], requireLive: true });
+  assert.equal((await b.receive(w2.wire, { now: t, stampKeys })).refused, "not_live");
+  assert.equal(b.timer, 0);
+});
+
+test("H1: a future-dated message isn't live; freshness counts from when it came off the relay", async () => {
+  const { a, b, relay } = await meetStrict();
+  const w = await a.session.encrypt("receipt", '{"here":1}', { now: Date.UTC(2100, 0, 1), ttlMs: 0, stamper, requireLive: true });
+  assert.equal((await b.receive(w.wire, { now: T0 + 3 * DAY, stampKeys })).refused, "not_live");
+  // an honest one, fetched at T0 + 1 min but only read (opened) three days later
+  const ok = await a.here({ now: T0 + MIN, stamper });
+  relay.put(ok.box, ok.wire);
+  const [wire] = b.session.inboxes(T0 + MIN).flatMap((x) => relay.take(x));
+  await b.receive(wire, { now: T0 + 3 * DAY, receivedAt: T0 + MIN, stampKeys });
+  assert.equal(b.peerLiveAt, T0 + MIN, "a three-day-old check doesn't show as live now");
+  assert.equal(M.liveState({ ownAt: T0 + 3 * DAY, peerAt: b.peerLiveAt, now: T0 + 3 * DAY }).live, false);
+});
