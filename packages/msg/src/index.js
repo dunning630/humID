@@ -20,6 +20,8 @@ export {
   MIN_TTL_MS, MAX_TTL_MS, MAX_DELETE, deleteBody, parseDelete, isTtl,
 } from "./session.js";
 export { MessageStore, TOMBSTONE_TTL_MS, MAX_TOMBSTONES } from "./history.js";
+// The human-to-human rule: nobody interacts without a live check (live.js).
+export { liveState, peerLiveAt, canRead, LIVE_WINDOW_MS, MIN_LIVE_WINDOW_MS, MAX_LIVE_WINDOW_MS, LIVE_SKEW_MS } from "./live.js";
 export { Conversation } from "./conversation.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,
