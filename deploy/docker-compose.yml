@@ -46,8 +46,10 @@ services:
       RECOVERY_URL: http://recovery:8084
       ACCESS_URL: http://access:8085
       KEYSHARE_URL: http://keyshare:8086
-      # Person to person (4.0, docs/MESSAGING.md): the relay. Leave empty to run without messaging.
-      RELAY_URL: ${HUMID_RELAY_URL-http://relay:8087}
+      # Person to person (4.1 preview, docs/MESSAGING.md): off until you set HUMID_RELAY_URL=http://relay:8087
+      # in deploy/.env. Every request, approval and message then needs a live check. Keep it off on
+      # anything holding real data until the independent review.
+      RELAY_URL: ${HUMID_RELAY_URL:-}
       TRUST_PROXY: "1"
       # Which devices may join and sign in. Every check is a live face or fingerprint; never a PIN.
       #   attested  (default) phones whose secure chip proves each check (Android key attestation, Apple App Attest)

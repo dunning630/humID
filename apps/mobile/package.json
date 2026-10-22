@@ -1,6 +1,6 @@
 {
   "name": "@humid/mobile",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "private": true,
   "description": "HumID mobile app (iOS, Android) and installable web app. One codebase; Tauri 2 for the native apps. 3.0: rebuilt around a kernel of small modules, the official brand, and a first paint that carries nothing it doesn't need.",
   "type": "module",

@@ -96,7 +96,9 @@ sender's face or fingerprint", never "verified human".
 - What the server can still put together: the address that asks for a stamp and the address
   that posts to a mailbox. Posts go out a few seconds later, on their own, and the relay
   session is replaced every few minutes, but only a VPN or Tor hides the address.
-- The Messages tab appears only when the server runs a relay.
+- The Messages tab appears only when the server runs a relay. Servers keep messaging off
+  until the operator turns it on: `HUMID_RELAY_URL=http://relay:8087` in `deploy/.env` with
+  Docker, `humid set HUMID_MESSAGING=on` on HumID Server for Windows (3.2.0 and later).
 
 ### How the flow was arrived at
 
@@ -519,8 +521,7 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
    Elligator-encoded request keys, one size class for invites and requests.
 7. **Proving it's you, in the app**: the "Is this really you?" button, the spoken-code screen,
    the locker capture screen.
-8. **The Windows server**: it runs no relay yet, so messaging is off there.
-9. **Independent review** of the handshake, the ratchet and the human-to-human rule, and a
+8. **Independent review** of the handshake, the ratchet and the human-to-human rule, and a
    machine-checked model (Tamarin or ProVerif), as the audit recommends for the rest of HumID.
 
 ## Try it
