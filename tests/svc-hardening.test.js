@@ -87,7 +87,7 @@ test("JSON null, arrays and scalars are a 400 where an object is required (F-05)
    one assertion the gateway made for reading one object was accepted for listing the vault
    and deleting a different object. */
 test("PC-08: an internal assertion can't be replayed or turned into another request", async () => {
-  const { signRequestAssertion, verifyAssertion, newInternalKeys } = await import("../packages/svc/src/index.js");
+  const { signRequest, verifyAssertion, newInternalKeys } = await import("../packages/svc/src/index.js");
   const reply = json;
   const k = newInternalKeys();
   const seen = [];
@@ -102,7 +102,7 @@ test("PC-08: an internal assertion can't be replayed or turned into another requ
   await svc.start();
   try {
     const base = `http://127.0.0.1:${svc.server.address().port}`;
-    const mint = (method, path, body) => signRequestAssertion(k.sk, { iss: "gateway", aud: "vault", rid: crypto.randomUUID(), sub: "hid_" + "a".repeat(40), stepUp: { at: Date.now() } }, { method, path, body });
+    const mint = (method, path, body) => signRequest(k.sk, { aud: "vault", method, path, body, claims: { sub: "hid_" + "a".repeat(40), stepUp: { at: Date.now() } } });
     const call = (method, path, a, body) => fetch(base + path, { method, headers: { "x-humid-assertion": a }, body });
     const read = mint("GET", "/objects/aaaa");
     assert.equal((await call("GET", "/objects/aaaa", read)).status, 200);

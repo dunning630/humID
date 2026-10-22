@@ -244,17 +244,21 @@ export function decodeShare(bytes) {
  *                    (your passport or ID chip); released only when that chip
  *                    is proven again, in person at a station or live remotely
  *   x = 3  card      encrypted under the seal card you keep offline
+ *   x = 4  key       encrypted under a FIDO2 security key's hmac-secret, which the
+ *                    key gives out only with its PIN (4.0, docs/SECURITY-KEY.md)
  *
+ * Any two different parts rebuild A (the polynomial has degree 1). Parts made at
+ * different times fit together, so a key added later works with an older card.
  * The split is deterministic (coefficients come from A and an epoch), so any
  * device holding A can make any part at any time and they always fit together.
  */
 
-export const QUORUM = Object.freeze({ witness: 1, anchor: 2, card: 3 });
+export const QUORUM = Object.freeze({ witness: 1, anchor: 2, card: 3, key: 4 });
 export const QUORUM_KINDS = Object.freeze(Object.keys(QUORUM));
 export const QUORUM_THRESHOLD = 2;
 const QUORUM_PART_BYTES = 65; // x ‖ y(64)
 
-/** The three 2-of-3 parts of `seed` for `epoch`. Returns { witness, anchor, card }: { x, y }. */
+/** The parts of `seed` for `epoch`, any two of which rebuild it. Returns { witness, anchor, card, key }: { x, y }. */
 export function quorumParts(seed, epoch = 1) {
   if (!(seed instanceof Uint8Array) || seed.length !== 64) throw new Error("Account seed must be 64 bytes");
   const coeff = hkdf(sha3_256, seed, undefined, utf8(`HUMID-QUORUM-v1 coefficient epoch ${epoch}`), seed.length);
@@ -314,14 +318,58 @@ export async function openCardPart(secret, blob, accountId) {
 export const CARD_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
 export const CARD_FULL_BLOB_BYTES = 12 + 64 + 16;
 
+/* Security key (4.0): the key part, encrypted under the 32-byte secret a FIDO2 key's
+ * hmac-secret gives out only with its PIN (docs/SECURITY-KEY.md). The server finds the
+ * part by the tag and can open neither. */
+export const KEY_SECRET_BYTES = 32;
+export const KEY_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
+const keyKdf = (secret, what, len) => {
+  if (!(secret instanceof Uint8Array) || secret.length !== KEY_SECRET_BYTES) throw new Error("A security key's secret has 32 bytes");
+  return hkdf(sha3_256, secret, undefined, utf8(`HUMID-KEY-v1 ${what}`), len);
+};
+const aadKey = (accountId) => utf8(`HUMID-KEY-v1|${accountId}`);
+
+/** What the server finds the key part by: base32 of 16 bytes, 26 characters. Reveals nothing about the secret. */
+export const keyTag = (secret) => base32(keyKdf(secret, "tag", 16));
+
+export async function sealKeyPart(secret, part, accountId) {
+  if (part?.x !== QUORUM.key) throw new Error("That isn't the key part");
+  const raw = keyKdf(secret, "key", 32);
+  const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
+  wipe(raw);
+  const nonce = random(12);
+  const plain = encodeQuorumPart(part);
+  try {
+    const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadKey(accountId) }, key, plain));
+    return concat(nonce, ct);
+  } finally { wipe(plain); }
+}
+
+export async function openKeyPart(secret, blob, accountId) {
+  const raw = keyKdf(secret, "key", 32);
+  const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+  wipe(raw);
+  let plain;
+  try {
+    plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadKey(accountId) }, key, blob.subarray(12)));
+  } catch {
+    throw new Error("This security key doesn't open this vault.");
+  }
+  try {
+    const part = decodeQuorumPart(plain);
+    if (part.x !== QUORUM.key) throw new Error("This security key doesn't open this vault.");
+    return part;
+  } finally { wipe(plain); }
+}
+
 /* ---------------- how long a recovery waits ----------------
  * The stronger the evidence, the shorter the wait. `base` is the server's
- * RECOVERY_DELAY_MS (72 hours in production). Kinds: witness | card | anchor;
+ * RECOVERY_DELAY_MS (72 hours in production). Kinds: witness | card | anchor | key;
  * anchorMode: "station" (in person, operator-verified) | "remote" (live chip).
  *
  *   station + anything                   base / 3     (24 h)
- *   witnesses + card, witnesses + chip   base         (72 h)
- *   card + chip (no people involved)     base × 7/3   (7 days)
+ *   witnesses + card, key or chip        base         (72 h)
+ *   any two of card, key, chip (no people)  base × 7/3   (7 days)
  *   a duress signal in the last 14 days  × 2
  */
 export const DURESS_WINDOW_MS = 14 * 24 * 3600_000;
@@ -338,7 +386,7 @@ export function quorumDelay(kinds, { base, anchorMode = null, duress = false } =
 
 /** Words for the evidence behind a recovery, for alerts and the continuity record. */
 export function evidenceLabel(kinds, anchorMode) {
-  const words = { witness: "witnesses", card: "seal card", anchor: anchorMode === "station" ? "ID chip at a station" : "live ID chip" };
+  const words = { witness: "witnesses", card: "seal card", key: "security key", anchor: anchorMode === "station" ? "ID chip at a station" : "live ID chip" };
   return [...kinds].sort((a, b) => QUORUM_KINDS.indexOf(a) - QUORUM_KINDS.indexOf(b)).map((k) => words[k] || k).join(" + ");
 }
 

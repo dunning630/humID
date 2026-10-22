@@ -11,6 +11,14 @@ name: Release HumID Server for Windows
 #
 # The zip is built on Windows, installed and smoke-tested there first; the
 # release is only created if that passes. The tag must match the version.
+#
+# The release is created as a DRAFT with the unsigned zip. The admin console installs
+# only zips signed with the maintainer's offline release key (ML-DSA-87; pinned in
+# deploy/windows/admin/release-keys.mjs), which CI never holds. To finish (RELEASING.md):
+#   3. download the zip from the draft, on the offline computer run
+#        node tools/release-key.mjs sign HumID-Server-Windows-<version>.zip --key <key file>
+#   4. upload HumID-Server-Windows-<version>.zip.sig to the draft, then publish it.
+# Publishing refuses to start while release-keys.mjs pins no key.
 
 on:
   push:
@@ -37,10 +45,22 @@ jobs:
       HUMID: C:\Program Files\HumID Server\humid.ps1
       NODE_NO_WARNINGS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: A release key is pinned (the console refuses unsigned updates; see release-keys.mjs)
+        if: github.ref_type == 'tag' || inputs.publish
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import { RELEASE_KEYS } from './deploy/windows/admin/release-keys.mjs';
+            if (!RELEASE_KEYS.length) {
+              console.error('deploy/windows/admin/release-keys.mjs pins no HumID release key, so every server would refuse this release. Run tools/release-key.mjs keygen offline and pin its public key first (RELEASING.md).');
+              process.exit(1);
+            }
+            console.log(RELEASE_KEYS.length + ' release key(s) pinned.');
+          "
       - name: Version matches the tag
         id: version
         shell: pwsh
@@ -51,7 +71,12 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME doesn't match deploy/windows/package.json version $v"
           }
       - name: Build
-        run: node deploy/windows/build.mjs --zip
+        shell: pwsh
+        run: |
+          node deploy/windows/build.mjs --zip
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # never a test build (one whose console trusts a test release key)
+          if (Select-String -Path deploy/windows/out/HumID-Server/VERSION.txt -Pattern 'TEST BUILD' -Quiet) { throw 'this is a test build; it must not be released' }
       - name: Install from the zip and smoke-test (as a person would)
         shell: pwsh
         run: |
@@ -91,19 +116,24 @@ jobs:
 
           $notes
 
+          **Signed:** ``HumID-Server-Windows-$($v).zip.sig`` is its signature by the HumID release key (ML-DSA-87). The admin console installs it only if that signature checks out against the key it pins; check it by hand with ``node tools/release-key.mjs verify HumID-Server-Windows-$($v).zip``.
+
           Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
           "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
           Get-Content "$env:RUNNER_TEMP\notes.md"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         if: github.ref_type == 'tag' || inputs.publish
         with:
           tag_name: server-win-v${{ steps.version.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: HumID Server for Windows ${{ steps.version.outputs.version }}
           body_path: ${{ runner.temp }}/notes.md
-          prerelease: true
+          # A draft, unsigned: the maintainer signs the zip offline, uploads the .sig and
+          # publishes (RELEASING.md). Consoles never see drafts, and refuse unsigned zips.
+          draft: true
+          prerelease: false
           files: deploy/windows/out/HumID-Server-Windows-*.zip
-      - uses: actions/upload-artifact@v4 # also when publishing: Release apps bundles it
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 · also when publishing: Release apps bundles it
         with:
           name: HumID-Server-Windows
           path: deploy/windows/out/HumID-Server-Windows-*.zip

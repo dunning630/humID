@@ -20,7 +20,7 @@
 
 import { X509Certificate } from "node:crypto";
 import { parse, kids, int, bool, octets, certExtension, CLASS } from "./der.js";
-import { GOOGLE_ATTESTATION_ROOTS } from "./roots.js";
+import { GOOGLE_ATTESTATION_ROOTS, REVOKED_ANDROID_CERTS } from "./roots.js";
 
 export const KEY_DESCRIPTION_OID = "1.3.6.1.4.1.11129.2.1.17";
 export const SECURITY_LEVEL = ["software", "tee", "strongbox"];
@@ -127,6 +127,7 @@ export function readAndroidAttestation({ chain, roots = GOOGLE_ATTESTATION_ROOTS
  *   signatureDigests  SHA-256 (hex) of the release signing certificate(s). Required:
  *                     without it, a rebuilt or re-signed copy of the app would pass.
  *                     allowAnySigner: true skips it, for test builds only.
+ *                     Certificates in REVOKED_ANDROID_CERTS are refused regardless.
  *   minPatchLevel     YYYYMM; phones on an older security patch are refused.
  */
 export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigests = [], allowAnySigner = false, requireLockedBoot = true, minPatchLevel } = {}) {
@@ -157,6 +158,9 @@ export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigest
   }
   if (!packageNames?.length) fail("not_configured", "The server doesn't know the HumID app's package name.");
   if (!r.app.packages.some((p) => packageNames.includes(p))) fail("wrong_app", "The key was not made by the HumID app.");
+  // A leaked signing key is refused before any operator setting is looked at: neither
+  // HUMID_ANDROID_CERT_DIGESTS nor allowAnySigner can let it back in.
+  if (r.app.digests.some((d) => REVOKED_ANDROID_CERTS.includes(String(d).toLowerCase()))) fail("revoked_signer", "The app was signed with a leaked key that HumID no longer accepts. Install the official HumID app.");
   if (!signatureDigests.length && !allowAnySigner) fail("not_configured", "The server isn't set up with the HumID app's signing certificate (HUMID_ANDROID_CERT_DIGESTS), so it can't tell the real app from a copy.");
   if (signatureDigests.length && !r.app.digests.some((d) => signatureDigests.includes(d))) fail("wrong_app", "The key was not made by a HumID build signed by us.");
   return {

@@ -4,6 +4,9 @@
 //   node deploy/windows/build.mjs --zip    -> also deploy/windows/out/HumID-Server-Windows-<version>.zip
 //   --as-version X.Y.Z                      label the build with another version (CI uses it to test updates and rollback)
 //   --out DIR                               build into DIR instead of deploy/windows/out
+//   --test-release-key <base64url>          TEST BUILDS ONLY: the console also trusts this release key (CI signs
+//                                           its own update packages with it). A release is never built with it;
+//                                           the release workflow checks VERSION.txt for it.
 //
 // The package holds the server as one JavaScript file, the web app, and the
 // installer. The installer fetches the official Node.js runtime from
@@ -20,6 +23,8 @@ const asVersion = process.argv.includes("--as-version") ? process.argv[process.a
 if (asVersion && !/^\d+\.\d+\.\d+$/.test(asVersion)) throw new Error("--as-version needs X.Y.Z");
 const version = asVersion || JSON.parse(readFileSync(join(here, "package.json"), "utf8")).version;
 const appVersion = JSON.parse(readFileSync(join(repo, "apps", "mobile", "package.json"), "utf8")).version;
+const testKey = process.argv.includes("--test-release-key") ? process.argv[process.argv.indexOf("--test-release-key") + 1] : null;
+if (testKey !== null && !/^[A-Za-z0-9_-]{3000,4000}$/.test(String(testKey))) throw new Error("--test-release-key needs a base64url ML-DSA-87 public key");
 const out = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : join(here, "out");
 const pkg = join(out, "HumID-Server");
 
@@ -29,7 +34,7 @@ mkdirSync(pkg, { recursive: true });
 // 1. The web app (a release build: no demo mode).
 const env = { ...process.env };
 delete env.HUMID_ALLOW_DEMO;
-execFileSync(process.execPath, [join(repo, "apps", "mobile", "build.mjs")], { stdio: "inherit", env });
+execFileSync(process.execPath, [join(repo, "apps", "mobile", "build.mjs")], { stdio: "inherit", env: { ...env, HUMID_PRECOMPRESS: "1" } }); // the Windows edge serves the .br/.gz siblings
 cpSync(join(repo, "apps", "mobile", "dist"), join(pkg, "app"), { recursive: true });
 
 // 2. The server: the seven services + the local edge, one file.
@@ -56,7 +61,25 @@ await esbuild.build({
   format: "esm",
   minify: false,
   legalComments: "eof",
-  define: { __HUMID_SERVER_VERSION__: JSON.stringify(version), __HUMID_ADMIN_PAGE__: JSON.stringify(readFileSync(join(here, "admin", "page.html"), "utf8")) },
+  define: {
+    __HUMID_SERVER_VERSION__: JSON.stringify(version), __HUMID_ADMIN_PAGE__: JSON.stringify(readFileSync(join(here, "admin", "page.html"), "utf8")),
+    ...(testKey ? { __HUMID_TEST_RELEASE_KEYS__: JSON.stringify([testKey]) } : {}),
+  },
+  logLevel: "info",
+});
+
+// 2c. The self-test (humid selftest): the deployment smoke test as one file, run against this
+// server's own 127.0.0.1 address (server 3.0).
+await esbuild.build({
+  entryPoints: [join(repo, "tests", "smoke.mjs")],
+  outfile: join(pkg, "humid-selftest.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  minify: false,
+  legalComments: "eof",
+  banner: { js: "// HumID self-test: node humid-selftest.mjs http://127.0.0.1:PORT [ACCESS-CODE]" },
   logLevel: "info",
 });
 
@@ -68,7 +91,8 @@ for (const f of readdirSync(join(here, "scripts"))) {
   if (f.endsWith(".ps1")) text = "﻿" + text;
   writeFileSync(join(pkg, f), text);
 }
-writeFileSync(join(pkg, "VERSION.txt"), crlf(`HumID Server for Windows ${version}\nBuilt ${new Date().toISOString()}\n`));
+writeFileSync(join(pkg, "VERSION.txt"), crlf(`HumID Server for Windows ${version}\nBuilt ${new Date().toISOString()}\n${testKey ? "TEST BUILD: its console also trusts a test release key. Never publish it.\n" : ""}`));
+if (testKey) console.warn("\n!! TEST BUILD: the console also trusts the test release key given. Never publish this build.");
 console.log(`\nBuilt ${pkg}`);
 
 // 4. Optional zip.

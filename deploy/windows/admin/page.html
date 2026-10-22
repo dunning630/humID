@@ -276,7 +276,8 @@ function updatesSection(s) {
     </dl>
     ${h.latest ? `<p><b>${esc(h.latest.version)}</b> is available${h.latest.publishedAt ? `, released ${esc(new Date(h.latest.publishedAt).toLocaleDateString())}` : ""}.</p>
       ${h.latest.notes ? `<details data-k="notes"><summary>What's new</summary><pre class="notes">${esc(h.latest.notes)}</pre></details>` : ""}
-      ${h.latest.asset?.sha256 ? "" : `<p class="small" style="color:var(--ember)">GitHub publishes no digest for this release's zip, so it can't be checked here.</p>`}`
+      ${h.latest.asset?.sha256 ? "" : `<p class="small" style="color:var(--ember)">GitHub publishes no digest for this release's zip, so it can't be checked here.</p>`}
+      ${!h.releaseKeys ? `<p class="small" style="color:var(--ember)">This console pins no HumID release key, so it can't tell who made an update and won't install it. Install the release by hand (unzip it and run its installer).</p>` : h.latest.sigAsset ? "" : `<p class="small" style="color:var(--ember)">This release has no signature (.sig), so the console won't install it.</p>`}`
       : h.error ? `<p class="small soft">${esc(h.error)}</p>` : `<p class="empty">You have the newest version.</p>`}
     ${!h.tokenSet && h.error ? `<p class="small soft">The repository is private. Make a fine-grained GitHub token with read-only access to its contents, then run <span class="mono">humid admin token &lt;token&gt;</span> in Terminal (Admin).</p>` : ""}
     <div class="actions">
@@ -337,7 +338,9 @@ function backupsSection(s) {
   return `<section>
     <h2>Backups</h2>
     ${s.backups.length ? `<table><tbody>${s.backups.slice(0, 6).map((b) => `<tr><td class="small">${esc(b.name)}</td><td class="num small soft">${gb(b.bytes)}</td><td class="num small soft">${ago(b.at)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">None yet.</p>`}
-    <p class="small soft">In ProgramData\\HumID\\backups, readable by administrators only. Each holds the server keys and every sealed document: copy one somewhere offline now and then.</p>
+    ${s.backupKey?.fingerprint
+      ? `<p class="small soft">Encrypted to backup key <span class="mono">${esc(s.backupKey.fingerprint)}</span>; restoring needs its private key file, which you keep off this computer. In ProgramData\\HumID\\backups (administrators only); keyshare's half of each in ${esc(s.backupKey.keyshareDir)}. Copy both somewhere offline now and then, on different disks.</p>`
+      : `<p class="small" style="color:var(--ember)">No backup key yet, so backups wait. In Terminal (Admin): <span class="mono">humid backup-key new -Path E:\\humid-backup.key</span> (a USB drive), then keep that file off this computer.</p>`}
   </section>`;
 }
 

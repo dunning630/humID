@@ -17,7 +17,7 @@
 // Operators mint codes with:   node server.mjs mint <count> [batch]
 // and sell them at a counter or through any store that delivers license keys.
 
-import { createService, openDb, env, json, parseJson, verifyAssertion, HttpError, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, sealerFromEnv, isSealedText, openDb, env, json, parseJson, verifyAssertion, HttpError, isMain } from "@humid/svc";
 import {
   parseAccessCode, accessCodeHash, newAccessCode, verifyPass, spentId, unb64u, b64u, PassError, MAX_KEYS,
 } from "@humid/pass";
@@ -27,6 +27,10 @@ const DAY = 86_400_000;
 const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10); // dates only: no times to correlate
 
 export function createAccess({
+  /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
+  tls = serviceTlsFromEnv(),
+  /** Secrets sealed at rest (packages/svc/src/seal.js). */
+  seal = sealerFromEnv(),
   port = Number(env("PORT", "8085")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
@@ -47,9 +51,15 @@ export function createAccess({
   ]);
 
   /* ---------- keys ---------- */
+  // Issuer private keys are sealed at rest when the server has a seal key; plain ones from before 3.0 are sealed in place.
+  if (seal.on) {
+    for (const row of db.prepare("SELECT id, pem FROM keys").all()) {
+      if (!isSealedText(row.pem)) db.prepare("UPDATE keys SET pem = ? WHERE id = ?").run(seal.sealText(`access/issuer/${row.id}`, row.pem), row.id);
+    }
+  }
   const loaded = new Map();
   const load = (row) => {
-    if (!loaded.has(row.id)) loaded.set(row.id, { ...issuerKey(row.pem), issueUntil: row.issue_until, acceptUntil: row.accept_until });
+    if (!loaded.has(row.id)) loaded.set(row.id, { ...issuerKey(seal.openText(`access/issuer/${row.id}`, row.pem)), issueUntil: row.issue_until, acceptUntil: row.accept_until });
     return loaded.get(row.id);
   };
   /** Keys whose passes are still accepted, newest first; makes a new issuing key when the last one's period ends. */
@@ -58,7 +68,7 @@ export function createAccess({
     let rows = db.prepare("SELECT * FROM keys WHERE accept_until > ? ORDER BY issue_until DESC").all(t);
     if (!rows.length || rows[0].issue_until <= t) {
       const k = newIssuerKey(keyBits);
-      db.prepare("INSERT INTO keys (id, pem, issue_until, accept_until) VALUES (?, ?, ?, ?)").run(k.id, k.pem, t + issueDays * DAY, t + acceptDays * DAY);
+      db.prepare("INSERT INTO keys (id, pem, issue_until, accept_until) VALUES (?, ?, ?, ?)").run(k.id, seal.sealText(`access/issuer/${k.id}`, k.pem), t + issueDays * DAY, t + acceptDays * DAY);
       rows = db.prepare("SELECT * FROM keys WHERE accept_until > ? ORDER BY issue_until DESC").all(t);
     }
     return rows.slice(0, MAX_KEYS).map(load);
@@ -144,7 +154,7 @@ export function createAccess({
     }],
   ];
 
-  const svc = createService({ name: "access", port, routes, bodyLimit: 16 * 1024, verify: (t) => verifyAssertion(internalPk, t, "access") });
+  const svc = createService({ tls, name: "access", port, routes, bodyLimit: 16 * 1024, verify: (t) => verifyAssertion(internalPk, t, "access") });
   // The first key is made at start-up (4096-bit keys take a moment), not on someone's first request,
   // and never by `mint`, which may run next to a live service.
   return { ...svc, start: (...a) => { liveKeys(); return svc.start(...a); }, mint, close: () => db.close() };

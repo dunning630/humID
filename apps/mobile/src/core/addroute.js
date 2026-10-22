@@ -1,4 +1,4 @@
-// How the Add camera decides where a photo goes (screens/add.jsx). Pure functions,
+// How the Add camera decides where a photo goes (screens/add/index.jsx). Pure functions,
 // so they're tested without a browser (tests/addroute.test.js).
 //
 // The camera never waits for a classification: it takes the photo as it always has,

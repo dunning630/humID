@@ -34,7 +34,9 @@ never need recovery.
 
 ## Layer 3 · Two-proof recovery
 
-`A` is split 2-of-3 (Shamir over GF(2⁸), degree 1). The coefficients come from
+`A` is split so that any two different parts rebuild it (Shamir over GF(2⁸), degree 1).
+4.0 adds a fourth part, held under a FIDO2 security key ([SECURITY-KEY.md](SECURITY-KEY.md));
+the first three are unchanged, so parts made at different times always fit. The coefficients come from
 `HKDF-SHA3-256(A, "HUMID-QUORUM-v1 coefficient epoch e")`, so every device
 holding `A` makes the same three parts at any time:
 
@@ -43,6 +45,7 @@ holding `A` makes the same three parts at any time:
 | **Witness** | 1 | split again among 2–5 witnesses (any majority), each piece sealed to that witness's account key | a majority approve, each with their own live biometric on their own phone |
 | **Anchor** | 2 | stored by the server, AES-256-GCM under `HKDF(server secret, account, identity fields)` — the identity fields themselves are never stored | the passport or ID chip is proven again: in person at a station, or live (Active Authentication) |
 | **Card** | 3 | the seal card (`HUMID-…` code), AES-256-GCM, like the v1 card | the card is presented |
+| **Key** (4.0) | 4 | a security key's `hmac-secret`, which it gives out only with its PIN | the key signs this recovery's fresh challenge with its PIN verified ([SECURITY-KEY.md](SECURITY-KEY.md)) |
 
 Any two different parts rebuild `A`; the new device checks that `A` derives the
 expected account id before joining. One part reveals nothing.
@@ -53,6 +56,7 @@ with the anchor part. Usual combinations:
 - lost everything, still has friends and a passport → witnesses + anchor
 - no witnesses reachable → anchor + card
 - no chip ID (country without e-passports) → witnesses + card
+- a security key on the keyring → key + witnesses, or key + card or chip (no people)
 
 ### The identity anchor (ICAO 9303)
 
@@ -115,15 +119,17 @@ and local development builds read a simulated chip in the browser.
 | Proofs | Wait (production) | Formula |
 |---|---|---|
 | anchor at a **station** + anything | 24 h | base ÷ 3 |
-| **witnesses** + card, witnesses + live chip | 72 h | base |
-| card + live chip (no people) | 7 days | base × 7⁄3 |
+| **witnesses** + card, key or live chip | 72 h | base |
+| any two of card, key, live chip (no people) | 7 days | base × 7⁄3 |
 | any of the above within 14 days of a **duress** signal | × 2 | |
 
 `base` is `RECOVERY_DELAY_MS` (72 h). The wait starts when the second kind of
 proof arrives; a stronger third proof can shorten it. During the wait every
 device of the account sees an alert naming the evidence, witnesses see it
 too, and **any surviving device cancels with one live check**. Proofs that
-point at different accounts are refused.
+point at different accounts are refused. Removing a security key or replacing the seal
+card during the wait withdraws it as a proof: a recovery left with one proof goes back
+to collecting.
 
 ## Layer 5 · The continuity record and the public log
 

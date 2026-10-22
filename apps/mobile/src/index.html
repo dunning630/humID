@@ -1,26 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#0b1b15">
-<meta name="description" content="HumID — your documents, sealed on your phone and opened only by you.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0B1410">
+<meta name="description" content="HumID — your documents, sealed on your phone and opened only by a living you.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="HumID">
+<meta name="referrer" content="no-referrer">
 <title>HumID</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
-<link rel="icon" href="/icons/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/icons/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180">
-<link rel="stylesheet" href="/assets/app.css">
+<link rel="modulepreload" href="__APP_JS__">
+<link rel="stylesheet" href="__APP_CSS__">
 </head>
 <body>
 <div id="app"></div>
-<script src="/assets/boot-guard.js"></script>
-<script type="module" src="/assets/app.js"></script>
+<script src="/boot-guard.js"></script>
+<script type="module" src="__APP_JS__"></script>
 </body>
 </html>

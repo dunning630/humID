@@ -1,4 +1,4 @@
-// App state as signals. Screens read these; only core/controller.js writes them.
+// App state as signals. Screens read these; only the kernel (core/) writes them.
 import { signal, computed } from "@preact/signals";
 import { DEMO_BUILD } from "@humid/gate";
 import { loadPrefs, sortItems } from "./prefs.js";
@@ -58,7 +58,9 @@ export const simLog = signal([]);
 export const simShow = signal(null);         // a report to show in the checks sheet
 
 export const interrupt = signal(null);       // overlay state
-export const sheet = signal(null);           // { type, ... }
+export const sheet = signal(null);           // { type, ... } one bottom sheet at a time; each type rendered by one file
+export const push = signal(null);            // { type, ... } one pushed (full-screen) step over the tabs
+export const sealing = signal(null);         // "seal" | "upload" | "done" while a document is being sealed
 export const viewer = signal(null);          // decrypted preview
 export const toasts = signal([]);
 export const idleDeadline = signal(0);       // when the app auto-locks

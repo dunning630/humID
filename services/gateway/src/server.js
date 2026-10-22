@@ -6,9 +6,8 @@
 // Invariant: no document ciphertext leaves the vault without a matching
 // ledger record. If the ledger cannot record the access, the gateway refuses.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { createService, env, json, bytes, parseJson, signRequestAssertion, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
+import { mkdirSync, readFileSync } from "node:fs";
+import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
@@ -19,6 +18,7 @@ const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
+const KEY_RE = "[0-9a-f]{32}";
 /**
  * Which devices may sign in (HUMID_DEVICE_POLICY):
  *   attested   only phones whose secure chip proves every check is a live biometric
@@ -101,6 +101,11 @@ const ROUTES = [
   { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
   { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
   { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
+  // security keys (4.0, docs/SECURITY-KEY.md): adding or removing one is a guarded change
+  { m: "GET", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true },
+  { m: "POST", p: re("/recovery/keys/challenge"), to: "recovery", path: "/keys/challenge", auth: true },
+  { m: "POST", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_added", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
+  { m: "DELETE", p: re(`/recovery/keys/(${KEY_RE})`), to: "recovery", path: "/keys/$1", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
   { m: "GET", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true },
   { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
   // verification stations
@@ -114,6 +119,8 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/card`), h: "addEvidence", kind: "card", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/challenge`), to: "recovery", path: "/requests/$1/challenge", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key/challenge`), to: "recovery", path: "/requests/$1/key/challenge", anon: true },
+  { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key`), h: "addEvidence", kind: "key", anon: true },
   { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
   { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
@@ -194,6 +201,14 @@ export function createGateway({
   checkin = env("HUMID_CHECKIN", "off"),
   /** How often the gateway tidies up after a Check-in erase: the vault's envelopes, and the ledger entry. */
   checkinSweepMs = 10_000,
+  /** Server secrets sealed at rest (packages/svc/src/seal.js): HUMID_SEAL_KEY_FILE, or the host's sealer. */
+  seal = sealerFromEnv(),
+  /**
+   * Mutual TLS to roles on other machines (server 3.0, docs/DEPLOY-VMS.md): this gateway's
+   * humid-front certificate, its key and the server's CA (PEM). Used for every https:// upstream.
+   * Default: HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY files, if set.
+   */
+  internalTls = tlsFromEnv(),
 } = {}) {
   const log = logger("gateway");
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
@@ -204,10 +219,9 @@ export function createGateway({
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
+  // Sealed under the server's seal key when it has one; a plain file from before 3.0 is sealed in place (same keys, same kid).
   const keyFile = `${dataDir}/htp-keys.json`;
-  let statics;
-  if (existsSync(keyFile)) statics = importStatics(JSON.parse(readFileSync(keyFile, "utf8")));
-  else { statics = createStatics(); writeFileSync(keyFile, JSON.stringify(exportStatics(statics)), { mode: 0o600 }); }
+  const statics = importStatics(JSON.parse(secretFile(keyFile, { seal, name: "gateway/htp-keys", make: () => JSON.stringify(exportStatics(createStatics())), log }).toString("utf8")));
   const htp = new HtpServer(statics);
   log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
@@ -221,6 +235,7 @@ export function createGateway({
   const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source address
   const loginFailAll = new Buckets(200, 300_000);   // failed proofs, whole server (ledger-write budget)
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
+  const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
@@ -239,20 +254,29 @@ export function createGateway({
 
   /* ---------- internal calls ---------- */
 
+  // Which role each service belongs to, for the certificate the gateway expects when it's on another machine.
+  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys" };
+  const agents = {};
+  for (const [svcName, base] of Object.entries(upstreams)) {
+    if (!/^https:/.test(base)) continue;
+    if (!internalTls) throw new Error(`${svcName} is at ${base}, but this gateway has no internal TLS certificate (HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY)`);
+    const role = ROLE_OF[svcName];
+    agents[role] ||= roleAgent(clientTls({ ...internalTls, expect: role }));
+  }
+
   async function internal(service, method, path, { claims = {}, body, headers = {} } = {}) {
-    // Bound to this one request: method, target and body (PC-08). The downstream service refuses it on any other.
-    const assertion = signRequestAssertion(internalSk, { iss: "gateway", aud: service, rid: randomUUID(), ...claims }, { method, path, body: body && body.length ? body : null });
+    // SEC-S-01: the assertion names this exact request (service, method, path and query as sent, body), once.
+    const target = new URL(path, "http://internal");
+    const sent = target.pathname + target.search;
+    const payload = body && body.length ? body : undefined;
+    const assertion = signRequest(internalSk, { aud: service, method, path: sent, body: payload, claims });
     let res;
     try {
-      res = await fetch(`${upstreams[service]}${path}`, {
-        method,
-        headers: { "x-humid-assertion": assertion, ...headers },
-        body: body && body.length ? body : undefined,
-      });
+      res = await internalRequest(`${upstreams[service]}${sent}`, { method, headers: { "x-humid-assertion": assertion, ...headers }, body: payload, agent: agents[ROLE_OF[service]] });
     } catch {
       throw new HttpError(503, `${service}_unavailable`, `${service} service is unavailable`);
     }
-    const buf = new Uint8Array(await res.arrayBuffer());
+    const buf = res.body;
     const out = { status: res.status, headers: {}, body: buf };
     for (const h of FORWARD_RES_HEADERS) { const v = res.headers.get(h); if (v) out.headers[h] = v; }
     return out;
@@ -580,6 +604,7 @@ export function createGateway({
       await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
+      await internalJson("recovery", "DELETE", "/keys", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
       const subject = s.subject;
@@ -600,10 +625,17 @@ export function createGateway({
       return { status: 201, json: out };
     },
 
-    // Two-proof recovery: the new device adds its seal card or its live ID chip.
+    // Two-proof recovery: the new device adds its seal card, its live ID chip or its security key.
     async addEvidence(s, body, stepUp, m, route) {
       const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
-      if (r.status !== 200) fail(r);
+      if (r.status !== 200) {
+        // A stored security key's signature checked and failed, or its counter went backwards: its
+        // owner sees it in Activity, at most once an hour, so a stranger can't flood the record.
+        if (route.kind === "key" && r.data?.account && ["key_cloned", "bad_key_proof"].includes(r.data.error) && keyRefusedNote.take(`${r.data.account}:${r.data.error}`)) {
+          await recordQuietly(r.data.account, "recovery.key_refused", { reason: r.data.error, ref: r.data.ref });
+        }
+        fail(r); // fail() passes on only the code and the message
+      }
       const d = r.data;
       if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
       await recordQuietly(d.account, "recovery.evidence", { ref: d.ref, kind: route.kind, anchorMode: d.anchorMode, kinds: d.kinds, releaseAt: d.releaseAt, evidence: d.evidence });
@@ -852,7 +884,15 @@ export function createGateway({
     for (const k of FORWARD_REQ_HEADERS) if (meta.h?.[k]) headers[k] = String(meta.h[k]);
     const path = url.pathname.replace(route.p, route.path) + url.search;
     const claims = s.subject ? claimsFor(s, stepUp ? { stepUp } : {}) : { sid: s.sidText.slice(0, 8) };
-    const res = await internal(route.to, meta.m, path, { claims, body, headers });
+    let res = await internal(route.to, meta.m, path, { claims, body, headers });
+    // An error passed straight through carries only its code and message: nothing a service
+    // added for the gateway's own use (an account, a reference) reaches the caller.
+    if (res.status >= 400) {
+      const e = safeJson(res.body);
+      if (e && typeof e === "object" && Object.keys(e).some((k) => k !== "error" && k !== "message")) {
+        res = { ...res, body: Buffer.from(JSON.stringify({ error: e.error, message: e.message })) };
+      }
+    }
 
     if (route.event) {
       const objectId = url.pathname.match(new RegExp(OBJ_RE))?.[0];
@@ -1033,6 +1073,14 @@ export function createGateway({
 
   const svc = createService({ name: "gateway", port, routes, extraHeaders: cors });
   return { ...svc, htp, sweepCheckin };
+}
+
+/** Internal TLS from files: HUMID_TLS_CA, HUMID_TLS_CERT, HUMID_TLS_KEY (a sealed key file opens with the seal key). */
+export function tlsFromEnv(env = process.env, seal = sealerFromEnv(env)) {
+  const { HUMID_TLS_CA: ca, HUMID_TLS_CERT: cert, HUMID_TLS_KEY: key } = env;
+  if (!ca && !cert && !key) return null;
+  if (!ca || !cert || !key) throw new Error("Internal TLS needs all of HUMID_TLS_CA, HUMID_TLS_CERT and HUMID_TLS_KEY");
+  return { ca: readFileSync(ca, "utf8"), cert: readFileSync(cert, "utf8"), key: seal.open("tls/key", readFileSync(key)).toString("utf8") };
 }
 
 if (isMain(import.meta.url)) {

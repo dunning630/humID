@@ -1,3 +1,4 @@
+/* global __HUMID_WORKER__ */
 // The camera's analysis, away from the main thread where the phone allows it.
 //
 // Each look: a small copy of the camera's frame (made by the browser, off the main
@@ -64,7 +65,7 @@ export function createAnalyzer({ shape = "full", bar = false, workerUrl = null, 
   function spawn(role) {
     if (workers[role] || dead) return workers[role] || null;
     try {
-      const w = new Worker(workerUrl || new URL("./scanworker.js", import.meta.url), { type: "module" });
+      const w = new Worker(workerUrl || (typeof __HUMID_WORKER__ !== "undefined" ? __HUMID_WORKER__ : new URL("./scanworker.js", import.meta.url)), { type: "module" });
       w.onmessage = (e) => {
         const p = pending.get(e.data.id);
         if (!p) return;

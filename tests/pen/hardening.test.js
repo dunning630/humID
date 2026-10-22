@@ -3,8 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { signRequestAssertion } from "@humid/svc";
-import { randomUUID } from "node:crypto";
+import { signRequest } from "@humid/svc";
 import { startStack } from "../e2e/stack.js";
 import { rawSession, frame, send } from "./_lib.js";
 
@@ -47,7 +46,7 @@ test("a huge declared Content-Length from an anonymous session is refused before
 });
 
 test("recovery routes answer a JSON null / array / scalar body with 400, not 500 (F-05)", async () => {
-  const hdr = (aud, method, path, body) => ({ "x-humid-assertion": signRequestAssertion(stack.internalSk, { iss: "gateway", aud, rid: randomUUID(), sub: "hid_" + "a".repeat(40) }, { method, path, body: Buffer.from(body) }), "content-type": "application/json" });
+  const hdr = (aud, method, path, body) => ({ "x-humid-assertion": signRequest(stack.internalSk, { aud, method, path, body: Buffer.from(body), claims: { sub: "hid_" + "a".repeat(40) } }), "content-type": "application/json" });
   for (const [m, path] of [["POST", "/links"], ["POST", "/offers"], ["POST", "/requests"]]) {
     for (const body of ["null", "[]", "5", '"x"']) {
       const res = await fetch(`${stack.upstreams.recovery}${path}`, { method: m, headers: hdr("recovery", m, path, body), body });

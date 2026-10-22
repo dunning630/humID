@@ -138,13 +138,6 @@ export function verify(envelope) {
   return { ok: sigOk && ctOk, sigOk, ctOk, manifest };
 }
 
-const sameBytes = (a, b) => {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
-  return d === 0;
-};
-
 /**
  * Verify, then decrypt with the holder's keys.
  *
@@ -180,6 +173,34 @@ export async function open(envelope, keys, { signer } = {}) {
   return { meta, bytes, manifest };
 }
 
+/** Constant-time byte comparison (lengths are public). */
+function sameBytes(a, b) {
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array) || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
+  return d === 0;
+}
+
+/**
+ * Open a document from the holder's own vault: as open, and the envelope must
+ * also be signed by the holder's own ML-DSA key (keys.dsaPk). Anyone holding
+ * the holder's public keys can seal a valid envelope to them; only the holder
+ * can sign one. Without this check a server could plant a document that opens
+ * as the holder's own (precert finding PC-03, prior H-1).
+ */
+export async function openOwn(envelope, keys) {
+  if (!(keys?.dsaPk instanceof Uint8Array)) throw new Error("The account's signing key is needed to check who sealed this.");
+  const { manifest } = unpack(envelope);
+  let signer;
+  try { signer = fromB64(manifest?.signer?.mldsa87Pk || ""); } catch { signer = null; }
+  if (!sameBytes(signer, keys.dsaPk)) {
+    const e = new Error("This document wasn't sealed by your account. It wasn't opened.");
+    e.code = "wrong_signer";
+    throw e;
+  }
+  return open(envelope, keys);
+}
+
 export const isAddressedTo = (manifest, kemPk) => manifest.recipient.kemPkFp === toHex(sha3_256(kemPk));
 export const fingerprint = (bytes, chars = 16) => toHex(sha3_256(bytes)).slice(0, chars);
 export { sha3_256, sha3_512 };
@@ -192,14 +213,26 @@ export { sha3_256, sha3_512 };
  */
 export const indexKey = (seed) => kdf(seed, undefined, "HUMID-PQ1 vault-index");
 
+// Entries are padded to 64-byte buckets before sealing (1.6.0), so the size of a sealed
+// entry, and the size change when one is re-sealed, says nothing about what it holds:
+// a pin or a decoy flag is 13-14 bytes of JSON, and the server sees PATCH sizes.
+const INDEX_BUCKET = 64;
+const padIndex = (entry) => {
+  const base = encodeJSON({ ...entry, p: "" }).length;
+  const want = Math.ceil(base / INDEX_BUCKET) * INDEX_BUCKET;
+  return { ...entry, p: " ".repeat(want - base) };
+};
+
 export async function sealIndex(key, entry) {
   const nonce = random(12);
-  const ct = await aesEncrypt(key, nonce, encodeJSON(entry), utf8("HUMID-INDEX-v1"));
+  const ct = await aesEncrypt(key, nonce, encodeJSON(padIndex(entry)), utf8("HUMID-INDEX-v1"));
   return concat(nonce, ct);
 }
 
 export async function openIndex(key, blob) {
-  return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+  const entry = decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+  if (typeof entry?.p === "string") delete entry.p; // the padding
+  return entry;
 }
 
 /* ---------- offline copy (added in @humid/crypto 1.4.0) ----------
