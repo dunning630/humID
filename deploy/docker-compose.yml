@@ -3,7 +3,10 @@
 #
 # Only the edge is reachable from outside. Every other service sits on an
 # internal network with no route to the internet, runs read-only, as non-root,
-# with all Linux capabilities dropped, and owns its own data volume.
+# with all Linux capabilities dropped, and owns its own data volume. One small
+# sidecar, attestation-status, may call out: it fetches Google's list of revoked
+# Android attestation keys and hands it to identity through a shared volume. It
+# is on the public network only, holds no keys and can't reach any service.
 
 name: humid
 
@@ -21,15 +24,23 @@ x-service: &service
     retries: 5
 
 services:
+  # Hardened like the others (PC-21): read-only, non-root, no capabilities. The container's
+  # own network namespace lets an unprivileged user bind 80 and 443 (Docker's default since
+  # 20.10, stated here), so Caddy needs no CAP_NET_BIND_SERVICE. Its certificates and
+  # state live on its two volumes.
   edge:
+    <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-edge:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/edge/Dockerfile }
-    restart: unless-stopped
+    user: "65532:65532"
+    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
     ports: ["80:80", "443:443", "443:443/udp"]
     environment:
       HUMID_DOMAIN: ${HUMID_DOMAIN:?set HUMID_DOMAIN in deploy/.env}
     volumes: [caddy-data:/data, caddy-config:/config]
+    tmpfs: ["/tmp"]
     networks: [public, internal]
+    healthcheck: { disable: true } # as before: the gateway's health is what the edge waits on
     depends_on:
       gateway: { condition: service_healthy }
 
@@ -94,12 +105,40 @@ services:
       HUMID_APP_ATTEST_ENV: ${HUMID_APP_ATTEST_ENV:-production}     # "development" for Xcode debug builds
       HUMID_REQUIRE_LOCKED_BOOT: ${HUMID_REQUIRE_LOCKED_BOOT:-1}    # refuse rooted / unlocked-bootloader Android phones
       HUMID_ANDROID_MIN_PATCH: ${HUMID_ANDROID_MIN_PATCH:-}        # optional minimum Android security patch, YYYYMM
-      HUMID_ATTESTATION_STATUS_REQUIRED: ${HUMID_ATTESTATION_STATUS_REQUIRED:-0}  # 1: refuse Android phones until Google's revoked-key list is fetched
+      # Google's revoked-key list, as the attestation-status sidecar last fetched it. With the
+      # attested policy an Android phone is refused while that copy is missing or over 48 hours
+      # old (status_unavailable / status_stale). 0 accepts it unchecked instead (not recommended).
+      HUMID_ATTESTATION_STATUS_FILE: /status/attestation-status.json
+      HUMID_ATTESTATION_STATUS_REQUIRED: ${HUMID_ATTESTATION_STATUS_REQUIRED:-1}
+      HUMID_DEVICE_POLICY: ${HUMID_DEVICE_POLICY:-attested}         # the gateway's; identity logs its live-human posture with it
+      # Test servers only: accept an Android app signed by anyone. Refused with the attested
+      # policy unless HUMID_INSECURE_TEST=1 is also set; logged as a warning at every start.
+      HUMID_ANDROID_ALLOW_ANY_SIGNER: ${HUMID_ANDROID_ALLOW_ANY_SIGNER:-0}
+      HUMID_INSECURE_TEST: ${HUMID_INSECURE_TEST:-0}
       HUMID_DURESS_COOLOFF_MS: ${HUMID_DURESS_COOLOFF_MS:-86400000}  # calm period before the owner can lift a duress lockdown
-    volumes: [identity-data:/data]
+    volumes: [identity-data:/data, attestation-status:/status:ro]
     healthcheck:
       <<: *health
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+  # Fetches https://android.googleapis.com/attestation/status every 6 hours (sooner after a
+  # failure) and writes it to the attestation-status volume, which identity reads. The
+  # identity image's own code (server.mjs status-fetch); no keys, no data, no internal network.
+  attestation-status:
+    <<: *service
+    image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-identity:${HUMID_VERSION:-latest}
+    build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: identity } }
+    command: ["server.mjs", "status-fetch"]
+    networks: [public]
+    environment:
+      HUMID_ATTESTATION_STATUS_FILE: /status/attestation-status.json
+    volumes: [attestation-status:/status]
+    healthcheck:
+      <<: *health
+      interval: 60s
+      start_period: 60s
+      # healthy once a copy younger than 48 hours is on the volume
+      test: ["CMD", "/nodejs/bin/node", "-e", "try{const j=JSON.parse(require('fs').readFileSync('/status/attestation-status.json','utf8'));process.exit(Date.now()-Date.parse(j.fetchedAt)<1728e5?0:1)}catch{process.exit(1)}"]
 
   vault:
     <<: *service
@@ -197,6 +236,7 @@ networks:
 volumes:
   caddy-data: {}
   caddy-config: {}
+  attestation-status: {}
   gateway-data: {}
   identity-data: {}
   vault-data: {}

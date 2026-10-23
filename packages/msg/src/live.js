@@ -25,6 +25,10 @@
 // A stamp proves A live human approved those bytes on a proven phone, not WHICH human; the
 // ratchet proves only the contact's persona could have sent them. Together: a live human
 // on the contact's side. See docs/MESSAGING.md, "The human-to-human rule".
+//
+// "Live" means a match made at that moment: HumID requires a Class-3 biometric match on
+// attested hardware and relies on the device's own anti-spoofing; it performs no
+// additional liveness detection.
 
 export const LIVE_WINDOW_MS = 5 * 60_000;
 export const MIN_LIVE_WINDOW_MS = 30_000;

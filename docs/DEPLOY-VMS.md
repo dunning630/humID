@@ -30,10 +30,17 @@ Firewall, deny by default:
 | internet / tunnel | front | 443 (or none, with an outbound tunnel) | phones |
 | front | core | 8501–8505 (`HUMID_INTERNAL_PORT_BASE` + 1…5) | gateway → identity, vault, ledger, recovery, access |
 | front | keys | 8506 (base + 6) | gateway → keyshare |
+| core | `android.googleapis.com` | 443 (HTTPS out, that host only) | identity fetches Google's revoked Android attestation keys every 6 hours |
 | management | each VM | RDP/SSH from a jump host only | administration |
 | anything else | anything | — | refused |
 
-Core and keys never call each other or the internet. Front never stores documents.
+Core and keys never call each other. Keys never calls the internet; core makes one
+outbound call, to Google's attestation status list. With the attested policy, identity
+refuses Android phones while its copy is missing or over 48 hours old, so without that
+rule Android phones can't join (it fails safe). If core must have no outbound route at
+all, fetch the list on another machine and copy it in: with `HUMID_ATTESTATION_STATUS_FILE`
+set, identity reads that file (the format `fetchStatusToFile` in
+`packages/attest/src/status.js` writes) instead of fetching. Front never stores documents.
 
 ## What each layer must do
 

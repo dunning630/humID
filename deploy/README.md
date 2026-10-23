@@ -8,9 +8,18 @@ Two ways:
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
 
-Eight small containers: **edge** (Caddy, the only one on the internet),
-**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access** and **keyshare**. They run on
-a private network with no route to the internet, read-only, as non-root.
+Small containers: **edge** (Caddy, the only one phones reach),
+**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access**, **keyshare** and **relay**. They run on
+a private network with no route to the internet, read-only, as non-root. One
+sidecar, **attestation-status**, fetches Google's list of revoked Android
+attestation keys every 6 hours and leaves it on a volume identity reads; it is
+the only container that calls out, and it holds no keys and reaches no service.
+With the default attested policy, identity refuses Android phones while that
+copy is missing or over 48 hours old (`HUMID_ATTESTATION_STATUS_REQUIRED=1`),
+so a server that can't reach `android.googleapis.com` fails safe: `docker
+compose ps` shows the sidecar unhealthy. Identity logs one `live-human posture`
+line at every start; a warning there names each setting that weakens the
+guarantee.
 
 ## What you need
 
@@ -76,6 +85,14 @@ docker compose pull vault && docker compose up -d vault
 Pulling private images needs a one-time `docker login ghcr.io` with a GitHub
 token that can read packages. Without it, `docker compose up -d --build`
 builds from the checked-out source instead.
+
+**Once, when updating to the non-root edge** (PC-21): Caddy's certificates
+were written by root before, and the edge now runs as user 65532. Hand its two
+volumes over before `up -d`, or it can't renew certificates:
+
+```bash
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint chown edge -R 65532:65532 /data /config
+```
 
 ## Keep these safe
 

@@ -1,6 +1,7 @@
 {
   "name": "@humid/fido",
   "version": "1.0.0",
+  "private": true,
   "description": "A FIDO2 security key as a HumID recovery proof: CTAP 2.1 over NFC (any ISO 7816 transport), PIN/UV auth protocols 1 and 2, hmac-secret, credProtect. No platform code.",
   "type": "module",
   "exports": "./src/index.js",

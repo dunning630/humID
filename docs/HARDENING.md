@@ -28,7 +28,7 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 |---|---|---|---|
 | Chain to pinned Google roots | `packages/attest/src/android.js` | Yes | ➖ |
 | Every certificate above the leaf in date; every issuer a CA | same | Intermediates' dates only; no CA check | ✅ (leaf dates left out, as Google's verifier does: devices set them unreliably) |
-| Google's revocation/status list | `packages/attest/src/status.js` | Never fetched | ✅ refreshed every 6 h; `HUMID_ATTESTATION_STATUS_REQUIRED=1` refuses until fetched |
+| Google's revocation/status list | `packages/attest/src/status.js` | Never fetched | ✅ refreshed every 6 h; in Docker by the `attestation-status` sidecar (identity has no internet) into a file identity reads; with the attested policy `HUMID_ATTESTATION_STATUS_REQUIRED` defaults to 1 and refuses Android phones while the copy is missing or over 48 h old (PC-14 / LIVE-02 / SRV-33, `tests/e2e/attestation-status.test.js`) |
 | Both security levels TEE or StrongBox; Software refused | `android.js` | `≥ 1` (so KeyMint's `100` passed) | ✅ allow-list {TEE, StrongBox} for both |
 | Verified boot, locked bootloader | same | Yes (`HUMID_REQUIRE_LOCKED_BOOT`, default on) | ➖ 🔒 rooted-phone test |
 | Biometric-only auth type, no `noAuthRequired`, timeout 0 | same | Yes | ➖ |
@@ -167,8 +167,8 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | M-1 | `/htp/v1/keys` policy hints are unauthenticated (a proxy can turn off split keys) | ✅ the policy is signed with the server's ML-DSA-87 key (`policySig`) and checked against the pinned kid; unsigned or altered hints are ignored (strict defaults). A pinned release build never seals unsplit, even on its first run (CRYPTO-07, VAULT-04, `tests/htp.test.js`, `tests/split-ratchet.test.js`) |
 | F-07 | Windows/Linux desktop gates are not OS-enforced (desktop paused) | ⬜ |
 | F-08/F-09 | Android wrapping key is valid 3 s after any biometric, not per use; no runtime root detection | ⬜ |
-| SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
+| SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ◑ actions pinned by SHA; release and server-windows workflows least-privilege, no install scripts beside a write token (PC-20); every container, the edge included, read-only, non-root, no capabilities (PC-21, `tests/deploy-hardening.test.js`). ⬜ base images still tag-only (`TODO(PC-21)` in both Dockerfiles: pin by digest); no provenance or SBOM (PC-19) |
 | SC-06 | Android Maven dependencies (incl. `play-services-mlkit-document-scanner`) pinned but not checksum-verified: no Gradle dependency verification | ⬜ |
-| SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
+| SRV-07 / F-04 / SRV-31 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ✅ Windows edge: no tunnel header is believed unless `HUMID_TRUST_FORWARDED` names the tunnel (`cloudflare` for Cloudflare Tunnel, set by `humid expose`; default `off`). Behind Tailscale Funnel the visitor's address isn't knowable, so all visitors share one bucket (`tests/e2e/windows-edge-forwarded.test.js`) |
 | SEC-S-01 / PC-08 | Internal gateway→service assertions not bound to the request (replayable, a read became a delete) | ✅ each assertion signs method, target and body hash and is accepted once (`signRequestAssertion`, `createService`) |
 | Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ◑ NIST ACVP known-answer tests for ML-KEM-1024, ML-DSA-87 and SLH-DSA-SHA2-256f run in CI (`tests/kat.test.js`, `tools/acvp-vectors.mjs`); ⬜ independent review |

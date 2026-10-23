@@ -31,11 +31,21 @@ it until that review and the items under *Before real data* are done.
 ## What it does not protect against yet
 
 - **Unreviewed composition.** See the status note above.
+- **"Live" means a biometric match, not liveness detection.** HumID requires
+  a Class-3 biometric match on attested hardware and relies on the device's own
+  anti-spoofing; it performs no additional liveness detection. A lifted
+  fingerprint or a mask that fools a phone's sensor fools HumID too; how well
+  each phone resists that is the phone maker's, and isn't attested.
 - **Attestation proves the key, not the person.** The secure chip proves a
   live biometric match on that phone unlocked the key. It can't tell whose
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
   Keys are destroyed if enrolment changes, and the owner confirms at setup
-  that only their own biometrics are enrolled (recorded in the ledger).
+  that only their own biometrics are enrolled (recorded in the ledger). When
+  that happens the phone tells the server, without signing in (it can't any
+  more): the holder's Activity shows *HumID key gone* and the device is marked
+  *Needs setting up again* until a live sign-in from it clears the mark. The
+  report is unauthenticated, so it is best effort, once a day per device, and
+  answers the same for accounts that don't exist.
 - **A live check is not consent.** It proves an enrolled face or finger was
   matched live, not that its owner meant it: a finger pressed while asleep, or
   under force (the duress gesture covers force), passes.
@@ -397,7 +407,10 @@ remaining item under *Before real data* #9.
 ## Live biometric checks
 
 "Human validated" means the server has evidence, for every action, that a
-live face or fingerprint match happened on a device it trusts. Here is how.
+face or fingerprint matched one enrolled on a device it trusts, at that moment.
+HumID requires a Class-3 biometric match on attested hardware and relies on the
+device's own anti-spoofing; it performs no additional liveness detection. Here
+is how.
 
 **When a phone joins** (first device, link, recovery), its secure chip makes a
 new P-256 *liveness key* that can only be used after a live biometric match,
@@ -423,6 +436,13 @@ or `apple-secure-enclave`) with the device.
 A missing or wrong signature is refused and logged in the holder's activity
 as an access denied, so a bot holding the account's keys gets nowhere and
 leaves a trace.
+
+Each signature has one accepted form: the server takes only low-S ECDSA
+(`s ≤ n/2`), so a signature seen on the wire can't be rewritten into a second
+valid one with a different proof hash. The app normalises what the chip
+returns. Checks of other people's signatures (ID documents, mDLs, SD-JWT
+credentials, security keys) follow their own standards, which allow either
+form; they trust what was signed, never the signature's bytes.
 
 **Device policy** (`HUMID_DEVICE_POLICY` on the gateway): `attested`
 (default) accepts only proven phones; `biometric` also accepts

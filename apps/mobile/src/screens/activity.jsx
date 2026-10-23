@@ -60,6 +60,7 @@ function describe(e, names) {
     case "identity.closed": return { icon: "x", tone: "danger", title: "HumID closed", meta: [] };
     case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only the owner's face or fingerprints" : null] };
     case "device.removed": return { icon: "x", tone: "amber", title: `Device removed · ${d.platform || "device"}`, meta: [], proof: d.proof };
+    case "device.keys_invalidated": return { icon: "alert", tone: "danger", title: `HumID key gone · ${d.platform || "device"}`, meta: ["reported by the device: its face or fingerprints changed, or HumID was reinstalled", "set it up again, or remove it if that wasn't you"] };
     case "device.link_approved": return { icon: "key", tone: "amber", title: `Approved ${d.platform || "a new device"}`, meta: [], proof: d.proof };
     case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made (older kind)" : "Recovery card made", meta: [], proof: d.proof };
     case "recovery.card_removed": return { icon: "idcard", tone: "", title: "Recovery card removed", meta: [], proof: d.proof };

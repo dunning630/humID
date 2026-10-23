@@ -59,6 +59,11 @@ pub struct Released {
     pub detail: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
+    /// A replacement for the handle that was passed in, when the platform moved the
+    /// secret to a new key during this release (Android: a 2.0 time-bound key to a
+    /// per-use one). The caller stores it in place of the old handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Handle>,
 }
 
 /// `challenge`: base64 bytes the liveness key signs during the check (known

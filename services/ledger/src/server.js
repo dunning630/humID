@@ -44,6 +44,8 @@ const EVENT_TYPES = new Set([
   "recovery.key_added", "recovery.key_removed", "recovery.key_refused",
   // the holder's signed choice of recovery mode: holder-only or hardened (ledger 1.5, docs/RECOVERY.md)
   "recovery.mode_set",
+  // a device reported that Android or iOS destroyed its biometric keys (ledger 1.6, LIVE-06)
+  "device.keys_invalidated",
 ]);
 
 /**

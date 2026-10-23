@@ -1,5 +1,12 @@
 # HumID Server for Windows
 
+## Unreleased
+
+- **Revocation fails closed** (PC-14 / LIVE-02). New installs get `HUMID_ATTESTATION_STATUS_REQUIRED=1`: with the attested policy an Android phone is refused while Google's revoked-key list hasn't been fetched or is over 48 hours old, instead of being let in unchecked. The server needs outbound HTTPS to `android.googleapis.com` (a PC with internet has it; on split roles, the core machine: docs/DEPLOY-VMS.md). An existing install keeps the `0` it was given: `humid set HUMID_ATTESTATION_STATUS_REQUIRED=1` to switch.
+- **The live-human posture at every start** (LIVE-04). Identity logs one line with the device policy, locked-boot rule, app signer rule, App Attest environment and revocation state, as a warning naming each setting that weakens it. `HUMID_ANDROID_ALLOW_ANY_SIGNER=1` (test servers only) is now listed in `humid.env` and refused with the attested policy unless `HUMID_INSECURE_TEST=1` is set too.
+
+- **Rate limits can't be dodged with a made-up address** (SRV-31). The edge used to believe `CF-Connecting-IP` or `X-Forwarded-For` from whatever came through the tunnel; behind Tailscale Funnel nothing overwrites them, so a visitor could name a new address on every request and reset every per-address limit. A new setting, `HUMID_TRUST_FORWARDED`, says which header to believe: `humid expose cloudflare` sets `cloudflare` (Cloudflare's edge overwrites `CF-Connecting-IP`), `humid expose tailscale` and `none` set `off`. With `off`, the default, all visitors through the tunnel share one address for the limits. An install that already uses Cloudflare Tunnel: run `humid set HUMID_TRUST_FORWARDED=cloudflare` (or `humid expose cloudflare` again).
+
 ## 3.2.0 (preview, non-production)
 
 Paired with **HumID 4.1 preview**. Installing over 3.1.0 keeps all data, settings and the server's identity, and changes nothing until you turn messaging on.

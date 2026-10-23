@@ -17,10 +17,10 @@
 // accepts desktop biometric-only gates without hardware proof, "demo" accepts
 // anything (local development only).
 
-import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import { recoveryModeMessage, isRecoveryMode, RECOVERY_MODES } from "@humid/recovery";
-import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
+import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
 export const ATTEST_MAX_AGE_MS = 5 * 60_000;
@@ -42,9 +42,15 @@ export function createIdentity({
   internalPk = env("HUMID_INTERNAL_PK"),
   // After a duress signal the account stays locked down until its owner clears it, calmly, at least this long after the last signal.
   duressCoolOffMs = Number(env("HUMID_DURESS_COOLOFF_MS", String(24 * 3600_000))),
-  // Google's list of revoked or suspended attestation certificates ("" turns it off).
+  // Google's list of revoked or suspended attestation certificates ("" turns it off), fetched
+  // here, or (Docker, where identity has no route to the internet) read from the file the
+  // attestation-status sidecar keeps up to date. A file wins over the URL.
   statusUrl = env("HUMID_ATTESTATION_STATUS_URL", STATUS_URL),
-  statusRequired = env("HUMID_ATTESTATION_STATUS_REQUIRED", "0") === "1",
+  statusFile = env("HUMID_ATTESTATION_STATUS_FILE", ""),
+  // 1: refuse an Android phone while the list is missing or older than statusMaxAgeMs · 0: accept it
+  // unchecked (logged) · unset: 1 for the attested device policy, 0 for the others.
+  statusRequired = statusRequiredFromEnv(env("HUMID_ATTESTATION_STATUS_REQUIRED", "auto")),
+  statusMaxAgeMs = Number(env("HUMID_ATTESTATION_STATUS_MAX_AGE_MS", String(STATUS_MAX_AGE_MS))),
   attest = {
     androidPackages: list(env("HUMID_ANDROID_PACKAGES", "app.humid.vault")),
     // the official HumID app's signing certificate, plus any the operator adds (their own builds)
@@ -57,7 +63,22 @@ export function createIdentity({
     appAttestEnvironment: env("HUMID_APP_ATTEST_ENV", "production"),  // or "development" for Xcode builds
     requireLockedBoot: env("HUMID_REQUIRE_LOCKED_BOOT", "1") !== "0",
   },
+  /**
+   * The gateway's device policy, for the start-up check and banner only (every request
+   * still carries the gateway's policy). Same variable the gateway reads.
+   */
+  devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
+  /** HUMID_INSECURE_TEST=1: allow test-only attestation shortcuts together with the attested policy. */
+  insecureTest = env("HUMID_INSECURE_TEST", "0") === "1",
 } = {}) {
+  const log = logger("identity");
+  if (!(Number.isFinite(statusMaxAgeMs) && statusMaxAgeMs > 0)) throw new Error("HUMID_ATTESTATION_STATUS_MAX_AGE_MS must be a positive number of milliseconds");
+  // LIVE-04: accepting an Android app signed by anyone drops the "genuine HumID app" half of
+  // the hardware proof. It's for test builds; with the attested policy it needs a second,
+  // explicit flag, so it can't arrive silently in a copied .env.
+  if (attest.allowAnySigner && devicePolicy === "attested" && !insecureTest) {
+    throw new Error("HUMID_ANDROID_ALLOW_ANY_SIGNER=1 accepts any self-signed copy of the HumID app as genuine, so it is refused with HUMID_DEVICE_POLICY=attested. For a test server only, also set HUMID_INSECURE_TEST=1.");
+  }
   const db = openDb(dataDir, "identity.db", [
     `CREATE TABLE identities (
        id TEXT PRIMARY KEY,
@@ -93,9 +114,15 @@ export function createIdentity({
      ALTER TABLE identities ADD COLUMN recovery_mode_version INTEGER;
      ALTER TABLE identities ADD COLUMN recovery_mode_epoch INTEGER;
      ALTER TABLE identities ADD COLUMN recovery_mode_sig BLOB`,
+    // LIVE-06: the device reported its biometric keys gone (fingerprints or face changed, app
+    // reinstalled); it needs setting up again. Cleared by its next successful sign-in.
+    `ALTER TABLE device_keys ADD COLUMN keys_gone_at TEXT`,
   ]);
-  const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, required: statusRequired, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
-  if (status) attest = { ...attest, revokedSerials: () => status.serials() };
+  const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, file: statusFile, maxAgeMs: statusMaxAgeMs, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
+  /** Whether a phone may be checked against a missing or stale list, under the gateway's policy. */
+  const statusNeeded = (policy) => statusRequired === "auto" ? policy === "attested" : statusRequired;
+  /** The attestation rules for one enrolment under `policy` (revocation fails closed when needed). */
+  const attestFor = (policy) => status ? { ...attest, revokedSerials: () => status.serials({ required: statusNeeded(policy) }) } : attest;
   const usedChallenge = db.prepare("SELECT device_id FROM attest_challenges WHERE th = ?");
   const useChallenge = db.prepare("INSERT OR IGNORE INTO attest_challenges (th, device_id, used_at) VALUES (?, ?, ?)");
 
@@ -107,6 +134,7 @@ export function createIdentity({
   const deviceView = (d, current) => ({
     id: d.id, platform: d.platform, gateMethod: d.gate_method, assurance: d.assurance, via: d.via, proof: d.proof,
     enrolledAt: d.enrolled_at, lastSeenAt: d.last_seen_at, current: d.id === current,
+    ...(d.keys_gone_at ? { needsSetup: true, keysGoneAt: d.keys_gone_at } : {}),
   });
 
   /** Which devices the server's policy accepts. Server-derived proof, never the device's claim. */
@@ -124,7 +152,7 @@ export function createIdentity({
    * An attestation's challenge is the session transcript: it must be fresh (a session
    * opened in the last few minutes) and enrol one device only.
    */
-  function liveness(live, th, message, deviceIdHex, sessionAgeMs) {
+  function liveness(live, th, message, deviceIdHex, sessionAgeMs, policy) {
     if (!live) return { proof: "none", livePub: null, detail: null };
     const livePub = unb64u(String(live.pub || ""));
     if (!verifyLiveSig(livePub, message, unb64u(String(live.sig || "")))) {
@@ -142,7 +170,7 @@ export function createIdentity({
       ? { kind: a.kind, chain: (Array.isArray(a.chain) ? a.chain : []).slice(0, 10).map((c) => unb64u(String(c))) }
       : { kind: a.kind, object: unb64u(String(a.object || "")) };
     try {
-      const { proof, detail } = verifyLiveKey({ pub: livePub, attestation: att }, th, attest);
+      const { proof, detail } = verifyLiveKey({ pub: livePub, attestation: att }, th, attestFor(policy));
       useChallenge.run(thHex, deviceIdHex, new Date().toISOString());
       return { proof, livePub, detail };
     } catch (e) {
@@ -203,7 +231,7 @@ export function createIdentity({
     }
     const gateMethod = String(d.gateMethod || "unknown").slice(0, 64);
     const id = deviceId(dsaPk);
-    const live = liveness(d.live, th, msg, id, sessionAgeMs);
+    const live = liveness(d.live, th, msg, id, sessionAgeMs, policy);
     allowed(policy, live.proof, gateMethod);
     const existing = getDevice.get(id);
     if (existing) {
@@ -269,6 +297,17 @@ export function createIdentity({
       if (!d) throw new HttpError(404, "unknown_device", "No such device.");
       return json(200, { account: d.account_id, revoked: !!d.revoked_at });
     }],
+    // Gateway only (LIVE-06): a device says Android or iOS destroyed its keys. It can't sign
+    // anything any more, so this is unauthenticated by necessity; it only marks the device as
+    // needing setup again, and that device's next sign-in clears it. True when newly marked.
+    ["POST", "/internal/devices/:id/keys-gone", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      const d = getDevice.get(params.id);
+      if (!d || d.account_id !== String(r.account) || d.revoked_at || d.keys_gone_at || getAccount.get(d.account_id)?.status !== "active") return json(200, { marked: false });
+      db.prepare("UPDATE device_keys SET keys_gone_at = ? WHERE id = ? AND keys_gone_at IS NULL").run(new Date().toISOString(), d.id);
+      return json(200, { marked: true, platform: d.platform });
+    }],
     // Gateway only: undo an enrolment whose evidence turned out to be spent meanwhile.
     ["POST", "/internal/devices/:id/revoke", ({ params, claims, body }) => {
       gatewayOnly(claims);
@@ -295,7 +334,8 @@ export function createIdentity({
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
       }
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
-      db.prepare("UPDATE device_keys SET last_seen_at = ? WHERE id = ?").run(new Date().toISOString(), device.id);
+      // A live sign-in proves this device's keys are there: any "keys gone" report about it is void.
+      db.prepare("UPDATE device_keys SET last_seen_at = ?, keys_gone_at = NULL WHERE id = ?").run(new Date().toISOString(), device.id);
       return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });
     }],
 
@@ -363,7 +403,61 @@ export function createIdentity({
     }],
   ];
 
-  return createService({ tls, name: "identity", port, routes, bodyLimit: 64 * 1024, verify: (t) => verifyAssertion(internalPk, t, "identity") });
+  const svc = createService({ tls, name: "identity", port, routes, bodyLimit: 64 * 1024, verify: (t) => verifyAssertion(internalPk, t, "identity") });
+
+  /**
+   * The live-human posture in one line (LIVE-04): everything that decides how much a
+   * device's "a live face or fingerprint approved this" is worth, so an operator can read
+   * it in the log instead of five settings across two services. `weakened` lists each
+   * setting below the strongest, and is logged as a warning when it isn't empty.
+   */
+  function posture() {
+    const p = {
+      devicePolicy,
+      requireLockedBoot: attest.requireLockedBoot !== false,
+      allowAnySigner: !!attest.allowAnySigner,
+      appAttestEnv: attest.appAttestEnvironment || "production",
+      androidMinPatch: attest.minPatchLevel || null,
+      revocation: status ? status.source : "fixed",
+      revocationRequired: statusNeeded(devicePolicy),
+      revocationMaxAgeH: Math.round(statusMaxAgeMs / 3600_000),
+      iphones: !!attest.iosAppId,
+    };
+    const weakened = [];
+    if (p.devicePolicy !== "attested") weakened.push(`HUMID_DEVICE_POLICY=${p.devicePolicy}: devices that can't prove a live check are accepted`);
+    if (!p.requireLockedBoot) weakened.push("HUMID_REQUIRE_LOCKED_BOOT=0: rooted and unlocked-bootloader Android phones are accepted");
+    if (p.allowAnySigner) weakened.push("HUMID_ANDROID_ALLOW_ANY_SIGNER=1: any self-signed copy of the HumID app counts as genuine (test builds only)");
+    if (p.appAttestEnv !== "production") weakened.push(`HUMID_APP_ATTEST_ENV=${p.appAttestEnv}: Xcode debug builds count as the App Store app`);
+    if (p.revocation === "off") weakened.push("HUMID_ATTESTATION_STATUS_URL is empty: Google's revoked-key list is never checked");
+    else if (!p.revocationRequired) weakened.push("HUMID_ATTESTATION_STATUS_REQUIRED=0: Android phones are accepted when Google's revoked-key list is missing or stale");
+    return { ...p, weakened };
+  }
+  const start = async (...a) => {
+    const p = posture();
+    (p.weakened.length ? log.warn : log.info)("live-human posture", p);
+    return svc.start(...a);
+  };
+  return { ...svc, start, posture, revocation: status, stop: (...a) => { status?.stop(); return svc.stop(...a); } };
 }
 
-if (isMain(import.meta.url)) createIdentity().start();
+/** "1" | "0" | "auto" (HUMID_ATTESTATION_STATUS_REQUIRED unset): true, false or "auto". */
+export function statusRequiredFromEnv(v) {
+  const s = String(v ?? "auto").trim().toLowerCase();
+  if (s === "1" || s === "true") return true;
+  if (s === "0" || s === "false") return false;
+  if (s === "auto" || s === "") return "auto";
+  throw new Error("HUMID_ATTESTATION_STATUS_REQUIRED must be 1, 0 or unset");
+}
+
+if (isMain(import.meta.url)) {
+  if (process.argv[2] === "status-fetch") {
+    // The attestation-status sidecar (deploy/docker-compose.yml): the only HumID process with a
+    // route to the internet, and it holds no keys and reaches no other service. It fetches
+    // Google's list every few hours and writes it where identity reads it.
+    runStatusFetcher({
+      url: env("HUMID_ATTESTATION_STATUS_URL", STATUS_URL),
+      file: env("HUMID_ATTESTATION_STATUS_FILE", "/status/attestation-status.json"),
+      log: (event, detail) => process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level: event.endsWith("unavailable") ? "warn" : "info", service: "attestation-status", msg: event, ...detail }) + "\n"),
+    });
+  } else createIdentity().start();
+}

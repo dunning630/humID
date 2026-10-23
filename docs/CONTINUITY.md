@@ -5,8 +5,11 @@ chips), `packages/audit` (public log), `services/recovery`, `services/ledger`,
 `services/gateway`, `services/identity`, `apps/mobile`. Tests:
 `tests/anchor.test.js`, `tests/tlog.test.js`, `tests/e2e/continuity.test.js`.
 
-HumID promises that a vault opens only for the living person who sealed it.
-On one phone, the secure chip proves a live face or fingerprint match. The
+HumID promises that a vault opens only for the person who sealed it, after a
+fresh biometric match. On one phone, the secure chip proves a face or
+fingerprint enrolled on it matched, at that moment. (HumID requires a Class-3
+biometric match on attested hardware and relies on the device's own
+anti-spoofing; it performs no additional liveness detection.) The
 hard part is everything else: a lost phone, a new phone, a switch from iPhone
 to Android. Phones never share biometric templates, and HumID never stores
 any, so a new phone starts as a stranger.

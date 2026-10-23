@@ -31,7 +31,7 @@ Needs Node 22.
 npm install
 npm test && npm run test:e2e   # crypto, protocol, every service end to end
 npm run build:app
-npm run dev                    # whole stack, no Docker → http://localhost:5173
+npm run dev                    # whole stack, no Docker → http://localhost:5173 (this computer only; HOST=0.0.0.0 to share it)
 ```
 
 Open http://localhost:5173 in a normal and a private window to try two

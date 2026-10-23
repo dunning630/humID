@@ -81,7 +81,7 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
 |---|---|---|
 | Isolation between services | separate read-only containers on an internal network | one process; services talk over 127.0.0.1 |
 | TLS | Caddy on the server, automatic certificates | the tunnel |
-| Client address for rate limits | Caddy's `X-Forwarded-For` | the edge trusts only the local tunnel's last hop (`CF-Connecting-IP` or the last `X-Forwarded-For` entry) |
+| Client address for rate limits | Caddy's `X-Forwarded-For` | `HUMID_TRUST_FORWARDED`, set by `humid expose`: `cloudflare` believes Cloudflare's `CF-Connecting-IP`; `off` (Tailscale Funnel, and the default) believes no header, so every visitor shares the tunnel's address and the per-address limits apply to all of them together; `xff` only for a tunnel you know appends the visitor's address |
 | Updates | `docker compose pull` per service | from the admin console (approved on a phone, automatic rollback), or unzip and run the installer again |
 
 The service code, the device policy, the attestation checks and the data

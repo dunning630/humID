@@ -1,6 +1,7 @@
 {
   "name": "@humid/codec",
   "version": "1.0.0",
+  "private": true,
   "description": "HumID envelope container: binary framing only, no crypto. Envelope format v1.",
   "type": "module",
   "exports": "./src/index.js",

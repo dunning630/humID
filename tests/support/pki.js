@@ -2,6 +2,8 @@
 // and Apple App Attest, signed by throwaway roots, so the verifiers and the
 // whole stack can be tested with phones that don't exist. Tests only.
 import { generateKeyPairSync, sign, createHash, randomBytes } from "node:crypto";
+import { ecdsaRS, P256_N } from "@humid/attest";
+import { lowS } from "../../packages/gate/src/lows.js";
 
 /* ---------------- DER ---------------- */
 
@@ -161,8 +163,21 @@ export function appAttestation({ root, clientDataHash, appId = "TEAM123456.app.h
   return cbor({ fmt: "apple-appattest", attStmt: { x5c: [leafDer, interDer], receipt: Buffer.from("receipt") }, authData });
 }
 
-/** A Secure Enclave-style liveness key (software here) and its signer. */
+/**
+ * A Secure Enclave-style liveness key (software here) and its signer. Like the app's
+ * native gate it hands over the low-S form (servers refuse the other, ATT-01);
+ * signHighS gives the other form of the same signature, for tests of that refusal.
+ */
 export function liveKey() {
   const k = ecKeys("P-256");
-  return { ...k, pub: k.publicKey.export({ type: "spki", format: "der" }), sign: (m) => sign("sha256", Buffer.from(m), k.privateKey) };
+  const raw = (m) => sign("sha256", Buffer.from(m), k.privateKey);
+  return { ...k, pub: k.publicKey.export({ type: "spki", format: "der" }), sign: (m) => Buffer.from(lowS(raw(m))), signHighS: (m) => Buffer.from(highS(raw(m))) };
+}
+/** The high-S form of a DER P-256 signature: (r, n − s) when s is low. */
+export function highS(der) {
+  const low = lowS(der);
+  const { r, s } = ecdsaRS(low);
+  const int = (x) => { let h = x.toString(16); if (h.length % 2) h = "0" + h; let b = Buffer.from(h, "hex"); if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]); return Buffer.concat([Buffer.from([2, b.length]), b]); };
+  const body = Buffer.concat([int(r), int(P256_N - s)]);
+  return Buffer.concat([Buffer.from([0x30, body.length]), body]);
 }
