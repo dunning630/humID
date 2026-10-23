@@ -17,7 +17,7 @@ test("the phone remembers the newest signed policy and refuses an older one afte
   let serving = cur;
   const fetch = async () => Response.json({ ...server.publicKeys(), ...serving });
   const saved = [];
-  R.store = { putIdentity: async (r) => { saved.push(r); } };
+  R.store = { getIdentity: async () => saved.at(-1) ?? S.identity.value, putIdentity: async (r) => { saved.push(r); } };
   S.identity.value = { server: { id: "hid_x" }, schema: 4 };
   R.api = new HumidApi({ fetch, pinnedKid: server.kid });
   await connectServer();
