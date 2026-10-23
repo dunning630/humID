@@ -9,7 +9,8 @@ const { R } = await import("../apps/mobile/src/core/runtime.js");
 const { splitKeysRatchet } = await import("../apps/mobile/src/core/vault.js");
 
 const saved = [];
-R.store = { putIdentity: async (r) => { saved.push(r); } };
+R.store = { getIdentity: async () => saved.at(-1) ?? S.identity.value, putIdentity: async (r) => { saved.push(r); } };
+S.identity.value = { server: { id: "hid_x" } };
 
 test("pinned build, first run, hint stripped: nothing is sealed unsplit", async () => {
   S.server.value = { policy: { splitKeys: false } };
