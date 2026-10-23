@@ -177,6 +177,13 @@ people, without leaving proof. Anyone can later check that a document sealed
 in 2027 and opened in 2031 sits on one unbroken chain of the same person,
 with the strength of each link on record.
 
+The ledger signs at most one new checkpoint every 5 seconds
+(`HUMID_TLOG_CHECKPOINT_MS`), however many entries arrive, and keeps
+superseded ones for an hour unless a cosigner signed them. A phone asking
+about an entry newer than the latest checkpoint waits for the next one. Each
+account's signed head is cached until it moves (or for an hour), so reading
+Activity costs no new signature.
+
 The public endpoints reveal tree sizes and hashes only: the total number of
 ledger events, never whose they are.
 
