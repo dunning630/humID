@@ -560,6 +560,10 @@ test("relay: a flood of new addresses can't reset a busy client's rate limit", (
   relay.put(box, w, { ip: "198.51.100.7" }); relay.put(box, w, { ip: "198.51.100.7" });
   for (let i = 0; i < 100; i++) { try { relay.put(box, w, { ip: `203.0.113.${i}` }); } catch {} }
   assert.throws(() => relay.put(box, w, { ip: "198.51.100.7" }), (e) => e.code === "rate_limited");
+  // ...and they can't lock a new one out either (MSG-05: the limiter never fails closed)
+  const fresh = M.memoryRelay({ now: () => t, maxRateKeys: 50 });
+  for (let i = 0; i < 200; i++) fresh.take("e".repeat(32), { ip: `2001:db8:0:${i.toString(16)}::1` });
+  assert.deepEqual(fresh.take("e".repeat(32), { ip: "198.51.100.9" }), []);
 });
 
 /* ---------------- polling: backfill and linkage (security review MSG-04, MSG-02) ---------------- */

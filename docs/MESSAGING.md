@@ -510,7 +510,8 @@ fixed or stated as limits here.
 | A-10 (40-bit match code) | Safety codes are 100 bits; invite codes pin the inviter's persona with 80 bits. |
 | Malformed peer keys | Every ML-KEM key that arrives is checked (FIPS 203 modulus check) before use, so a bad one is refused at the door instead of breaking the conversation later. Tested. |
 | "Unlinkability checked by string search only" | Tested by the protocol: personas share no key material, box ids differ by direction and day, every relay object is a fixed size class with no persona keys or IDs inside, the issuer sees only blinded values, the same message blinds differently each time. |
-| Relay rate-limit table | Bounded; when full it drops past windows and then refuses new addresses, so a flood of addresses can't reset a busy client's limit. Tested. |
+| Relay rate-limit table | Fixed-size count-min sketches, for calls per minute and bytes per day: they never fill up, so a flood of addresses can neither reset a busy client's limit nor lock new networks out (an earlier bounded table refused new addresses when full). Tested. |
+| Relay fill-up (PC-27, MSG-05) | Daily byte quotas per address (IPv6 /64), per site (IPv6 /48) and per block (IPv4 /24, IPv6 /32, `HUMID_RELAY_MAX_BLOCK_BYTES_DAY`); past 75% full (`HUMID_RELAY_FAIR_ABOVE`), a block that already holds more than its fair share of today's deposits is refused, not everyone. A determined sender with addresses in many blocks can still fill it; relay postage (a blind token per deposit from the same live check) is the durable fix and isn't built yet. Tested. |
 | "Fuzzing: one fixed seed, any error type accepted" | `tests/msg.test.js` fuzzes messages, requests, invites, stored state and codes with a fresh seed each run (printed on failure, rerun with `MSG_FUZZ_SEED`), and accepts only `MsgError` with a code. |
 
 ### Replacing the crypto backend
