@@ -63,3 +63,15 @@ test("a signed-in session can't report another account's device", async () => {
   await new HumidApi({ baseUrl: stack.baseUrl }).reportKeysGone({ id: carol.id, device: carol.deviceId });
   assert.equal((await carolApi.me()).devices.find((d) => d.id === carol.deviceId).needsSetup, true);
 });
+
+test("V76-01: a decoy report naming the wrong account spends nothing; the genuine report still lands", async () => {
+  const dave = makeHolder("dave-keys-gone");
+  const daveApi = await register(dave, stack.baseUrl);
+  const attacker = new HumidApi({ baseUrl: stack.baseUrl });
+  for (let i = 0; i < 3; i++) assert.deepEqual(await attacker.reportKeysGone({ id: makeHolder(`wrong-${i}`).id, device: dave.deviceId }), { ok: true });
+  assert.equal((await daveApi.me()).devices.find((d) => d.id === dave.deviceId).needsSetup, undefined, "nothing was marked");
+  // later the same minute Dave's phone really loses its keys
+  await new HumidApi({ baseUrl: stack.baseUrl }).reportKeysGone({ id: dave.id, device: dave.deviceId });
+  assert.equal((await daveApi.me()).devices.find((d) => d.id === dave.deviceId).needsSetup, true);
+  assert.equal((await daveApi.ledger()).entries.filter((e) => e.type === "device.keys_invalidated").length, 1);
+});

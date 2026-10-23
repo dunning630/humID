@@ -256,7 +256,9 @@ export function createGateway({
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
-  const keysGoneNote = new Buckets(1, 24 * 3_600_000); // one "keys gone" report per device a day
+  // one "keys gone" line in a device's Activity a day, spent only once identity has marked that
+  // device for the account the report named (V76-01: a wrong-account report spends nothing)
+  const keysGoneNote = new Buckets(1, 24 * 3_600_000);
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
   const inflight = new Map();
@@ -606,19 +608,23 @@ export function createGateway({
     /**
      * LIVE-06. The phone's keys are gone, so it holds nothing it can sign with: the report is
      * unauthenticated, and so it does as little as possible. The device is marked as needing
-     * setup again (its next sign-in clears that) and its owner's Activity says so, at most
-     * once a day per device. The answer is the same whether or not the account or device
-     * exists, so it tells a stranger nothing.
+     * setup again and its owner's Activity says so, once per mark (its next sign-in clears it).
+     * The answer is the same whether or not the account or device exists, so it tells a
+     * stranger nothing, and a report naming the wrong account spends nothing (V76-01).
      */
     async keyInvalidated(s, body) {
       const { id, device } = parseJson(body) || {};
       if (!re(ID_RE).test(String(id)) || !re(DEV_RE).test(String(device))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      const mine = !s.subject || s.subject === id; // a signed-in session speaks only for its own account
-      if (mine && keysGoneNote.take(device)) {
-        const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
-        if (r?.status === 200 && r.data?.marked) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
-      }
-      return { status: 202, json: { ok: true } };
+      const ok = { status: 202, json: { ok: true } }; // the same answer whatever happens below: no oracle
+      if (s.subject && s.subject !== id) return ok; // a signed-in session speaks only for its own account
+      // Identity marks the device only when it is an active device of that account and not
+      // already marked; the mark itself is the once-per-device allowance (until the device's
+      // next sign-in clears it), so a wrong account or a repeat changes and spends nothing.
+      // No per-source bucket: one a stranger could drain would drop the genuine report (V76-01);
+      // the call is one indexed lookup, inside the per-session anonymous limit (20 a minute).
+      const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
+      if (r?.status === 200 && r.data?.marked && keysGoneNote.take(`${id}/${device}`)) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
+      return ok;
     },
 
     async logout(s) {
