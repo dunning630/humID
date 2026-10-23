@@ -5,6 +5,7 @@ import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, SESSION_LOST } from "./notify.js";
 import { isNetworkFailure } from "./link.js";
 import { keepOffline } from "./session.js";
+import { updateIdentity } from "./identity.js";
 import { parseCosigners } from "@humid/api";
 import { TLOG_COSIGNERS } from "./config.js";
 
@@ -17,12 +18,8 @@ const COSIGNERS = parseCosigners(TLOG_COSIGNERS);
  * with it, a changed key fails verification and Activity reports it.
  */
 async function rememberLedgerKey(fp) {
-  const id = S.identity.value;
-  if (!fp || !id || id.ledgerKeyFp) return;
-  const record = { ...id, ledgerKeyFp: fp };
-  delete record.schema;
-  await R.store.putIdentity(record);
-  S.identity.value = { ...record, schema: id.schema ?? 4 };
+  if (!fp || !S.identity.value || S.identity.value.ledgerKeyFp) return;
+  await updateIdentity((id) => { if (id.ledgerKeyFp) return null; id.ledgerKeyFp = fp; });
 }
 
 /**
@@ -64,11 +61,14 @@ export async function checkContinuity() {
   try {
     const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: id?.ledgerKeyFp || undefined, cosigners: COSIGNERS });
     S.continuity.value = r;
-    if (r.ok && (!id.tlog || r.size >= id.tlog.size)) {
-      const record = { ...id, ledgerKeyFp: id.ledgerKeyFp || r.keyFp, tlog: { size: r.size, root: r.root, at: r.at } };
-      delete record.schema;
-      await R.store.putIdentity(record);
-      S.identity.value = { ...record, schema: id.schema ?? 4 };
+    // The record as it is now, not as it was before the round trip (APP-11): only the
+    // checkpoint changes, so a duress setting saved meanwhile stays saved.
+    if (r.ok) {
+      await updateIdentity((cur) => {
+        if (cur.tlog && r.size < cur.tlog.size) return null;
+        cur.ledgerKeyFp = cur.ledgerKeyFp || r.keyFp;
+        cur.tlog = { size: r.size, root: r.root, at: r.at };
+      });
     }
   } catch (e) {
     // Not reaching the server is not evidence of tampering: check again once it's back.
