@@ -157,7 +157,7 @@ function WhatLive({ onClose, name }) {
       <div class="rows">
         <Row icon="fingerprint" tone="mint" chevron={false} title="A live check" sub="Your face or fingerprint on your phone, proven by its secure chip. Opening, sending and approving each take one." />
         <Row icon="person" tone="mint" chevron={false} title="Here" sub="You've had a live check in the last 5 minutes. Then you're away, and your messages lock on this phone until your next one." />
-        <Row icon="users" tone="mint" chevron={false} title="Both here" sub={`You and ${name || "they"} have both had a live check in the last 5 minutes: two people, each confirmed by their own phone, right now. It doesn't prove who wrote the words.`} />
+        <Row icon="users" tone="mint" chevron={false} title="Both here" sub={`You and ${name || "they"} have both had a live check in the last few minutes, each confirmed by their own phone. It doesn't prove who wrote the words.`} />
       </div>
       <div class="actions"><button class="btn primary mint block" onClick={onClose}>Got it</button></div>
     </Sheet>

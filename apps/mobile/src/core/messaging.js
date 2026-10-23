@@ -160,18 +160,32 @@ async function flush() {
 
 /* ---------------- stamps: one live check, the exact blinded values ---------------- */
 
+/**
+ * The stamp keys: this epoch's and the next (an hour each), and the retired ones whose stamps
+ * can still arrive. Fetched at start and again before the published ones run out (MSG-01).
+ */
+async function loadKeys() {
+  const k = await R.api.msgKeys();
+  keyset = M.importStampKeys(k.stamp.keys, { passKeys: (k.passKeyIds || []).map((id) => ({ id })), archive: k.stamp.archive || [] });
+}
+/** Keys good for at least the next few minutes, so a stamp asked for now uses the right epoch's key. */
+async function freshKeys() {
+  if (!keyset || keyset.until - now() < 10 * 60_000) await loadKeys();
+}
+
 /** A stamper for the step-up `proof` of ONE live check (used once, up to the server's limit). */
 function stampWith(proof) {
   let used = false;
-  const many = async (commits) => {
+  // at: the time the stamped messages will carry; it picks this epoch's stamp key (MSG-01)
+  const many = async (commits, { at = now() } = {}) => {
     if (used) throw Object.assign(new Error("That live check was already used. Try again."), { code: "stamp_used" });
     if (commits.length > (S.server.value?.policy?.messaging?.stampsPerCheck || 1)) throw Object.assign(new Error("That's more than one live check can approve. Try a smaller step."), { code: "too_many_stamps" });
     used = true;
-    const drafts = commits.map((c) => M.blindStamp(keyset, c));
-    const sigs = await R.api.stamp({ kid: keyset.issuing.id, blinded: drafts.map((d) => d.blinded) }, proof);
+    const drafts = commits.map((c) => M.blindStamp(keyset, c, { at }));
+    const sigs = await R.api.stamp({ kid: drafts[0].draft.kid, blinded: drafts.map((d) => d.blinded) }, proof);
     return drafts.map((d, i) => M.finalizeStamp(keyset, d.draft, sigs[i]));
   };
-  return Object.assign(async (c) => (await many([c]))[0], { many });
+  return Object.assign(async (c, opts) => (await many([c], opts))[0], { many });
 }
 /**
  * Can this device get live stamps? Only a phone whose secure chip proves the check: the server
@@ -184,7 +198,7 @@ const NEEDS_PHONE = "Connecting and sending need a phone whose secure chip prove
 function live(purpose, label, fn) {
   needVault();
   if (!canStamp()) throw Object.assign(new Error(NEEDS_PHONE), { code: "stamp_needs_proven_phone" });
-  return withStepUp("stamp", [], purpose, label, ({ seed, proof }) => fn({ seed, stamper: stampWith(proof) }));
+  return freshKeys().then(() => withStepUp("stamp", [], purpose, label, ({ seed, proof }) => fn({ seed, stamper: stampWith(proof) })));
 }
 
 /* ---------------- what the screens see ---------------- */
@@ -281,8 +295,7 @@ export async function start() {
     return;
   }
   try {
-    const k = await R.api.msgKeys();
-    keyset = M.importStampKeys(k.stamp.keys, { passKeys: (k.passKeyIds || []).map((id) => ({ id })) });
+    await loadKeys();
     freshRelay();
     list = await loadList();
     for (const ct of list.contacts) { try { await openConv(ct.id); } catch { /* a conversation that won't open is shown as ended */ } }

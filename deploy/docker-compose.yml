@@ -149,8 +149,8 @@ services:
       PORT: "8085"
       HUMID_PASS_ISSUE_DAYS: ${HUMID_PASS_ISSUE_DAYS:-365}          # a new pass key each period
       HUMID_PASS_ACCEPT_DAYS: ${HUMID_PASS_ACCEPT_DAYS:-545}        # how long a key's passes stay spendable
-      HUMID_STAMP_ISSUE_DAYS: ${HUMID_STAMP_ISSUE_DAYS:-90}         # 4.0 live stamps: their own key, never the pass key
-      HUMID_STAMP_ACCEPT_DAYS: ${HUMID_STAMP_ACCEPT_DAYS:-120}
+      HUMID_STAMP_EPOCH_MINUTES: ${HUMID_STAMP_EPOCH_MINUTES:-60}   # 4.0 live stamps: their own keys, never the pass key, a new one each epoch
+      HUMID_STAMP_ACCEPT_DAYS: ${HUMID_STAMP_ACCEPT_DAYS:-15}       # how long a retired stamp key's message stamps count (relay keeps 14 days)
     volumes: [access-data:/data]
     healthcheck:
       <<: *health

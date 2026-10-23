@@ -67,7 +67,7 @@ export class Conversation {
     const me = this.session.s.me.fp, convId = this.session.convId;
     // what Session.encrypt will commit to for these (protocol messages: no disappearing time, no timer change)
     const commits = items.map((it, i) => messageCommitment({ convId, senderFp: me, nonce: nonces[i], kind: it.kind, body: typeof it.body === "string" ? utf8(it.body) : it.body, at: now, x: 0, ta: 0 }));
-    const stamps = await stamper.many(commits);
+    const stamps = await stamper.many(commits, { at: now });
     if (!Array.isArray(stamps) || stamps.length !== items.length || (this.requireLive && stamps.some((x) => !x))) {
       throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
     }

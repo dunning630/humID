@@ -10,8 +10,10 @@ const rnd = (n) => new Uint8Array(randomBytes(n));
 const T0 = Date.UTC(2026, 9, 22, 3, 0, 0);
 const MIN = 60_000;
 
+// Tests that aren't about stamp-key epochs use one key whose epoch covers every test date.
+const ALWAYS = { notBefore: 0, notAfter: Date.UTC(2200, 0, 1) };
 const issuer = newIssuerKey(2048);
-const stampKeys = M.importStampKeys([{ ...issuer.publicView, issuing: true }]);
+const stampKeys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }]);
 let checks = 0; // live checks the "server" saw (one blind signature request each)
 const askServer = async (blinded) => { checks++; return blindSign(issuer, blinded); };
 const stamper = M.makeStamper(stampKeys, askServer);
@@ -29,7 +31,7 @@ const batchStamper = Object.assign(async (c) => stamper(c), {
 });
 // A stamp from a key nobody published: looks like a stamp, isn't one.
 const rogue = newIssuerKey(2048);
-const rogueKeys = M.importStampKeys([{ ...rogue.publicView, issuing: true }]);
+const rogueKeys = M.importStampKeys([{ ...rogue.publicView, ...ALWAYS, issuing: true }]);
 const rogueStamper = M.makeStamper(rogueKeys, async (b) => blindSign(rogue, b));
 
 const code = async (p, c) => {
@@ -343,4 +345,78 @@ test("H1: a future-dated message isn't live; freshness counts from when it came 
   await b.receive(wire, { now: T0 + 3 * DAY, receivedAt: T0 + MIN, stampKeys });
   assert.equal(b.peerLiveAt, T0 + MIN, "a three-day-old check doesn't show as live now");
   assert.equal(M.liveState({ ownAt: T0 + 3 * DAY, peerAt: b.peerLiveAt, now: T0 + 3 * DAY }).live, false);
+});
+
+/* ---------- stamps bound to their epoch (security review MSG-01) ---------- */
+
+/**
+ * An issuer with one key per hour, like services/access: it signs only with the key of the
+ * epoch it is in (± skew), whatever the phone asks for. Returns the published views and a
+ * stamper whose "server" runs at `issuerNow()`.
+ */
+function hourlyIssuer(start, hours) {
+  const keys = Array.from({ length: hours }, (_, i) => ({ k: newIssuerKey(2048), notBefore: start + i * HOUR, notAfter: start + (i + 1) * HOUR }));
+  const view = (e, issuing = false) => ({ ...e.k.publicView, notBefore: e.notBefore, notAfter: e.notAfter, issuing });
+  const sign = (kid, blinded, t) => {
+    const e = keys.find((x) => x.k.id === kid);
+    if (!e || t < e.notBefore - M.STAMP_SKEW_MS || t >= e.notAfter + M.STAMP_SKEW_MS) throw new M.MsgError("key_changed", "The stamp key changed. Try again.");
+    return blindSign(e.k, blinded);
+  };
+  return { keys, view, sign };
+}
+
+test("MSG-01: stamps bought ahead stop counting at the end of their key's epoch", async () => {
+  const H = hourlyIssuer(T0, 4);
+  // the receiver knows every key (current and next published, the rest archived as they retire)
+  const recvKeys = M.importStampKeys([H.view(H.keys[0], true), H.view(H.keys[1])], { archive: H.keys.slice(2).map((e) => H.view(e)) });
+  const { a, b } = await meetStrict();
+  const buyAt = T0 + MIN;
+  // A modified client, at T0 + 1 min, asks for stamps dated every 5 minutes for 3 hours.
+  // Honestly it would blind each for the key of its date: the issuer refuses all but this hour's.
+  const honest = M.importStampKeys([H.view(H.keys[0], true), H.view(H.keys[1])]);
+  const later = M.makeStamper(honest, async (bl, kid) => H.sign(kid, bl, buyAt));
+  await assert.rejects(a.session.encrypt("receipt", '{"here":1}', { now: T0 + 70 * MIN, ttlMs: 0, stamper: later, requireLive: true }), (e) => e.code === "key_changed");
+  // So it blinds them all for the key it CAN get now, this hour's.
+  const forced = M.importStampKeys([H.view(H.keys[0], true)]);
+  const now0 = M.makeStamper(forced, async (bl, kid) => H.sign(kid, bl, buyAt));
+  const stockpile = [];
+  for (let k = 1; k <= 36; k++) {
+    const at = T0 + k * 5 * MIN;
+    stockpile.push({ at, w: await a.session.encrypt("receipt", '{"here":1}', { now: at, ttlMs: 0, stamper: now0, requireLive: true }) });
+  }
+  // A bot releases each a minute before its date.
+  let lastLive = 0;
+  for (const { at, w } of stockpile) {
+    const r = await b.receive(w.wire, { now: at - MIN, stampKeys: recvKeys, receivedAt: at - MIN });
+    if (!r.refused) lastLive = at;
+  }
+  assert.ok(lastLive >= T0 + 55 * MIN, "inside the epoch the stamps count (the bound is the epoch, not zero)");
+  assert.ok(lastLive <= T0 + HOUR + M.STAMP_SKEW_MS, `nothing dated after the epoch (+ skew) counted; last was ${(lastLive - T0) / MIN} min`);
+  // and "Both here" lapses within one freshness window of the epoch's end
+  const after = T0 + HOUR + M.STAMP_SKEW_MS + M.LIVE_WINDOW_MS;
+  assert.equal(M.liveState({ ownAt: after, peerAt: b.peerLiveAt, now: after }).live, false, "no human present: not 'Both here' after the epoch");
+});
+
+test("MSG-01: a request's stamp covers when it was made, and must fall in its key's epoch", async () => {
+  const H = hourlyIssuer(T0, 3);
+  const keys = M.importStampKeys([H.view(H.keys[0], true), H.view(H.keys[1])], { archive: [H.view(H.keys[2])] });
+  const c = M.requestCommitment({ th0: new Uint8Array(32), senderFp: new Uint8Array(32), at: T0 + MIN });
+  assert.notDeepEqual(c, M.requestCommitment({ th0: new Uint8Array(32), senderFp: new Uint8Array(32), at: T0 + 2 * HOUR }), "the time is inside the commitment");
+  assert.throws(() => M.requestCommitment({ th0: new Uint8Array(32), senderFp: new Uint8Array(32) }), (e) => e.code === "bad_commitment");
+  // A request stamped now with this hour's key, but dated two hours on, isn't live.
+  const forced = M.importStampKeys([H.view(H.keys[0], true)]);
+  const st = M.makeStamper(forced, async (bl, kid) => H.sign(kid, bl, T0 + MIN));
+  const seedA = rnd(64);
+  const inv = await M.createInvite(seedA, { now: T0 });
+  const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
+  const req = await M.requestContact(rnd(64), opened, { stamper: st, now: T0 + 2 * HOUR, requireLive: true });
+  const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
+  await code(M.readRequest(inv.state, personaA, req.wire, { now: T0 + 2 * HOUR, stampKeys: keys, requireLive: true }), "not_live");
+  // Made now, it is.
+  const ok = await M.requestContact(rnd(64), opened, { stamper: st, now: T0 + MIN, requireLive: true });
+  assert.equal((await M.readRequest(inv.state, personaA, ok.wire, { now: T0 + 2 * MIN, stampKeys: keys, requireLive: true })).live, true);
+});
+
+test("MSG-01: a published stamp key must say which epoch it issues for", () => {
+  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, issuing: true }]), (e) => e.code === "bad_stamp_key");
 });

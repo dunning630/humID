@@ -13,8 +13,10 @@ const rnd = (n) => new Uint8Array(randomBytes(n));
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 9, 20, 13, 0, 0);
 
+// Tests that aren't about stamp-key epochs use one key whose epoch covers every test date.
+const ALWAYS = { notBefore: 0, notAfter: Date.UTC(2200, 0, 1) };
 const issuer = newIssuerKey(2048);
-const stampKeys = M.importStampKeys([{ ...issuer.publicView, issuing: true }]);
+const stampKeys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }]);
 const issuerLog = [];
 const stamper = M.makeStamper(stampKeys, async (blinded) => { issuerLog.push(Buffer.from(blinded).toString("hex")); return blindSign(issuer, blinded); });
 
@@ -543,12 +545,12 @@ test("skipped message keys are forgotten after the relay's retention time", asyn
 });
 
 test("stamps: a retired key stops counting; a stamp key that is also a pass key is refused", async () => {
-  const keys = M.importStampKeys([{ ...issuer.publicView, issuing: true, acceptUntil: "2026-12-31" }]);
+  const keys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true, acceptUntil: "2026-12-31" }]);
   const c = rnd(32);
   const st = await M.makeStamper(keys, async (bl) => blindSign(issuer, bl))(c);
   assert.ok(M.verifyStamp(keys, st, c, { now: Date.UTC(2026, 11, 31, 23) }));
   assert.ok(!M.verifyStamp(keys, st, c, { now: Date.UTC(2027, 0, 1, 1) }));
-  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, issuing: true }], { passKeys: [{ id: issuer.publicView.id }] }), (e) => e.code === "bad_stamp_key");
+  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }], { passKeys: [{ id: issuer.publicView.id }] }), (e) => e.code === "bad_stamp_key");
 });
 
 test("relay: a flood of new addresses can't reset a busy client's rate limit", () => {

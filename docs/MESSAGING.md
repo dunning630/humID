@@ -47,6 +47,16 @@ with the conversation, for that long. So nobody can keep one old check "live" by
 or replay an old timer change. Freshness counts from when the message came off the relay, not
 when the phone got round to opening it.
 
+**Stamps can't be bought ahead (MSG-01).** The issuer signs blind, so it never sees the time a
+stamp's message carries. Instead it uses a new stamp key every hour and signs only with the key
+of the hour it's in (give or take 2 minutes). Each key is published with its hour, and a phone
+counts a stamp only if its message, request or receipt is dated inside that hour. So someone who
+passes a burst of checks now can date their stamps no later than the end of this hour: a
+modified app can make a holder look "here" for at most the rest of the hour they last checked
+in, plus one freshness window, not for as long as they like. The issuer publishes this hour's
+key and the next one (so phones switch on time), and the public halves of retired keys for as
+long as their stamps can still arrive; a retired key's private half is erased when its hour ends.
+
 **Here, away, and both here.** A conversation is validated human to human ("Both here")
 only while, within one freshness window (5 minutes):
 
@@ -214,22 +224,30 @@ made once per contact.
 ## Live stamps
 
 ```
-phone:  commitment = SHA3-256("stamp message" ‖ lp(conversation id, sender persona, nonce, kind, body))
-        blinded    = Blind(commitment)                 RFC 9474, RSABSSA-SHA384-PSS-Randomized
-server: inside a live step-up (secure-chip-signed face or fingerprint check), one stamp per check:
-        blind signature = BlindSign(stamp key, blinded)
+phone:  commitment = SHA3-256("stamp message" ‖ lp(conversation id, sender persona, nonce, kind, body, at|x|ta))
+        (a request: SHA3-256("stamp request" ‖ lp(handshake, sender persona, at)))
+        blinded    = Blind(commitment) for the key of the hour that holds `at`
+                                                       RFC 9474, RSABSSA-SHA384-PSS-Randomized
+server: inside a live step-up (secure-chip-signed face or fingerprint check on a proven phone),
+        1 or 2 stamps per check, only with this hour's key:
+        blind signature = BlindSign(stamp key of this hour, blinded)
 phone:  stamp = Finalize(...)  → put INSIDE the encrypted message
-contact: verify(stamp, commitment recomputed from what arrived)
+contact: verify(stamp, commitment recomputed from what arrived), and `at` inside the key's hour (± 2 min)
 ```
 
 - **Unlinkable, forever.** Blindness is information-theoretic: the server can't
   connect a stamp to the check that bought it, whatever it computes, quantum or
   not. It never sees the message, the conversation or the recipient.
 - **Bound to one message.** A stamp copied onto another message fails.
-- **Separate key.** The stamp key must never be the access-pass key: a blind
+- **Bound to its hour.** Each stamp key signs only during its hour, and a stamp
+  counts only for a time inside that hour (above). `HUMID_STAMP_EPOCH_MINUTES`
+  (default 60, 5 to 360) sets the hour's length; shorter bounds stockpiling more
+  tightly and costs more key generation.
+- **Separate key.** Stamp keys must never be the access-pass key: a blind
   signer signs whatever it's handed, so a shared key would let a "stamp" request
   carry a blinded access pass. The app refuses a stamp key that appears among
-  the pass keys, and stops counting a key's stamps after its `acceptUntil` day.
+  the pass keys, and stops counting a key's stamps after its `acceptUntil` day
+  (15 days after its hour by default, `HUMID_STAMP_ACCEPT_DAYS`).
 - **Forgery after quantum computers** rests on RSA, as for passes. A future
   quantum computer could forge stamps then; it couldn't unmask anyone, and a
   stamp only matters when it's received.
