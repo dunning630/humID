@@ -57,16 +57,18 @@ parts of one epoch made at different times always fit:
 | Part | x | Protected by | Released when |
 |---|---|---|---|
 | **Witness** | 1 | split again among 2–5 witnesses (any majority), each piece sealed to that witness's account key | a majority approve, each with their own live biometric on their own phone |
-| **Anchor** | 2 | sealed **on the holder's phone** under a key from one passport or ID chip's own authentication key (DG15), which the server never stores; the server wraps it again | that same chip is proven again, live: in person at a station, or on the phone (Active Authentication) |
+| **Anchor** | 2 | sealed on the holder's phone under a key from one passport or ID chip's public authentication key (DG15), and wrapped again by the server. This ties it to one chip, but **the server can open it** (it sees DG15 whenever the chip is checked): see [The anchor and the operator](#the-anchor-and-the-operator) | that same chip is proven again, live: in person at a station, or on the phone (Active Authentication) |
 | **Card** | 3 | the seal card (`HUMID-…` code), AES-256-GCM, like the v1 card | the card is presented |
 | **Key** (4.0) | 4 | a security key's `hmac-secret`, which it gives out only with its PIN | the key signs this recovery's fresh challenge with its PIN verified ([SECURITY-KEY.md](SECURITY-KEY.md)) |
 
 Any two different parts of the same epoch rebuild `A`; the new device checks
 that `A` derives the expected account id before joining. One part reveals
-nothing, and the server can open none of them.
+nothing. The server can open the witness, card and key parts only with the
+holder's help; the anchor part it can open itself.
 
-No one can recover alone: not a witness, not a thief with the card, not HumID.
-Usual combinations:
+No one can recover alone: not a witness, not a thief with the card. A hostile
+server operator is one proof short if the holder linked a passport (the
+operator holds the anchor part), two short if not. Usual combinations:
 
 - lost everything, still has friends and a passport → witnesses + anchor
 - no witnesses reachable → anchor + card
@@ -80,7 +82,9 @@ account's recovery-mode statement. New parts then come from a new line, the
 epoch is bound into the card and key encryption and the witness piece, the
 server deletes every older piece and cancels recoveries under way, and parts
 of different epochs never combine. So a lost card or a removed witness's
-piece, wherever it is (including old server backups), opens nothing.
+piece, wherever it is (including old server backups), can't be combined with
+anything new. Two old pieces still fit each other, because the seed `A`
+doesn't change; destroy old cards. Rotating `A` (VAULT-03) is the follow-up.
 
 ### The identity anchor (ICAO 9303)
 
@@ -92,8 +96,10 @@ Linking the anchor, all inside one step-up:
    nobody can link someone else's identity from a scan a hotel or a bank kept.
 2. The phone seals the anchor part itself:
    `key = HKDF-SHA3-256(DG15, "HUMID-ANCHOR-PART-v2 key")`, AES-256-GCM, with
-   the account id and epoch as associated data. The part never reaches the
-   server in a form it can open.
+   the account id and epoch as associated data. This ties the part to the chip
+   whose DG15 it is. DG15 is public data (anyone who reads the chip with its
+   MRZ or CAN gets it, and step 3 sends it to the server), so it is not a
+   secret against the server.
 3. The server runs **passive authentication**: DG hashes match the SOD; the
    SOD's signed attributes bind its content; the Document Signer's signature
    verifies (RSA PKCS#1, RSA-PSS, ECDSA); the DS certificate chains to a
@@ -101,8 +107,9 @@ Linking the anchor, all inside one step-up:
    checks the chip's answer against DG15.
 4. It stores `anchor = HMAC-SHA3(server key, "HUMID-ANCHOR-CHIP-v2|" ‖ SHA3(DG15))`,
    a fingerprint of **that one chip's key**, and the sealed part, wrapped
-   again under its own secret. It never stores DG15, the MRZ or the names.
-   One chip anchors one HumID.
+   again under its own secret. It doesn't store DG15, the MRZ or the names,
+   so its database and secret alone don't open the part. A server that records
+   one link or recovery request does. One chip anchors one HumID.
 
 So the anchor is one document, not one person. Another passport doesn't
 match: not your old one, still in date after you renewed, and not a
@@ -135,8 +142,65 @@ Proving it again:
   photo, the person is present and asking themselves. The operator's own live
   biometric signs the result. The station's phone also seals the chip's DG15
   to the recovering phone's keys (checked against the recovery code), so that
-  phone can open the part later. The vault server never gets DG15 openable.
-  The operator never learns whose HumID it is. Both ledgers record it.
+  phone can open the part later (the vault server sees DG15 here too, as it
+  does in every chip check). The station operator never learns whose HumID it
+  is. Both ledgers record it.
+
+### The anchor and the operator
+
+**What holds today.** The anchor is bound to one chip and can't be linked
+from copied data: an old passport, a namesake's passport or a scan someone
+kept can't stand in for yours (CREDS-01/02).
+
+**What doesn't.** The anchor part's key comes from DG15, the chip's public
+Active Authentication key. The server has to see DG15 to check the chip, at
+every link and every recovery. So **in hardened mode, whoever runs your vault
+server holds your passport piece in a form they can open**, if they record
+one request. With it and any **one** other stolen proof (a photo of your
+recovery card, say) they could rebuild your account key offline, without the
+wait, the veto or a ledger entry. A thief who taps your passport with its MRZ
+gets DG15 too, but still needs the stored blob, which only the server has.
+
+No passport offers a fix inside the chip. Chips have no static secret they'll
+give a reader: Active Authentication signs a challenge, and Chip
+Authentication is an ephemeral key exchange. Neither yields the same key twice.
+
+**What to do now, if you don't want to trust the operator that far:** don't
+link a passport. Use witnesses or a security key as your proofs (each of
+their parts needs something the server never sees), or choose holder-only.
+The app says this on the ID chip screen.
+
+**The real fix, for the owner to decide: a 2-of-2 split wrap with an
+independent cosigner.**
+
+- *What.* The anchor part is wrapped under a key `K` that is split in two:
+  one share for HumID's server, one for a cosigner. The cosigner is a
+  separate small service run by **a different organisation** (a notary, a
+  civil-society group, a second hosting company) in a different
+  jurisdiction, with its own keys that HumID never holds.
+- *Linking.* The phone seals the part under a fresh random `K`, picks a
+  random `R`, and sends the server `K ⊕ R` and the cosigner `R` (sealed to
+  the cosigner's published post-quantum key, so the server only relays
+  ciphertext). Both shares are bound to the account id and the chip's
+  fingerprint. Neither side alone ever holds `K`.
+- *Recovering.* After the server's checks and the wait, the cosigner checks
+  for itself that the request is real: the live chip answer to its own nonce,
+  the wait elapsed, and no veto in the public log. Only then does it release
+  `R`, sealed to the recovering device's keys. The cosigner logs every
+  release in its own transparency log.
+- *What it buys.* A hostile operator alone can no longer open the anchor
+  part. It would need the cosigner to collude too, so for the operator the
+  passport becomes a full second proof again.
+- *What it costs.* A second organisation to find, contract and keep running;
+  one more round trip in recovery; and a second availability dependency (if
+  the cosigner is down, passport recovery waits). The cosigner sees that an
+  account recovers, and when, but no names.
+- *Effort.* About 3–4 days, plus the partner. Files: `services/recovery`, a
+  new `services/cosigner`, `core/recovery.js`, `core/join.js`, and the
+  deploy configuration.
+
+The same cosigner could later back up Check-in's fuse keys (docs/CHECKIN.md),
+which have the same "the operator holds it" limit.
 
 ### Reading the chip
 
@@ -296,11 +360,11 @@ that it's on. Treat duress as raising the cost of coercion, not removing it.
   station operator can defeat the chain. The waits, the veto, the alerts and
   the public log are what catch those.
 - The waits and the veto are server rules. A dishonest server that also got
-  **two** of the holder's proofs could release early. It doesn't hold any
-  part it can open itself: `anchor-secret.bin`, its database and the
-  holder's name and birth date open nothing. Before the chip-bound anchor it
-  did hold one (the anchor part), so a single stolen card was enough. The
-  cryptography guarantees confidentiality; the clock is the server's word.
+  the holder's proofs could release early or skip the wait. Without a
+  passport link it needs **two** of them. With one, it already holds the
+  passport piece ([above](#the-anchor-and-the-operator)), so **one** more is
+  enough. The cryptography guarantees confidentiality; the clock is the
+  server's word.
 - In **holder-only** mode there is nothing to recover with at all, so none
   of this applies, and nothing can bring the vault back after every device is
   lost.

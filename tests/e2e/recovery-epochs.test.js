@@ -7,6 +7,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
 import { startStack } from "./stack.js";
 import { ml_dsa87 } from "@humid/htp";
 import { suite } from "@humid/crypto";
@@ -14,7 +15,7 @@ import { random } from "@humid/htp";
 import { HumidApi } from "@humid/api";
 import {
   quorumParts, split, combine, combineQuorum, newCard, cardTag, sealCardPart, openCardPart, QUORUM,
-  encodeShare, recoveryModeMessage,
+  encodeShare, recoveryModeMessage, recoveryModeHash, RECMODE_GENESIS,
 } from "@humid/recovery";
 import { makeHolder, register, sealBytes } from "./holder.js";
 
@@ -23,9 +24,17 @@ let stack;
 before(async () => { stack = await startStack({ recoveryDelayMs: 100_000 }); });
 after(async () => { await stack?.stop(); });
 
-const statement = (h, mode, version, epoch) => ({ mode, version, epoch, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch), h.keys.dsaSk) });
+const signed = new Map();
+/** As the app signs it: chained to the statement this holder signed at version - 1. */
+const statement = (h, mode, version, epoch) => {
+  const after = signed.get(`${h.id}/${version - 1}`);
+  const prev = version > 1 && after ? recoveryModeHash(h.id, after) : RECMODE_GENESIS;
+  const st = { mode, version, epoch, prev, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch, prev), h.keys.dsaSk) };
+  signed.set(`${h.id}/${version}`, st);
+  return st;
+};
 
-test("the PoC: removed witnesses + a new card, or + the anchor part, no longer rebuild the seed once the pieces are new", async () => {
+test("the PoC: removed witnesses no longer fit a new card or the new anchor part once the pieces are new", async () => {
   const seed = crypto.getRandomValues(new Uint8Array(64));
   const account = "hid_" + "cd".repeat(20);
   const old = quorumParts(seed, 1);
@@ -101,4 +110,36 @@ test("the server: a new set retires every stored piece, cancels recoveries, and 
   // The ledger says the pieces were renewed.
   const entry = (await api.ledger()).entries.filter((e) => e.type === "recovery.mode_set").pop();
   assert.equal(entry.detail.newPieces, true);
+});
+
+test("V74-04 (the limit, documented): after hardened → holder-only, two pre-switch pieces still fit each other; the app says so", async () => {
+  // The switch deletes every stored piece and starts a new epoch, but the account key A doesn't
+  // change (rotating it is VAULT-03, not built). So the old printed card plus a second old piece
+  // (a former witness's share, or a blob from an old server backup) still rebuild A offline.
+  // This pins that behaviour as it is; seed rotation will have to change it on purpose.
+  const h = makeHolder("switch-residue");
+  const api = new HumidApi({ baseUrl: stack.baseUrl });
+  await api.register({ pub: h.pub, commit: h.commit, device: h.device, sign: h.registerSign, recoveryMode: statement(h, "hardened", 1, 1) });
+  const parts = quorumParts(h.seed, 1);
+  const card = newCard();
+  await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, h.id), epoch: 1 }, h.stepUp);
+  const backup = (() => { const d = new DatabaseSync(`${stack.root}/recovery/recovery.db`); try { return d.prepare("SELECT blob FROM cards WHERE account = ?").get(h.id).blob; } finally { d.close(); } })();
+  await api.removeCard(h.stepUp);
+  await api.setRecoveryMode(statement(h, "holder-only", 2, 2), h.stepUp);
+  const m = await api.recoveryMode();
+  assert.deepEqual([m.mode, m.epoch, m.escrow], ["holder-only", 2, []]);
+  const oldCard = await openCardPart(card.secret, new Uint8Array(backup), h.id, 1);
+  const formerWitness = { ...quorumParts(h.seed, 1).witness };
+  assert.deepEqual(combineQuorum([oldCard, formerWitness]), h.seed, "two old pieces still rebuild A after the switch");
+  assert.throws(() => combineQuorum([oldCard, quorumParts(h.seed, 2).witness]), /different sets/, "but never with a new one");
+
+  // So the switch screen and the docs must say it plainly, and tell the holder to destroy old cards.
+  const root = new URL("../../", import.meta.url);
+  const screen = readFileSync(new URL("apps/mobile/src/screens/you/recovery.jsx", root), "utf8");
+  assert.match(screen, /title="Old pieces still fit each other"/);
+  assert.match(screen, /Destroy your old recovery cards/);
+  assert.doesNotMatch(screen, /so old ones can't be combined with new ones\./, "the old overclaim is gone");
+  const doc = readFileSync(new URL("docs/RECOVERY.md", root), "utf8");
+  assert.match(doc, /\*\*What switching doesn't undo\.\*\*/);
+  assert.doesNotMatch(doc, /those pieces can never be\s+combined with anything again/);
 });

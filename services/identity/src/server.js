@@ -19,7 +19,7 @@
 
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
-import { recoveryModeMessage, isRecoveryMode, RECOVERY_MODES } from "@humid/recovery";
+import { recoveryModeMessage, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
@@ -117,6 +117,8 @@ export function createIdentity({
     // LIVE-06: the device reported its biometric keys gone (fingerprints or face changed, app
     // reinstalled); it needs setting up again. Cleared by its next successful sign-in.
     `ALTER TABLE device_keys ADD COLUMN keys_gone_at TEXT`,
+    // Statements are chained (V74-01/02): each names the hash of the one before.
+    `ALTER TABLE identities ADD COLUMN recovery_mode_prev TEXT`,
   ]);
   const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, file: statusFile, maxAgeMs: statusMaxAgeMs, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
   /** Whether a phone may be checked against a missing or stale list, under the gateway's policy. */
@@ -179,25 +181,26 @@ export function createIdentity({
     }
   }
   /**
-   * A recovery mode statement { mode, version, epoch, sig } for `account`, checked against its
-   * account key. Versions only go up, and epochs never go down; the same statement again is
-   * accepted (a retried request).
+   * A recovery mode statement { mode, version, epoch, prev, sig } for `account`, checked
+   * against its account key, and against the one on file: it must follow it (followsMode:
+   * a higher version, an epoch no lower, chained to it). The same statement again is accepted
+   * (a retried request, or the gateway reconciling identity and recovery).
    */
   function checkedMode(account, m) {
-    const mode = String(m?.mode || ""), version = Number(m?.version), epoch = Number(m?.epoch);
+    const mode = String(m?.mode || ""), version = Number(m?.version), epoch = Number(m?.epoch), prev = String(m?.prev ?? RECMODE_GENESIS);
     const u32 = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
     if (!isRecoveryMode(mode) || !u32(version) || !u32(epoch)) throw new HttpError(400, "bad_recovery_mode", "Unknown recovery mode.");
     const sig = unb64u(String(m?.sig || ""));
-    if (!verify(sig, recoveryModeMessage(account.id, mode, version, epoch), new Uint8Array(account.dsa_pk))) {
-      throw new HttpError(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
-    }
-    const cur = account.recovery_mode_version || 0;
-    if (version < cur || (version === cur && (account.recovery_mode !== mode || account.recovery_mode_epoch !== epoch))) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
-    if (epoch < (account.recovery_mode_epoch || 1)) throw new HttpError(409, "stale_recovery_mode", "Recovery pieces can't go back to an older set.");
-    return { mode, version, epoch, sig };
+    let ok = false;
+    try { ok = verify(sig, recoveryModeMessage(account.id, mode, version, epoch, prev), new Uint8Array(account.dsa_pk)); } catch { ok = false; }
+    if (!ok) throw new HttpError(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+    const next = { mode, version, epoch, prev, sig };
+    if (!followsMode(account.id, statementOf(account), next)) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
+    return next;
   }
-  const saveMode = (id, m) => db.prepare("UPDATE identities SET recovery_mode = ?, recovery_mode_version = ?, recovery_mode_epoch = ?, recovery_mode_sig = ? WHERE id = ?").run(m.mode, m.version, m.epoch, m.sig, id);
-  const modeView = (r) => (r.recovery_mode ? { mode: r.recovery_mode, version: r.recovery_mode_version, epoch: r.recovery_mode_epoch, sig: b64u(r.recovery_mode_sig) } : null);
+  const statementOf = (r) => (r.recovery_mode ? { mode: r.recovery_mode, version: r.recovery_mode_version, epoch: r.recovery_mode_epoch, prev: r.recovery_mode_prev || RECMODE_GENESIS } : null);
+  const saveMode = (id, m) => db.prepare("UPDATE identities SET recovery_mode = ?, recovery_mode_version = ?, recovery_mode_epoch = ?, recovery_mode_prev = ?, recovery_mode_sig = ? WHERE id = ?").run(m.mode, m.version, m.epoch, m.prev, m.sig, id);
+  const modeView = (r) => (r.recovery_mode ? { ...statementOf(r), sig: b64u(r.recovery_mode_sig) } : null);
   const assuranceOf = (proof, gateMethod) => (attested(proof) ? "hardware" : DESKTOP_BIOMETRIC.has(gateMethod) ? "os" : "none");
   const accountView = (r, current) => ({
     id: r.id, status: r.status, createdAt: r.created_at, commit: r.commit_hex,
@@ -343,7 +346,7 @@ export function createIdentity({
     ["GET", "/internal/recovery-mode/:id", ({ params, claims }) => {
       gatewayOnly(claims);
       const a = active(params.id);
-      return json(200, { account: a.id, dsaPk: b64u(a.dsa_pk), recoveryMode: modeView(a) || { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, sig: null } });
+      return json(200, { account: a.id, dsaPk: b64u(a.dsa_pk), recoveryMode: modeView(a) || { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, prev: RECMODE_GENESIS, sig: null } });
     }],
     ["POST", "/internal/recovery-mode", ({ body, claims }) => {
       gatewayOnly(claims);

@@ -160,6 +160,8 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: toB64(dkeys.dsaPk) },
       enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null, recoveryMode,
+      // The statement this device signed, pinned: a server showing less later is caught (V74-01/02).
+      modePin: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev },
       server: serverRecord(srv, { id: sess.id, registeredAt: new Date().toISOString() }),
     };
     await R.store.putIdentity(record);
@@ -169,7 +171,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
       S.session.value = sess;
       S.items.value = [];
       S.cardCode.value = sess.cardSet && card ? card.code : null;
-      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, escrow: sess.cardSet ? ["card"] : [], trusted: true };
+      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev, escrow: sess.cardSet ? ["card"] : [], trusted: true, statement: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev } };
       S.enrollStep.value = "done";
     });
     R.api.htp.pinnedKid = srv.kid;

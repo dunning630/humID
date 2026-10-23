@@ -279,8 +279,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     let mode = null;
     if (created && r.recoveryMode) {
       const m = r.recoveryMode;
-      if (!isRecoveryMode(m.mode) || !verify(unb64u(String(m.sig || "")), recoveryModeMessage(id, m.mode, Number(m.version), Number(m.epoch)), keys.dsaPk)) throw fail(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
-      mode = { mode: m.mode, version: Number(m.version), epoch: Number(m.epoch), sig: m.sig };
+      if (!isRecoveryMode(m.mode) || !verify(unb64u(String(m.sig || "")), recoveryModeMessage(id, m.mode, Number(m.version), Number(m.epoch), m.prev), keys.dsaPk)) throw fail(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+      mode = { mode: m.mode, version: Number(m.version), epoch: Number(m.epoch), prev: m.prev, sig: m.sig };
     }
     if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso(), recoveryMode: mode };
     const a = st.accounts[id];

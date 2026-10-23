@@ -104,11 +104,11 @@ test("hardened setup (the default): the recovery card is made under the same che
 test("a mode the server shows that the account key never signed isn't trusted", () => {
   const k = ml_dsa87.keygen(), other = ml_dsa87.keygen();
   const acct = "hid_" + "ab".repeat(20);
-  const good = signMode(acct, k.secretKey, "holder-only", 3, 2);
+  const good = signMode(acct, k.secretKey, "holder-only", 1, 1);
   assert.equal(verifiedMode(acct, k.publicKey, good), "holder-only");
   assert.equal(verifiedMode(acct, k.publicKey, { ...good, mode: "hardened" }), null, "the server flipped the mode");
   assert.equal(verifiedMode(acct, k.publicKey, { ...good, version: 4 }), null);
-  assert.equal(verifiedMode(acct, k.publicKey, signMode(acct, other.secretKey, "hardened", 4, 2)), null, "signed by another key");
+  assert.equal(verifiedMode(acct, k.publicKey, signMode(acct, other.secretKey, "hardened", 1, 1)), null, "signed by another key");
   assert.equal(verifiedMode(acct, k.publicKey, { mode: "hardened", version: 0, epoch: 1, sig: null }), "hardened", "an account from before modes");
   assert.equal(verifiedMode(acct, k.publicKey, { mode: "holder-only", version: 0, sig: null }), null, "unsigned holder-only is not a thing");
   assert.equal(verifiedMode(acct, k.publicKey, { ...good, broken: true }), null);

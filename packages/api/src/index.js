@@ -140,7 +140,7 @@ export class HumidApi {
         // optional recovery card { tag, blob }, stored under this same live check
         ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
         // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
-        ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, sig: b64u(recoveryMode.sig) } } : {}),
+        ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, prev: recoveryMode.prev, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
@@ -479,7 +479,7 @@ export class HumidApi {
     return { ...r, sig: r.sig ? unb64u(r.sig) : null };
   }
   /** Switch modes (or start a new set of recovery pieces): { mode, version, epoch, sig } signed by the account key, with a step-up. */
-  setRecoveryMode({ mode, version, epoch, sig }, stepUp) { return this.#json("POST", "/recovery/mode", { body: { mode, version, epoch, sig: b64u(sig) }, stepUp }); }
+  setRecoveryMode({ mode, version, epoch, prev, sig }, stepUp) { return this.#json("POST", "/recovery/mode", { body: { mode, version, epoch, prev, sig: b64u(sig) }, stepUp }); }
 
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }

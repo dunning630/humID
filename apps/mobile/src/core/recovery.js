@@ -15,7 +15,7 @@ import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
 import { setDraft, clearDraft, current as draftNow, CARD_DRAFT } from "./drafts.js";
-import { loadRecoveryMode, isHolderOnly, currentEpoch } from "./recmode.js";
+import { loadRecoveryMode, isHolderOnly, currentEpoch, mayMakePieces } from "./recmode.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -78,6 +78,9 @@ export async function loadRecovery() {
  * the account's current set of pieces (its epoch, from the signed recovery-mode statement).
  */
 export const partOf = (seed, kind) => {
+  // Never on the server's say-so (V74-01): only in a hardened mode this device has checked
+  // against its account key and its own pin. Every flow that makes a piece comes through here.
+  if (!mayMakePieces()) throw Object.assign(new Error("This HumID is set to open only on your own devices, or your vault server's record of that doesn't check out. No recovery piece was made."), { code: "holder_only" });
   const parts = quorumParts(seed, currentEpoch());
   const p = parts[kind];
   for (const k of Object.keys(parts)) if (k !== kind) wipe(parts[k].y);
@@ -129,7 +132,7 @@ export function resumeNewCard(d) {
 export async function removeCard() {
   try {
     await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => R.api.removeCard(proof));
-    toast("Recovery card removed. It no longer counts on your vault server. To make it useless everywhere, make new recovery pieces.");
+    toast("Recovery card removed. It no longer counts on your vault server, but it still fits your other pieces: destroy it, or make new recovery pieces so it fits nothing new.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -178,7 +181,7 @@ export async function saveContacts(contacts, ownerName) {
 export async function removeContacts() {
   try {
     await withStepUp("removeContacts", [], "contacts", "Remove your witnesses", async ({ proof }) => R.api.removeContacts(proof));
-    toast("Witnesses removed. Their pieces no longer count on your vault server. To make them useless everywhere, make new recovery pieces.");
+    toast("Witnesses removed. Their pieces no longer count on your vault server, but still fit your other pieces: make new recovery pieces so they fit nothing new.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -309,8 +312,9 @@ export async function demoPassport(name = "Demo Person") {
  * Link your passport or ID to your HumID. The chip must be read live: `read(nonce)` reads it
  * and has it answer the server's fresh challenge, so copied chip files can't link someone's
  * identity (CREDS-02). The anchor part is sealed here, under a key from that chip's own
- * authentication key (DG15), before it leaves the phone: the server never sees it openable
- * and never keeps DG15 (VAULT-01, CREDS-03). A chip with no authentication key can't hold it.
+ * authentication key (DG15), before it leaves the phone. That ties it to this one chip
+ * (CREDS-01). It does NOT keep it from the vault server, which sees DG15 when the chip is
+ * checked: the anchor screen says so (V74-03). A chip with no authentication key can't hold it.
  */
 export async function setAnchor(read) {
   try {
