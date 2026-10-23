@@ -63,6 +63,14 @@ test("screens reach the kernel only through core/index.js (and a few leaf module
   for (const f of all.filter((x) => x.startsWith("core/"))) assert.doesNotMatch(noComments(read(f)), /from "\.\.\/screens\//, `${f} imports a screen`);
 });
 
+test("the viewer calls no hook after an early return (APP-08: a hooks-order bug kept a stale question)", () => {
+  const v = noComments(read("screens/vault.jsx"));
+  const body = v.slice(v.indexOf("export function Viewer()"), v.indexOf("\n}\n", v.indexOf("export function Viewer()")));
+  assert.ok(body.length > 50);
+  assert.doesNotMatch(body, /\buse[A-Z]\w*\(/, "Viewer() returns early by kind, so it must not call hooks; FileViewer holds the state");
+  assert.match(v, /<FileViewer key=\{/);
+});
+
 test("every pushed-screen type and every sheet type is rendered in exactly one place", () => {
   const where = (re) => {
     const m = new Map();

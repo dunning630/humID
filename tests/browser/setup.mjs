@@ -350,6 +350,37 @@ try {
   await shot(page, "small-vault-pinned-day");
   step("a pinned item moves to the top of the vault");
 
+  // APP-08: Back with the viewer's "Save an unsealed copy?" open closes that question, not the
+  // viewer; and the question never carries over to the next document opened
+  const openDoc = async (i) => {
+    await rows.nth(i).click();
+    await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+    await hold(page);
+    await page.locator(".viewer").waitFor();
+  };
+  const saveAsk = page.getByText("Save an unsealed copy?");
+  await openDoc(1);
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet", "back closes the question first");
+  await saveAsk.waitFor({ state: "detached" });
+  assert.equal(await page.locator(".viewer").count(), 1, "the viewer is still open");
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet");
+  assert.equal(await back(), ".viewer", "then back closes the viewer");
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  await openDoc(0);
+  await page.waitForTimeout(300);
+  assert.equal(await saveAsk.count(), 0, "the next document opens without a stale question");
+  await page.locator(".viewer [data-back]").first().click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("viewer: back closes its Save question first; the question never carries to the next document");
+
   // PC-17: HumID hidden while a check is running (here the demo hold, before the prompt)
   // locks at once; the document never opens behind the scenes, and isn't showing on return
   const setHidden = (h) => page.evaluate((hid) => {
