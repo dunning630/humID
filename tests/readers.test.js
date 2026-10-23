@@ -62,7 +62,7 @@ test("outside the Android app the gate lists none, and never throws", async () =
 
 test("every way a secret is revealed asks first: a document or card, the recovery card, messages", () => {
   const core = new URL("../apps/mobile/src/core/", import.meta.url);
-  const src = (f) => readFileSync(new URL(f, core), "utf8");
+  const src = (f) => readFileSync(new URL(f, core), "utf8").replace(/\r\n/g, "\n"); // CRLF on a Windows checkout
   const before = (f, fn, call) => { const s = src(f), i = s.indexOf(fn); assert.ok(i >= 0, fn); const j = s.indexOf(call, i); assert.ok(j > i && j < s.indexOf("\n}\n", i), `${f}: ${fn} asks first`); };
   before("vault.js", "export async function openItem(", "screenReadersOk(");
   assert.ok(src("vault.js").indexOf("screenReadersOk(", src("vault.js").indexOf("export async function openItem(")) < src("vault.js").indexOf("fetchPlain(item", src("vault.js").indexOf("export async function openItem(")), "before the document is fetched");
