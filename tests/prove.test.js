@@ -262,6 +262,26 @@ test("locker: sealed items reveal nothing; open only with the locker key; items 
   await assert.rejects(M.sealEvidence({ bytes: voice, kind: "voice", mime: "audio/mp4", capturedAt: T0 }, key, { persona: pub, now: T0 }), (e) => e.code === "stamp_required");
 });
 
+test("MSG-10: a media credential still verifies after its stamp key retires, against the issuer's archive", async () => {
+  const persona = M.newPersona(rnd(64));
+  const hourKey = newIssuerKey(2048);
+  const view = { ...hourKey.publicView, notBefore: T0, notAfter: T0 + 3600_000, acceptUntil: new Date(T0 + 15 * DAY).toISOString().slice(0, 10) };
+  const now = M.importStampKeys([{ ...view, issuing: true }]);
+  const st = M.makeStamper(now, async (b) => blindSign(hourKey, b));
+  const bytes = rnd(1000);
+  const cred = await M.makeMediaCredential({ persona, bytes, kind: "photo", mime: "image/jpeg", capturedAt: T0 + MIN, stamper: st });
+  const fresh = M.verifyMediaCredential(cred, bytes, { stampKeys: now, now: T0 + DAY });
+  assert.equal(fresh.ok, true);
+  assert.deepEqual(fresh.stampedIn, { from: T0, to: T0 + 3600_000 }, "when the live check happened, from the key's own epoch");
+  // four months on, the key is long retired; the verifier has it from the archive
+  const otherKey = newIssuerKey(2048), later = T0 + 121 * DAY;
+  const keysThen = M.importStampKeys([{ ...otherKey.publicView, notBefore: later, notAfter: later + 3600_000, issuing: true }], { archive: [view] });
+  assert.equal(M.verifyMediaCredential(cred, bytes, { stampKeys: keysThen, now: later }).ok, true, "the real you is still 'live' months later");
+  // a message's stamp under the same retired key does not count any more: messages matter on arrival
+  const c = new Uint8Array(32).fill(5);
+  assert.equal(M.verifyStamp(keysThen, await st(c, { at: T0 + MIN }), c, { now: later, at: T0 + MIN }), false);
+});
+
 test("locker release: signed and stamped, names who it went to, expires, and can't be edited", async () => {
   const seed = rnd(64);
   const key = M.lockerKey(seed);

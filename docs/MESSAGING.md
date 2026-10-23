@@ -275,9 +275,19 @@ contact: verify(stamp, commitment recomputed from what arrived), and `at` inside
   carry a blinded access pass. The app refuses a stamp key that appears among
   the pass keys, and stops counting a key's stamps after its `acceptUntil` day
   (15 days after its hour by default, `HUMID_STAMP_ACCEPT_DAYS`).
-- **Forgery after quantum computers** rests on RSA, as for passes. A future
-  quantum computer could forge stamps then; it couldn't unmask anyone, and a
-  stamp only matters when it's received.
+- **Stamps are RSA, with no post-quantum fallback.** Blind RSA (RFC 9474) is the
+  only standard blind signature there is today, so stamps rest on RSA, as passes
+  do. A future quantum computer could forge stamps; it couldn't unmask anyone.
+  For a message that's harmless in hindsight, because a stamp only matters when
+  it's received. For something published to last, a stamped media credential
+  or an evidence release, it isn't: once RSA falls, anyone can forge the "live
+  human" part. The persona's signatures on them (ML-DSA-87 and SLH-DSA) still
+  hold, so who signed stays provable; that a live check was made does not.
+- **Stamped media and releases keep verifying.** A message's stamp stops counting
+  15 days after its key retires. A credential or release is instead checked
+  against the issuer's archive of retired stamp public keys (`/msg/keys?all=1`),
+  so a genuine one made today still verifies in four months; the key's epoch
+  says when the live check happened.
 
 ### A new signal about human activity, with nothing about any human
 
@@ -452,8 +462,11 @@ release    = dual-signed + stamped: hash, recipient, purpose, released, expires,
 ### Limits of proving it's you
 
 - **Capture and release times are what you state**, signed but not
-  independently witnessed. Anchoring statements to an independent timestamp
-  (RFC 3161, or a transparency log) is listed below.
+  independently witnessed. The stamp's key does pin the hour the live check
+  was made. Anchoring statements to an independent timestamp (RFC 3161, or a
+  transparency log) is listed below.
+- **The "live" part of a credential is RSA** and can be forged once quantum
+  computers break RSA (see "Live stamps"); the persona's signatures can't.
 - **The challenge needs a connection made beforehand.** It works between people
   who connected in HumID before the suspicious call. Connect with the people who
   would act on a call from you (family, your finance contact) now.

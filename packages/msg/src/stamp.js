@@ -29,8 +29,12 @@
 // What it does not reveal, to anyone: blindness is information-theoretic, so
 // the server cannot link a stamp to the check that bought it, even with
 // unlimited (quantum) computing. Forgery rests on RSA: a future quantum
-// computer could forge stamps, never unmask anyone. Stamps matter only when
-// they are received, so a forged stamp in 2040 gains nothing on 2026 traffic.
+// computer could forge stamps, never unmask anyone. A message's stamp matters
+// only when it is received, so a forged stamp in 2040 gains nothing on 2026
+// traffic. A stamp on something published to last (a media credential, an
+// evidence release) is different: it is RSA with no post-quantum fallback, and
+// once RSA falls anyone can forge one. Its signatures by the persona (ML-DSA-87
+// + SLH-DSA) still hold; the "live human" part does not.
 //
 // The stamp key MUST be a separate key from the access-pass key. A blind signer
 // signs whatever it is handed; with one shared key, a "stamp" request could be
@@ -93,6 +97,12 @@ export function importStampKeys(list, { passKeys = [], archive = [] } = {}) {
 /** The published key whose epoch holds `at` (the one the issuer signs with then), else the issuing key. */
 export const stampKeyFor = (keyset, at = Date.now()) =>
   keyset.published?.find((k) => at >= k.notBefore && at < k.notAfter) || keyset.issuing;
+
+/** When a stamp was made, as its key's epoch says: { from, to } (ms), or null for an unknown key. */
+export function stampEpoch(keyset, stamp) {
+  const key = keyset?.keys?.find((k) => k.id === stamp?.kid);
+  return key ? { from: key.notBefore, to: key.notAfter } : null;
+}
 
 /** Is `kid` one of these stamp keys? A message stamped under a key this phone hasn't fetched yet waits for a refetch (MSG-07). */
 export const knowsStampKey = (keyset, kid) => !!keyset?.keys?.some((k) => k.id === kid);
@@ -157,12 +167,15 @@ export function finalizeStamp(keyset, draft, blindSig) {
  * (± STAMP_SKEW_MS), so a stamp bought now can't be dated hours later (MSG-01). Messages and
  * requests always pass it; leaving it out checks only the key and the signature.
  */
-export function verifyStamp(keyset, stamp, commitment, { now = Date.now(), at } = {}) {
+export function verifyStamp(keyset, stamp, commitment, { now = Date.now(), at, longLived = false } = {}) {
   try {
     if (stamp?.v !== STAMP_VERSION) return false;
     const key = keyset.keys.find((k) => k.id === stamp.kid);
     if (!key) return false;
-    if (key.acceptUntil && today(now) > key.acceptUntil) return false; // a retired key's stamps stop counting
+    // A message's stamp matters only on arrival, so a retired key's stamps stop counting. A
+    // published statement (a media credential, an evidence release) keeps counting against the
+    // issuer's archive of retired public keys: the key's own epoch says when it was stamped (MSG-10).
+    if (!longLived && key.acceptUntil && today(now) > key.acceptUntil) return false;
     if (at !== undefined && !(Number.isSafeInteger(at) && at >= key.notBefore - STAMP_SKEW_MS && at < key.notAfter + STAMP_SKEW_MS)) return false;
     const input = punb64u(stamp.input), sig = punb64u(stamp.sig);
     if (input.length !== INPUT_LEN || sig.length !== key.k) return false;
