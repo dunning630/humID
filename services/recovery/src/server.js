@@ -37,10 +37,11 @@
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv, createHash, createPublicKey, verify as verifySig } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, verifyStatement, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
+import { holderProofs } from "@humid/svc/holder";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
-import { sha3_256, toHex, identityId, verify as verifyDsa, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { sha3_256, toHex, identityId, verify as verifyDsa, setupCardMessage } from "@humid/htp";
 import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
   QUORUM, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES, ANCHOR_PART_BLOB_BYTES,
@@ -68,6 +69,12 @@ export function createRecovery({
   port = Number(env("PORT", "8084")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
+  /**
+   * The core role's statement key, public half (SRV-30): identity vouches with it that a device key
+   * belongs to an account, so this service checks the holder's own live proof before it changes or
+   * releases recovery material, instead of taking the gateway's word for it.
+   */
+  corePk = env("HUMID_CORE_STATEMENT_PK"),
   delayMs = Number(env("RECOVERY_DELAY_MS", String(72 * HOUR))),
   cscaDir = env("HUMID_CSCA_DIR", ""),
   trustFile = env("HUMID_TRUST_STORE", ""),   // trust.json from tools/trust.mjs (ICAO / BSI master lists)
@@ -211,10 +218,27 @@ export function createRecovery({
   const now = () => Date.now();
   const fp = (b) => toHex(sha3_256(b));
   const needUser = (c) => { if (!c?.sub) throw new HttpError(401, "sign_in_required", "Sign in first"); return c.sub; };
-  const needStepUp = (c) => {
-    needUser(c);
-    if (!c.stepUp || now() - c.stepUp.at > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_required", "This needs a fresh biometric check.");
-  };
+  // SRV-30: the holder's own approval of exactly this action (the app's method and path, and the
+  // body this service received, which the gateway passes on unchanged), checked here against the
+  // device key identity vouches for, once. The gateway's key alone changes and releases nothing.
+  const proofs = holderProofs({ corePk, now });
+  const needHolder = (c, method, path, body) => { proofs.check(c?.holder, { sub: needUser(c), method, path, body }); return c.sub; };
+  /**
+   * The recovery card made with a new account (gateway register): no step-up exists yet, so the
+   * account key signs the card inside the registration's live check, and identity's "created"
+   * statement says this account was made just now, in that session. Nothing else stores a card
+   * without a step-up.
+   */
+  function setupCardOk(c, tag, blob) {
+    const sc = c?.setupCard;
+    if (!sc) return false;
+    const created = verifyStatement(corePk, sc.created, "created");
+    let dsaPk, th, sig;
+    try { dsaPk = unb64u(String(sc.dsaPk || "")); th = unb64u(String(sc.th || "")); sig = unb64u(String(sc.sig || "")); } catch { return false; }
+    if (created.account !== c.sub || created.th !== sc.th || identityId(dsaPk) !== c.sub) return false;
+    if (db.prepare("SELECT 1 FROM cards WHERE account = ?").get(c.sub)) return false; // only the first card
+    return verifyDsa(sig, setupCardMessage(th, c.sub, tag, blob), dsaPk);
+  }
   const gatewayOnly = (c) => { if (c?.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only"); };
   const key = (v, name) => {
     const b = unb64u(String(v ?? ""));
@@ -500,7 +524,7 @@ export function createRecovery({
       return json(200, { code: l.code, kemPk: b64u(l.kem_pk), xPk: b64u(l.x_pk), platform: l.platform, createdAt: l.created_at, expiresAt: l.expires_at });
     }],
     ["POST", "/links/:code/approve", ({ params, claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "POST", `/recovery/links/${params.code}/approve`, body);
       const l = db.prepare("SELECT * FROM links WHERE code = ? AND expires_at > ?").get(codeParam(params.code), now());
       if (!l) throw new HttpError(404, "unknown_code", "That code expired. Start again on the new device.");
       if (l.status !== "waiting") throw new HttpError(409, "already_used", "That code was already used.");
@@ -542,12 +566,13 @@ export function createRecovery({
 
   const card = [
     ["PUT", "/card", ({ claims, body }) => {
-      needStepUp(claims);
-      requireHardened(claims.sub);
+      needUser(claims);
       const r = parseObject(body);
       const tag = String(r.tag || "");
       if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(tag)) throw new HttpError(400, "bad_tag", "Card tag is malformed");
       const blob = unb64u(String(r.blob || ""));
+      if (!setupCardOk(claims, tag, blob)) needHolder(claims, "PUT", "/recovery/card", body);
+      requireHardened(claims.sub);
       // v1 cards hold the whole seed; v2 cards hold only the card part of two-proof recovery.
       const scheme = blob.length === CARD_PART_BLOB_BYTES ? "quorum" : blob.length === CARD_FULL_BLOB_BYTES ? "full" : null;
       if (!scheme) throw new HttpError(400, "bad_blob", "Card blob has the wrong size");
@@ -562,12 +587,21 @@ export function createRecovery({
       demote(claims.sub);
       return json(200, { createdAt: at, replaced: true, scheme });
     }],
+    // Account closed: every piece of recovery material this account has here goes, under the
+    // holder's approval for closing the account (one proof, used once, so one route for all of it).
+    ["DELETE", "/escrow", ({ claims, body }) => {
+      const sub = needHolder(claims, "DELETE", "/identity/me", body);
+      const left = escrowOf(sub);
+      deleteEscrow(sub);
+      db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), sub);
+      return json(200, { removed: left });
+    }],
     ["GET", "/card", ({ claims }) => {
       const c = db.prepare("SELECT created_at, scheme FROM cards WHERE account = ?").get(needUser(claims));
       return json(200, c ? { exists: true, createdAt: c.created_at, scheme: c.scheme } : { exists: false });
     }],
-    ["DELETE", "/card", ({ claims }) => {
-      needStepUp(claims);
+    ["DELETE", "/card", ({ claims, body }) => {
+      needHolder(claims, "DELETE", "/recovery/card", body);
       const n = db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub).changes;
       // A removed card no longer counts as a proof in a recovery under way.
       db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
@@ -598,7 +632,7 @@ export function createRecovery({
     // sees DG15 right here (V74-03). Only a fingerprint of DG15 is stored. One chip anchors one
     // HumID; a renewed passport is linked again.
     ["PUT", "/anchor", ({ claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "PUT", "/recovery/anchor", body);
       requireHardened(claims.sub);
       const r = parseObject(body);
       const sealed = unb64u(String(r.sealedPart || ""));
@@ -620,8 +654,8 @@ export function createRecovery({
       db.exec("COMMIT");
       return json(200, { createdAt: at, document, country, version: 2 });
     }, { bodyLimit: 3 * CHIP_MAX }],
-    ["DELETE", "/anchor", ({ claims }) => {
-      needStepUp(claims);
+    ["DELETE", "/anchor", ({ claims, body }) => {
+      needHolder(claims, "DELETE", "/recovery/anchor", body);
       const n = db.prepare("DELETE FROM anchors WHERE account = ?").run(claims.sub).changes;
       return json(200, { removed: n > 0 });
     }],
@@ -691,7 +725,7 @@ export function createRecovery({
       return json(200, { ...issueKeyChallenge(`add:${sub}`), exclude });
     }],
     ["POST", "/keys", ({ claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "POST", "/recovery/keys", body);
       requireHardened(claims.sub);
       const r = parseObject(body);
       const tag = String(r.tag || "");
@@ -715,15 +749,15 @@ export function createRecovery({
       db.prepare("INSERT INTO seckeys (id, account, tag, blob, pub, cred_id, sign_count, label, created_at, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, claims.sub, tag, blob, pub, credId, count, label, at, epoch);
       return json(201, { id, createdAt: at, count: mine.length + 1 });
     }],
-    ["DELETE", "/keys/:id", ({ params, claims }) => {
-      needStepUp(claims);
+    ["DELETE", "/keys/:id", ({ params, claims, body }) => {
+      needHolder(claims, "DELETE", `/recovery/keys/${params.id}`, body);
       const n = db.prepare("DELETE FROM seckeys WHERE id = ? AND account = ?").run(keyIdParam(params.id), claims.sub).changes;
       if (!n) throw new HttpError(404, "unknown_key", "That security key isn't one of yours.");
       demote(claims.sub);
       return json(200, { removed: true, count: db.prepare("SELECT COUNT(*) AS n FROM seckeys WHERE account = ?").get(claims.sub).n });
     }],
-    ["DELETE", "/keys", ({ claims }) => {
-      needStepUp(claims);
+    ["DELETE", "/keys", ({ claims, body }) => {
+      needHolder(claims, "DELETE", "/recovery/keys", body);
       const n = db.prepare("DELETE FROM seckeys WHERE account = ?").run(claims.sub).changes;
       demote(claims.sub);
       return json(200, { removed: n });
@@ -767,7 +801,7 @@ export function createRecovery({
     // Replace the owner's whole contact set. Each share must be sealed to the keys the contact offered.
     // scheme "quorum": the shares rebuild the witness part; "full" (v1): they rebuild the seed.
     ["PUT", "/contacts", ({ claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "PUT", "/recovery/contacts", body);
       requireHardened(claims.sub);
       const r = parseObject(body);
       const scheme = r.scheme === "quorum" ? "quorum" : "full";
@@ -805,8 +839,8 @@ export function createRecovery({
       const gs = db.prepare("SELECT contact, label, created_at FROM guardians WHERE owner = ? ORDER BY rowid").all(sub);
       return json(200, { n: set.n, threshold: set.threshold, createdAt: set.created_at, scheme: set.scheme, guardians: gs.map((g) => ({ contact: g.contact, label: g.label ? b64u(g.label) : null, createdAt: g.created_at })) });
     }],
-    ["DELETE", "/contacts", ({ claims }) => {
-      needStepUp(claims);
+    ["DELETE", "/contacts", ({ claims, body }) => {
+      needHolder(claims, "DELETE", "/recovery/contacts", body);
       db.prepare("DELETE FROM guardians WHERE owner = ?").run(claims.sub);
       const n = db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(claims.sub).changes;
       return json(200, { removed: n > 0 });
@@ -1044,7 +1078,7 @@ export function createRecovery({
 
     // A contact releases their share to the requesting device, re-sealed to its recovery key.
     ["POST", "/help/:code", ({ params, claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "POST", `/recovery/help/${params.code}`, body);
       const r = parseObject(body);
       const q = db.prepare("SELECT * FROM requests WHERE code = ?").get(codeParam(params.code));
       if (!q || !["collecting", "waiting"].includes(q.status) || q.expires_at < now()) throw new HttpError(404, "unknown_code", "No recovery is waiting with that code.");
@@ -1086,8 +1120,8 @@ export function createRecovery({
       const rows = db.prepare("SELECT * FROM requests WHERE account = ? AND status IN ('collecting', 'waiting') ORDER BY created_at DESC").all(sub);
       return json(200, { alerts: rows.map((q) => requestView(q)) });
     }],
-    ["POST", "/alerts/:ref/cancel", ({ params, claims }) => {
-      needStepUp(claims);
+    ["POST", "/alerts/:ref/cancel", ({ params, claims, body }) => {
+      needHolder(claims, "POST", `/recovery/alerts/${params.ref}/cancel`, body);
       const q = db.prepare("SELECT * FROM requests WHERE ref = ? AND account = ?").get(String(params.ref), claims.sub);
       if (!q || !["collecting", "waiting"].includes(q.status)) throw new HttpError(404, "unknown_request", "That recovery is no longer open.");
       db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE id = ?").run(now(), q.id);
@@ -1129,7 +1163,7 @@ export function createRecovery({
     }],
     ["POST", "/station/requests/:code/verify", ({ params, claims, body }) => {
       needStation(claims);
-      needStepUp(claims);
+      needHolder(claims, "POST", `/recovery/station/requests/${params.code}/verify`, body);
       const q = stationRequest(params.code);
       const r = parseObject(body);
       const c = r.checks || {};
@@ -1221,7 +1255,7 @@ export function createRecovery({
       return json(200, { duressAlert: !!s?.duress_alert });
     }],
     ["PUT", "/settings", ({ claims, body }) => {
-      needStepUp(claims);
+      needHolder(claims, "PUT", "/recovery/settings", body);
       const r = parseObject(body);
       db.prepare(`INSERT INTO settings (account, duress_alert, updated_at) VALUES (?, ?, ?)
                   ON CONFLICT(account) DO UPDATE SET duress_alert = excluded.duress_alert, updated_at = excluded.updated_at`)
@@ -1230,6 +1264,7 @@ export function createRecovery({
     }],
   ];
 
+  if (!corePk) throw new Error("recovery needs HUMID_CORE_STATEMENT_PK (run setup again, or init on Windows)");
   log.info("recovery delay", { hours: +(delayMs / HOUR).toFixed(3) });
   return createService({ tls,
     name: "recovery", port, routes: [...links, ...card, ...anchor, ...keys, ...contacts, ...requests, ...station, ...modes, ...duress], bodyLimit: 64 * 1024,

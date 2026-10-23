@@ -38,7 +38,7 @@ test("the recovery service holds at most maxUnbound unproven requests, and ends 
   const keys = newInternalKeys();
   const dir = mkdtempSync(join(tmpdir(), "humid-recflood-"));
   let t = Date.now();
-  const rec = createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, tls: null, maxUnbound: 5, unboundTtlMs: 60_000 });
+  const rec = createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, corePk: keys.pk, tls: null, maxUnbound: 5, unboundTtlMs: 60_000 });
   await rec.start();
   try {
     const url = `http://127.0.0.1:${rec.server.address().port}`;

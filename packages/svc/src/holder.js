@@ -48,7 +48,7 @@ export function holderProofs({ corePk = null, resolve = null, now = () => Date.n
      * Check `proof` approves `method path` for account `sub`, once. Returns { body, proofHash, device }:
      * body is the request body the holder signed (the app's own, which may carry what it asked for).
      */
-    check(proof, { sub, method, path }) {
+    check(proof, { sub, method, path, body: requestBody }) {
       if (!proof || typeof proof !== "object") throw new HttpError(403, "step_up_required", "This needs a fresh biometric check on your device.");
       if (!sub) throw new HttpError(401, "unauthenticated", "Sign in first");
       if (proof.m !== method || proof.p !== path) throw new HttpError(403, "step_up_mismatch", "That approval was for a different action.");
@@ -57,7 +57,9 @@ export function holderProofs({ corePk = null, resolve = null, now = () => Date.n
       if (!Number.isSafeInteger(at) || t - at > STEP_UP_MAX_AGE_MS || at - t > CLOCK_SKEW_MS || at < startedAt) throw new HttpError(403, "step_up_stale", "Biometric check is too old. Try again.");
       if (!Number.isSafeInteger(exp) || exp < t || exp - t > STEP_UP_NONCE_MS + CLOCK_SKEW_MS) throw new HttpError(403, "step_up_stale", "Biometric check is too old. Try again.");
       if (!Number.isSafeInteger(seq) || seq < 0) throw new HttpError(400, "bad_proof", "Malformed proof");
-      const th = b(proof.th), nonce = b(proof.nonce), sig = b(proof.sig), body = b(proof.body || "");
+      // requestBody: the body this service received, when it is the app's own body passed through
+      // unchanged (so the gateway can't act on content other than what the holder signed).
+      const th = b(proof.th), nonce = b(proof.nonce), sig = b(proof.sig), body = requestBody instanceof Uint8Array ? requestBody : b(proof.body || "");
       if (!th?.length || !nonce?.length || !sig?.length || !body) throw new HttpError(400, "bad_proof", "Malformed proof");
       const { dsaPk, livePub } = deviceKeys(proof, sub);
       const action = actionBytes({ method, path, device: String(proof.device), nonce, exp });
