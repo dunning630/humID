@@ -226,6 +226,14 @@ try {
   assert.equal(await page.locator(".pushed .checklist input:checked").count(), 1);
   await backOut(page);
   await page.locator(".pushed").waitFor({ state: "detached" });
+  // verify-71 #3: Protection has the same shape as a real account's: a count on the hub, a checklist inside
+  const protectRow = page.locator("main .row", { hasText: "Protection" }).first();
+  await protectRow.getByText(/\d of 3 done/).waitFor({ timeout: 10_000 });
+  await protectRow.click();
+  await page.locator(".pushed").getByRole("heading", { name: "Finish protecting your HumID" }).waitFor();
+  assert.equal(await page.locator(".pushed [role=progressbar][aria-label=Protection]").count(), 1);
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
   await youScreen(page, "Recovery");
   const recovery = await page.locator(".pushed .rows").first().innerText();
   assert.doesNotMatch(recovery, /Made [A-Z][a-z]{2}/, "no recovery card date");
