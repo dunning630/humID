@@ -435,6 +435,31 @@ export function parseQr(text) {
   return { kind, code: m[3], expiresAt };
 }
 
+/* ---------------- recovery modes ----------------
+ * Each holder chooses at setup (docs/RECOVERY.md#two-recovery-modes):
+ *   holder-only  only a live check on one of the holder's own enrolled devices opens anything.
+ *                No recovery part is ever made for the server, and it refuses to store one.
+ *                Lose every device and the vault is gone.
+ *   hardened     two different proofs, a wait, and a veto from any surviving device.
+ * The choice is signed by the account key over this statement, so a server can't change it
+ * without the holder's devices noticing. `version` only ever goes up. `epoch` is which split
+ * of the seed the account's recovery parts are made from (quorumParts): a new epoch retires
+ * every part made before it.
+ */
+export const RECOVERY_MODES = Object.freeze({ holderOnly: "holder-only", hardened: "hardened" });
+export const RECMODE_LABEL = "HUMID-RECMODE-v1";
+export const isRecoveryMode = (m) => m === RECOVERY_MODES.holderOnly || m === RECOVERY_MODES.hardened;
+const u32ok = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
+
+/** The bytes the account key signs to set the recovery mode (and the recovery epoch). */
+export function recoveryModeMessage(accountId, mode, version, epoch) {
+  if (!accountId || !isRecoveryMode(mode) || !u32ok(version) || !u32ok(epoch)) throw new Error("Not a recovery mode statement");
+  return concat(utf8(RECMODE_LABEL), lp(utf8(String(accountId)), utf8(mode), u32(version), u32(epoch)));
+}
+
+/** What a holder-only account may use to bring a device in: only another of its own devices. */
+export const routesFor = (mode) => (mode === RECOVERY_MODES.holderOnly ? ["link"] : ["link", "quorum", "card", "contacts"]);
+
 /* ---------------- account check ----------------
  * Adding a device: both screens show this short string for the account, and the
  * person compares them before the new device finishes. A server that sealed some

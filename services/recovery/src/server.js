@@ -18,6 +18,10 @@
 // a card and (4.0) a security-key part; any two different ones rebuild it. A recovery needs two DIFFERENT kinds of proof, and
 // waits longer the weaker they are (see quorumDelay in @humid/recovery).
 //
+// Recovery modes (docs/RECOVERY.md#two-recovery-modes): a holder-only account has no card,
+// witnesses, anchor or security key here, ever. Its mode is a statement signed by its account
+// key; every escrow route checks that signature and refuses (409 holder_only).
+//
 // Everything stored here is ciphertext or public keys, except the anchor part,
 // which is encrypted under a key derived from this server's secret AND the
 // holder's identity fields (never stored), so a copy of the database alone
@@ -28,10 +32,11 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "no
 import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, logger, isMain } from "@humid/svc";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
-import { sha3_256, toHex, identityId, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { sha3_256, toHex, identityId, verify as verifyDsa, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
   QUORUM, decodeQuorumPart, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES,
+  RECOVERY_MODES, isRecoveryMode, recoveryModeMessage,
 } from "@humid/recovery";
 
 /* Security keys (docs/SECURITY-KEY.md). The relying party no website can claim, and what the key signs. */
@@ -112,6 +117,8 @@ export function createRecovery({
      CREATE INDEX seckeys_account ON seckeys(account);
      CREATE TABLE key_challenges (scope TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL);
      ALTER TABLE requests ADD COLUMN key_id TEXT`,
+    // Recovery modes: the account's signed choice, and the account key that signed it.
+    `CREATE TABLE modes (account TEXT PRIMARY KEY, mode TEXT NOT NULL, version INTEGER NOT NULL, epoch INTEGER NOT NULL, sig BLOB NOT NULL, dsa_pk BLOB NOT NULL, updated_at TEXT NOT NULL)`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -235,6 +242,64 @@ export function createRecovery({
   };
   const guardianSet = (owner) => db.prepare("SELECT * FROM guardian_sets WHERE owner = ?").get(owner);
 
+  /* ---------- recovery modes ---------- */
+
+  const getMode = db.prepare("SELECT * FROM modes WHERE account = ?");
+  const u32ok = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
+  /** A mode statement { mode, version, epoch, sig, dsaPk } for `account`, checked. Throws if it isn't the account's own. */
+  function checkStatement(account, st) {
+    const mode = String(st?.mode || ""), version = Number(st?.version), epoch = Number(st?.epoch);
+    if (!isRecoveryMode(mode) || !u32ok(version) || !u32ok(epoch)) throw new HttpError(400, "bad_recovery_mode", "Unknown recovery mode.");
+    const dsaPk = st.dsaPk instanceof Uint8Array ? st.dsaPk : unb64u(String(st.dsaPk || ""));
+    const sig = st.sig instanceof Uint8Array ? st.sig : unb64u(String(st.sig || ""));
+    let ok = false;
+    try { ok = dsaPk.length === SIZES.dsaPk && identityId(dsaPk) === account && verifyDsa(sig, recoveryModeMessage(account, mode, version, epoch), dsaPk); } catch { ok = false; }
+    if (!ok) throw new HttpError(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+    return { mode, version, epoch, sig, dsaPk };
+  }
+  /**
+   * This account's recovery mode. Accounts from before modes, with no statement on file, are
+   * hardened. A stored statement is checked again every time, so a row changed on disk without
+   * the account key fails closed (as holder-only: nothing more is stored or released).
+   */
+  function statementOf(account) {
+    const m = account && getMode.get(account);
+    if (!m) return { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, sig: null };
+    try { return checkStatement(account, { mode: m.mode, version: m.version, epoch: m.epoch, sig: new Uint8Array(m.sig), dsaPk: new Uint8Array(m.dsa_pk) }); }
+    catch { log.warn("recovery mode statement doesn't verify", { account }); return { mode: RECOVERY_MODES.holderOnly, version: m.version, epoch: m.epoch, sig: null, broken: true }; }
+  }
+  const modeOf = (account) => statementOf(account).mode;
+  /** Refuse anything that would store or use recovery material for a holder-only account. */
+  function requireHardened(account) {
+    if (modeOf(account) !== RECOVERY_MODES.hardened) throw new HttpError(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
+  }
+  /** What escrow this account still has here. */
+  const escrowOf = (account) => [
+    ...(db.prepare("SELECT 1 FROM cards WHERE account = ?").get(account) ? ["card"] : []),
+    ...(db.prepare("SELECT 1 FROM guardian_sets WHERE owner = ?").get(account) || db.prepare("SELECT 1 FROM guardians WHERE owner = ?").get(account) ? ["contacts"] : []),
+    ...(db.prepare("SELECT 1 FROM anchors WHERE account = ?").get(account) ? ["anchor"] : []),
+    ...(db.prepare("SELECT 1 FROM seckeys WHERE account = ?").get(account) ? ["key"] : []),
+  ];
+  /** Keep a newer signed statement. The same one again is fine; an older one never replaces it. */
+  function learnMode(account, st) {
+    const m = checkStatement(account, st);
+    const cur = getMode.get(account);
+    if (cur && (m.version < cur.version || (m.version === cur.version && (m.mode !== cur.mode || m.epoch !== cur.epoch)))) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
+    if (m.epoch < (cur?.epoch || 1)) throw new HttpError(409, "stale_recovery_mode", "Recovery pieces can't go back to an older set.");
+    if (cur && m.version === cur.version) return m;
+    if (m.mode === RECOVERY_MODES.holderOnly) {
+      // Holder-only only once nothing is left here: the holder deletes each proof first.
+      const left = escrowOf(account);
+      if (left.length) throw new HttpError(409, "escrow_remains", `Remove your ${left.join(", ")} first.`, { left });
+      // Recoveries already under way can't finish any more.
+      db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
+    }
+    db.prepare(`INSERT INTO modes (account, mode, version, epoch, sig, dsa_pk, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account) DO UPDATE SET mode = excluded.mode, version = excluded.version, epoch = excluded.epoch, sig = excluded.sig, dsa_pk = excluded.dsa_pk, updated_at = excluded.updated_at`)
+      .run(account, m.mode, m.version, m.epoch, m.sig, m.dsaPk, new Date().toISOString());
+    return m;
+  }
+
   /* ---------- two-proof recovery: which proofs a request has, and when it opens ---------- */
 
   /** The kinds of proof a quorum request holds right now. */
@@ -278,6 +343,7 @@ export function createRecovery({
   /** Tie a request to an account the first time a proof names it. Throws if proofs disagree. */
   function bindAccount(q, account) {
     if (q.account && q.account !== account) throw new HttpError(409, "different_person", "These proofs belong to different people. Nothing was released.");
+    requireHardened(account);
     if (!q.account && openRequests(account) >= maxOpenPerAccount) throw new HttpError(429, "too_many_requests", "There are already recoveries waiting for this HumID.");
     const first = !q.account;
     if (first) {
@@ -355,6 +421,7 @@ export function createRecovery({
   const card = [
     ["PUT", "/card", ({ claims, body }) => {
       needStepUp(claims);
+      requireHardened(claims.sub);
       const r = parseObject(body);
       const tag = String(r.tag || "");
       if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(tag)) throw new HttpError(400, "bad_tag", "Card tag is malformed");
@@ -397,6 +464,7 @@ export function createRecovery({
     // and is stored only encrypted under the identity fields, which aren't stored.
     ["PUT", "/anchor", ({ claims, body }) => {
       needStepUp(claims);
+      requireHardened(claims.sub);
       const r = parseObject(body);
       const part = decodeQuorumPart(unb64u(String(r.part || "")));
       if (part.x !== QUORUM.anchor) throw new HttpError(400, "bad_part", "That isn't the anchor part.");
@@ -476,11 +544,13 @@ export function createRecovery({
     // `exclude` lists the credentials this account already has, so a key that holds one refuses to make another.
     ["POST", "/keys/challenge", ({ claims }) => {
       const sub = needUser(claims);
+      requireHardened(sub);
       const exclude = db.prepare("SELECT cred_id FROM seckeys WHERE account = ?").all(sub).map((k) => b64u(k.cred_id));
       return json(200, { ...issueKeyChallenge(`add:${sub}`), exclude });
     }],
     ["POST", "/keys", ({ claims, body }) => {
       needStepUp(claims);
+      requireHardened(claims.sub);
       const r = parseObject(body);
       const tag = String(r.tag || "");
       if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(tag)) throw new HttpError(400, "bad_tag", "Key tag is malformed");
@@ -549,6 +619,7 @@ export function createRecovery({
     // scheme "quorum": the shares rebuild the witness part; "full" (v1): they rebuild the seed.
     ["PUT", "/contacts", ({ claims, body }) => {
       needStepUp(claims);
+      requireHardened(claims.sub);
       const r = parseObject(body);
       const scheme = r.scheme === "quorum" ? "quorum" : "full";
       const list = Array.isArray(r.guardians) ? r.guardians : [];
@@ -655,6 +726,7 @@ export function createRecovery({
       if (r.method === "card") {
         const c = db.prepare("SELECT account, scheme FROM cards WHERE tag = ?").get(String(r.tag || ""));
         if (!c) throw new HttpError(404, "unknown_card", "That recovery card isn't on file. Check the code, or it may have been replaced.");
+        requireHardened(c.account);
         if (c.scheme === "quorum") throw new HttpError(409, "needs_second_proof", "This seal card is one of two proofs. Choose Prove it's me, then add your witnesses or your ID.");
         if (openRequests(c.account) >= maxOpenPerAccount) throw new HttpError(429, "too_many_requests", "There are already recoveries waiting for this HumID.");
         const delay = recentDuress(c.account) ? delayMs * 2 : delayMs;
@@ -686,6 +758,8 @@ export function createRecovery({
       if (!q) throw new HttpError(404, "unknown_request", "No such recovery.");
       const v = { ...requestView(q, { secret: true }), account: q.account };
       if (q.status === "waiting" && q.release_at && now() >= q.release_at) {
+        // A holder-only account releases nothing, whatever a request collected before the switch.
+        if (modeOf(q.account) !== RECOVERY_MODES.hardened) return json(200, { ...v, status: "cancelled", reason: "holder_only" });
         if (q.method === "card") {
           const c = db.prepare("SELECT blob FROM cards WHERE account = ?").get(q.account);
           if (!c) return json(200, { ...v, status: "cancelled", reason: "card_replaced" });
@@ -756,6 +830,7 @@ export function createRecovery({
       if (!q || q.account !== String(r.account) || q.method !== String(r.method) || q.status !== "waiting" || !q.release_at || now() < q.release_at) {
         throw new HttpError(403, "not_released", "That recovery isn't released yet, so this device can't join.");
       }
+      if (modeOf(q.account) !== RECOVERY_MODES.hardened) throw new HttpError(403, "not_released", "This HumID opens only on its own devices. Add this device from one of them.");
       return json(200, { released: true });
     }],
     // Two proofs: a fresh challenge for a security key to sign, with its PIN.
@@ -821,6 +896,7 @@ export function createRecovery({
       const owner = String(r.owner || "");
       const g = db.prepare("SELECT 1 FROM guardians WHERE owner = ? AND contact = ?").get(owner, claims.sub);
       if (!g) throw new HttpError(403, "not_a_contact", "You aren't a recovery contact for that person.");
+      requireHardened(owner);
       const set = guardianSet(owner);
       // v1 contacts rebuild the seed on their own; v2 witnesses are one of two proofs.
       if (q.method === "contacts" && set.scheme === "quorum") throw new HttpError(409, "needs_second_proof", "They need to start again with Prove it's me: you're one of two proofs now.");
@@ -927,6 +1003,25 @@ export function createRecovery({
 
   /* ---------- duress and settings ---------- */
 
+  const modes = [
+    // Gateway only: the account's signed recovery mode, at setup and when its holder switches.
+    ["POST", "/internal/recovery-mode", ({ claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      const account = String(r.account || "");
+      if (!/^hid_[0-9a-f]{40}$/.test(account)) throw new HttpError(400, "bad_subject", "Unknown subject");
+      const m = learnMode(account, r);
+      return json(200, { mode: m.mode, version: m.version, epoch: m.epoch });
+    }],
+    // The account's signed statement as this service holds it, for the holder's devices to check
+    // against their own account key, and what recovery material is still stored here.
+    ["GET", "/mode", ({ claims }) => {
+      const sub = needUser(claims);
+      const st = statementOf(sub);
+      return json(200, { mode: st.mode, version: st.version, epoch: st.epoch, sig: st.sig ? b64u(st.sig) : null, ...(st.broken ? { broken: true } : {}), escrow: escrowOf(sub) });
+    }],
+  ];
+
   const duress = [
     // Gateway only: the owner unlocked with their duress gesture.
     ["POST", "/internal/duress", ({ claims, body }) => {
@@ -962,7 +1057,7 @@ export function createRecovery({
 
   log.info("recovery delay", { hours: +(delayMs / HOUR).toFixed(3) });
   return createService({ tls,
-    name: "recovery", port, routes: [...links, ...card, ...anchor, ...keys, ...contacts, ...requests, ...station, ...duress], bodyLimit: 64 * 1024,
+    name: "recovery", port, routes: [...links, ...card, ...anchor, ...keys, ...contacts, ...requests, ...station, ...modes, ...duress], bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "recovery"),
   });
 }

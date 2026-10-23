@@ -42,6 +42,8 @@ const EVENT_TYPES = new Set([
   "checkin.armed", "checkin.disarmed", "checkin.erased",
   // security keys as a recovery proof (ledger 1.4, docs/SECURITY-KEY.md)
   "recovery.key_added", "recovery.key_removed", "recovery.key_refused",
+  // the holder's signed choice of recovery mode: holder-only or hardened (ledger 1.5, docs/RECOVERY.md)
+  "recovery.mode_set",
 ]);
 
 /**
