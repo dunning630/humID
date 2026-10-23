@@ -3,7 +3,7 @@
 // (and in the app's control) and this module never holds a private key.
 
 import { HtpClient, HtpError } from "@humid/htp/client";
-import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
+import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, setupCardMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
 import { verifyLedger, verifyBridge, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
@@ -134,13 +134,16 @@ export class HumidApi {
   async register({ pub, commit, device, sign, card, soleBiometric, pass, recoveryMode }) {
     await this.htp.connect();
     const th = this.htp.transcript;
-    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
+    // card: the setup recovery card, which the account key also signs in this check (the recovery
+    // service stores it only with that signature: there is no step-up yet to approve it)
+    const cardMsg = card ? setupCardMessage(th, identityId(pub.dsaPk), card.tag, card.blob) : undefined;
+    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th, ...(cardMsg ? { card: cardMsg } : {}) });
     this.session = await this.#json("POST", "/auth/register", {
       body: {
         kemPk: b64u(pub.kemPk), dsaPk: b64u(pub.dsaPk), xPk: b64u(pub.xPk), commit, sig: b64u(sigs.registerSig),
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
-        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob), ...(sigs.cardSig ? { sig: b64u(sigs.cardSig) } : {}) } } : {}),
         // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
         ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, prev: recoveryMode.prev, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),

@@ -276,17 +276,32 @@ core together with keys can still release both halves. What holds:
 
 | Who is compromised | Gets |
 |---|---|
-| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
+| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open, no change to recovery material. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
 | Keys role alone | Encrypted document keys; nothing opens without envelopes and the account keys. |
 | Core role alone | Envelopes and identity's statement key; no document keys. |
 | Core and keys together | Both server-held halves, still useless without the account keys, which never leave the phone. |
 | Any of these | Never the account keys, so never a document's contents. |
 
-**Not covered yet:** recovery-service changes (cards, contacts, anchors,
-security keys) still take the gateway's word for the step-up; a compromised
-front host can change them, though every change is recorded and no recovery
-releases without its wait and the holder's veto. Moving recovery onto the same
-checks is the follow-up.
+- **The recovery service** checks the same way before anything that changes
+  or releases recovery material:
+  - setting or removing a seal card, contacts, an ID anchor, a security key or
+    recovery settings;
+  - approving a device link;
+  - a witness releasing their piece;
+  - cancelling a recovery;
+  - a station's in-person verification;
+  - closing the account.
+
+  It checks the proof against the body it received, so the gateway can't turn
+  one approval into a different change. The recovery card made with a new
+  account has no step-up yet. The account key signs that card inside the
+  registration's live check, and identity's signed statement says the
+  account was created in that session. The recovery mode itself was already
+  a statement signed by the account key (docs/RECOVERY.md).
+
+**What a front host can still do with recovery:** see that recoveries happen
+and refuse service. It can also start a recovery request, which anyone
+can, and which still needs two real proofs, the wait and no veto.
 
 ## Offline
 

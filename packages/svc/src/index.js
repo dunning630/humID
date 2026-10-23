@@ -120,10 +120,11 @@ export function verifyAssertion(pkB64, token, audience) {
 //   "device"  identity (core key): this device key and liveness key belong to this account, now
 //   "ledger"  ledger (core key): this entry is in the holder's ledger
 //   "erased"  keyshare (keys key): Check-in destroyed these keys, so these envelopes may go
+//   "created" identity (core key): this account was created just now (its setup recovery card)
 // Short-lived, and checked against public keys pinned in each service's settings.
 
 const STATEMENT_PREFIX = "HUMID-STATEMENT-v1.";
-const STATEMENT_KINDS = new Set(["device", "ledger", "erased"]);
+const STATEMENT_KINDS = new Set(["device", "ledger", "erased", "created"]);
 
 export function signStatement(skB64, kind, claims, ttlMs = 60_000) {
   if (!STATEMENT_KINDS.has(kind)) throw new Error(`Unknown statement kind ${kind}`);
