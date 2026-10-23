@@ -15,7 +15,9 @@ import { R, SEED, wipe, sleep, localChallenge } from "./runtime.js";
 import { toast, friendly, cancelled, haptic } from "./notify.js";
 
 // The gate methods' names live with the app's other labels (ui/labels.js: pure words, no kernel).
-export { gateLabel } from "../ui/labels.js";
+// Imported as well as passed on: withKeys names the method in its prompt.
+import { gateLabel } from "../ui/labels.js";
+export { gateLabel };
 
 /**
  * Checks that are part of a conversation's rhythm (sending, opening a conversation) show as a

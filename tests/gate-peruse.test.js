@@ -44,3 +44,18 @@ test("the app stores a replacement handle the moment a release returns one", () 
   const src = readFileSync(new URL("../apps/mobile/src/core/interrupt.js", import.meta.url), "utf8");
   assert.match(src, /if \(rel\.handle\) await keepGateHandle\(id, rel\.handle\);/);
 });
+
+test("a live check gets as far as the gate (withKeys names the method in its prompt)", async () => {
+  // Regression: interrupt.js passed gateLabel on without importing it, so every live check threw
+  // "gateLabel is not defined" before the gate was asked.
+  const S = await import("../apps/mobile/src/core/state.js");
+  const { withKeys } = await import("../apps/mobile/src/core/interrupt.js");
+  const asked = [];
+  let shown = "";
+  globalThis.__TAURI_INTERNALS__ = { invoke: async (cmd) => { asked.push(cmd); shown = S.interrupt.value?.message || ""; throw new Error("cancelled"); } };
+  S.identity.value = { gate: { adapter: "native", handle: { id: "h" } }, device: { id: "d" }, method: "android-keystore-biometric", bindingId: "AA==", pub: {} };
+  const e = await withKeys("launch", "Open your vault", async () => {}).catch((x) => x);
+  assert.deepEqual(asked, ["plugin:humid-gate|release"], `the gate was asked (got ${e?.message})`);
+  assert.match(shown, /^Confirm with /);
+  S.identity.value = null;
+});
