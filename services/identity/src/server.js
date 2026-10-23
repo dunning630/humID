@@ -209,15 +209,21 @@ export function createIdentity({
       const id = identityId(keys.dsaPk);
       const existing = getAccount.get(id);
       if (existing && existing.status !== "active") throw new HttpError(409, "identity_closed", "This identity was closed.");
+      // Registering creates an account; it never adds a device to one that exists (REC-01).
+      // Holding the account seed is not enough to join: later devices come in only through
+      // /internal/devices, which the gateway reaches after an approved device link or a released
+      // recovery (PC-02). Revealing that the account exists costs nothing here: the caller just
+      // proved it holds the account key.
+      if (existing) throw new HttpError(409, "identity_exists", "This HumID already exists. To add this phone, approve it from one of your devices or recover your HumID.");
       db.exec("BEGIN");
       try {
-        if (!existing) {
-          db.prepare("INSERT INTO identities (id, kem_pk, dsa_pk, x_pk, commit_hex, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(id, keys.kemPk, keys.dsaPk, keys.xPk, commit, new Date().toISOString());
-        }
-        const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy, Number(r.sessionAgeMs));
+        db.prepare("INSERT INTO identities (id, kem_pk, dsa_pk, x_pk, commit_hex, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(id, keys.kemPk, keys.dsaPk, keys.xPk, commit, new Date().toISOString());
+        const { device, created } = addDevice(getAccount.get(id), th, r.device, "register", r.policy, Number(r.sessionAgeMs));
+        // A brand-new account can only get a brand-new device; a device key already bound to another account is refused in addDevice.
+        if (!created) throw new HttpError(409, "device_taken", "This device key is already enrolled.");
         db.exec("COMMIT");
-        return respondWithDevice(existing ? 200 : 201, getAccount.get(id), device);
+        return respondWithDevice(201, getAccount.get(id), device);
       } catch (e) { db.exec("ROLLBACK"); throw e; }
     }],
 

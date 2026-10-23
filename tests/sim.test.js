@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HumidApi } from "@humid/api";
 import { createSimServer } from "../apps/mobile/src/sim/server.js";
-import { makeHolder, sealFor } from "./e2e/holder.js";
+import { makeHolder, anotherDevice, sealFor } from "./e2e/holder.js";
 
 const reports = [];
 const sim = await createSimServer({ onCheck: (r) => reports.push(r) });
@@ -39,6 +39,14 @@ test("register: account key, device key and the secure chip are all checked; the
     assert.ok(labels.some((l) => l.startsWith(want)), `${want}\n${labels.join("\n")}`);
   }
   assert.ok(labels.some((l) => l.startsWith("null Certificate chain")), "says honestly it can't check the chain");
+});
+
+test("register never adds a phone to an existing account (REC-01), and the pass isn't used up", async () => {
+  const thief = anotherDevice(alice);
+  const pass = await api().getPass(sim.demoAccessCode());
+  await assert.rejects(api().register({ pub: thief.pub, commit: thief.commit, device: thief.device, sign: thief.registerSign, pass }), (e) => e.code === "identity_exists");
+  const dave = makeHolder("dave-sim");
+  assert.equal((await api().register({ pub: dave.pub, commit: dave.commit, device: dave.device, sign: dave.registerSign, pass })).created, true);
 });
 
 test("sign-in needs the device key AND a live secure-chip signature over the server's challenge", async () => {

@@ -272,6 +272,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!verify(unb64u(String(r.sig || "")), registerMessage(s.th, keys, r.commit), keys.dsaPk)) throw fail(401, "bad_proof", "Proof of possession failed: the device does not hold this identity key.");
     const id = identityId(keys.dsaPk);
     const created = !st.accounts[id];
+    // As on the real server: registering creates an account, never adds a phone to one (REC-01).
+    if (!created) throw fail(409, "identity_exists", "This HumID already exists. To add this phone, approve it from one of your devices or recover your HumID.");
     if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso() };
     const a = st.accounts[id];
     let enrolled;

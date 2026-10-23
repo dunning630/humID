@@ -74,3 +74,28 @@ test("PC-02: a cancelled recovery lets no device in, even after its wait and eve
   await assert.rejects(fresh.enrollDevice({ account: alice.id, device: thief.device, via: "quorum", recoveryId: req.id, sign: thief.enrollSign }), (e) => e.code === "not_released");
   assert.equal((await phone.me()).devices.length, 1);
 });
+
+test("REC-01: registering again with an existing account's keys adds no device", async () => {
+  // The same thief, through the other door: POST /auth/register used to fall through to
+  // "add a device" when the account already existed, with no link, no recovery and no alert.
+  const before = (await phone.me()).devices.length;
+  const thief = anotherDevice(alice);
+  await assert.rejects(register(thief, stack.baseUrl), (e) => e.code === "identity_exists" && e.status === 409);
+  // The same device key Alice already has can't use it as a back door to a session either.
+  await assert.rejects(register(alice, stack.baseUrl), (e) => e.code === "identity_exists");
+  const me = await phone.me();
+  assert.equal(me.devices.length, before);
+  assert.ok(!me.devices.some((d) => d.id === thief.deviceId), "the thief's phone is not on the account");
+  const added = (await phone.ledger()).entries.filter((e) => e.type === "device.added" && e.detail?.device === thief.deviceId);
+  assert.equal(added.length, 0, "nothing recorded for a refused registration");
+});
+
+test("REC-01: registering with an existing account's keys is refused during a duress lockdown too", async () => {
+  // A duress sign-in locks the account down; the register door must stay shut as well (REC-02).
+  const forced = new HumidApi({ baseUrl: stack.baseUrl });
+  await forced.login({ id: alice.id, device: alice.deviceId, sign: alice.unlockSign(1) });
+  const thief = anotherDevice(alice);
+  await assert.rejects(register(thief, stack.baseUrl), (e) => e.code === "identity_exists");
+  assert.ok(!(await phone.me()).devices.some((d) => d.id === thief.deviceId));
+  await forced.logout();
+});

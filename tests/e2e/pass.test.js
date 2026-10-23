@@ -8,12 +8,12 @@ import { join } from "node:path";
 import { startStack } from "./stack.js";
 import { HumidApi } from "@humid/api";
 import { spentId } from "@humid/pass";
-import { makeHolder } from "./holder.js";
+import { makeHolder, anotherDevice } from "./holder.js";
 
 let stack, codes;
 before(async () => {
   stack = await startStack({ registration: "pass", passBuyUrl: "https://humidsecure.com/access" });
-  codes = stack.access.mint(6, "e2e");
+  codes = stack.access.mint(8, "e2e");
 });
 after(async () => { await stack?.stop(); });
 
@@ -79,6 +79,16 @@ test("a registration that fails gives the pass back", async () => {
   // mallory's device can't prove possession of these account keys: refused, pass refunded
   await assert.rejects(newApi().register({ pub: alice.pub, commit: alice.commit, device: mallory.device, sign: mallory.registerSign, pass: p }), /Proof of possession/);
   assert.equal((await registerWith(makeHolder("retry"), p)).created, true);
+});
+
+test("REC-01: registering with an existing account's keys is refused and gives the pass back", async () => {
+  const owner = makeHolder("owner-rec01");
+  await registerWith(owner, await newApi().getPass(codes[7]));
+  // A thief with a copy of owner's seed and a phone of their own: no device is added, and the pass isn't spent.
+  const thief = anotherDevice(owner);
+  const p = await newApi().getPass(codes[6]);
+  await assert.rejects(registerWith(thief, p), (e) => e.code === "identity_exists" && e.status === 409);
+  assert.equal((await registerWith(makeHolder("rec01-retry"), p)).created, true, "the refused registration left the pass unspent");
 });
 
 test("pass requests can't ride on a signed-in session", async () => {

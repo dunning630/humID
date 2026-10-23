@@ -469,8 +469,11 @@ export function createGateway({
           json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy },
         });
       } catch (e) { await refund(); throw e; }
-      if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
+      if (reg.status !== 201) await refund(); // failed: the pass stays unspent
       if (reg.status >= 300) fail(reg);
+      // Only a newly created account binds a session here. Anything else would let the account seed alone
+      // add a phone to an existing account, bypassing the device link and recovery paths (REC-01, PC-02).
+      if (reg.status !== 201) throw new HttpError(409, "identity_exists", "This HumID already exists. To add this phone, approve it from one of your devices or recover your HumID.");
       bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
