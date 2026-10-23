@@ -599,7 +599,10 @@ export function createGateway({
       let cardSet = false;
       if (reg.status === 201 && r.card) {
         const stepUp = { at: Date.now(), proof: proofHash(unb64u(r.sig)), method: s.gateMethod, assurance: s.assurance, live: !!s.livePub };
-        const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp }), json: r.card }).catch(() => ({ status: 503 }));
+        // No step-up exists yet: the account key signed this card in the registration's live check,
+        // and identity says the account was made in this session. Recovery checks both (SRV-30).
+        const setupCard = { created: reg.data.created, dsaPk: r.dsaPk, th: b64u(s.th), sig: r.card.sig };
+        const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp, setupCard }), json: { tag: r.card.tag, blob: r.card.blob } }).catch(() => ({ status: 503 }));
         cardSet = c.status === 200;
         if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup", scheme: c.data?.scheme });
       }
@@ -763,10 +766,8 @@ export function createGateway({
       if (wiped.status !== 200) return { status: wiped.status, json: wiped.data };
       await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
       await internalJson("keyshare", "DELETE", "/shares", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/keys", { claims }).catch(() => {});
+      // every piece of recovery material, under the holder's approval for closing the account (SRV-30)
+      await internalJson("recovery", "DELETE", "/escrow", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
       const subject = s.subject;

@@ -67,7 +67,7 @@ function deviceOf(S, keys, kind) {
     deviceId: deviceId(dkeys.dsaPk),
     device: { dsaPk: dkeys.dsaPk, platform: kind, gateMethod, assurance },
     // register: account key signs both statements, device key proves possession, liveness key proves a live check
-    registerSign: async ({ register, device, th }) => ({ registerSig: sign(register, keys), sigAccount: sign(device, keys), sigDevice: sign(device, dkeys), live: live(device, th) }),
+    registerSign: async ({ register, device, th, card }) => ({ registerSig: sign(register, keys), sigAccount: sign(device, keys), sigDevice: sign(device, dkeys), live: live(device, th), ...(card ? { cardSig: sign(card, keys) } : {}) }),
     enrollSign: async (m, th) => ({ sigAccount: sign(m, keys), sigDevice: sign(m, dkeys), live: live(m, th) }),
     sign: async (m) => ({ sig: sign(m, dkeys), interrupt, live: lk?.sign(m) }),                      // sign-in (no presence report: older apps)
     // sign-in as current apps do it: the device key signs the challenge with the duress flag d (0 or 1)
