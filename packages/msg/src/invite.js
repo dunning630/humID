@@ -14,7 +14,7 @@
 //                          dual-signs the transcript (ML-DSA-87 + SLH-DSA), attaches
 //                          a live stamp, posts to A's reply box.
 //   A  readRequest         decrypts, checks both signatures and the stamp, shows
-//                          "HC-…  wants to connect · live human ✓ · safety code".
+//                          "HC-…  wants to connect · asked with a live check · safety code".
 //   A  acceptRequest       (after a live check) starts the conversation; the first
 //                          message is an "accept".
 //   B  — the accept arrives in the conversation's inbox; B's session opens it.
@@ -175,7 +175,8 @@ async function makeRequest(accountSeed, invite, { intro = "", stamper = null, no
 
   const rxSk = random(32), rxPk = b.x25519.publicKey(rxSk);
   const rek = b.kem.keygen(random(SIZES.kemSeed));
-  const stamp = stamper ? await stamper(requestCommitment({ th0, senderFp: personaFingerprint(me.pub) })) : null;
+  // the stamp covers when the request was made, and is checked against its key's epoch (MSG-01)
+  const stamp = stamper ? await stamper(requestCommitment({ th0, senderFp: personaFingerprint(me.pub), at: now }), { at: now }) : null;
   if (requireLive && !stamp) {
     wipe(xe, k1.sharedSecret, k2.sharedSecret, dh1, dh2, dh3, bind, wrapKey);
     throw new MsgError("stamp_required", "The live check didn't complete, so no request was made");
@@ -243,7 +244,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
     wipe(ss1, ss2, dh1, dh2, dh3, bind);
     const senderFp = personaFingerprint(peer);
     let live = null;
-    if (r.st && stampKeys) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp }), { now });
+    if (r.st && stampKeys && Number.isSafeInteger(r.at)) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp, at: r.at }), { now, at: r.at });
     if (requireLive && live !== true) {
       wipe(rk0);
       throw new MsgError("not_live", r.st ? "This request's live check didn't verify, so it isn't shown" : "This request wasn't approved with a live check, so it isn't shown");

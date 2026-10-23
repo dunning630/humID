@@ -261,8 +261,10 @@ export class Session {
       // A change you make is always newer than the one you last saw, even if the clocks disagree.
       const timerAt = Math.max(now, (s0.timerAt ?? 0) + 1);
       const ta = newTimer !== null ? timerAt : 0;
+      // `at` picks the stamp key: the issuer signs only with the key of the epoch it's in, and the
+      // receiver counts the stamp only if `at` is inside that key's epoch (MSG-01).
       const stamp = stamper
-        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes, at: now, x: ttl, ta }))
+        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes, at: now, x: ttl, ta }), { at: now })
         : null;
       if (requireLive && !stamp) throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
 
@@ -381,7 +383,9 @@ export class Session {
       let live = null;
       if (p.st && stampKeys) {
         const ta = p.k === "timer" && Number.isSafeInteger(p.ta) ? p.ta : 0;
-        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body, at: p.at, x: p.x ?? 0, ta }), { now });
+        // at: the stamp's key must be the one of the epoch this message says it was sent in, so a
+        // stamp bought now can't be dated later and released as "live" then (MSG-01)
+        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body, at: p.at, x: p.x ?? 0, ta }), { now, at: p.at });
         // One stamp, one message, once (security review H1): a stamp dated outside what the relay
         // could still be holding, or one this conversation has already seen, is not live.
         if (live && (p.at > receivedAt + LIVE_SKEW_MS || p.at < receivedAt - STAMP_MAX_AGE_MS)) live = false;

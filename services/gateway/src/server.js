@@ -705,8 +705,11 @@ export function createGateway({
 
     // The stamp keys, and the pass key ids beside them so the app can refuse a server that
     // stamps with its pass key (a blind signer signs whatever it's handed).
-    async msgKeys() {
-      const [st, pk] = await Promise.all([internalJson("access", "GET", "/internal/stamp/keys"), internalJson("access", "GET", "/internal/keys")]);
+    // ?since=ms: only retired stamp keys whose epoch ended after it (a phone that has the rest).
+    async msgKeys(s, body, stepUp, m, route, meta) {
+      const since = Number(new URL(String(meta?.p || "/"), "http://inner").searchParams.get("since") || 0);
+      const q = Number.isSafeInteger(since) && since > 0 ? `?since=${since}` : "";
+      const [st, pk] = await Promise.all([internalJson("access", "GET", `/internal/stamp/keys${q}`), internalJson("access", "GET", "/internal/keys")]);
       if (st.status !== 200) fail(st);
       if (pk.status !== 200) fail(pk);
       return { status: 200, json: { stamp: st.data, passKeyIds: (pk.data.keys || []).map((k) => k.id) } };

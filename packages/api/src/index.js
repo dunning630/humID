@@ -490,12 +490,17 @@ export class HumidApi {
 
   /* ---------------- person to person (4.0, docs/MESSAGING.md) ---------------- */
 
-  /** The server's stamp keys, and its pass key ids (the app refuses a stamp key that is also a pass key). */
-  msgKeys() { return this.#json("GET", "/msg/keys"); }
+  /**
+   * The server's stamp keys (this epoch's and the next, plus `archive`: retired keys whose stamps
+   * still count), and its pass key ids (the app refuses a stamp key that is also a pass key).
+   * since (ms): only retired keys whose epoch ended after it.
+   */
+  msgKeys({ since = 0 } = {}) { return this.#json("GET", since > 0 ? `/msg/keys?since=${Math.floor(since)}` : "/msg/keys"); }
   /** Network-wide daily totals of live-approved messages. */
   msgStats() { return this.#json("GET", "/msg/stats").then((r) => r.days); }
   /**
-   * Blind-signed stamps for the blinded values ONE live check approved (1 to 4).
+   * Blind-signed stamps for the blinded values ONE live check approved (1 or 2).
+   * kid: the stamp key of this epoch the values were blinded for (blindStamp's draft.kid).
    * stepUp: from api.ticket("stamp") signed during the check. Returns blind signatures, in order.
    */
   async stamp({ kid, blinded }, stepUp) {

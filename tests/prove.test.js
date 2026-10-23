@@ -11,11 +11,13 @@ const rnd = (n) => new Uint8Array(randomBytes(n));
 const T0 = Date.UTC(2026, 9, 20, 16, 0, 0);
 const MIN = 60_000, DAY = 86_400_000;
 
+// Tests that aren't about stamp-key epochs use one key whose epoch covers every test date.
+const ALWAYS = { notBefore: 0, notAfter: Date.UTC(2200, 0, 1) };
 const issuer = newIssuerKey(2048);
-const stampKeys = M.importStampKeys([{ ...issuer.publicView, issuing: true }]);
+const stampKeys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }]);
 const stamper = M.makeStamper(stampKeys, async (blinded) => blindSign(issuer, blinded));
 const otherIssuer = newIssuerKey(2048);
-const otherKeys = M.importStampKeys([{ ...otherIssuer.publicView, issuing: true }]);
+const otherKeys = M.importStampKeys([{ ...otherIssuer.publicView, ...ALWAYS, issuing: true }]);
 const foreignStamper = M.makeStamper(otherKeys, async (blinded) => blindSign(otherIssuer, blinded));
 
 const contains = (hay, needle) => Buffer.from(hay).indexOf(Buffer.from(needle)) >= 0;

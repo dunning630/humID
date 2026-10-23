@@ -25,6 +25,7 @@ export { liveState, peerLiveAt, canRead, LIVE_WINDOW_MS, MIN_LIVE_WINDOW_MS, MAX
 export { Conversation } from "./conversation.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,
+  stampKeyFor, knowsStampKey, STAMP_SKEW_MS, MAX_ARCHIVED_STAMP_KEYS,
 } from "./stamp.js";
 export { BUCKETS, isWireSize, isBox, boxFor, pollDays, WIRE_VERSION, newRetract, retractTag } from "./wire.js";
 export { memoryRelay, rateKey, RELAY_DEFAULTS } from "./relay.js";

@@ -22,8 +22,13 @@ import {
   parseAccessCode, accessCodeHash, newAccessCode, verifyPass, spentId, unb64u, b64u, PassError, MAX_KEYS,
 } from "@humid/pass";
 import { newIssuerKey, issuerKey, blindSign, KEY_BITS } from "@humid/pass/issuer";
+import { generateKeyPair as genKeyPair } from "node:crypto";
+import { promisify } from "node:util";
 
+const generateKeyPair = promisify(genKeyPair);
 const DAY = 86_400_000;
+/** A stamp key signs from this long before its epoch until this long after (clocks differ). Same as @humid/msg STAMP_SKEW_MS. */
+const STAMP_SKEW_MS = 2 * 60_000;
 /** Stamps one live check may approve: one message, or one action that is two (a delete and the end). */
 export const MAX_STAMPS_PER_CHECK = 2;
 const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10); // dates only: no times to correlate
@@ -41,16 +46,20 @@ export function createAccess({
   issueDays = Number(env("HUMID_PASS_ISSUE_DAYS", "365")),
   acceptDays = Number(env("HUMID_PASS_ACCEPT_DAYS", "545")),
   keyBits = Number(env("HUMID_PASS_KEY_BITS", String(KEY_BITS))),
-  // Live stamps (HumID 4.0 messaging, docs/MESSAGING.md): a SEPARATE blind-signing key, never
+  // Live stamps (HumID 4.0 messaging, docs/MESSAGING.md): SEPARATE blind-signing keys, never
   // the pass key. A blind signer signs whatever it is handed; with one shared key, a "stamp"
-  // request could be a blinded access pass. Stamps matter only when received (the relay keeps
-  // messages 14 days), so stamp keys rotate quickly.
-  stampIssueDays = Number(env("HUMID_STAMP_ISSUE_DAYS", "90")),
-  stampAcceptDays = Number(env("HUMID_STAMP_ACCEPT_DAYS", "120")),
+  // request could be a blinded access pass. The issuer can't see a stamp's time, so each key
+  // signs only during its own epoch (an hour by default) and phones count a stamp only for a
+  // time inside that epoch (security review MSG-01): stamps can't be stockpiled beyond it.
+  stampEpochMinutes = Number(env("HUMID_STAMP_EPOCH_MINUTES", "60")),
+  // how long a retired key's stamps keep counting: the relay keeps messages 14 days
+  stampAcceptDays = Number(env("HUMID_STAMP_ACCEPT_DAYS", "15")),
   stampKeyBits = Number(env("HUMID_STAMP_KEY_BITS", String(KEY_BITS))),
   now = () => Date.now(),
 } = {}) {
-  if (!(stampAcceptDays > stampIssueDays && stampAcceptDays < 2 * stampIssueDays)) throw new Error("HUMID_STAMP_ACCEPT_DAYS must be between STAMP_ISSUE_DAYS and 2 × STAMP_ISSUE_DAYS");
+  if (!(Number.isInteger(stampEpochMinutes) && stampEpochMinutes >= 5 && stampEpochMinutes <= 360)) throw new Error("HUMID_STAMP_EPOCH_MINUTES must be 5 to 360: a longer epoch lets stamps be stockpiled for longer");
+  if (!(stampAcceptDays >= 15 && stampAcceptDays <= 400)) throw new Error("HUMID_STAMP_ACCEPT_DAYS must be 15 to 400 (the relay keeps messages 14 days)");
+  const EPOCH = stampEpochMinutes * 60_000;
   if (!(acceptDays > issueDays && acceptDays < 2 * issueDays)) throw new Error("HUMID_PASS_ACCEPT_DAYS must be between ISSUE_DAYS and 2 × ISSUE_DAYS, so at most two keys are live");
   const db = openDb(dataDir, "access.db", [
     `CREATE TABLE codes (hash TEXT PRIMARY KEY, batch TEXT NOT NULL, minted_day TEXT NOT NULL,
@@ -62,6 +71,12 @@ export function createAccess({
     // approved, network-wide). Nothing about who asked, for what, or to whom.
     `CREATE TABLE stamp_keys (id TEXT PRIMARY KEY, pem TEXT NOT NULL, issue_until INTEGER NOT NULL, accept_until INTEGER NOT NULL);
      CREATE TABLE stamp_days (day TEXT PRIMARY KEY, stamps INTEGER NOT NULL, checks INTEGER NOT NULL)`,
+    // MSG-01: one stamp key per epoch. not_before/issue_until bound the epoch it signs in; pub is
+    // its public half, kept (for phones checking stamps still on their way) after the private
+    // key is erased at the end of its epoch. Rows from before this (one key for 90 days, no
+    // epoch) are never published again.
+    `ALTER TABLE stamp_keys ADD COLUMN not_before INTEGER;
+     ALTER TABLE stamp_keys ADD COLUMN pub TEXT`,
   ]);
 
   /* ---------- keys ---------- */
@@ -92,26 +107,68 @@ export function createAccess({
   /* ---------- live stamp keys (separate from pass keys) ---------- */
   if (seal.on) {
     for (const row of db.prepare("SELECT id, pem FROM stamp_keys").all()) {
-      if (!isSealedText(row.pem)) db.prepare("UPDATE stamp_keys SET pem = ? WHERE id = ?").run(seal.sealText(`access/stamp/${row.id}`, row.pem), row.id);
+      if (row.pem && !isSealedText(row.pem)) db.prepare("UPDATE stamp_keys SET pem = ? WHERE id = ?").run(seal.sealText(`access/stamp/${row.id}`, row.pem), row.id);
     }
   }
   const stampLoaded = new Map();
   const loadStamp = (row) => {
-    if (!stampLoaded.has(row.id)) stampLoaded.set(row.id, { ...issuerKey(seal.openText(`access/stamp/${row.id}`, row.pem)), issueUntil: row.issue_until, acceptUntil: row.accept_until });
+    if (!stampLoaded.has(row.id)) stampLoaded.set(row.id, issuerKey(seal.openText(`access/stamp/${row.id}`, row.pem)));
     return stampLoaded.get(row.id);
   };
-  function liveStampKeys() {
-    const t = now();
-    let rows = db.prepare("SELECT * FROM stamp_keys WHERE accept_until > ? ORDER BY issue_until DESC").all(t);
-    if (!rows.length || rows[0].issue_until <= t) {
-      let k;
-      // Never a pass key: different key, different id (checked, not assumed).
-      const passIds = new Set(db.prepare("SELECT id FROM keys").all().map((r) => r.id));
-      do { k = newIssuerKey(stampKeyBits); } while (passIds.has(k.id));
-      db.prepare("INSERT INTO stamp_keys (id, pem, issue_until, accept_until) VALUES (?, ?, ?, ?)").run(k.id, seal.sealText(`access/stamp/${k.id}`, k.pem), t + stampIssueDays * DAY, t + stampAcceptDays * DAY);
-      rows = db.prepare("SELECT * FROM stamp_keys WHERE accept_until > ? ORDER BY issue_until DESC").all(t);
+  const epochOf = (t) => Math.floor(t / EPOCH) * EPOCH;
+  const stampRow = db.prepare("SELECT * FROM stamp_keys WHERE not_before = ?");
+  const insertStamp = db.prepare("INSERT OR IGNORE INTO stamp_keys (id, pem, issue_until, accept_until, not_before, pub) VALUES (?, ?, ?, ?, ?, ?)");
+  function addStampKey(start, k) {
+    // Never a pass key: different key, different id (checked, not assumed).
+    if (db.prepare("SELECT 1 FROM keys WHERE id = ?").get(k.id) || stampRow.get(start)) return;
+    insertStamp.run(k.id, seal.sealText(`access/stamp/${k.id}`, k.pem), start + EPOCH, start + EPOCH + stampAcceptDays * DAY, start, JSON.stringify(k.publicView));
+  }
+  /** The current epoch's key and the next one exist (the next is made ahead, off the request path, by tick()). */
+  function ensureStampKeys() {
+    const e = epochOf(now());
+    for (const start of [e, e + EPOCH]) {
+      while (!stampRow.get(start)) addStampKey(start, newIssuerKey(stampKeyBits));
     }
-    return rows.slice(0, MAX_KEYS).map(loadStamp);
+  }
+  /**
+   * Erase private keys whose epoch is over, so a stolen retired key can't back-date stamps. The
+   * public halves stay: messages need them for accept_until, and stamped media and evidence
+   * releases are checked against them by their own time for as long as they matter (MSG-10).
+   * Makes the next epoch's key ahead of time, in the background, so nobody's request waits for
+   * a 4096-bit key.
+   */
+  let making = null;
+  async function tick() {
+    const t = now();
+    for (const row of db.prepare("SELECT id FROM stamp_keys WHERE pem != '' AND issue_until + ? < ?").all(STAMP_SKEW_MS, t)) stampLoaded.delete(row.id);
+    db.prepare("UPDATE stamp_keys SET pem = '' WHERE pem != '' AND issue_until + ? < ?").run(STAMP_SKEW_MS, t);
+    // two epochs ahead, so the key published as "next" always exists before anyone asks
+    if (making) return making;
+    making = (async () => {
+      for (const start of [epochOf(t) + EPOCH, epochOf(t) + 2 * EPOCH]) {
+        if (stampRow.get(start)) continue;
+        const { privateKey } = await generateKeyPair("rsa", { modulusLength: stampKeyBits, publicExponent: 65537 });
+        addStampKey(start, issuerKey(privateKey.export({ type: "pkcs8", format: "pem" })));
+      }
+    })().finally(() => { making = null; });
+    return making;
+  }
+  const view = (row, issuing) => ({ ...JSON.parse(row.pub), issuing, notBefore: row.not_before, notAfter: row.issue_until, acceptUntil: day(row.accept_until) });
+  /** Published: the current epoch's key (issuing) and the next. Archive: retired keys whose stamps still count. */
+  function stampKeySet({ since = 0 } = {}) {
+    ensureStampKeys();
+    const e = epochOf(now());
+    const published = [view(stampRow.get(e), true), view(stampRow.get(e + EPOCH), false)];
+    const archive = db.prepare("SELECT * FROM stamp_keys WHERE not_before IS NOT NULL AND not_before < ? AND accept_until > ? AND issue_until > ? ORDER BY not_before DESC").all(e, now(), since).map((r) => view(r, false));
+    return { published, archive };
+  }
+  /** The key a stamp request names, if it may sign now: its epoch, give or take the skew. */
+  function signingKey(kid) {
+    ensureStampKeys();
+    const t = now();
+    const row = db.prepare("SELECT * FROM stamp_keys WHERE id = ? AND not_before IS NOT NULL").get(String(kid));
+    if (!row || !row.pem || t < row.not_before - STAMP_SKEW_MS || t >= row.issue_until + STAMP_SKEW_MS) return null;
+    return loadStamp(row);
   }
   const countStamps = db.prepare(`INSERT INTO stamp_days (day, stamps, checks) VALUES (?, ?, 1)
     ON CONFLICT(day) DO UPDATE SET stamps = stamps + excluded.stamps, checks = checks + 1`);
@@ -185,12 +242,14 @@ export function createAccess({
       return json(200, { spent: id });
     }],
 
-    // Live stamps: the published keys (at most two, one issuing; the app refuses a stamp key that
-    // is also a pass key).
-    ["GET", "/internal/stamp/keys", ({ claims }) => {
+    // Live stamps: the published keys (this epoch's, issuing, and the next; the app refuses a
+    // stamp key that is also a pass key), and the retired ones whose stamps still count.
+    // since (ms): only retired keys whose epoch ended after it, for a phone that has the rest.
+    ["GET", "/internal/stamp/keys", ({ claims, query }) => {
       gatewayOnly(claims);
-      const ks = liveStampKeys();
-      return json(200, { suite: "RSABSSA-SHA384-PSS-Randomized", keys: ks.map((k, i) => ({ ...k.publicView, issuing: i === 0, acceptUntil: day(k.acceptUntil) })) });
+      const since = Number(query.get("since") || 0);
+      const { published, archive } = stampKeySet({ since: Number.isSafeInteger(since) ? since : 0 });
+      return json(200, { suite: "RSABSSA-SHA384-PSS-Randomized", epochMs: EPOCH, keys: published, archive });
     }],
 
     // Blind-sign the stamps ONE live check approved. The gateway calls this only inside a
@@ -200,8 +259,8 @@ export function createAccess({
     ["POST", "/internal/stamp/sign", ({ body, claims }) => {
       gatewayOnly(claims);
       const r = parseJson(body) || {};
-      const key = liveStampKeys()[0];
-      if (String(r.kid) !== key.id) throw new HttpError(409, "key_changed", "The stamp key changed. Try again.");
+      const key = signingKey(r.kid);
+      if (!key) throw new HttpError(409, "key_changed", "The stamp key changed. Try again.");
       const list = Array.isArray(r.blinded) ? r.blinded : [];
       if (list.length < 1 || list.length > MAX_STAMPS_PER_CHECK) throw new HttpError(400, "bad_request", `One check approves 1 to ${MAX_STAMPS_PER_CHECK} stamps`);
       const sigs = [];
@@ -235,7 +294,20 @@ export function createAccess({
   const svc = createService({ tls, name: "access", port, routes, bodyLimit: 16 * 1024, verify: (t) => verifyAssertion(internalPk, t, "access") });
   // The first key is made at start-up (4096-bit keys take a moment), not on someone's first request,
   // and never by `mint`, which may run next to a live service.
-  return { ...svc, start: (...a) => { liveKeys(); liveStampKeys(); return svc.start(...a); }, mint, close: () => db.close() };
+  let ticker = null;
+  return {
+    ...svc,
+    start: (...a) => {
+      liveKeys(); ensureStampKeys();
+      tick().catch(() => {});
+      ticker = setInterval(() => { tick().catch(() => {}); }, 60_000); ticker.unref?.();
+      return svc.start(...a);
+    },
+    stop: (...a) => { clearInterval(ticker); return svc.stop(...a); },
+    /** Run the stamp-key upkeep now (tests move the clock). */
+    tick,
+    mint, close: () => db.close(),
+  };
 }
 
 if (isMain(import.meta.url)) {
