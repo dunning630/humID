@@ -60,6 +60,8 @@ export function createRecovery({
   trustFile = env("HUMID_TRUST_STORE", ""),   // trust.json from tools/trust.mjs (ICAO / BSI master lists)
   cscas: extraCscas = [],
   stations = list(env("HUMID_STATION_ACCOUNTS", "")),
+  /** "*" in stations (every account is a station) is for local development only, and only with this set (HUMID_ALLOW_ANY_STATION=dev). */
+  allowAnyStation = env("HUMID_ALLOW_ANY_STATION", "") === "dev",
   linkTtlMs = 10 * 60_000,
   offerTtlMs = 15 * 60_000,
   collectTtlMs = 7 * 24 * HOUR,   // contacts have a week to respond
@@ -137,6 +139,12 @@ export function createRecovery({
     return cscas;
   };
   const stationSet = new Set(stations);
+  // "*" makes every account a verification station, which can vouch any recovery onto the
+  // fastest wait (VAULT-08). One env value away in production, so it needs a second, explicit flag.
+  if (stationSet.has("*")) {
+    if (!allowAnyStation) throw new Error('HUMID_STATION_ACCOUNTS="*" makes every account a verification station. That is for local development only: set HUMID_ALLOW_ANY_STATION=dev to allow it, or list the station accounts.');
+    log.error("EVERY ACCOUNT IS A VERIFICATION STATION (HUMID_STATION_ACCOUNTS=*, HUMID_ALLOW_ANY_STATION=dev). Local development only: anyone can put any recovery on the fastest wait.");
+  }
   log.info("identity anchors", { countries: currentCscas().length, stations: stationSet.size });
 
   /** AES-256-GCM under a key from the server secret and `context` (identity fields, or a request id). */

@@ -19,7 +19,7 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
-export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {} } = {}) {
+export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], allowAnyStation = false, cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {} } = {}) {
   // checkin: HUMID_CHECKIN. keyshareClock: { now, mono, tickMs } for Check-in tests that move time.
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
   const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
@@ -37,7 +37,7 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
   });
   const vault = createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, quotaBytes: 5 * 1024 * 1024, maxObjectBytes: 2 * 1024 * 1024 });
   const ledger = createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, cosigners });
-  const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations });
+  const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations, allowAnyStation });
   const access = createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: passKeyBits, stampKeyBits: passKeyBits });
   // 4.0 messaging: the relay (no accounts) beside the other services; messaging=false runs a server without one.
   const relay = messaging ? createRelay({ port: 0, dataDir: join(root, "relay"), internalPk: ik.pk, ...relayOpts }) : null;
