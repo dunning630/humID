@@ -82,9 +82,9 @@ export function Lock() {
     return (
       <main class="screen">
         <div class="hero" style={{ flex: "0 0 auto", marginTop: "8vh" }}><Mark state="failed" size={140} /></div>
-        <h1 class="center" style={{ marginTop: 18 }}>{x.title}</h1>
+        <h1 class="center mt-4">{x.title}</h1>
         <p class="lede center" style={{ margin: "10px auto 0" }}>{x.text}</p>
-        {x.warn && <div style={{ marginTop: 18 }}><Banner tone="amber" icon="alert" title="Don't continue unless you expected this" text="Check with whoever runs your vault server before setting up again." /></div>}
+        {x.warn && <div class="mt-4"><Banner tone="amber" icon="alert" title="Don't continue unless you expected this" text="Check with whoever runs your vault server before setting up again." /></div>}
         <div class="foot">
           {impersonation && !checked && <button class="btn quiet block" onClick={() => setChecked(true)}>I checked with my server operator</button>}
           {(!impersonation || checked) && !confirm && <button class={`btn ${terminal ? "primary" : "quiet"} block`} onClick={() => setConfirm(true)}>Set up HumID again</button>}

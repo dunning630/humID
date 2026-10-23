@@ -226,7 +226,7 @@ function AddFlow({ open }) {
               </div>
             </section>
           ))}
-          <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
+          <p class="fine mt-3">Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
         </Step>
       )}
       {step.at === "camera" && (

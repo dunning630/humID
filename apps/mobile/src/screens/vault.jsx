@@ -100,7 +100,7 @@ export function Vault() {
         </div>
       )}
 
-      {S.loading.value && all.length === 0 && <p class="muted small" style={{ marginTop: 20 }}>Loading your vault…</p>}
+      {S.loading.value && all.length === 0 && <p class="muted small mt-5">Loading your vault…</p>}
       {!S.loading.value && all.length === 0 && (
         <Empty icon="vault" title="Nothing here yet" text="Your IDs, cards and documents, sealed on this phone before they go anywhere.">
           <Print size={56} />
@@ -108,9 +108,9 @@ export function Vault() {
           {off && <p class="fine">Adding needs a connection.</p>}
         </Empty>
       )}
-      {all.length > 0 && list.length === 0 && <p class="muted center" style={{ marginTop: 24 }}>{S.query.value ? `Nothing matches “${S.query.value}”.` : S.tagFilter.value ? "Nothing with this tag." : "Nothing of this kind."}</p>}
+      {all.length > 0 && list.length === 0 && <p class="muted center mt-6">{S.query.value ? `Nothing matches “${S.query.value}”.` : S.tagFilter.value ? "Nothing with this tag." : "Nothing of this kind."}</p>}
 
-      {list.length > 0 && <div class="rows" style={{ marginTop: 14 }}>{list.map((it) => <ItemRow item={it} key={it.id} />)}</div>}
+      {list.length > 0 && <div class="rows mt-3">{list.map((it) => <ItemRow item={it} key={it.id} />)}</div>}
 
       {all.length > 0 && (
         <button class="btn primary" style={{ position: "fixed", right: "max(16px, calc(50% - var(--col) / 2 + 16px))", bottom: "calc(var(--safe-b) + var(--tabbar-h) + 16px)", zIndex: 31, width: 56, height: 56, padding: 0, borderRadius: 999, opacity: off ? 0.5 : 1 }}
@@ -226,7 +226,7 @@ export function Item() {
       <Pushed title={item.name} onBack={mode === "view" ? close : () => setMode("view")} trailing={!off && mode === "view" && <button class="icon-btn" aria-label="More" aria-haspopup="menu" onClick={() => setMode("menu")}><Icon name="more" /></button>}>
         {(mode === "view" || mode === "menu") && (
           <>
-            <div class="eyebrow" style={{ marginBottom: 8 }}>{k.one}</div>
+            <div class="eyebrow mb-2">{k.one}</div>
             <div class="card center stack" style={{ alignItems: "center" }}>
               {card ? (
                 <div class={`pay-card brand-${card.brand}`} aria-label={`${brandName(card.brand)} card`} style={{ width: "100%" }}>
@@ -240,8 +240,8 @@ export function Item() {
               <div class="small muted">{card ? "The number and code open only after a live check, for 30 seconds." : pi ? `${PASS_STYLES[pi.style] || "Pass"} · ${pi.issuer || pi.organization} · checked against its issuer when it was added` : id ? `${ID_KINDS[id.kind] || "ID"} · sealed with its photos` : "Sealed. Nothing here can show it until a live check opens it."}</div>
               <button class="btn primary block" disabled={off} onClick={open}><Icon name="fingerprint" />{card ? "Show the number" : "Open"}</button>
             </div>
-            {off && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="signal" title="Opening needs a connection" text="The document and its key are only in your vault. Nothing here can open it offline." /></div>}
-            <div class="rows" style={{ marginTop: 14 }}>
+            {off && <div class="mt-3"><Banner tone="amber" icon="signal" title="Opening needs a connection" text="The document and its key are only in your vault. Nothing here can open it offline." /></div>}
+            <div class="rows mt-3">
               <Fact k="Kind" v={k.one} />
               {item.tags?.length > 0 && <Fact k="Tags" v={<TagLabels tags={item.tags} />} />}
               <Fact k="Size" v={fmtSize(item.size)} />
@@ -252,7 +252,7 @@ export function Item() {
               {(id?.expiry || card?.expiry || pi?.expires) && <Fact k="Expires" v={id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)} />}
               <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} mine={false} />} />
             </div>
-            <p class="fine" style={{ marginTop: 12 }}>Opening, saving a copy and deleting each need a live check. Every one is recorded in Activity.</p>
+            <p class="fine mt-3">Opening, saving a copy and deleting each need a live check. Every one is recorded in Activity.</p>
           </>
         )}
         {mode === "edit" && (
@@ -267,7 +267,7 @@ export function Item() {
         )}
         {mode === "delete" && (
           <>
-            <div style={{ marginTop: 8 }}><Banner tone="danger" icon="trash" title={`Delete ${item.name}?`} text="It's gone from your vault for good. Copies you saved elsewhere stay." /></div>
+            <div class="mt-2"><Banner tone="danger" icon="trash" title={`Delete ${item.name}?`} text="It's gone from your vault for good. Copies you saved elsewhere stay." /></div>
             <div class="actions">
               <button class="btn danger solid block" onClick={async () => { if (await deleteItem(item)) close(); }}><Icon name="fingerprint" />Delete</button>
               <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>

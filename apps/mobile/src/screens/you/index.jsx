@@ -122,7 +122,7 @@ function CardSheet({ code }) {
     <Sheet onClose={close} eyebrow="Shown once · write it down now" title="Your new recovery card">
       <p class="t2 small">Your old card, if you had one, no longer works. On its own this card opens nothing: recovery also needs your witnesses, your ID chip or a security key.</p>
       <CardBox code={code} />
-      <div class="row-x" style={{ marginTop: 12 }}>
+      <div class="row-x mt-3">
         {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
         <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
         <span class="fine grow">A saved file can sync to your cloud. Paper is safer.</span>

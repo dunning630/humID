@@ -223,6 +223,20 @@ test("controls are the product's own 44 px: segmented controls, the search field
   for (const f of faces) assert.doesNotMatch(noComments(read(f)).replace(/<button class="link" style=\{\{ minHeight: 0 \}\} type="button"/g, ""), /<button[^>]*minHeight: (?:[0-3]?\d|4[0-3])\b/, `${f} shrinks a button below 44 px`);
 });
 
+test("spacing is on the token grid: screens use the mt-/mb- utilities, never an off-grid inline margin", () => {
+  const GRID = new Set([0, 4, 8, 12, 16, 20, 24, 32]);
+  const bad = [], sole = [];
+  for (const f of screens) noComments(read(f)).split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(/\bmargin(?:Top|Bottom|Left|Right): (\d+)\b/g)) if (!GRID.has(Number(m[1]))) bad.push(`${f}:${i + 1}: ${m[0]}`);
+    // a margin alone in an element's style is what the utilities are for
+    for (const m of line.matchAll(/<[a-z][a-z0-9]*\b[^<>]*\sstyle=\{\{ ?margin(?:Top|Bottom): ?\d+ ?\}\}/g)) sole.push(`${f}:${i + 1}: ${m[0].slice(0, 80)}`);
+  });
+  assert.deepEqual(bad, [], "off-grid margins");
+  assert.deepEqual(sole, [], "use class mt-N / mb-N");
+  const css = read("brand/base.css");
+  for (const [k, v] of [["mt-1", "s-1"], ["mt-2", "s-2"], ["mt-3", "s-3"], ["mt-4", "s-4"], ["mt-5", "s-5"], ["mt-6", "s-6"], ["mb-2", "s-2"], ["mb-3", "s-3"]]) assert.match(css, new RegExp(`\\.${k} \\{ margin-(?:top|bottom): var\\(--${v}\\)`), `.${k} is --${v}`);
+});
+
 /** WCAG relative luminance contrast of two #rrggbb colours. */
 function contrast(a, b) {
   const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
