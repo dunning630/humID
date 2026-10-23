@@ -330,6 +330,16 @@ async function readOffline() {
   } catch { return null; }
 }
 
+/**
+ * The offline copy as a decoy session may hold it: the documents (filtered to the decoys by
+ * refresh), the devices (the same in every session) and the ledger (filtered by decoyView).
+ * The real recovery setup and duress status are dropped before any screen can read them.
+ */
+export const decoyCopy = (copy) => {
+  const { recovery, duress, ...rest } = copy || {};
+  return { ...rest, recovery: recovery ? { anchor: { available: !!recovery.anchor?.available }, keys: { available: !!recovery.keys?.available, max: recovery.keys?.max } } : null };
+};
+
 /** Update part of the offline copy. Only from a real, online session. */
 export function keepOffline(patch) {
   const account = S.identity.value?.server?.id;
@@ -362,7 +372,7 @@ async function unlockOffline(used) {
       clearKeys();
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
-    R.offline = copy;
+    R.offline = duress ? decoyCopy(copy) : copy;
     if (duress) dropDrafts();
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;

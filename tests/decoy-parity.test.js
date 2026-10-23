@@ -81,3 +81,53 @@ test("Recovery in a decoy session: calm and generic, no names, no anchor, no car
   assert.equal(S.recovery.value.contacts.n, 2);
   S.resetSession();
 });
+
+test("an offline decoy session takes nothing personal from the offline copy (verify-71 #1)", async () => {
+  const { decoyCopy } = await import("../apps/mobile/src/core/session.js");
+  const real = {
+    card: { exists: true, scheme: "quorum", createdAt: "2026-10-22T10:00:00Z" }, anchor: { available: true, exists: true, document: "passport", country: "UTO" },
+    contacts: { n: 2, threshold: 2, names: ["Mum", "Sam"], scheme: "quorum" }, keys: { available: true, max: 4, list: [{ id: "k", name: "Blue key" }] },
+    proofs: { witness: true, anchor: true, card: true, key: true }, ready: true, settings: { duressAlert: true },
+  };
+  const copy = { v: 1, account: "hid_x", items: [], devices: [{ id: "d" }], ledger: { ok: true, entries: [] }, recovery: real, duress: { lockdown: true, alert: true } };
+  // what unlockOffline keeps for a decoy session
+  const kept = decoyCopy(copy);
+  assert.equal(kept.duress, undefined);
+  assert.doesNotMatch(JSON.stringify(kept), /Mum|Sam|Blue key|passport|2026-10-22/);
+  assert.deepEqual(kept.devices, copy.devices, "devices are the same in every session");
+  // and loadRecovery reads it as a calm account, even from the full real copy
+  for (const offline of [kept, copy]) {
+    R.offline = offline;
+    S.offline.value = { savedAt: "x" };
+    S.decoy.value = true;
+    await loadRecovery();
+    const r = S.recovery.value;
+    assert.deepEqual(r.proofs, { witness: false, anchor: false, card: false, key: false });
+    assert.equal(r.card.exists, false);
+    assert.deepEqual(r.contacts.names, []);
+    assert.doesNotMatch(JSON.stringify(r), /Mum|Sam|Blue key|passport|2026-10-22/);
+    assert.equal(r.anchor.available, true);
+  }
+  // a real offline session still shows its own setup
+  R.offline = copy; S.decoy.value = false;
+  await loadRecovery();
+  assert.equal(S.recovery.value.card.exists, true);
+  S.resetSession(); R.offline = null;
+});
+
+test("every read of the offline copy in core/ is decoy-safe", () => {
+  // Each place that reads R.offline either filters for a decoy session itself, or reads data
+  // a decoy session may show (devices: the same in every session; items: refresh filters to the
+  // decoys; the ledger: loadLedger applies decoyView). unlockOffline keeps only decoyCopy().
+  const core = new URL("../apps/mobile/src/core/", import.meta.url);
+  const reads = [];
+  for (const f of ["recovery.js", "safety.js", "vault.js", "devices.js", "ledger.js", "session.js"]) {
+    readFileSync(new URL(f, core), "utf8").split("\n").forEach((line, i) => { if (/R\.offline\??\.\w/.test(line)) reads.push(`${f}:${line.trim().slice(0, 60)}`); });
+  }
+  const safe = [/^recovery\.js:const copy = R\.offline\?\.recovery/, /^safety\.js:if \(S\.offline\.value\) \{ S\.duressInfo/, /^vault\.js:/, /^devices\.js:/, /^ledger\.js:/];
+  assert.deepEqual(reads.filter((r) => !safe.some((re) => re.test(r))), [], "a new read of the offline copy needs a decoy decision");
+  // loadDuress checks decoy before the copy; loadLedger filters after it
+  const safety = readFileSync(new URL("safety.js", core), "utf8");
+  assert.ok(safety.indexOf("if (S.decoy.value) { S.duressInfo") < safety.indexOf("if (S.offline.value) { S.duressInfo"));
+  assert.match(readFileSync(new URL("session.js", core), "utf8"), /R\.offline = duress \? decoyCopy\(copy\) : copy;/);
+});
