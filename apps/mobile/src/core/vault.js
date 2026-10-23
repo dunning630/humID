@@ -16,6 +16,7 @@ import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline, markPicking } from "./session.js";
 import { openChip } from "./nfc.js";
 import { mark } from "./perf.js";
+import { updateIdentity } from "./identity.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -27,8 +28,7 @@ import { mark } from "./perf.js";
 async function splitKeysRatchet(id) {
   const hint = !!S.server.value?.policy?.splitKeys;
   if (hint && !id.splitKeysSeen) {
-    const next = { ...id, splitKeysSeen: true };
-    try { await R.store.putIdentity(next); S.identity.value = next; } catch { /* remembered next time */ }
+    try { await updateIdentity((cur) => { if (cur.splitKeysSeen) return null; cur.splitKeysSeen = true; }); } catch { /* remembered next time */ }
     return true;
   }
   if (!hint && id.splitKeysSeen) throw Object.assign(new Error("Your vault didn't offer split keys this time, so nothing was sealed. Try again on a connection you trust."), { code: "split_keys_missing" });

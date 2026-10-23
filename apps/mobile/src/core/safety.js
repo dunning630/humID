@@ -16,6 +16,7 @@ import { R } from "./runtime.js";
 import { toast, friendly, cancelled, buzz } from "./notify.js";
 import { withStepUp, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
+import { updateIdentity } from "./identity.js";
 
 /* ---------------- duress ---------------- */
 
@@ -25,10 +26,14 @@ export async function loadDuressSetting(Suite) {
   const { setting, record, unreadable } = await openDuress(Suite, R.settingsKey, id);
   R.duressUnreadable = !!unreadable;
   if (record) {
+    // Only the sealed setting changes, and only if nothing sealed a newer one meanwhile.
     try {
-      delete record.schema;
-      await R.store.putIdentity(record);
-      S.identity.value = { ...record, schema: id.schema ?? 4 };
+      await updateIdentity((cur) => {
+        if (cur.duressSealed !== id.duressSealed) return null;
+        cur.duressSealed = record.duressSealed;
+        cur.duressSealedAt = record.duressSealedAt;
+        delete cur.duress;
+      });
     } catch { /* next unlock tries again */ }
   }
   R.duressSetting = setting;
@@ -39,14 +44,10 @@ export async function loadDuressSetting(Suite) {
 const currentDuress = () => (S.decoy.value || !R.duressSetting ? { ...DURESS_OFF } : { ...R.duressSetting });
 
 export async function saveDuress({ enabled, gesture }) {
-  const id = S.identity.value;
   if (S.decoy.value) { toast(enabled ? "Duress protection is on." : "Duress protection is off."); return true; } // the same words, nothing saved
   try {
-    const record = await sealDuress(suite(id.suite), R.settingsKey, id, { enabled, gesture });
-    delete record.schema;
-    await R.store.putIdentity(record);
+    await updateIdentity((cur) => sealDuress(suite(cur.suite), R.settingsKey, cur, { enabled, gesture }));
     R.duressSetting = { enabled: !!enabled, gesture: gesture === "hold" ? "hold" : "taps" };
-    S.identity.value = { ...record, schema: id.schema ?? 4 };
     S.duressInfo.value = { ...(S.duressInfo.value || {}), setting: currentDuress() };
   } catch (e) { toast(friendly(e), "error"); return false; }
   toast(enabled ? "Duress protection is on." : "Duress protection is off.");
