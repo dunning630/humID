@@ -182,7 +182,9 @@ services:
       <<: *env
       PORT: "8087"
       HUMID_RELAY_MAX_TOTAL_BYTES: ${HUMID_RELAY_MAX_TOTAL_BYTES:-2147483648}
-      HUMID_RELAY_MAX_NET_BYTES_DAY: ${HUMID_RELAY_MAX_NET_BYTES_DAY:-50331648}  # per network (IPv4 address or IPv6 /48)
+      HUMID_RELAY_MAX_NET_BYTES_DAY: ${HUMID_RELAY_MAX_NET_BYTES_DAY:-50331648}  # per network (IPv4 address, IPv6 /64 and /48)
+      HUMID_RELAY_MAX_BLOCK_BYTES_DAY: ${HUMID_RELAY_MAX_BLOCK_BYTES_DAY:-134217728}  # per IPv4 /24 or IPv6 /32, all addresses together
+      HUMID_RELAY_FAIR_ABOVE: ${HUMID_RELAY_FAIR_ABOVE:-0.75}  # past this share of the total, only blocks under a fair share deposit
     volumes: [relay-data:/data]
     healthcheck:
       <<: *health
