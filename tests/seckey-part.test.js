@@ -82,7 +82,7 @@ test("waits: a key counts as a kind; the formula is the one the server uses", ()
 
 test("encodeQuorumPart and decodeQuorumPart accept the key part and still refuse strangers", () => {
   const k = quorumParts(seed).key;
-  assert.deepEqual(decodeQuorumPart(encodeQuorumPart(k)), k);
+  assert.deepEqual(decodeQuorumPart(encodeQuorumPart(k)), { x: k.x, y: k.y }); // the epoch travels in the AAD, not the part
   const bad = encodeQuorumPart(k); bad[0] = 5;
   assert.throws(() => decodeQuorumPart(bad), /Unknown recovery part/);
 });

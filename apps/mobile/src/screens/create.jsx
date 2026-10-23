@@ -1,12 +1,13 @@
 // Create my HumID: (connect, when the build doesn't pin a server) · (access pass, when
-// the server needs one) · lock it to you · your recovery card · you're in.
+// the server needs one) · how you get back in (the recovery mode) · lock it to you ·
+// your recovery card, or for holder-only your second device · you're in.
 import { useState } from "preact/hooks";
 import { Mark, Wordmark } from "../brand/mark.jsx";
 import { Icon } from "../brand/icons.jsx";
 import { Stepper, Banner, AssurancePill, Row } from "../ui/kit.jsx";
 import { CardBox, CardConfirm, PrintableCard, CAN_PRINT } from "../ui/codes.jsx";
 import * as S from "../core/state.js";
-import { enroll, finishEnroll, connectServer, saveCard, redeemAccessCode, resumePass, demoAccessCode, serverPinned, toast } from "../core/index.js";
+import { enroll, finishEnroll, connectServer, saveCard, redeemAccessCode, resumePass, demoAccessCode, serverPinned, toast, HOLDER_ONLY, HARDENED } from "../core/index.js";
 import { parseAccessCode } from "@humid/pass";
 import { serverHost, SERVER_URL } from "../core/config.js";
 import { openExternal } from "../core/external.js";
@@ -100,7 +101,7 @@ export function Create() {
   const step = S.enrollStep.value;
   const hw = S.hwGate.value;
   const [sole, setSole] = useState(false);
-  const steps = [...(serverPinned() ? [] : ["connect"]), ...(S.passNeeded.value ? ["access"] : []), "bind", "done", "in"];
+  const steps = [...(serverPinned() ? [] : ["connect"]), ...(S.passNeeded.value ? ["access"] : []), "mode", "bind", "done", "in"];
   const idx = steps.indexOf(step);
   const at = Math.max(0, idx);
   const go = (i) => (S.enrollStep.value = steps[i]);
@@ -112,6 +113,7 @@ export function Create() {
       <TopBar step={at} steps={steps.length} onBack={back} />
       {step === "connect" && <ConnectStep eyebrow={n("connect")} onNext={next} />}
       {step === "access" && <AccessStep eyebrow={n("access")} onNext={next} />}
+      {step === "mode" && <ModeStep eyebrow={n("mode")} onNext={next} />}
       {step === "bind" && (
         <>
           <div class="eyebrow">{n("bind")} · Lock it to you</div>
@@ -120,11 +122,11 @@ export function Create() {
           <div class="hero" style={{ flex: "0 0 auto", margin: "18px 0 6px" }}><Mark size={150} /></div>
           <div class="foot">
             <SoleBiometric checked={sole} onChange={setSole} />
-            <BindButtons onBind={(demo) => enroll(demo, { soleBiometric: sole })} label="Create" sole={sole} />
+            <BindButtons onBind={(demo) => enroll(demo, { soleBiometric: sole, recoveryMode: S.setupMode.value })} label="Create" sole={sole} />
           </div>
         </>
       )}
-      {step === "done" && <RecoveryCardStep onNext={() => go(steps.indexOf("in"))} />}
+      {step === "done" && (S.recoveryMode.value?.mode === HOLDER_ONLY ? <SecondDeviceStep onNext={() => go(steps.indexOf("in"))} /> : <RecoveryCardStep onNext={() => go(steps.indexOf("in"))} />)}
       {step === "in" && <YoureIn />}
     </main>
   );
@@ -171,6 +173,94 @@ function AccessStep({ eyebrow, onNext }) {
   );
 }
 
+/**
+ * How you get back in if you lose every device: the recovery mode. Hardened is selected and
+ * labelled recommended; holder-only is a real choice with its consequence said plainly.
+ * The choice is signed by the account key during the next step's check.
+ */
+export const MODE_CHOICES = [
+  {
+    id: HARDENED, icon: "shield", title: "A safe way back in", tag: "Recommended",
+    text: "Set up two ways to prove it's you later: people you trust, your passport or ID card, a recovery card, a security key. To get back in you use any two of them, then there's a wait during which any device you still have can cancel it.",
+    cost: "More ways back in, but some of that proof is kept on HumID's servers, locked so they can't open it on their own.",
+  },
+  {
+    id: HOLDER_ONLY, icon: "key", title: "Only my own devices", tag: "Most private",
+    text: "Your documents open only on a phone or computer you've already set up. If you lose every one of them, no one can get your documents back: not your friends, not your ID, not HumID.",
+    cost: "There's nothing anyone could be forced or tricked into handing over. You'll need a second device, set up now, so one lost phone is never the end.",
+  },
+];
+
+function ModeStep({ eyebrow, onNext }) {
+  const pick = S.setupMode.value;
+  const [sure, setSure] = useState(false);
+  const holderOnly = pick === HOLDER_ONLY;
+  return (
+    <>
+      <div class="eyebrow">{eyebrow} · Getting back in</div>
+      <h1 style={{ marginTop: 8 }}>If you lose every device</h1>
+      <p class="lede" style={{ marginTop: 10 }}>How do you want to be able to get back in? You can change this later under You → Recovery.</p>
+      <div class="options" style={{ marginTop: 18 }} role="radiogroup" aria-label="How you get back in">
+        {MODE_CHOICES.map((c) => (
+          <button class="option" role="radio" aria-checked={pick === c.id} data-mode={c.id} onClick={() => { S.setupMode.value = c.id; setSure(false); }}>
+            <span class="lead"><Icon name={c.icon} /></span>
+            <span>
+              <span class="title">{c.title} <span class={`pill ${c.id === HARDENED ? "mint" : ""}`} style={{ marginLeft: 6 }}>{c.tag}</span></span>
+              <span class="sub" style={{ display: "block" }}>{c.text}</span>
+              <span class="sub muted" style={{ display: "block", marginTop: 4 }}>{c.cost}</span>
+            </span>
+            {pick === c.id ? <Icon name="check" /> : <span />}
+          </button>
+        ))}
+      </div>
+      {holderOnly && (
+        <div class="card" style={{ marginTop: 14 }} id="mode-sure">
+          <Banner tone="danger" icon="alert" title="Lose every device, lose your vault" text="HumID will keep no way to bring it back. Not even we can help, by design." />
+          <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 8 }}>
+            <span><span class="title">I understand. I'll set up a second device</span></span>
+            <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
+          </button>
+        </div>
+      )}
+      <div class="foot">
+        <button class="btn primary block" onClick={() => {
+          if (holderOnly && !sure) {
+            const el = document.getElementById("mode-sure");
+            el?.scrollIntoView({ block: "center", behavior: "smooth" });
+            el?.querySelector("[role=checkbox]")?.focus({ preventScroll: true });
+            return toast("First confirm you understand: only your own devices can bring your vault back.", "warn");
+          }
+          onNext();
+        }}>Next: lock it to you</button>
+        <p class="fine center">{holderOnly ? "Only your own devices · no recovery kept anywhere" : "Two proofs, a wait, and a veto from your devices"}</p>
+      </div>
+    </>
+  );
+}
+
+/** Holder-only: the second device is the only safety net, so setup asks for it now, loudly. */
+function SecondDeviceStep({ onNext }) {
+  const [later, setLater] = useState(false);
+  return (
+    <>
+      <div class="eyebrow">Only your own devices · do this now</div>
+      <h1 style={{ marginTop: 8 }}>Add a second device</h1>
+      <p class="lede" style={{ marginTop: 10 }}>Right now this phone is the only way into your vault. If it's lost, broken or stolen, your documents are gone for good. A second phone, tablet or computer you keep somewhere else fixes that.</p>
+      <div class="rows" style={{ marginTop: 16 }}>
+        <Row icon="key" tone="mint" chevron={false} title="On the other device" sub="Install HumID, then choose I already have HumID → From another device. It shows a code." />
+        <Row icon="fingerprint" tone="mint" chevron={false} title="On this phone" sub="Open your vault, then You → Devices → Add a device, and type or scan that code." />
+      </div>
+      <div style={{ marginTop: 14 }}><Banner tone="danger" icon="alert" title="Until then, one lost phone is the end" text="HumID keeps no recovery for you: no card, no witnesses, nothing on our servers. That's what makes it private." /></div>
+      <div class="foot">
+        <button class="btn primary block" onClick={() => { finishEnroll(); S.push.value = { type: "devices", open: "add" }; S.tab.value = "you"; }}><Icon name="plus" />Add my second device now</button>
+        {!later
+          ? <button class="link muted" onClick={() => setLater(true)}>Not now</button>
+          : <button class="btn ghost block" onClick={onNext}>I'll add it soon. I know a lost phone means a lost vault</button>}
+      </div>
+    </>
+  );
+}
+
 /** The recovery card: shown once. Write it down, type one group back, then on. */
 function RecoveryCardStep({ onNext }) {
   const code = S.cardCode.value;
@@ -209,6 +299,7 @@ function RecoveryCardStep({ onNext }) {
 }
 
 function YoureIn() {
+  const holderOnly = S.recoveryMode.value?.mode === HOLDER_ONLY;
   return (
     <>
       <div class="hero" style={{ flex: "0 0 auto", marginTop: 4 }}><Mark state="verified" size={150} /></div>
@@ -217,7 +308,9 @@ function YoureIn() {
       <p class="center" style={{ marginTop: 10 }}><AssurancePill assurance={S.identity.value?.assurance} /></p>
       <div class="foot">
         <button class="btn primary mint lg block" onClick={finishEnroll}><Icon name="vault" />Open my vault</button>
-        <p class="fine center">Next, under You: a second proof and a second device, so a lost phone is never an emergency.</p>
+        <p class="fine center">{holderOnly
+          ? "Next, under You → Devices: a second device. It's the only way back in if you lose this phone."
+          : "Next, under You: a second proof and a second device, so a lost phone is never an emergency."}</p>
       </div>
     </>
   );

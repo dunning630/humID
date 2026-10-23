@@ -106,8 +106,9 @@ it until that review and the items under *Before real data* are done.
   account ([ANONYMITY.md](ANONYMITY.md) lists what that doesn't cover: network,
   timing within a day, the seller). A document's location stamp, like its name,
   is inside the encrypted index: the server never sees it. The public log reveals the total number of
-  ledger events. The server holds a keyed hash of an anchored ID's stable
-  fields, and its issuing country.
+  ledger events. The server holds a keyed fingerprint of an anchored ID chip's own key
+  (not the holder's details), and its issuing country. A holder-only account has no
+  recovery material on the server at all ([RECOVERY.md](RECOVERY.md#two-recovery-modes)).
 - **Demo mode has no biometric.** It exists only in local development builds
   (`npm run dev`); release builds don't contain it, and servers refuse it
   unless `HUMID_DEVICE_POLICY=demo`.

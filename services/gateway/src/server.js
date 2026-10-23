@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, identityId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 import { rateKey, isBox, TAG_RE } from "@humid/msg/relay-rules";
 
@@ -17,6 +17,8 @@ const ID_RE = "hid_[0-9a-f]{40}";
 const DEV_RE = "dev_[0-9a-f]{24}";
 const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
+/** A recovery request's code: 16 characters, it lives up to a week (CRYPTO-08). Older 12-character ones still work. */
+const RCODE_RE = "[0-9A-HJKMNP-TV-Z]{12}(?:[0-9A-HJKMNP-TV-Z]{4})?";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
 const KEY_RE = "[0-9a-f]{32}";
@@ -39,6 +41,8 @@ const REGISTRATION = ["pass", "open"];
 const re = (s) => new RegExp(`^${s}$`);
 /** How a device may join an existing account: an approved link, or a released recovery (never "register"). */
 const ENROL_VIA = new Set(["link", "card", "contacts", "quorum"]);
+/** The account id a registration's ML-DSA-87 key will have (base64url key → hid_…). */
+const identityOf = (dsaPkB64) => { try { return identityId(unb64u(String(dsaPkB64 || ""))); } catch { return ""; } };
 
 /**
  * Inner routes the app may call. Anything else is a 404, so internal routes
@@ -100,20 +104,25 @@ const ROUTES = [
   { m: "GET", p: re("/recovery/protecting/alerts"), to: "recovery", path: "/protecting/alerts", auth: true },
   // identity anchor (passport or ID chip) and recovery settings
   { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
-  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
+  { m: "POST", p: re("/recovery/anchor/challenge"), to: "recovery", path: "/anchor/challenge", auth: true },
+  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, version: r?.version, proof: su?.proof }) },
   { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
   // security keys (4.0, docs/SECURITY-KEY.md): adding or removing one is a guarded change
   { m: "GET", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true },
   { m: "POST", p: re("/recovery/keys/challenge"), to: "recovery", path: "/keys/challenge", auth: true },
   { m: "POST", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_added", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
   { m: "DELETE", p: re(`/recovery/keys/(${KEY_RE})`), to: "recovery", path: "/keys/$1", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: 0, removed: r?.removed, proof: su?.proof }) },
+  // Recovery mode (docs/RECOVERY.md#two-recovery-modes): holder-only or hardened, signed by the account key.
+  { m: "GET", p: re("/recovery/mode"), to: "recovery", path: "/mode", auth: true },
+  { m: "POST", p: re("/recovery/mode"), h: "setRecoveryMode", auth: true, guard: true },
   { m: "GET", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true },
   { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
   // verification stations
   { m: "GET", p: re("/recovery/station"), to: "recovery", path: "/station", auth: true },
-  { m: "GET", p: re(`/recovery/station/requests/(${CODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/station/requests/(${RCODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
   // recovering on a new device
   { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
   { m: "GET", p: re(`/recovery/requests/(${REQ_RE})`), to: "recovery", path: "/requests/$1", anon: true },
@@ -122,8 +131,8 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key/challenge`), to: "recovery", path: "/requests/$1/key/challenge", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key`), h: "addEvidence", kind: "key", anon: true },
-  { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
-  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/help/(${RCODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
+  { m: "POST", p: re(`/recovery/help/(${RCODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
   { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
 
@@ -473,10 +482,18 @@ export function createGateway({
         spent = sp.data.spent;
       }
       const refund = () => spent && internalJson("access", "POST", "/internal/refund", { json: { spent } }).catch((e) => log.warn("pass refund failed", { err: e.message }));
+      // The recovery mode chosen at setup, signed by the account key. The recovery service learns
+      // it first: if it can't, nothing is created, so a holder-only account is never one it would
+      // store recovery material for.
+      const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, sig: r.recoveryMode.sig } : null;
+      if (mode) {
+        const m = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: identityOf(r.dsaPk), dsaPk: r.dsaPk, ...mode } }).catch(() => ({ status: 503, data: { error: "recovery_unavailable", message: "recovery service is unavailable" } }));
+        if (m.status !== 200) { await refund(); fail(m); }
+      }
       let reg;
       try {
         reg = await internalJson("identity", "POST", "/internal/register", {
-          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy },
+          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy, ...(mode ? { recoveryMode: mode } : {}) },
         });
       } catch (e) { await refund(); throw e; }
       if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
@@ -485,6 +502,7 @@ export function createGateway({
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
+      if (reg.status === 201 && mode) await recordQuietly(s.subject, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)) });
       // A recovery card made with the account: the registration itself was the live check.
       let cardSet = false;
       if (reg.status === 201 && r.card) {
@@ -639,6 +657,34 @@ export function createGateway({
       s.closeAfterReply = true;
       dropWhere((x) => x !== s && x.subject === subject);
       return { status: closed.status, json: { closed: closed.status === 200, erasedItems: wiped.data.deleted } };
+    },
+
+    /**
+     * Change this account's recovery mode, with a fresh live check. The statement is signed by
+     * the account key (only a device holding the seed can make one), and every service checks
+     * it again. To holder-only, the recovery service goes first: it refuses while any card,
+     * witnesses, ID anchor or security key is left (the app deletes each one first, each under
+     * its own step-up). To hardened, identity goes first. Either way a half-done switch leaves
+     * the stricter answer in force, and the ledger entry is written before the second service
+     * is told: if the ledger can't record it, the switch stops there.
+     */
+    async setRecoveryMode(s, body, stepUp) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Changing how you recover needs a fresh biometric check.");
+      const r = parseJson(body) || {};
+      const statement = { mode: r.mode, version: r.version, epoch: r.epoch, sig: r.sig };
+      const cur = await internalJson("identity", "GET", `/internal/recovery-mode/${s.subject}`).catch(() => ({ status: 503 }));
+      if (cur.status !== 200) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
+      const toRecovery = () => internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: s.subject, dsaPk: cur.data.dsaPk, ...statement } });
+      const toIdentity = () => internalJson("identity", "POST", "/internal/recovery-mode", { json: { account: s.subject, ...statement } });
+      const steps = r.mode === "holder-only" ? [toRecovery, toIdentity] : [toIdentity, toRecovery];
+      // Checked once before anything is written, so a bad statement leaves no ledger entry.
+      const probe = await steps[0]();
+      if (probe.status !== 200) fail(probe);
+      const from = cur.data.recoveryMode || { mode: "hardened", epoch: 1 };
+      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), proof: stepUp.proof });
+      const done = await steps[1]();
+      if (done.status !== 200) fail(done);
+      return { status: 200, json: { mode: r.mode, version: r.version, epoch: r.epoch } };
     },
 
     // A new device asks to recover. For a card the account is known now, so its devices are alerted now.

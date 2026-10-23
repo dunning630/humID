@@ -12,7 +12,7 @@ import { identityId, random, ml_dsa87, b64u } from "@humid/htp";
 import { cosignMessage } from "@humid/audit";
 import {
   newCard, cardTag, sealCardPart, openCardPart, split, combine, encodeShare, decodeShare,
-  quorumParts, encodeQuorumPart, decodeQuorumPart, combineQuorum, QUORUM,
+  quorumParts, decodeQuorumPart, combineQuorum, QUORUM, anchorPartKey, sealAnchorPart, openAnchorPart,
 } from "@humid/recovery";
 import { makeHolder, anotherDevice, register, sealFor, sealBytes } from "./holder.js";
 import { testCsca, testPassport } from "../support/passport.js";
@@ -53,8 +53,14 @@ before(async () => {
   await phone.setContacts({ threshold: 2, guardians, scheme: "quorum" }, alice.stepUp);
 
   passport = testPassport({ csca, mrz: { surname: "LIDDELL", given: "ALICE" } });
-  await phone.setAnchor({ chip: passport, part: encodeQuorumPart(parts.anchor) }, alice.stepUp);
+  await linkChip(alice, phone, passport, parts.anchor);
 });
+
+/** As the app links an ID chip: the live chip answers a challenge; the part is sealed to that chip. */
+async function linkChip(h, api, chip, part) {
+  const nonce = await api.anchorChallenge();
+  return api.setAnchor({ chip, sealedPart: await sealAnchorPart(anchorPartKey(chip.dg15), part, h.id), signature: chip.answer(nonce) }, h.stepUp);
+}
 after(async () => { await stack?.stop(); });
 
 /* ---------------- helpers: a new device, and Alice's people ---------------- */
@@ -90,6 +96,12 @@ async function finish(dev, released) {
     parts.push({ x: QUORUM.witness, y: combine(pieces) });
   }
   if (released.anchorPart) parts.push(decodeQuorumPart(released.anchorPart));
+  // The anchor part as Alice's phone sealed it: the recovering device opens it with the chip it read
+  // (after a station, the station hands it the chip's key, sealed to this device's recovery keys).
+  if (released.anchorSealed) {
+    const dg15 = released.anchorKey ? (await S.open(released.anchorKey, dev.rk)).bytes : passport.dg15;
+    parts.push(await openAnchorPart(anchorPartKey(dg15), released.anchorSealed, released.account));
+  }
   const seed = combineQuorum(parts);
   const keys = S.deriveKeys(seed);
   assert.equal(identityId(keys.dsaPk), alice.id, "two proofs rebuild Alice's seed");
@@ -124,14 +136,15 @@ test("setup: the server knows which proofs exist, and stores nothing that opens 
   const row = db.prepare("SELECT * FROM anchors WHERE account = ?").get(alice.id);
   db.close();
   assert.ok(!JSON.stringify(row).includes("LIDDELL"), "no names on file");
-  assert.equal(row.blob.length, 12 + 65 + 16, "the anchor part is stored encrypted");
-  // Someone else can't anchor their HumID to Alice's passport.
+  assert.equal(row.blob.length, 12 + (12 + 65 + 16) + 16, "the anchor part is stored sealed by the phone, and wrapped again");
+  assert.equal(row.version, 2);
+  // Someone else can't anchor their HumID to Alice's passport, even holding it.
   const mallory = makeHolder("mallory-anchor");
   const mapi = await register(mallory, stack.baseUrl);
-  await assert.rejects(mapi.setAnchor({ chip: passport, part: encodeQuorumPart(quorumParts(mallory.seed).anchor) }, mallory.stepUp), (e) => e.code === "anchor_taken");
+  await assert.rejects(linkChip(mallory, mapi, passport, quorumParts(mallory.seed).anchor), (e) => e.code === "anchor_taken");
   // An untrusted country's passport is refused.
   const fake = testPassport({ csca: testCsca("Nowhere") });
-  await assert.rejects(mapi.setAnchor({ chip: fake, part: encodeQuorumPart(quorumParts(mallory.seed).anchor) }, mallory.stepUp), (e) => e.code === "untrusted_country");
+  await assert.rejects(linkChip(mallory, mapi, fake, quorumParts(mallory.seed).anchor), (e) => e.code === "untrusted_country");
 });
 
 /* ---------------- one proof is never enough ---------------- */
@@ -186,7 +199,7 @@ test("seal card + live ID chip (no people): the 7-day tier, and only a chip that
   const wait = r.releaseAt - Date.now();
   assert.ok(wait > (DELAY * 7) / 3 - 1000 && wait <= (DELAY * 7) / 3, `card + chip waits 7/3 × base (${wait})`);
   const released = await waitFor(dev.api, dev.req.id, wait + 150);
-  assert.ok(released.anchorPart && released.blob && !released.shares);
+  assert.ok(released.anchorSealed && !released.anchorPart && released.blob && !released.shares, "the anchor part arrives as the phone sealed it");
   const joined = await finish(dev, released);
   await phone.removeDevice(joined.api.session.device, alice.stepUp);
 });
@@ -217,7 +230,13 @@ test("station: the 24-hour tier; only stations can vouch, only after their check
   await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: noKey, checks: all, signature: passport.answer(nonce) }, station.stepUp), (e) => e.code === "no_chip_proof", "leaving DG15 out doesn't dodge the challenge");
   await assert.rejects(witnessApis[0].stationChallenge(dev.req.code), (e) => e.code === "not_a_station");
   nonce = await stationApi.stationChallenge(dev.req.code);
-  const v = await stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(nonce) }, station.stepUp);
+  // The station must hand the chip's key to the recovering phone (Alice's part opens only with it).
+  await assert.rejects(stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(nonce) }, station.stepUp), (e) => e.code === "update_required");
+  nonce = await stationApi.stationChallenge(dev.req.code);
+  // ...sealed to the keys the recovery code commits to (the API checks them against the code).
+  const req = await stationApi.stationRequest(dev.req.code);
+  const chipKey = await sealBytes(station, passport.dg15, { kemPk: req.kemPk, xPk: req.xPk });
+  const v = await stationApi.stationVerify(dev.req.code, { chip: passport, checks: all, signature: passport.answer(nonce), chipKey }, station.stepUp);
   assert.equal(v.verified, true);
   assert.equal(v.chipProof, true);
   assert.equal(v.account, undefined, "the operator doesn't learn whose HumID it is");
@@ -225,7 +244,7 @@ test("station: the 24-hour tier; only stations can vouch, only after their check
   assert.ok(v.releaseAt - Date.now() <= DELAY / 3);
 
   const released = await waitFor(dev.api, dev.req.id, v.releaseAt - Date.now() + 150);
-  assert.ok(released.anchorPart && released.shares);
+  assert.ok(released.anchorSealed && released.anchorKey && released.shares, "with the chip key the station sealed to this device");
   const joined = await finish(dev, released);
   const types = (await phone.ledger()).entries.map((e) => e.type);
   assert.ok(types.includes("recovery.station_verified"));
@@ -250,7 +269,7 @@ test("veto: any surviving device cancels, and the requesting device gets nothing
   await cancelAll();
   const st = await waitFor(dev.api, dev.req.id, DELAY + 150);
   assert.equal(st.status, "cancelled");
-  assert.equal(st.blob ?? st.shares ?? st.anchorPart, undefined);
+  assert.equal(st.blob ?? st.shares ?? st.anchorPart ?? st.anchorSealed, undefined);
 });
 
 /* ---------------- duress ---------------- */
