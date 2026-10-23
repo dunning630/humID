@@ -21,6 +21,7 @@ export const R = {
   indexKey: null,      // decrypts item names while unlocked; wiped on lock
   offlineKey: null,    // seals this device's offline copy while unlocked; wiped on lock
   settingsKey: null,   // opens this device's sealed settings (duress gesture); wiped on lock
+  msgKey: null,        // 4.0 messaging: seals the contact list and wraps conversation keys; wiped on lock
   duressSetting: null, // { enabled, gesture } once a live check opened it; cleared on lock
   duressUnreadable: false,
   offline: null,       // the offline copy, as last saved (in memory while unlocked)

@@ -1,6 +1,6 @@
 // Boot, the connection to the vault server, unlock and lock, the offline copy, and
 // the rules for leaving the screen. The one place the app's view changes hands.
-import { batch } from "@preact/signals";
+import { batch, effect } from "@preact/signals";
 import { fromB64 } from "@humid/codec";
 import { suite } from "@humid/crypto";
 import { adapter as gateAdapter, demoGate, bestHardwareGate, ASSURANCE } from "@humid/gate";
@@ -71,8 +71,21 @@ export async function resetSimulation() {
 
 /* ---------------- boot ---------------- */
 
+/**
+ * 4.0 messaging: loaded and started once the vault is open, if this server runs a relay
+ * (never in the first paint, never offline). Locking stops it and forgets what it decrypted.
+ */
+function watchMessaging() {
+  effect(() => {
+    if (S.view.value === "app" && S.messagingOn.value && !S.offline.value && R.msgKey) {
+      import("./messaging.js").then((m) => m.start()).catch(() => {});
+    }
+  });
+}
+
 export async function boot() {
   R.store = await openStore();
+  watchMessaging();
   R.hooks.keyGone = keyGone;
   S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
@@ -398,6 +411,7 @@ export function lock(reason) {
   R.knownNames.clear();
   clearTimeout(idleTimer);
   R.hooks.stopCheckinWatch?.();
+  R.hooks.stopMessaging?.();
   keepDraft();
   batch(() => {
     S.view.value = "locked";

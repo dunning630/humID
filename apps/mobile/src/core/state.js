@@ -57,6 +57,15 @@ export const chipRead = signal(null);        // { stage, message, fraction, erro
 export const simLog = signal([]);
 export const simShow = signal(null);         // a report to show in the checks sheet
 
+// Person to person (4.0, docs/MESSAGING.md). liveAt: when this phone's holder last passed a live
+// check (0 = not this session); the human-to-human rule shows message content only while it's fresh.
+export const liveAt = signal(0);
+// The Messages tab: { ready, error, contacts, invites, requests, newCount } (core/messaging.js), or null.
+export const msg = signal(null);
+// The open conversation, only while its holder's check is fresh: { id, messages, notices } or null.
+export const thread = signal(null);
+export const messagingOn = computed(() => !!server.value?.policy?.messaging);
+
 export const interrupt = signal(null);       // overlay state
 export const sheet = signal(null);           // { type, ... } one bottom sheet at a time; each type rendered by one file
 export const push = signal(null);            // { type, ... } one pushed (full-screen) step over the tabs

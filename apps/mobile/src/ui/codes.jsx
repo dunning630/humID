@@ -77,9 +77,9 @@ export function PrintableCard({ code }) {
 // expires. The code is what commits to the keys, so scanning is only a convenience:
 // what's scanned is checked like a typed code, never opened or run.
 
-export function QrCode({ kind, code, expiresAt, size = 184 }) {
+export function QrCode({ kind, code, expiresAt, size = 184, payload = null }) {
   let q;
-  try { q = qrcode(0, "M"); q.addData(qrPayload(kind, code, expiresAt)); q.make(); }
+  try { q = qrcode(0, "M"); q.addData(payload || qrPayload(kind, code, expiresAt)); q.make(); }
   catch { return null; }
   const n = q.getModuleCount();
   let d = "";
@@ -102,7 +102,7 @@ const QR_FOR = { link: "adding a device", recover: "a recovery", contact: "a wit
  * Uses the platform's barcode detector where there is one, jsQR otherwise. Frames are
  * analysed at 640 px wide, five times a second: enough for a QR, light on the battery.
  */
-export function Scanner({ onCode, onCancel, expect }) {
+export function Scanner({ onCode, onCancel, expect, parse = null }) {
   const video = useRef(null);
   const [err, setErr] = useState(null);
   const [hint, setHint] = useState(null);
@@ -140,9 +140,10 @@ export function Scanner({ onCode, onCancel, expect }) {
               }
             } catch { /* keep looking */ }
             if (text) {
-              const hit = parseQr(text);
+              // parse: a screen's own reader (4.0 invite codes); otherwise HumID's 12-character codes
+              const hit = parse ? parse(text) : parseQr(text);
               if (!hit) setHint("That isn't a HumID code. Type the code instead.");
-              else if (hit.kind !== expect) setHint(`That code is for ${QR_FOR[hit.kind]}, not this.`);
+              else if (!parse && hit.kind !== expect) setHint(`That code is for ${QR_FOR[hit.kind]}, not this.`);
               else if (hit.expiresAt <= Date.now()) setHint("That code has expired. Start again on the other device.");
               else { stop = true; onCode(hit); return; }
             }

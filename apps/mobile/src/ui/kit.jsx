@@ -23,6 +23,8 @@ export function useNow(ms = 1000) {
 }
 
 /* ---------- the check (the biological interrupt) ---------- */
+// Sending and opening a conversation: the same check, shown as a compact card (core/interrupt.js COMPACT).
+const COMPACT_CHECKS = new Set(["send", "read"]);
 export function Interrupt() {
   const it = S.interrupt.value;
   const [holding, setHolding] = useState(false);
@@ -36,9 +38,9 @@ export function Interrupt() {
   const stop = () => { clearTimeout(timer.current); setHolding(false); };
   const title = it.state === "verified" ? "It's you" : it.state === "failed" ? "Not verified" : "Checking it's you";
   return (
-    <div class="interrupt" data-state={it.state} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite" tabIndex={-1} ref={root}>
+    <div class="interrupt" data-state={it.state} data-compact={COMPACT_CHECKS.has(it.purpose) ? "" : undefined} role="dialog" aria-modal="true" aria-labelledby="int-title" aria-live="polite" tabIndex={-1} ref={root}>
       <div class="eyebrow">{title}</div>
-      <Mark state={it.state} progress={it.progress} size={168} />
+      <Mark state={it.state} progress={it.progress} size={COMPACT_CHECKS.has(it.purpose) ? 72 : 168} />
       <h2 id="int-title">{it.label}</h2>
       <p>{it.message}</p>
       {it.needsHold && (
@@ -171,18 +173,21 @@ export function Confirm({ title, text, action, danger = true, onConfirm, onClose
 }
 
 /* ---------- tab bar ---------- */
+// Messages appears only when the server runs a messaging relay (4.0).
 export const TABS = [
   { id: "vault", label: "Vault", icon: "vault" },
+  { id: "messages", label: "Messages", icon: "chat", when: () => S.messagingOn.value },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "you", label: "You", icon: "person" },
 ];
 export function TabBar() {
+  const n = S.msg.value?.newCount || 0;
   return (
     <nav class="tabbar" aria-label="Sections" role="tablist">
-      {TABS.map((t) => (
+      {TABS.filter((t) => !t.when || t.when()).map((t) => (
         <button role="tab" aria-selected={S.tab.value === t.id} aria-current={S.tab.value === t.id ? "page" : undefined}
           onClick={() => { S.sheet.value = null; S.tab.value = t.id; window.scrollTo({ top: 0 }); }}>
-          <Icon name={t.icon} />
+          <span class="tab-ico"><Icon name={t.icon} />{t.id === "messages" && n > 0 && <span class="badge" aria-label={`${n} new`}>{n > 9 ? "9+" : n}</span>}</span>
           {t.label}
         </button>
       ))}
