@@ -29,9 +29,11 @@ async function edgeWith(trustForwarded) {
 }
 async function hellos(base, n, header) {
   const j = await (await fetch(`${base}/htp/v1/keys`)).json();
-  const body = JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
+  const server = { kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) };
   let ok = 0;
   for (let i = 0; i < n; i++) {
+    // a fresh hello each time: the gateway refuses a replayed one before any work (CRYPTO-04)
+    const body = JSON.stringify(clientHello(server).wire);
     const r = await fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json", ...header(i) }, body });
     if (r.status === 200) ok++;
   }
