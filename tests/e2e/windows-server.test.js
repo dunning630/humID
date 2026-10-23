@@ -46,6 +46,13 @@ test("init writes settings with a fresh internal key pair; set validates", async
   assert.throws(() => host("set", "HUMID_REGISTRATION=free"), /pass or open/);
   assert.throws(() => host("set", "HUMID_DEVICE_POLICY=pin"), /attested, biometric, demo/);
   assert.doesNotMatch(host("show"), /SK=[^(]/, "show hides the secret key");
+  // `humid show | grep -q …`: the reader leaves before show writes; show stops quietly (no EPIPE crash)
+  const early = spawn(process.execPath, ["--no-warnings", program, "show", "--root", root], { stdio: ["ignore", "pipe", "pipe"] });
+  early.stdout.destroy();
+  let err = "";
+  early.stderr.on("data", (d) => (err += d));
+  const code = await new Promise((r) => early.on("close", r));
+  assert.equal(code, 0, `show into a closed pipe: ${err}`);
 });
 
 test("default policy: the server refuses a device that can't prove a live check", async () => {

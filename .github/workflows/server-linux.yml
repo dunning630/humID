@@ -54,7 +54,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pkg" && tar -xzf deploy/linux/out/HumID-Server-Linux-*.tar.gz -C "$RUNNER_TEMP/pkg"
           sudo "$RUNNER_TEMP/pkg/humid-server/bin/humid" install --policy biometric
           sudo humid status
+          # grep -q leaves as soon as it matches; show must stop quietly, not crash on EPIPE
           sudo humid show | grep -q '^HUMID_SEAL=file'
+          sudo humid show | head -1 >/dev/null
           test "$(sudo stat -c '%U %a' /var/lib/humid)" = "humid 700"
           sudo humid selftest
           code=$(sudo humid mint 1 ci | grep -o 'HA-[0-9A-Z-]*' | tail -1)

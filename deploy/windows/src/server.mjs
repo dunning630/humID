@@ -415,4 +415,11 @@ function sealStatus() {
   process.stdout.write(JSON.stringify(out) + "\n");
 }
 
+// A one-shot command piped into something that stops reading early (`humid show | grep -q`,
+// `| head`) is done, not broken: stop quietly instead of crashing on EPIPE. Not for "run",
+// whose output goes to the service log.
+if (command !== "run") {
+  process.stdout.on("error", (e) => { if (e.code === "EPIPE") process.exit(0); throw e; });
+}
+
 main().catch((e) => fail(e.code === "bad_config" ? e.message : e.stack || String(e)));
