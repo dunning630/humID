@@ -38,6 +38,8 @@ export const importStatics = (j) =>
 export const PENDING_IDLE_MS = 2 * 60 * 1000;
 /** Sessions that haven't signed in, per client group (an IPv4 address or an IPv6 /64). */
 export const PENDING_PER_GROUP = 20;
+/** Signed-in sessions one account may hold at once (several devices, plus reconnects not yet idle). */
+export const SIGNED_IN_PER_SUBJECT = 16;
 
 export class HtpServer {
   /**
@@ -46,7 +48,7 @@ export class HtpServer {
    * pendingPerGroup / pendingIdleMs: how many sessions one client group may hold before
    * signing in, and how long one may sit unused (CRYPTO-04).
    */
-  constructor(statics, { maxSessions = 50_000, idleMs = SESSION_IDLE_MS, maxMs = SESSION_MAX_MS, pendingIdleMs = PENDING_IDLE_MS, pendingPerGroup = PENDING_PER_GROUP } = {}) {
+  constructor(statics, { maxSessions = 50_000, idleMs = SESSION_IDLE_MS, maxMs = SESSION_MAX_MS, pendingIdleMs = PENDING_IDLE_MS, pendingPerGroup = PENDING_PER_GROUP, perSubject = SIGNED_IN_PER_SUBJECT } = {}) {
     this.statics = statics;
     this.sessions = new Map();
     this.maxSessions = maxSessions;
@@ -54,6 +56,7 @@ export class HtpServer {
     this.maxMs = maxMs;
     this.pendingIdleMs = pendingIdleMs;
     this.pendingPerGroup = pendingPerGroup;
+    this.perSubject = perSubject;
     // Client nonces of accepted hellos, until the hello's time window closes: a captured hello
     // can't be replayed to make the server do the handshake work and hold a slot again.
     this.helloNonces = new Map(); // nC -> expires
@@ -117,6 +120,19 @@ export class HtpServer {
     if (this.sessions.size < this.maxSessions) return;
     if (!oldest) throw new HtpServerError(503, "busy", "Too many sessions");
     this.drop(oldest);
+  }
+
+  /**
+   * A session has just signed in as `session.subject`. An account may hold `perSubject`
+   * signed-in sessions; past that, its own least recently used one is dropped, never the new
+   * one (a holder signing in to meet a Check-in deadline always gets in) and never another
+   * account's. So filling the table with signed-in sessions takes maxSessions / perSubject
+   * accounts, each one paid for and proven live, not one account signing in again and again.
+   */
+  signedIn(session) {
+    const mine = [...this.sessions.values()].filter((x) => x !== session && x.subject && x.subject === session.subject);
+    mine.sort((a, b) => a.touchedAt - b.touchedAt);
+    while (mine.length >= this.perSubject) this.drop(mine.shift());
   }
 
   rememberHello(nC, expires, now) {

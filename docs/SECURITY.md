@@ -122,6 +122,30 @@ it until that review and the items under *Before real data* are done.
 - **Demo mode has no biometric.** It exists only in local development builds
   (`npm run dev`); release builds don't contain it, and servers refuse it
   unless `HUMID_DEVICE_POLICY=demo`.
+- **A new install takes the ledger's key on trust unless the build carries
+  it.** Activity checks the history against the ledger's signing key. A
+  release built with `HUMID_LEDGER_KEY_FP` (the fingerprint
+  `deploy/setup.sh` prints, set as a repository variable) checks it against
+  that key from the first run. Without it, a new install, or one whose data
+  was cleared, pins the first ledger key it's shown. A server already
+  malicious at that moment could present a history under a key of its own,
+  and that install would believe it until the key changed. The public log
+  and cosigners still see the real one. *Release apps* warns when the
+  variable isn't set.
+- **The phone's memory of document versions is only as old as its storage.**
+  To stop the vault from serving back an older index entry (a decoy flag
+  you turned off, an old name or pin), the phone keeps the highest version
+  it has seen for each document, sealed in its own storage (`index-revs`
+  under the index key). With that store missing, on a new install, a second
+  phone, after the app's data is cleared, or after a restore, the phone
+  starts from whatever the vault shows. The vault could then serve any
+  entry this account once sealed for that document, as long as it's still
+  bound to the document and still opens. From that point on, nothing older
+  than what the phone saw is accepted. Entries sealed before 4.1 also carry
+  no version until the app re-seals them, which it does the next time it
+  lists the vault online. Removing a document from the decoy view protects
+  you against a coercer only once the phone that made the change has seen
+  it saved.
 - **Server keys are files.** The gateway's HTP key, the ledger's signing key,
   the access service's pass keys and keyshare's `share-key.bin` live on the
   server's volumes, not in a hardware security module.
