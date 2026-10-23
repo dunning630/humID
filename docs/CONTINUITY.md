@@ -174,7 +174,11 @@ does. Then:
 
 - **Decoy view.** The app shows only documents you marked "Show in decoy
   view" (a flag inside the encrypted index), a calm Security screen (duress
-  off, no alerts) and an Activity list limited to those documents.
+  off, no alerts), a Recovery screen with nothing set up (no witness names,
+  no ID chip, no card) and an Activity list limited to those documents,
+  numbered from 1 with no gaps and not described as complete. Changing the
+  duress setting or the decoys there takes the same steps and says the same
+  words as in a normal session, and saves nothing.
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

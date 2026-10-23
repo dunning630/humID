@@ -23,7 +23,9 @@ export function Duress() {
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "taps");
   const [alert, setAlert] = useState(!!info?.alert);
-  const items = decoy ? [] : S.items.value;
+  // In a decoy session S.items holds only the decoys, so the list looks like any account's.
+  // Saving there changes nothing anywhere (saveDuress and setDecoys know the session).
+  const items = S.items.value;
   const [decoys, setDecoys] = useState(() => new Set(items.filter((i) => i.decoy).map((i) => i.id)));
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);

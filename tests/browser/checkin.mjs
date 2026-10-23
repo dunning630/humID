@@ -6,7 +6,8 @@
 //   - checking in moves the deadline; a longer window can be chosen for the night
 //   - Duress Practice and the Lock screen agree: three taps 500 ms apart are duress in both (APP-01)
 //   - a duress unlock erases the vault at once, while the duress session looks calm and
-//     still shows Check-in on, and the decoy document
+//     still shows Check-in on, and the decoy document; its Activity has no numbering gaps and
+//     doesn't claim to be complete, Duress lists the decoy, Recovery names nothing (PC-16)
 //   - the next ordinary unlock says the vault was erased; only the decoy is left; Activity agrees
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
@@ -190,6 +191,31 @@ try {
   await toast(page, /Heartbeat sent\. Next by/);
   await shot(page, "4-duress-session");
   step("duress unlock: only the decoy, Heartbeat still looks on, and a heartbeat looks normal");
+
+  // PC-16: the decoy session's other screens look like an ordinary account's
+  await tab(page, "Activity");
+  const verified = page.getByRole("button", { name: /Verified on this phone/ });
+  await verified.waitFor({ timeout: 15_000 });
+  await verified.click();
+  const summary = await page.locator(".rows .row", { hasText: /^\d+ events/ }).first().innerText();
+  assert.doesNotMatch(summary, /nothing altered or missing/, "a filtered list doesn't claim to be complete");
+  const count = Number(/(\d+) events/.exec(summary)[1]);
+  await page.locator("button.event").first().click(); // the newest entry
+  const entry = await page.locator(".sheet .row", { hasText: "Entry" }).innerText();
+  assert.equal(Number(/#(\d+)/.exec(entry)[1]), count, "entries are numbered 1..n: no gaps where hidden events were");
+  await page.locator(".sheet").getByRole("button", { name: "Close", exact: true }).last().click();
+  await youScreen(page, "Duress gesture");
+  await page.locator(".pushed .checklist label", { hasText: "Library card" }).waitFor();
+  assert.equal(await page.getByText("Nothing in your vault yet").count(), 0, "the decoy documents are listed like any account's");
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  await youScreen(page, "Recovery");
+  const recovery = await page.locator(".pushed .rows").first().innerText();
+  assert.doesNotMatch(recovery, /Made [A-Z][a-z]{2}/, "no recovery card date");
+  assert.match(recovery, /A code you keep offline/, "the card row reads as not set up");
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("duress session: Activity numbered without gaps and not called complete; Duress lists the decoy; Recovery generic");
 
   /* ---------------- the holder, safe again ---------------- */
   await page.getByRole("button", { name: "Lock now" }).first().click();

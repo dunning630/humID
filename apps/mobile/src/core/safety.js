@@ -40,7 +40,7 @@ const currentDuress = () => (S.decoy.value || !R.duressSetting ? { ...DURESS_OFF
 
 export async function saveDuress({ enabled, gesture }) {
   const id = S.identity.value;
-  if (S.decoy.value) { toast("Saved."); return true; }
+  if (S.decoy.value) { toast(enabled ? "Duress protection is on." : "Duress protection is off."); return true; } // the same words, nothing saved
   try {
     const record = await sealDuress(suite(id.suite), R.settingsKey, id, { enabled, gesture });
     delete record.schema;
