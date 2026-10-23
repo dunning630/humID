@@ -111,7 +111,7 @@ Their anonymity differs:
 |---|---|
 | **Seal card** | nothing: a code the holder keeps |
 | **Witnesses** | to the server, which pseudonymous accounts protect which; to each witness, only what the holder chose to tell them |
-| **ID chip** | the one that ties a HumID to a real identity: the server keeps a keyed fingerprint of the passport's stable fields, so someone with the server's secret and a person's passport details could confirm that person has a HumID. The app says so before anchoring. |
+| **ID chip** | the one that ties a HumID to a real identity: the server keeps a keyed fingerprint of that one chip's own key (not the holder's details), and the holder's name and birth date pass through when they link or recover. Someone who runs the server and also has that passport could confirm its holder has a HumID. The app says so before anchoring. |
 
 The fully anonymous emergency path is **seal card + witnesses**, and a second
 device makes recovery rarely needed at all. Setup points people there.
