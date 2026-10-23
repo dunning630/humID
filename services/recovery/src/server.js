@@ -97,6 +97,8 @@ export function createRecovery({
   maxKeysPerAccount = 4,
 } = {}) {
   const log = logger("recovery");
+  // Refuse a bad setting before opening anything (a refused start leaves no database open).
+  if (stations.includes("*") && !allowAnyStation) throw new Error('HUMID_STATION_ACCOUNTS="*" makes every account a verification station. That is for local development only: set HUMID_ALLOW_ANY_STATION=dev to allow it, or list the station accounts.');
   const db = openDb(dataDir, "recovery.db", [
     `CREATE TABLE links (
        code TEXT PRIMARY KEY, kem_pk BLOB NOT NULL, x_pk BLOB NOT NULL, platform TEXT,
@@ -186,7 +188,6 @@ export function createRecovery({
   // "*" makes every account a verification station, which can vouch any recovery onto the
   // fastest wait (VAULT-08). One env value away in production, so it needs a second, explicit flag.
   if (stationSet.has("*")) {
-    if (!allowAnyStation) throw new Error('HUMID_STATION_ACCOUNTS="*" makes every account a verification station. That is for local development only: set HUMID_ALLOW_ANY_STATION=dev to allow it, or list the station accounts.');
     log.error("EVERY ACCOUNT IS A VERIFICATION STATION (HUMID_STATION_ACCOUNTS=*, HUMID_ALLOW_ANY_STATION=dev). Local development only: anyone can put any recovery on the fastest wait.");
   }
   log.info("identity anchors", { countries: currentCscas().length, stations: stationSet.size });
@@ -1266,10 +1267,11 @@ export function createRecovery({
 
   if (!corePk) throw new Error("recovery needs HUMID_CORE_STATEMENT_PK (run setup again, or init on Windows)");
   log.info("recovery delay", { hours: +(delayMs / HOUR).toFixed(3) });
-  return createService({ tls,
+  const svc = createService({ tls,
     name: "recovery", port, routes: [...links, ...card, ...anchor, ...keys, ...contacts, ...requests, ...station, ...modes, ...duress], bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "recovery"),
   });
+  return { ...svc, close: () => db.close() }; // release the database file (Windows can't delete an open one)
 }
 
 if (isMain(import.meta.url)) createRecovery().start();

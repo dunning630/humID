@@ -531,7 +531,7 @@ export function createIdentity({
     (p.weakened.length ? log.warn : log.info)("live-human posture", p);
     return svc.start(...a);
   };
-  return { ...svc, start, posture, revocation: status, stop: (...a) => { status?.stop(); return svc.stop(...a); } };
+  return { ...svc, start, posture, revocation: status, stop: (...a) => { status?.stop(); return svc.stop(...a); }, close: () => db.close() };
 }
 
 /** "1" | "0" | "auto" (HUMID_ATTESTATION_STATUS_REQUIRED unset): true, false or "auto". */

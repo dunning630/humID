@@ -12,8 +12,9 @@ import { createRecovery } from "../services/recovery/src/server.js";
 const keys = newInternalKeys();
 const make = (opts) => {
   const dir = mkdtempSync(join(tmpdir(), "humid-station-"));
-  try { return createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, corePk: keys.pk, tls: null, ...opts }); }
-  finally { rmSync(dir, { recursive: true, force: true }); }
+  let r = null;
+  try { r = createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, corePk: keys.pk, tls: null, ...opts }); return r; }
+  finally { r?.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 };
 
 test('"*" stations are refused without the dev flag', () => {

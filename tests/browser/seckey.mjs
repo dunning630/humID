@@ -68,6 +68,9 @@ try {
     await p.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
     await p.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
     await p.getByRole("button", { name: "Continue" }).click();
+    await p.getByText("If you lose every device").waitFor();
+    await p.getByRole("button", { name: "Next: lock it to you" }).click(); // the recommended recovery mode is already selected
+    await p.getByText("Your body becomes the key").waitFor();
     await p.getByRole("checkbox").first().click();
     await p.getByRole("button", { name: /Use demo mode/ }).click();
     await hold(p);
