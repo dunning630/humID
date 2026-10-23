@@ -1,12 +1,14 @@
 // What a breached or malicious server can't make the phone believe (pre-certification
-// audit, October 2026): a document signed by anyone but the account (PC-03), and a history
-// signed by a ledger key or "cosigners" the server picked for itself (PC-04). Each case is
-// the audit's own proof of concept, now refused.
+// audit, October 2026): a document signed by anyone but the account (PC-03), a history
+// signed by a ledger key or "cosigners" the server picked for itself (PC-04), and a history
+// shown to the phone that isn't the one in the public log (CRYPTO-01). Each case is the
+// audit's own proof of concept, now refused.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { suite, splitWrap, splitUnwrap, isSplit } from "@humid/crypto";
 import { GENESIS, entryHash, signHead, leafHash, checkpointMessage, cosignMessage, verifyLedger, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { ml_dsa87, b64u, toHex, sha3_256 } from "@humid/htp";
+import { histLedgerKey, ev, chain, pageOf, maliciousServer } from "./support/ledger-server.js";
 
 const S = suite();
 const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
@@ -73,4 +75,63 @@ test("parseCosigners reads the server's HUMID_TLOG_COSIGNERS form and skips anyt
   const m = parseCosigners(`eu-witness=${b64u(k)}, bad name=${b64u(k)},=x,nokey=`);
   assert.deepEqual([...m.keys()], ["eu-witness"]);
   assert.deepEqual(m.get("eu-witness"), k);
+});
+
+/* ---------------- CRYPTO-01: the page and the public log must describe one history ---------------- */
+
+const honest = chain([ev("identity.created"), ev("device.added", { device: "dev_attacker", via: "card" }), ev("object.opened", { id: "will" })]);
+
+test("CRYPTO-01: a ledger page with an event removed no longer passes as 'Published in the public log'", async () => {
+  // the audit's PoC: the attacker's device.added is gone from what the phone is shown, chain rebuilt, head re-signed
+  const doctored = chain([ev("identity.created"), ev("object.opened", { id: "will" })]);
+  const api = maliciousServer({ shown: { page: doctored, all: doctored }, logged: honest });
+  const l = await api.ledger({ trustedKeyFp: histLedgerKey.fp });
+  assert.equal(l.ok, true, "the page is self-consistent: that alone proves nothing");
+  // Before the fix the phone asked for "the latest entry" and got the honest one: ok.
+  const before = await api.continuity({ trustedKeyFp: histLedgerKey.fp });
+  assert.equal(before.ok, true);
+  assert.notEqual(before.hash, l.head.hash, "...about a different history");
+  // Now it asks about the head it was shown, and the log holds something else there.
+  const c = await api.continuity({ trustedKeyFp: histLedgerKey.fp, head: l.head });
+  assert.equal(c.ok, false);
+  assert.equal(c.mismatch, true);
+  assert.match(c.reason, /doesn't match the public log at entry 2/);
+});
+
+test("CRYPTO-01: the honest page and the log agree", async () => {
+  const api = maliciousServer({ shown: { page: honest, all: honest }, logged: honest });
+  const l = await api.ledger({ trustedKeyFp: histLedgerKey.fp });
+  const c = await api.continuity({ trustedKeyFp: histLedgerKey.fp, head: l.head });
+  assert.equal(c.ok, true, c.reason);
+  assert.deepEqual([c.seq, c.hash], [l.head.seq, l.head.hash]);
+});
+
+test("CRYPTO-01: a page that drops or rewrites the head this phone saw last time is refused", async () => {
+  const seen = { seq: 3, hash: honest[2].hash };
+  // truncated: entries after seq 1 gone (the server rolled the account back)
+  assert.match(verifyLedger(pageOf(honest.slice(0, 1)), { trustedKeyFp: histLedgerKey.fp, previousHead: seen }).reason, /got shorter/);
+  assert.match(verifyLedger(pageOf([]), { previousHead: seen }).reason, /got shorter/);
+  // rewritten: same length and more, but entry 3 isn't the one this phone verified
+  const forked = chain([ev("identity.created"), ev("device.added", { device: "dev_attacker", via: "card" }), ev("session.opened"), ev("session.closed")]);
+  assert.match(verifyLedger(pageOf(forked), { previousHead: seen }).reason, /Entry 3 changed/);
+  // an honest page that grew is fine
+  const grown = chain([...honest.map((e) => e.body), ev("session.closed")]);
+  const ok = verifyLedger(pageOf(grown), { previousHead: seen });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.equal(ok.previousHeadOnPage, true);
+});
+
+test("CRYPTO-01: when the page starts after the head seen last time, the entries in between must link back to it", async () => {
+  const long = chain([...honest.map((e) => e.body), ...Array.from({ length: 6 }, () => ev("session.opened"))]); // 9 entries
+  const seen = { seq: 3, hash: honest[2].hash };
+  // honest server: a page of the last 4, and the entries 3..5 on request
+  const good = maliciousServer({ shown: { page: long.slice(-4), all: long }, logged: long });
+  const l = await good.ledger({ trustedKeyFp: histLedgerKey.fp, previousHead: seen });
+  assert.equal(l.ok, true, l.reason);
+  // a server that rewrote entry 3 (and everything after) can't link its page to it
+  const forked = chain([ev("identity.created"), ev("session.opened"), ...Array.from({ length: 7 }, () => ev("session.opened"))]);
+  const bad = maliciousServer({ shown: { page: forked.slice(-4), all: forked }, logged: long });
+  const r = await bad.ledger({ trustedKeyFp: histLedgerKey.fp, previousHead: seen });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /no longer contains entry 3/);
 });

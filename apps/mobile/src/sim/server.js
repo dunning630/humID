@@ -450,7 +450,9 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       checks.push(pass("Its second key went to the keyshare service", "the vault never sees it; the account keys alone can't open this document"));
     }
     if (usage(s.subject).bytes + body.length > QUOTA) throw fail(507, "quota_exceeded", "Your vault is full");
-    const id = crypto.randomUUID(), t = iso();
+    const asked = headers["x-humid-object-id"];
+    if (asked != null && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(asked)) || st.objects[asked])) throw fail(409, "id_taken", "That item id can't be used");
+    const id = asked != null ? String(asked) : crypto.randomUUID(), t = iso();
     if (share) st.keyshare[id] = { owner: s.subject, share: b64u(share) };
     await tx(db, "blobs", "readwrite", (b) => b.put(body, id));
     st.objects[id] = { id, owner: s.subject, size: body.length, index, sealedAt: v.manifest.created, uploadedAt: t, updatedAt: t, method: v.manifest.interrupt?.method || null, assurance: v.manifest.interrupt?.assurance || null };
@@ -487,6 +489,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
 
   /* ledger + public log */
   route("GET", "/ledger/events", (s, r, su, m, body, headers, q) => {
+    if (q.get("from") != null) {
+      const from = Number(q.get("from")), to = Number(q.get("to") ?? from + 999);
+      return [200, { owner: s.subject, entries: (st.ledger[s.subject] || []).filter((e) => e.seq >= from && e.seq <= to).slice(0, 1000), ledgerKey: ledgerKeyView }];
+    }
     const limit = Math.min(Math.max(Number(q.get("limit")) || 200, 1), 1000);
     const rows = (st.ledger[s.subject] || []).slice(-limit);
     const last = rows[rows.length - 1];
@@ -495,10 +501,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     return [200, { owner: s.subject, entries: rows, head, ledgerKey: ledgerKeyView }];
   }, { auth: true });
   route("GET", "/ledger/tlog/checkpoint", () => [200, checkpoint()], { auth: true });
-  route("GET", "/ledger/tlog/inclusion", (s) => {
+  route("GET", "/ledger/tlog/inclusion", (s, r, su, m, body, headers, q) => {
     const cp = checkpoint();
     const chain = st.ledger[s.subject] || [];
-    const lastE = chain[chain.length - 1];
+    const lastE = q.get("seq") ? chain[Number(q.get("seq")) - 1] : chain[chain.length - 1];
     if (!lastE) throw fail(404, "not_in_log", "That entry isn't in the public log yet.");
     const leaf = b64u(leafHash(s.subject, lastE.seq, lastE.hash));
     const index = st.leaves.lastIndexOf(leaf);
@@ -637,7 +643,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   async function fetchFn(input, init = {}) {
     const path = new URL(String(input), "sim://humid").pathname;
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90)); // a little network latency
-    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass", splitKeys: true } });
+    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy: platformPolicy, registration: "pass", splitKeys: true }) });
     if (path.endsWith("/htp/v1/hello")) {
       try { return jsonRes(200, htp.hello(JSON.parse(init.body))); }
       catch (e) { return jsonRes(e.status || 400, { error: e.code || "handshake_failed", message: e.message }); }

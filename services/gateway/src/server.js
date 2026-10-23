@@ -175,21 +175,28 @@ const CHECKIN_GRACES = CHECKIN_POLICY.graceMin.map((m) => m * 60_000);
 /** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
 const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
 
-const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
+const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index", "x-humid-object-id"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
 const SHARE_HEADER = "x-humid-share"; // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
 
-class Buckets {
-  constructor(capacity, perMs) { this.capacity = capacity; this.perMs = perMs; this.m = new Map(); }
+/**
+ * Token buckets per key. At `max` keys the least recently used one is forgotten, never the
+ * whole table: clearing everything (as before, CRYPTO-04) let anyone with 100k addresses
+ * reset every limit, failed sign-in counts included. A key that's forgotten is one nobody
+ * has used for longer than any other, so it was close to full again anyway.
+ */
+export class Buckets {
+  constructor(capacity, perMs, { max = 100_000 } = {}) { this.capacity = capacity; this.perMs = perMs; this.max = max; this.m = new Map(); }
   take(key, now = Date.now()) {
     const b = this.m.get(key) || { tokens: this.capacity, at: now };
+    this.m.delete(key); // re-inserted below, so the Map's order is least recently used first
     b.tokens = Math.min(this.capacity, b.tokens + ((now - b.at) / this.perMs) * this.capacity);
     b.at = now;
-    if (b.tokens < 1) { this.m.set(key, b); return false; }
-    b.tokens -= 1;
+    const ok = b.tokens >= 1;
+    if (ok) b.tokens -= 1;
     this.m.set(key, b);
-    if (this.m.size > 100_000) this.m.clear();
-    return true;
+    while (this.m.size > this.max) this.m.delete(this.m.keys().next().value);
+    return ok;
   }
 }
 
@@ -262,13 +269,13 @@ export function createGateway({
   log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
 
-  const helloLimit = new Buckets(30, 60_000);   // per client IP
+  const helloLimit = new Buckets(30, 60_000);   // per client network: an IPv4 address or an IPv6 /64 (rateKey)
   const callLimit = new Buckets(600, 60_000);   // per session
   // Sign-in throttles count FAILED proofs only and never refuse a request before its proof has been
   // checked. See the note at `login` and docs/CHECKIN.md: a lockout must never keep the holder from
   // checking in, because a missed Check-in erases the vault.
   const loginFailId = new Buckets(10, 300_000);     // failed proofs per identity
-  const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source address
+  const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source network (IPv4 address or IPv6 /64)
   const loginFailAll = new Buckets(200, 300_000);   // failed proofs, whole server (ledger-write budget)
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
@@ -604,7 +611,7 @@ export function createGateway({
           message: b64u(reported ? loginPresenceMessage(s.th, who, c.nonce, r.d) : liveMsg), liveMessage: b64u(liveMsg) },
       });
       const failed = v.status >= 400 && v.status < 500;
-      const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(s.clientIp), loginFailAll.take("*")].every(Boolean);
+      const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(rateKey(s.clientIp || "")), loginFailAll.take("*")].every(Boolean);
       if (throttled) {
         if (loginNote.take(r.id)) await recordQuietly(r.id, "access.denied", { reason: "sign_in_throttled", device: r.device });
         throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
@@ -1192,11 +1199,13 @@ export function createGateway({
 
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
-    // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2, stampNeeds: DEMO_STAMPS ? "any" : "hardware" } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    // UI; the gateway enforces it on every sign-in and step-up. It's signed with the server's
+    // ML-DSA-87 key (CRYPTO-07), so the app believes it only from the server it pinned.
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2, stampNeeds: DEMO_STAMPS ? "any" : "hardware" } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) }) }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
-      if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
-      try { return json(200, htp.hello(parseJson(body))); }
+      const group = rateKey(clientIp(req) || "");
+      if (!helloLimit.take(group)) return json(429, { error: "rate_limited", message: "Too many handshakes" });
+      try { return json(200, htp.hello(parseJson(body), Date.now(), { group })); }
       catch (e) { if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message }); throw e; }
     }, { public: true, bodyLimit: 16 * 1024 }],
     // The frame header names the session, so the cap is chosen from its first bytes: an unknown
@@ -1212,7 +1221,7 @@ export function createGateway({
       return internal("ledger", "GET", `/tlog/consistency?${q}`);
     }, { public: true }],
     ["POST", "/tlog/v1/cosign", ({ req, body }) => {
-      if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Slow down" });
+      if (!helloLimit.take(rateKey(clientIp(req) || ""))) return json(429, { error: "rate_limited", message: "Slow down" });
       return internal("ledger", "POST", "/tlog/cosign", { body, headers: { "content-type": "application/json" } });
     }, { public: true, bodyLimit: 16 * 1024, admit: admitBody() }],
     ["OPTIONS", "/htp/v1/keys", () => ({ status: 204, headers: {}, body: "" }), { public: true }],

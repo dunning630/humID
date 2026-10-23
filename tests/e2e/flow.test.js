@@ -138,6 +138,19 @@ test("rename replaces only the encrypted index", async () => {
   assert.equal(meta.name, "Passport (scan).txt");
 });
 
+test("the app picks the item id, so its index entry is sealed to it before upload (CRYPTO-05)", async () => {
+  const id = crypto.randomUUID();
+  const { envelope } = await sealFor(alice, "bound.txt", "bound");
+  const index = await alice.S.sealIndex(alice.indexKey, { name: "bound.txt" }, { id, rev: 1 });
+  assert.equal((await aliceApi.upload(envelope, index, null, id)).id, id);
+  const got = (await aliceApi.list()).items.find((i) => i.id === id);
+  assert.equal((await alice.S.openIndex(alice.indexKey, new Uint8Array(Buffer.from(got.index, "base64url")), { id })).name, "bound.txt");
+  // an id already in use, or not a UUID v4, is refused
+  await assert.rejects(aliceApi.upload(envelope, index, null, id), (e) => e.code === "id_taken");
+  await assert.rejects(aliceApi.upload(envelope, index, null, "../x"), (e) => e.code === "bad_id");
+  await aliceApi.remove(id, alice.stepUp);
+});
+
 test("delete needs a step-up and removes the item", async () => {
   await assert.rejects(aliceApi.remove(docId), (e) => e.code === "step_up_required");
   await aliceApi.remove(docId, alice.stepUp);

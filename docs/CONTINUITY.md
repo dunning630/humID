@@ -201,15 +201,39 @@ unauthenticated:
 | `GET /tlog/v1/consistency?from=&to=` | proof that one tree extends another |
 | `POST /tlog/v1/cosign` | a configured cosigner's signature on a checkpoint |
 
-On each Activity view the phone checks that its latest entry is included in
-the current checkpoint and that the checkpoint extends the one it saw last
-time (remembered on the device). Independent cosigners
+On each Activity view the phone checks three things, and shows "Verified" and
+"Published in the public log" only when all three hold:
+
+- **The page and the log are one history.** The head of the ledger page it
+  just verified (its seq and hash) is the entry the log proves is included,
+  in the current checkpoint. The server holds the ledger's signing key, so it
+  could rebuild and re-sign a page with an event left out; the log keeps the
+  real one, and any difference is reported as a mismatch ("Your history
+  doesn't match the public log"), never as "checked later".
+- **Nothing it saw is gone.** The page still holds the head this phone
+  confirmed last time, unchanged (remembered on the device as `ledgerHead`).
+  When more has happened since than one page shows, the phone fetches the
+  entries in between (`GET /ledger/events?from=&to=`) and checks they link
+  back to it.
+- **The log only grew.** The checkpoint extends the one it saw last time.
+
+The ledger key is built into release builds (`HUMID_LEDGER_KEY_FP`, printed
+by `deploy/setup.sh`), like the cosigners, so a new install doesn't have to
+trust the first key it's shown; a build without it pins the first key it
+verifies. Independent cosigners
 (`tools/tlog-cosign.mjs`, configured with `HUMID_TLOG_COSIGNERS`) do the same
 from outside and refuse — loudly — if the history ever forks. So the server
 can't rewrite anyone's history, or show different histories to different
 people, without leaving proof. Anyone can later check that a document sealed
 in 2027 and opened in 2031 sits on one unbroken chain of the same person,
 with the strength of each link on record.
+
+The ledger signs at most one new checkpoint every 5 seconds
+(`HUMID_TLOG_CHECKPOINT_MS`), however many entries arrive, and keeps
+superseded ones for an hour unless a cosigner signed them. A phone asking
+about an entry newer than the latest checkpoint waits for the next one. Each
+account's signed head is cached until it moves (or for an hour), so reading
+Activity costs no new signature.
 
 The public endpoints reveal tree sizes and hashes only: the total number of
 ledger events, never whose they are.
@@ -229,7 +253,11 @@ does. Then:
   no ID chip, no card) and an Activity list limited to those documents,
   numbered from 1 with no gaps and not described as complete. Changing the
   duress setting or the decoys there takes the same steps and says the same
-  words as in a normal session, and saves nothing.
+  words as in a normal session, and saves nothing. Each index entry is sealed
+  to its own item and carries a rev that only grows; the phone remembers the
+  highest rev it has seen for each item (sealed on the device), so the vault
+  can't bring back a flag you turned off by serving an older entry. An older
+  entry shows as "Changed on the server" and is not believed.
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

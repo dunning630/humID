@@ -26,6 +26,7 @@ for _ in $(seq 1 30); do
   [ -n "$line" ] && break; sleep 2
 done
 fp="$(echo "$line" | grep -o '"fingerprint":"[^"]*"' | cut -d'"' -f4)"
+ledgerfp="$(docker compose logs ledger 2>/dev/null | grep '"ledger key"' | tail -1 | grep -o '"fp":"[^"]*"' | cut -d'"' -f4)"
 kid="$(echo "$line" | grep -o '"kid":"[^"]*"' | cut -d'"' -f4)"
 echo
 echo "HumID is running at https://$domain"
@@ -37,3 +38,4 @@ echo "To build apps that trust only this server, set these repository variables 
 echo "(Settings > Secrets and variables > Actions > Variables), then run Actions > Release apps:"
 echo "  HUMID_SERVER_URL = https://$domain"
 echo "  HUMID_SERVER_KID = ${kid:-<64-hex kid from 'docker compose logs gateway'>}"
+echo "  HUMID_LEDGER_KEY_FP = ${ledgerfp:-<32-hex fp from 'docker compose logs ledger'>}"

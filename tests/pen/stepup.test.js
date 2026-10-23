@@ -55,10 +55,19 @@ test("proof with a stale `at` (2 minutes old, consistently signed): 403 step_up_
 
 test("a good proof works once; the same ticket (nonce and seq) again is 409 replay", async () => {
   const t = await htp.ticket("GET", path());
-  const r1 = await call(t, (m) => goodSign(m, t));
+  const frames = [];
+  const fetch = htp.fetch;
+  htp.fetch = (url, init) => { if (init?.body instanceof Uint8Array) frames.push(init.body); return fetch(url, init); };
+  let r1;
+  try { r1 = await call(t, (m) => goodSign(m, t)); } finally { htp.fetch = fetch; }
   assert.equal(r1.status, 200);
   assert.ok(r1.body.length > 0, "ciphertext released");
-  await assert.rejects(call(t, (m) => goodSign(m, t)), (e) => e.code === "replay" && e.status === 409);
+  // The client won't send a second frame under that seq (CRYPTO-06: it would reuse the GCM nonce)…
+  await assert.rejects(call(t, (m) => goodSign(m, t)), (e) => e.code === "ticket_used");
+  // …and the captured frame, sent again by someone on the path, is refused by the server.
+  const again = await fetch(`${htp.base}/htp/v1/call`, { method: "POST", headers: { "content-type": "application/vnd.humid.htp" }, body: frames.at(-1) });
+  assert.equal(again.status, 409);
+  assert.equal((await again.json()).error, "replay");
 });
 
 test("a nonce issued for one action used for another: 403 step_up_mismatch", async () => {
