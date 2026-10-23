@@ -284,6 +284,11 @@ On each Activity view the phone checks three things, and shows "Verified" and
   back to it.
 - **The log only grew.** The checkpoint extends the one it saw last time.
 
+If more than 20,000 events have happened since the phone last checked, it
+doesn't fetch them all: Activity says "Not verified on this phone" (not a
+tamper alarm, and never "Verified"), shows the events as the server sent
+them, and keeps the head it saw before as the one to check against.
+
 The ledger key is built into release builds (`HUMID_LEDGER_KEY_FP`, printed
 by `deploy/setup.sh`), like the cosigners, so a new install doesn't have to
 trust the first key it's shown; a build without it pins the first key it
@@ -325,6 +330,11 @@ does. Then:
   highest rev it has seen for each item (sealed on the device), so the vault
   can't bring back a flag you turned off by serving an older entry. An older
   entry shows as "Changed on the server" and is not believed.
+  Entries sealed before this (index v1, apps before 4.1) carry no rev; the
+  app re-seals them as v2 the next time it lists the vault online (25 per
+  visit), recorded in Activity as "Updated details". Until an item has been
+  re-sealed once, the vault could still serve an older v1 entry for it; the
+  limits are in [SECURITY.md](SECURITY.md#what-it-does-not-protect-against-yet).
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

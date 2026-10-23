@@ -80,6 +80,15 @@ no shop link, no split keys, no Check-in, no messaging. A build pinned to its
 server also refuses to seal a document unsplit when the hint says otherwise,
 from its very first run.
 
+A signed policy stays valid for 7 days, so someone who saved one could serve
+it again after the server changed it. The app therefore keeps the newest
+signed policy it has accepted (`policySeen` in the identity record, with its
+signature, checked again on every load) and uses whichever of that and the
+one just served is newer. A replayed older policy, or none at all, never
+replaces it: split keys can't go from on to off and the shop link can't
+revert. Before the first honest connection there is nothing to compare
+against; a pinned build's split-keys rule covers that case.
+
 ## Handshake
 
 ```
@@ -162,8 +171,13 @@ response meta       { s: status, h?: headers }
 - Each client network (an IPv4 address or an IPv6 /64) may hold 20 sessions
   that haven't signed in; a 21st replaces its own oldest. When the whole table
   (50,000) is full, the least recently used session that hasn't signed in makes
-  room, so a flood can't lock out people signing in. Only a table of signed-in
-  sessions answers `busy`.
+  room, so a flood can't lock out people signing in. One account holds at
+  most 16 signed-in sessions (`HUMID_SESSIONS_PER_ACCOUNT`); signing in again
+  past that drops that account's own least recently used session, never the
+  new one and never another account's. Only a table of signed-in sessions
+  answers `busy`, and filling it takes about 3,000 accounts, each registered
+  (with a paid pass where registration needs one) and signed in with a live
+  check, inside a 15-minute idle window.
 - A step-up ticket's `seq` is sent in exactly one frame; the client refuses to
   use a ticket twice (`ticket_used`), because a second frame would reuse its
   AES-GCM nonce.

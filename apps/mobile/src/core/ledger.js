@@ -71,6 +71,9 @@ export async function loadLedger() {
 export async function checkContinuity() {
   const id = S.identity.value;
   if (S.offline.value) { S.continuity.value = { ok: false, pending: true, reason: "Checked when you're back online" }; return; }
+  // A page this phone couldn't link to what it saw before isn't checked against the log: there
+  // is no verified head to ask about, and nothing is remembered from it.
+  if (S.ledger.value?.unverified) { S.continuity.value = { ok: false, pending: true, reason: S.ledger.value.reason }; return; }
   const head = shownHead;
   try {
     const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: trustedLedgerKey(), cosigners: COSIGNERS, head: head || undefined });
