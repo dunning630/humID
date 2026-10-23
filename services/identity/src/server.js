@@ -20,7 +20,7 @@
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, signStatement, unb64u, b64u, HttpError, isMain, logger, sealerFromEnv } from "@humid/svc";
 import { holderProofs } from "@humid/svc/holder";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS, ml_dsa87 } from "@humid/htp";
-import { recoveryModeMessage, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
+import { recoveryModeMessage, recoveryModeHash, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
@@ -326,6 +326,18 @@ export function createIdentity({
       const id = identityId(keys.dsaPk);
       const existing = getAccount.get(id);
       if (existing && existing.status !== "active") throw new HttpError(409, "identity_closed", "This identity was closed.");
+      // Registration creates an account with its first device. On an account that already exists it
+      // may only repeat for a device that is already enrolled there (a retry whose answer was lost).
+      // A NEW device joins only through /internal/devices, behind an existing device's approval or a
+      // completed recovery (PC-02). Without this, a copied account seed alone enrolled a thief's
+      // phone with no approval, no wait and no alert (review 2026-10-23, SRV-01).
+      if (existing) {
+        const dsaPk = key(r.device?.dsaPk, "device dsaPk", SIZES.dsaPk);
+        const known = getDevice.get(deviceId(dsaPk));
+        if (!known || known.account_id !== id || known.revoked_at) {
+          throw new HttpError(409, "identity_exists", "This HumID already exists. Add this phone from one of your devices, or recover your HumID.");
+        }
+      }
       db.exec("BEGIN");
       try {
         if (!existing) {
@@ -427,8 +439,10 @@ export function createIdentity({
       gatewayOnly(claims);
       const r = parseObject(body);
       const a = active(String(r.account));
-      saveMode(a.id, checkedMode(a, r));
-      return json(200, { recoveryMode: modeView(getAccount.get(a.id)) });
+      const m = checkedMode(a, r);
+      saveMode(a.id, m);
+      // hash: the statement's, for the ledger's recovery.mode_set (devices compare it exactly).
+      return json(200, { recoveryMode: modeView(getAccount.get(a.id)), hash: recoveryModeHash(a.id, m) });
     }],
     // SRV-30: this device key (and liveness key) belongs to this account, now. Vault and keyshare
     // check the holder's proofs against it; the gateway can ask, but can't make it vouch for a

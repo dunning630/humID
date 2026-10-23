@@ -325,3 +325,38 @@ test("nothing in the app logs, copies to the clipboard, or phones home", () => {
   }
   assert.deepEqual(bad, []);
 });
+
+// The recovery-mode copy the round-3 review caught overclaiming (verify-74b, V74B-02). Each
+// phrasing made a promise the code doesn't keep: the passport piece is one the server CAN open
+// (V74-03); switching to holder-only doesn't make old pieces stop fitting each other, and a new
+// card doesn't make the old one stop working (V74-04); and a server that controls everything
+// can show a phone that hasn't seen your latest choice an older one (V74B-01).
+const RECOVERY_OVERCLAIM = [
+  // ("locked so the server can't open it" is fine where the same line says the passport piece isn't)
+  [/^(?!.*passport).*locked so (they|the servers?|HumID) can't open (it|them)/i, "the passport piece isn't locked against the server (V74-03)"],
+  [/Only your own devices can open your vault now/i, "pieces made before the switch still fit each other (V74-04)"],
+  [/the old one stops working/i, "an old card still fits the other pieces of its set; it only stops counting on the server (V74-04)"],
+  [/so a server can't switch it on/i, "only as far as each device has seen (V74B-01)"],
+  [/A server can't flip it quietly/i, "only as far as each device has seen (V74B-01)"],
+  [/lp\(account id, mode, version, epoch\)/, "the statement names the one before it (prev)"],
+];
+const RECOVERY_DOCS = ["docs/RECOVERY.md", "docs/CONTINUITY.md", ".changeset/recovery-modes.md", ".changeset/recovery-mode-chain.md"];
+
+test("recovery-mode copy says no more than the code keeps (V74B-02)", () => {
+  const hits = [];
+  const core = all.filter((x) => x.startsWith("core/") && x.endsWith(".js"));
+  for (const f of [...faces, ...core, "ui/labels.js"]) userText(f).split("\n").forEach((line, i) => {
+    for (const [re, why] of RECOVERY_OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  for (const f of RECOVERY_DOCS) docText(f).split("\n").forEach((line, i) => {
+    for (const [re, why] of RECOVERY_OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  assert.deepEqual(hits, []);
+  // and the changeset title says the limit
+  assert.match(docText(".changeset/recovery-mode-chain.md"), /rolled back below what each device has seen/);
+  // RECOVERY.md states the piece-making rule and its per-device limit
+  const rec = docText("docs/RECOVERY.md");
+  assert.match(rec, /### When a phone makes recovery pieces/);
+  assert.match(rec, /lp\(account id, mode, u32 version, u32 epoch, prev\)/);
+  assert.match(rec, /can't prove "nothing newer"/);
+});

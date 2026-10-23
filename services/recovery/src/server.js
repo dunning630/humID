@@ -393,14 +393,14 @@ export function createRecovery({
   }
   /** A new set of pieces: everything stored from older sets is deleted, and no recovery under way can finish. */
   function retireOlderPieces(account, epoch) {
-    db.exec("BEGIN");
-    db.prepare("DELETE FROM cards WHERE account = ? AND epoch < ?").run(account, epoch);
-    const sets = db.prepare("SELECT 1 FROM guardian_sets WHERE owner = ? AND epoch < ?").get(account, epoch);
-    if (sets) { db.prepare("DELETE FROM guardians WHERE owner = ?").run(account); db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account); }
-    db.prepare("DELETE FROM anchors WHERE account = ? AND epoch < ?").run(account, epoch);
-    db.prepare("DELETE FROM seckeys WHERE account = ? AND epoch < ?").run(account, epoch);
-    db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
-    db.exec("COMMIT");
+    db.tx(() => {
+      db.prepare("DELETE FROM cards WHERE account = ? AND epoch < ?").run(account, epoch);
+      const sets = db.prepare("SELECT 1 FROM guardian_sets WHERE owner = ? AND epoch < ?").get(account, epoch);
+      if (sets) { db.prepare("DELETE FROM guardians WHERE owner = ?").run(account); db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account); }
+      db.prepare("DELETE FROM anchors WHERE account = ? AND epoch < ?").run(account, epoch);
+      db.prepare("DELETE FROM seckeys WHERE account = ? AND epoch < ?").run(account, epoch);
+      db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
+    });
   }
   /**
    * Keep a newer signed statement. The same one again is fine; an older one never replaces it.
@@ -424,7 +424,7 @@ export function createRecovery({
       db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
     }
     const at = new Date().toISOString();
-    db.exec("BEGIN");
+    db.tx(() => {
     db.prepare(`INSERT INTO modes (account, mode, version, epoch, prev, sig, dsa_pk, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account) DO UPDATE SET mode = excluded.mode, version = excluded.version, epoch = excluded.epoch, prev = excluded.prev, sig = excluded.sig, dsa_pk = excluded.dsa_pk, updated_at = excluded.updated_at`)
       .run(account, m.mode, m.version, m.epoch, m.prev, m.sig, m.dsaPk, at);
@@ -432,19 +432,19 @@ export function createRecovery({
                 ON CONFLICT(account) DO UPDATE SET version = excluded.version, epoch = excluded.epoch, hash = excluded.hash, updated_at = excluded.updated_at
                 WHERE excluded.version >= mode_marks.version`)
       .run(account, m.version, m.epoch, m.hash, at);
-    db.exec("COMMIT");
+    });
     // Pieces from an older epoch than this one, wherever they came from, are retired.
     retireOlderPieces(account, m.epoch);
     return m;
   }
   function deleteEscrow(account) {
-    db.exec("BEGIN");
-    db.prepare("DELETE FROM cards WHERE account = ?").run(account);
-    db.prepare("DELETE FROM guardians WHERE owner = ?").run(account);
-    db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account);
-    db.prepare("DELETE FROM anchors WHERE account = ?").run(account);
-    db.prepare("DELETE FROM seckeys WHERE account = ?").run(account);
-    db.exec("COMMIT");
+    db.tx(() => {
+      db.prepare("DELETE FROM cards WHERE account = ?").run(account);
+      db.prepare("DELETE FROM guardians WHERE owner = ?").run(account);
+      db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account);
+      db.prepare("DELETE FROM anchors WHERE account = ?").run(account);
+      db.prepare("DELETE FROM seckeys WHERE account = ?").run(account);
+    });
   }
 
   /* ---------- two-proof recovery: which proofs a request has, and when it opens ---------- */
@@ -579,12 +579,12 @@ export function createRecovery({
       if (!scheme) throw new HttpError(400, "bad_blob", "Card blob has the wrong size");
       const epoch = requireEpoch(claims.sub, r.epoch);
       const at = new Date().toISOString();
-      db.exec("BEGIN");
-      db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub);
-      db.prepare("INSERT INTO cards (account, tag, blob, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, tag, blob, at, scheme, epoch);
-      // The old card no longer counts as a proof in a recovery under way.
-      db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
-      db.exec("COMMIT");
+      db.tx(() => {
+        db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub);
+        db.prepare("INSERT INTO cards (account, tag, blob, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, tag, blob, at, scheme, epoch);
+        // The old card no longer counts as a proof in a recovery under way.
+        db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
+      });
       demote(claims.sub);
       return json(200, { createdAt: at, replaced: true, scheme });
     }],
@@ -649,10 +649,10 @@ export function createRecovery({
       const blob = wrap("chip v2", claims.sub, Buffer.from(sealed));
       const { document, country } = anchorSummary(ok.mrz);
       const at = new Date().toISOString();
-      db.exec("BEGIN");
-      db.prepare("DELETE FROM anchors WHERE account = ?").run(claims.sub);
-      db.prepare("INSERT INTO anchors (account, anchor, blob, document, country, created_at, version, epoch) VALUES (?, ?, ?, ?, ?, ?, 2, ?)").run(claims.sub, anchorHash, blob, document, country, at, epoch);
-      db.exec("COMMIT");
+      db.tx(() => {
+        db.prepare("DELETE FROM anchors WHERE account = ?").run(claims.sub);
+        db.prepare("INSERT INTO anchors (account, anchor, blob, document, country, created_at, version, epoch) VALUES (?, ?, ?, ?, ?, ?, 2, ?)").run(claims.sub, anchorHash, blob, document, country, at, epoch);
+      });
       return json(200, { createdAt: at, document, country, version: 2 });
     }, { bodyLimit: 3 * CHIP_MAX }],
     ["DELETE", "/anchor", ({ claims, body }) => {
@@ -826,11 +826,11 @@ export function createRecovery({
         return { contact: offer.account, envelope, label };
       });
       const at = new Date().toISOString();
-      db.exec("BEGIN");
-      db.prepare("DELETE FROM guardians WHERE owner = ?").run(claims.sub);
-      db.prepare("INSERT OR REPLACE INTO guardian_sets (owner, threshold, n, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, t, n, at, scheme, epoch);
-      for (const g of rows) db.prepare("INSERT INTO guardians (owner, contact, envelope, label, created_at) VALUES (?, ?, ?, ?, ?)").run(claims.sub, g.contact, g.envelope, g.label, at);
-      db.exec("COMMIT");
+      db.tx(() => {
+        db.prepare("DELETE FROM guardians WHERE owner = ?").run(claims.sub);
+        db.prepare("INSERT OR REPLACE INTO guardian_sets (owner, threshold, n, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, t, n, at, scheme, epoch);
+        for (const g of rows) db.prepare("INSERT INTO guardians (owner, contact, envelope, label, created_at) VALUES (?, ?, ?, ?, ?)").run(claims.sub, g.contact, g.envelope, g.label, at);
+      });
       return json(200, { threshold: t, n, createdAt: at, scheme });
     }, { bodyLimit: MAX_CONTACTS * (ENVELOPE_MAX + 2048) }],
     ["GET", "/contacts", ({ claims }) => {
@@ -1096,21 +1096,25 @@ export function createRecovery({
       checkEnvelope(envelope, { signerFp: claims.dsaFp, recipientKemPk: new Uint8Array(q.kem_pk) });
       const first = !q.account;
       if (first && openRequests(owner) >= maxOpenPerAccount) throw new HttpError(429, "too_many_requests", "There are already recoveries waiting for this person.");
-      db.exec("BEGIN");
-      db.prepare("INSERT OR REPLACE INTO approvals (request_id, contact, envelope, created_at) VALUES (?, ?, ?, ?)").run(q.id, claims.sub, envelope, now());
-      const count = approvalCount(q.id);
-      if (q.method === "quorum") {
-        db.prepare("UPDATE requests SET account = ?, threshold = ? WHERE id = ?").run(owner, set.threshold, q.id);
-        db.exec("COMMIT");
+      const step = db.tx(() => {
+        db.prepare("INSERT OR REPLACE INTO approvals (request_id, contact, envelope, created_at) VALUES (?, ?, ?, ?)").run(q.id, claims.sub, envelope, now());
+        const count = approvalCount(q.id);
+        if (q.method === "quorum") {
+          db.prepare("UPDATE requests SET account = ?, threshold = ? WHERE id = ?").run(owner, set.threshold, q.id);
+          return { quorum: true, count };
+        }
+        let releaseAt = q.release_at;
+        let status = q.status;
+        if (!releaseAt && count >= set.threshold) { releaseAt = now() + (recentDuress(owner) ? delayMs * 2 : delayMs); status = "waiting"; }
+        db.prepare("UPDATE requests SET account = ?, threshold = ?, release_at = ?, status = ?, expires_at = ?, quorum_at = ? WHERE id = ?")
+          .run(owner, set.threshold, releaseAt, status, releaseAt ? releaseAt + releasedTtlMs : q.expires_at, q.quorum_at ?? (releaseAt ? now() : null), q.id);
+        return { quorum: false, count, releaseAt };
+      });
+      const { count, releaseAt } = step;
+      if (step.quorum) {
         const e = evaluate(q.id);
         return json(200, { owner, approvals: count, threshold: set.threshold, releaseAt: e.release_at, first, ref: q.ref, platform: q.platform, kinds: kindsOf(e), method: "quorum" });
       }
-      let releaseAt = q.release_at;
-      let status = q.status;
-      if (!releaseAt && count >= set.threshold) { releaseAt = now() + (recentDuress(owner) ? delayMs * 2 : delayMs); status = "waiting"; }
-      db.prepare("UPDATE requests SET account = ?, threshold = ?, release_at = ?, status = ?, expires_at = ?, quorum_at = ? WHERE id = ?")
-        .run(owner, set.threshold, releaseAt, status, releaseAt ? releaseAt + releasedTtlMs : q.expires_at, q.quorum_at ?? (releaseAt ? now() : null), q.id);
-      db.exec("COMMIT");
       return json(200, { owner, approvals: count, threshold: set.threshold, releaseAt, first, ref: q.ref, platform: q.platform, method: "contacts" });
     }, { bodyLimit: ENVELOPE_MAX + 4096 }],
 
@@ -1211,7 +1215,8 @@ export function createRecovery({
       const account = String(r.account || "");
       if (!/^hid_[0-9a-f]{40}$/.test(account)) throw new HttpError(400, "bad_subject", "Unknown subject");
       const m = learnMode(account, r, { sync: r.sync === true });
-      return json(200, { mode: m.mode, version: m.version, epoch: m.epoch });
+      // hash: the statement's, for the ledger's recovery.mode_set (devices compare it exactly).
+      return json(200, { mode: m.mode, version: m.version, epoch: m.epoch, hash: m.hash });
     }],
     // Gateway only: where this service stands, to compare with identity's statement.
     ["GET", "/internal/recovery-mode/:id", ({ params, claims }) => {

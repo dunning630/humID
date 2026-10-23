@@ -77,14 +77,29 @@ function protectedAlg(p) {
 }
 
 /**
+ * The bytes a signature or MAC must cover. When the caller supplies `detached` (the session's own
+ * DeviceAuthentication), that is what is checked, and a structure that carries a payload of its
+ * own is refused: otherwise a holder proof captured from another session verified against the
+ * payload the attacker attached (review 2026-10-23, CRED-01).
+ */
+function payloadOf(p, detached) {
+  if (detached !== undefined) {
+    if (p.payload != null) fail("the payload must be detached here");
+    if (!(detached instanceof Uint8Array)) fail("no payload to verify");
+    return detached;
+  }
+  if (!(p.payload instanceof Uint8Array)) fail("no payload to verify");
+  return p.payload;
+}
+
+/**
  * Verify a COSE_Sign1. key: { curve, publicKey, crv? }. detached: the payload
  * when the structure carries nil (DeviceSignature).
  */
 export function verifySign1(msg, key, { detached, aad } = {}) {
   const p = msg.protectedBytes ? msg : parse1(msg);
   const alg = protectedAlg(p);
-  const payload = p.payload == null ? detached : p.payload;
-  if (!(payload instanceof Uint8Array)) fail("no payload to verify");
+  const payload = payloadOf(p, detached);
   const data = toBeSigned(p, payload, aad);
   try {
     if (alg === ALG.EdDSA) return key.curve === ed25519 && ed25519.verify(p.tag, data, key.publicKey);
@@ -98,7 +113,7 @@ export function verifySign1(msg, key, { detached, aad } = {}) {
 export function verifyMac0(msg, macKey, { detached, aad } = {}) {
   const p = msg.protectedBytes ? msg : parse1(msg);
   if (protectedAlg(p) !== ALG.HMAC256) return false;
-  const payload = p.payload == null ? detached : p.payload;
+  const payload = payloadOf(p, detached);
   const want = hmac(sha256, macKey, toBeMaced(p, payload, aad));
   return want.length === p.tag.length && want.every((x, i) => x === p.tag[i]);
 }

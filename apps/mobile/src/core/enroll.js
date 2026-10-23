@@ -175,7 +175,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
       S.session.value = sess;
       S.items.value = [];
       S.cardCode.value = sess.cardSet && card ? card.code : null;
-      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev, escrow: sess.cardSet ? ["card"] : [], trusted: true, statement: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev } };
+      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev, escrow: sess.cardSet ? ["card"] : [], trusted: true, vouched: true, statement: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev } };
       S.enrollStep.value = "done";
     });
     R.api.htp.pinnedKid = srv.kid;

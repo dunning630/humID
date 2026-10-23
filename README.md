@@ -23,6 +23,8 @@ doesn't yet), [deploy/README.md](deploy/README.md) (running a server, on Linux w
 [docs/MESSAGING.md](docs/MESSAGING.md) (HumID 4.0, provisional: person to person, known only by an ID), and
 [docs/CREDENTIALS.md](docs/CREDENTIALS.md) (HumID 4.0, provisional: asking for and checking mobile licenses, digital IDs, passports; what an SSN check can and can't be).
 
+The next build is specified in [docs/V5.md](docs/V5.md) (HumID 5.0: post-quantum from the ground up, keys made by the device's secure hardware inside every live check).
+
 ## Try it on your machine
 
 Needs Node 22.
