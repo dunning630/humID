@@ -20,6 +20,9 @@ name: Release apps
 #   HUMID_SERVER_KID   the server's 64-hex key id (printed by deploy/setup.sh or `humid status`) — pins it in the app
 #   HUMID_TLOG_COSIGNERS  optional, the same name=key,… as the server's: the public log's independent cosigners
 #                      the apps trust (PC-04). Without it apps verify the log but show no cosigners.
+#   HUMID_LEDGER_KEY_FP  the ledger's 32-hex signing-key fingerprint (printed by deploy/setup.sh) — built into the
+#                      app, so a new install never trusts the first ledger key it's shown (PC-04, CRYPTO-01).
+#                      Without it the app pins the first key it verifies, as before.
 # A published build must pin its server: HUMID_SERVER_KID has to be set as a repository variable, and the
 # server_kid box is refused when publishing.
 #
@@ -197,6 +200,7 @@ jobs:
       HUMID_SERVER_URL: ${{ needs.plan.outputs.server_url }}
       HUMID_SERVER_KID: ${{ needs.plan.outputs.server_kid }}
       HUMID_TLOG_COSIGNERS: ${{ vars.HUMID_TLOG_COSIGNERS }}
+      HUMID_LEDGER_KEY_FP: ${{ vars.HUMID_LEDGER_KEY_FP }}
       HUMID_SIMULATE: ${{ inputs.simulate == true && '1' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -232,6 +236,8 @@ jobs:
             # 3.0: a published app is always pinned to its server's key. Trust-on-first-use would hand
             # first contact to whoever controls the network at enrolment, for good (SEC-A-06).
             if [ -z "$HUMID_SERVER_KID" ] && [ "${HUMID_SIMULATE:-0}" != "1" ]; then echo "::error::HUMID_SERVER_KID is not set: a release build must pin its server's key. Set it under Settings > Secrets and variables > Actions > Variables (the key id is on the server's setup page)."; exit 1; fi
+            if [ -n "$HUMID_LEDGER_KEY_FP" ] && ! [[ "$HUMID_LEDGER_KEY_FP" =~ ^[0-9a-fA-F]{32}$ ]]; then echo "::error::HUMID_LEDGER_KEY_FP must be 32 hex characters"; exit 1; fi
+            if [ -z "$HUMID_LEDGER_KEY_FP" ]; then echo "::warning::HUMID_LEDGER_KEY_FP is not set: each new install will trust the first ledger key it sees. Set it from deploy/setup.sh's output."; fi
             echo "Building for $HUMID_SERVER_URL (pinned key: $HUMID_SERVER_KID)"
           fi
 
@@ -534,6 +540,7 @@ jobs:
       HUMID_SERVER_URL: ${{ needs.plan.outputs.server_url }}
       HUMID_SERVER_KID: ${{ needs.plan.outputs.server_kid }}
       HUMID_TLOG_COSIGNERS: ${{ vars.HUMID_TLOG_COSIGNERS }}
+      HUMID_LEDGER_KEY_FP: ${{ vars.HUMID_LEDGER_KEY_FP }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }

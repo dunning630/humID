@@ -22,8 +22,14 @@ export const signHead = (owner, seq, hash, signedAt, sk) => b64u(ml_dsa87.sign(h
  * Verify a ledger page. Returns { ok, reason, entries } where entries are parsed.
  * Checks every link, every hash, contiguous sequence numbers, and the head signature.
  * A page that starts after seq 1 is verified from its first entry onward.
+ *
+ * `previousHead` ({ seq, hash }): the head this device verified last time (CRYPTO-01).
+ * The page must still hold that entry unchanged, so history this device has already
+ * seen can't be rewritten or cut short. When the page starts after it, the result says
+ * `previousHeadOnPage: false` and the caller must fetch the entries in between and check
+ * them with verifyBridge.
  */
-export function verifyLedger(page, { expectedOwner, trustedKeyFp } = {}) {
+export function verifyLedger(page, { expectedOwner, trustedKeyFp, previousHead } = {}) {
   const fail = (reason) => ({ ok: false, reason, entries: [] });
   if (!page || !Array.isArray(page.entries)) return fail("No ledger data");
   if (expectedOwner && page.owner !== expectedOwner) return fail("Ledger belongs to someone else");
@@ -39,13 +45,39 @@ export function verifyLedger(page, { expectedOwner, trustedKeyFp } = {}) {
     out.push({ seq: e.seq, hash: e.hash, ...JSON.parse(e.body) });
     prev = e;
   }
-  if (!prev) return { ok: true, reason: "Empty", entries: [], keyFp };
+  const before = previousHead?.seq > 0 ? previousHead : null;
+  if (!prev) return before ? fail("Your history got shorter since this phone last checked") : { ok: true, reason: "Empty", entries: [], keyFp };
   const h = page.head;
   if (!h || h.seq !== prev.seq || h.hash !== prev.hash) return fail("Head does not match the latest entry");
   let sigOk = false;
   try { sigOk = ml_dsa87.verify(unb64u(h.sig), headMessage(page.owner, h.seq, h.hash, h.signedAt), unb64u(page.ledgerKey.dsa)); } catch {}
   if (!sigOk) return fail("Head signature is invalid");
-  return { ok: true, reason: "Verified", entries: out, keyFp, head: h };
+  let previousHeadOnPage = null;
+  if (before) {
+    if (before.seq > h.seq) return fail("Your history got shorter since this phone last checked");
+    const seen = page.entries.find((e) => e.seq === before.seq);
+    if (seen && seen.hash !== before.hash) return fail(`Entry ${before.seq} changed since this phone last checked`);
+    previousHeadOnPage = !!seen;
+  }
+  return { ok: true, reason: "Verified", entries: out, keyFp, head: { seq: h.seq, hash: h.hash, signedAt: h.signedAt, sig: h.sig }, ...(before ? { previousHeadOnPage } : {}) };
+}
+
+/**
+ * Verify a run of entries that bridges the head this device saw last time to a page that
+ * starts after it (CRYPTO-01): every entry hashes correctly, each links to the one before,
+ * the run starts at `from` ({ seq, hash }, the old head, included unchanged) and its last
+ * entry is the one the verified page's first entry points back to (`to`: { seq, prev }).
+ * No signature is needed: the page's signed head commits to every hash behind it.
+ */
+export function verifyBridge(owner, entries, from, to) {
+  if (!Array.isArray(entries) || !entries.length) return false;
+  let prev = null;
+  for (const e of entries) {
+    if (prev && (e.seq !== prev.seq + 1 || e.prev !== prev.hash)) return false;
+    if (entryHash(owner, e.seq, e.prev, e.body) !== e.hash) return false;
+    prev = e;
+  }
+  return entries[0].seq === from.seq && entries[0].hash === from.hash && prev.seq + 1 === to.seq && prev.hash === to.prev;
 }
 
 /* ---------------- public transparency log ----------------

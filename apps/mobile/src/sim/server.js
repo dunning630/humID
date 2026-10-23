@@ -477,6 +477,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
 
   /* ledger + public log */
   route("GET", "/ledger/events", (s, r, su, m, body, headers, q) => {
+    if (q.get("from") != null) {
+      const from = Number(q.get("from")), to = Number(q.get("to") ?? from + 999);
+      return [200, { owner: s.subject, entries: (st.ledger[s.subject] || []).filter((e) => e.seq >= from && e.seq <= to).slice(0, 1000), ledgerKey: ledgerKeyView }];
+    }
     const limit = Math.min(Math.max(Number(q.get("limit")) || 200, 1), 1000);
     const rows = (st.ledger[s.subject] || []).slice(-limit);
     const last = rows[rows.length - 1];
@@ -485,10 +489,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     return [200, { owner: s.subject, entries: rows, head, ledgerKey: ledgerKeyView }];
   }, { auth: true });
   route("GET", "/ledger/tlog/checkpoint", () => [200, checkpoint()], { auth: true });
-  route("GET", "/ledger/tlog/inclusion", (s) => {
+  route("GET", "/ledger/tlog/inclusion", (s, r, su, m, body, headers, q) => {
     const cp = checkpoint();
     const chain = st.ledger[s.subject] || [];
-    const lastE = chain[chain.length - 1];
+    const lastE = q.get("seq") ? chain[Number(q.get("seq")) - 1] : chain[chain.length - 1];
     if (!lastE) throw fail(404, "not_in_log", "That entry isn't in the public log yet.");
     const leaf = b64u(leafHash(s.subject, lastE.seq, lastE.hash));
     const index = st.leaves.lastIndexOf(leaf);

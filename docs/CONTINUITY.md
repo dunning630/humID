@@ -150,9 +150,26 @@ unauthenticated:
 | `GET /tlog/v1/consistency?from=&to=` | proof that one tree extends another |
 | `POST /tlog/v1/cosign` | a configured cosigner's signature on a checkpoint |
 
-On each Activity view the phone checks that its latest entry is included in
-the current checkpoint and that the checkpoint extends the one it saw last
-time (remembered on the device). Independent cosigners
+On each Activity view the phone checks three things, and shows "Verified" and
+"Published in the public log" only when all three hold:
+
+- **The page and the log are one history.** The head of the ledger page it
+  just verified (its seq and hash) is the entry the log proves is included,
+  in the current checkpoint. The server holds the ledger's signing key, so it
+  could rebuild and re-sign a page with an event left out; the log keeps the
+  real one, and any difference is reported as a mismatch ("Your history
+  doesn't match the public log"), never as "checked later".
+- **Nothing it saw is gone.** The page still holds the head this phone
+  confirmed last time, unchanged (remembered on the device as `ledgerHead`).
+  When more has happened since than one page shows, the phone fetches the
+  entries in between (`GET /ledger/events?from=&to=`) and checks they link
+  back to it.
+- **The log only grew.** The checkpoint extends the one it saw last time.
+
+The ledger key is built into release builds (`HUMID_LEDGER_KEY_FP`, printed
+by `deploy/setup.sh`), like the cosigners, so a new install doesn't have to
+trust the first key it's shown; a build without it pins the first key it
+verifies. Independent cosigners
 (`tools/tlog-cosign.mjs`, configured with `HUMID_TLOG_COSIGNERS`) do the same
 from outside and refuse — loudly — if the history ever forks. So the server
 can't rewrite anyone's history, or show different histories to different
