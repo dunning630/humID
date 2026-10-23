@@ -25,6 +25,18 @@ export async function loadRecovery() {
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
   ]);
   if (!card || !contacts) return;
+  if (S.decoy.value) {
+    // A decoy session shows an ordinary account with no recovery set up: no witness names,
+    // no ID chip, no card date (PC-16: names here would tell a coercer whom to press next).
+    // The same requests were made above, so the traffic looks the same.
+    S.recovery.value = {
+      card: { exists: false }, anchor: { available: !!anchor?.available, exists: false }, settings: {},
+      contacts: { n: 0, threshold: 0, createdAt: null, names: [], scheme: "quorum" },
+      keys: { available: !!keyList, max: keyList?.max || 4, list: [] },
+      proofs: { witness: false, anchor: false, card: false, key: false }, ready: false, legacy: false,
+    };
+    return;
+  }
   const names = [];
   for (const g of contacts.guardians || []) {
     let name = "A witness";
