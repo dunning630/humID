@@ -89,7 +89,7 @@ try {
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByText("Your vault server").first().waitFor();
   assert.equal(await page.locator(".stepper").getAttribute("role"), "progressbar");
-  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "5");
+  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "6"); // connect, access, mode, bind, card, in
   // the key is behind a disclosure: the host leads
   assert.equal(await page.getByText(/Compare it with the key/).count(), 0, "the key is folded away");
   await page.getByRole("button", { name: "Show its key" }).click();
@@ -362,7 +362,7 @@ try {
   await p2.page.goto(BASE);
   await p2.page.getByRole("button", { name: "Create my HumID" }).click();
   await p2.page.getByText("Pay without being known").waitFor({ timeout: 15_000 });
-  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "4", "access, bind, recovery card, in");
+  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "5", "access, mode, bind, recovery card, in");
   assert.match(await p2.page.locator(".eyebrow").first().innerText(), /Step 1/i);
   assert.equal(await p2.page.evaluate(() => globalThis.__humidBack()), "screen", "the back gesture does what the Back button does");
   await p2.page.getByRole("button", { name: "I already have HumID" }).click();
