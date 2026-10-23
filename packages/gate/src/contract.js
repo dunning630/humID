@@ -9,7 +9,9 @@
 //   id                  stable string, stored with the identity
 //   probe()             -> { available, method, assurance, label, modalities, proof, reason }
 //   enroll(opts)        -> { handle, bindingId, secret, interrupt, live }
-//   release(handle, opts) -> { secret, interrupt, live }
+//   release(handle, opts) -> { secret, interrupt, live, handle? }
+//                       handle: a replacement the caller must store in place of the one it
+//                       passed (the gate moved the secret to a new key); absent = unchanged
 //   forget(handle)      optional; removes the OS-held key material
 //
 // opts: { purpose, prompt, challenge, attest }
