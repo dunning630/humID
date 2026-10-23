@@ -223,16 +223,58 @@ const padIndex = (entry) => {
   return { ...entry, p: " ".repeat(want - base) };
 };
 
-export async function sealIndex(key, entry) {
+// Index entries v2 (1.6.0, CRYPTO-05): bound to the item they describe and versioned, so a
+// server can neither move an entry onto another item nor serve an older one back (an old
+// decoy flag, name or pin). Layout: "HIX2" ‖ nonce(12) ‖ AES-GCM(entry with rev), with
+// AAD "HUMID-INDEX-v2" ‖ lp(item id). `rev` is a number that only grows; the app keeps the
+// highest it has seen per item and refuses anything lower. v1 entries still open (rev 0).
+const INDEX_V2 = utf8("HIX2");
+const indexAad = (id) => concat(utf8("HUMID-INDEX-v2"), u32(utf8(id).length), utf8(id));
+
+/** Seal an index entry. With `bind` ({ id, rev }) it's a v2 entry for that item at that rev. */
+export async function sealIndex(key, entry, bind) {
   const nonce = random(12);
+  if (bind) {
+    const rev = Number(bind.rev);
+    if (!bind.id || !Number.isSafeInteger(rev) || rev < 1) throw new Error("An index entry needs its item id and a rev of at least 1");
+    return concat(INDEX_V2, nonce, await aesEncrypt(key, nonce, encodeJSON(padIndex({ ...entry, rev })), indexAad(String(bind.id))));
+  }
   const ct = await aesEncrypt(key, nonce, encodeJSON(padIndex(entry)), utf8("HUMID-INDEX-v1"));
   return concat(nonce, ct);
 }
 
-export async function openIndex(key, blob) {
-  const entry = decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+/**
+ * Open an index entry. With `bind` ({ id }), a v2 entry opens only as that item's: the
+ * result carries its `rev` (a v1 entry, from before 1.6.0, has rev 0).
+ */
+export async function openIndex(key, blob, bind) {
+  let entry = null;
+  if (bind && blob.length > 16 && INDEX_V2.every((b, i) => blob[i] === b)) {
+    try {
+      entry = decodeJSON(await aesDecrypt(key, blob.subarray(4, 16), blob.subarray(16), indexAad(String(bind.id))));
+      if (!Number.isSafeInteger(entry?.rev) || entry.rev < 1) throw new Error("bad rev");
+    } catch { entry = null; } // a v1 entry whose random nonce happens to start "HIX2" is tried as v1 below
+  }
+  if (!entry) {
+    entry = decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-v1")));
+    if (bind) entry.rev = 0; // whatever a v1 entry says inside, it predates versioning
+  }
   if (typeof entry?.p === "string") delete entry.p; // the padding
   return entry;
+}
+
+/**
+ * The highest index rev this device has seen per item (1.6.0, CRYPTO-05), kept on the
+ * device under the index key with its own label, so it can't be swapped for an entry or
+ * any other sealed record.
+ */
+export async function sealIndexRevs(key, revs) {
+  const nonce = random(12);
+  return concat(nonce, await aesEncrypt(key, nonce, encodeJSON(revs), utf8("HUMID-INDEX-REVS-v1")));
+}
+
+export async function openIndexRevs(key, blob) {
+  return decodeJSON(await aesDecrypt(key, blob.subarray(0, 12), blob.subarray(12), utf8("HUMID-INDEX-REVS-v1")));
 }
 
 /* ---------- offline copy (added in @humid/crypto 1.4.0) ----------
