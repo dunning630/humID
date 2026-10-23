@@ -4,7 +4,9 @@ name: Release apps
 # secrets exist) and uploads on its own runner.
 #
 #   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
-#   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
+#   Tag app-vX.Y.Z  → iPhone, Android and Linux, attached to a draft GitHub release.
+#   Mac and Windows desktop apps are paused (2026-10-23): no run builds them unless the
+#   repository variable HUMID_DESKTOP_RELEASES is on. "all" means ios,android,linux.
 #   Or tick "Publish apps" when you run it: a pre-release tagged app-v<apps/mobile version>
 #   on the run's commit, with each installer and the whole bundle as one zip.
 #   Every run also leaves one artifact, HumID-<version>-<server>: a "HumID <version>" folder
@@ -42,7 +44,7 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Comma-separated: ios,android,macos,windows,linux — or all — and/or server-windows"
+        description: "Comma-separated: ios,android,linux — or all — and/or server-windows. (macos and windows desktop apps are paused: built only with HUMID_DESKTOP_RELEASES=on)"
         default: android
         required: true
       publish_server:
@@ -87,9 +89,10 @@ jobs:
           echo "::error::A simulation build (the server inside the app) can't be published as a release. Untick one of the two."
           exit 1
       # Desktop apps are paused (2026-10-17): a desktop gate has no hardware proof a
-      # server can check, so macOS, Windows and Linux apps are not published. They can
-      # still be built to test (unpublished). Set the repository variable
-      # HUMID_DESKTOP_RELEASES=on to publish them again.
+      # server can check, so macOS, Windows and Linux apps are not published. Linux can
+      # still be built to test (unpublished). Mac and Windows aren't built at all
+      # (2026-10-23): "all" leaves them out, and naming them is refused with a warning.
+      # Set the repository variable HUMID_DESKTOP_RELEASES=on to build and publish them again.
       - id: m
         env:
           PUBLISHING: ${{ (startsWith(github.ref, 'refs/tags/app-v') || inputs.publish_apps == true) && '1' || '' }}
@@ -97,7 +100,7 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           WANT="${PLATFORMS:-all}"
-          WANT="${WANT/all/ios,android,macos,windows,linux}"
+          if [ "$DESKTOP_RELEASES" = "on" ]; then WANT="${WANT/all/ios,android,macos,windows,linux}"; else WANT="${WANT/all/ios,android,linux}"; fi
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os, sys
           runners = {"ios": "macos-26", "macos": "macos-26", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
@@ -106,6 +109,10 @@ jobs:
           apps = [p for p in want if p != "server-windows"]
           bad = [p for p in apps if p not in runners]
           if bad: sys.exit(f"Unknown platform(s): {bad}")
+          paused = [p for p in apps if p in ("macos", "windows")]
+          if paused and os.environ.get("DESKTOP_RELEASES") != "on":
+              print(f"::warning::Mac and Windows desktop apps are paused and aren't built: left out {', '.join(paused)} (HUMID_DESKTOP_RELEASES=on builds them)", file=sys.stderr)
+              apps = [p for p in apps if p not in paused]
           desktop = [p for p in apps if p in ("macos", "windows", "linux")]
           if desktop and os.environ.get("PUBLISHING") and os.environ.get("DESKTOP_RELEASES") != "on":
               print(f"::warning::Desktop apps are paused and won't be published: left out {', '.join(desktop)}", file=sys.stderr)
