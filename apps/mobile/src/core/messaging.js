@@ -25,8 +25,8 @@
 //            unposted messages live inside its sealed save instead (PC-28). Sent a few seconds
 //            later, retried on every poll.
 //
-// The relay is reached from its own session that never signs in (replaced every few minutes),
-// so no account is ever attached to a mailbox; the server still sees the network address that
+// The relay is reached from sessions that never sign in (one per deposit; one per conversation
+// for polling, replaced every few minutes), so no account is ever attached to a mailbox; the server still sees the network address that
 // posts, and a VPN or Tor is how to hide that. Stamps come from the signed-in session, inside a live step-up
 // over exactly the blinded values, so the issuer learns that this account asked, never for what.
 import * as M from "@humid/msg";
@@ -43,7 +43,6 @@ const MAX_LABEL = 40;
 const te = new TextEncoder(), td = new TextDecoder();
 
 let started = false;
-let relay = null;
 let keyset = null;
 let timer = null;
 let polling = null;
@@ -133,16 +132,13 @@ async function addConv(session, contact, { peerAt = null, first = null } = {}) {
 
 /* ---------------- posting: through an outbox, so nothing is lost to a dropped connection ---------------- */
 
-// What the server could still put together (security review M2): it sees the address that asks for
-// a stamp and the address that posts to a mailbox. Posts therefore go out a few seconds later, on
-// their own, and the relay session is replaced every few minutes; a VPN or Tor hides the address.
+// What the server could still put together (security review M2, MSG-02): it sees the address that
+// asks for a stamp and the address that posts to a mailbox. Posts therefore go out a few seconds
+// later, each from a relay session of its own; each conversation is polled from its own session,
+// replaced every few minutes; a VPN or Tor hides the address.
 const JITTER_MS = [1500, 6000];
 const RELAY_SESSION_MS = 5 * 60_000;
-let relayBorn = 0, flushTimer = null;
-function freshRelay() {
-  if (!relay || now() - relayBorn > RELAY_SESSION_MS) { relay?.close(); relay = R.api.relay(); relayBorn = now(); }
-  return relay;
-}
+let flushTimer = null;
 /*
  * Two outboxes (PC-28). What a conversation sends is kept INSIDE its sealed save (Conversation
  * pending/posted), written in the same step as the ratchet move that made it, so a crash can't
@@ -168,7 +164,13 @@ async function openOutbox(rec) {
 }
 /** Refused for good (malformed, oversized): retrying won't help. Offline, busy or full: try again later. */
 const finalRefusal = (e) => e?.status >= 400 && e?.status < 500 && e?.status !== 429;
-const putOnce = (box, wire, tag) => freshRelay().put(box, wire, tag);
+// Each deposit and each unsend from a relay session of its own (MSG-02), opened for it and closed
+// after: the relay can't tie what this phone posts to what it fetches, or one post to another.
+async function oneShot(fn) {
+  const r = R.api.relay();
+  try { return await fn(r); } finally { r.close(); }
+}
+const putOnce = (box, wire, tag) => oneShot((r) => r.put(box, wire, tag));
 async function flush() {
   // conversations, oldest first, from their sealed outboxes
   for (const c of convs.values()) {
@@ -302,7 +304,10 @@ function showThread(id) {
     id: m.id, dir: m.dir, kind: m.kind, at: m.at, expiresAt: m.expiresAt, live: m.dir === "out" ? true : m.live === true, duress: !!m.duress,
     text: m.kind === "text" ? td.decode(m.body) : null,
   }));
-  S.thread.value = { id, locked: false, messages: msgs, notices: ct.notices || [] };
+  // messages known not to have arrived: a later one did, these didn't (a relay that drops, or a
+  // phone that was off past the relay's 14 days)
+  const missing = c.session.status === "erased" ? 0 : c.session.gaps({ now: now() }).missing;
+  S.thread.value = { id, locked: false, messages: msgs, notices: ct.notices || [], missing };
 }
 
 /** Re-render when the holder's check lapses, so content disappears on time. */
@@ -332,7 +337,6 @@ export async function start() {
   }
   try {
     await loadKeys();
-    freshRelay();
     list = await loadList();
     for (const ct of list.contacts) { try { await openConv(ct.id); } catch { /* a conversation that won't open is shown as ended */ } }
     await countWaiting();
@@ -351,7 +355,8 @@ export function stop() {
   started = false;
   clearTimeout(timer); clearTimeout(lapseTimer);
   clearTimeout(flushTimer);
-  relay?.close(); relay = null;
+  for (const e of pollSessions.values()) e.relay.close();
+  pollSessions.clear();
   for (const r of reviews.values()) r.shown?._accept && wipe(r.shown._accept.rk0);
   // Ratchet keys and message bodies are overwritten in memory, not left for the garbage collector (L4).
   for (const c of convs.values()) c.unload().catch(() => {});
@@ -388,27 +393,62 @@ export function poll() {
   return polling;
 }
 
+/*
+ * Fetching (security review MSG-02, MSG-04). What the relay could put together from polls is
+ * kept as small as the design allows:
+ *   - each conversation (and each open invite) is polled from a relay session of its own, never
+ *     together with another, so one request never names two of a holder's personas;
+ *   - in a random order, with a random pause between them;
+ *   - only yesterday's and today's mailboxes (tomorrow's only near midnight UTC), so one day's
+ *     poll doesn't already name the next day's mailbox.
+ * After time away, a conversation fetches every day since it was last polled (`lastPolled`,
+ * sealed in the contact list), up to the 14 days the relay keeps anything, so nothing sent
+ * while this phone was off is missed. What still goes missing shows in the thread (gaps()).
+ */
+const POLL_GAP_MS = [150, 900];
+const pollSessions = new Map(); // conversation or invite id → { relay, born }
+function pollRelay(id) {
+  let e = pollSessions.get(id);
+  if (!e || now() - e.born > RELAY_SESSION_MS) { e?.relay.close(); e = { relay: R.api.relay(), born: now() }; pollSessions.set(id, e); }
+  return e.relay;
+}
+const pause = (lo, hi) => new Promise((r) => setTimeout(r, lo + Math.floor(Math.random() * (hi - lo))));
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) { const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
 async function fetchAll() {
   const t = now();
-  const want = new Map(); // box → { conv } | { invite }
+  const targets = [];
   for (const ct of list.contacts) {
     const c = convs.get(ct.id);
     if (!c || c.status === "erased" || c.status === "closed") continue;
-    for (const b of c.session.inboxes(t)) want.set(b, { conv: ct.id });
+    targets.push({ id: ct.id, ct, boxes: c.session.inboxesSince(ct.lastPolled ?? null, t) });
   }
-  for (const inv of list.invites) if (!inv.closed && inv.expires > t) want.set(inv.state.replyBox, { invite: inv.id });
-  const boxes = [...want.keys()];
-  for (let i = 0; i < boxes.length; i += 64) {
-    const { got } = await freshRelay().take(boxes.slice(i, i + 64));
-    for (const [box, wires] of Object.entries(got)) {
-      const to = want.get(box);
-      for (const wire of wires) {
-        // Stored before anything else, as ciphertext: the relay no longer has it.
-        if (to.conv) { await putWaiting({ conv: to.conv, at: now() }, wire); pendingCount.set(to.conv, (pendingCount.get(to.conv) || 0) + 1); }
-        else { const at = now(); const id = await putWaiting({ invite: to.invite, at }, wire); requests.set(id, { id, invite: to.invite, at }); }
+  for (const inv of list.invites) if (!inv.closed && inv.expires > t) targets.push({ id: inv.id, invite: inv.id, boxes: [inv.state.replyBox] });
+  let polled = false;
+  for (const [i, x] of shuffle(targets).entries()) {
+    if (i) await pause(...POLL_GAP_MS);
+    if (!started) return;
+    for (let j = 0; j < x.boxes.length; j += 64) {
+      const ask = x.boxes.slice(j, j + 64);
+      let more = true;
+      while (more) {
+        const r = await pollRelay(x.id).take(ask);
+        more = r.more;
+        for (const wires of Object.values(r.got)) {
+          for (const wire of wires) {
+            // Stored before anything else, as ciphertext: the relay no longer has it.
+            if (x.ct) { await putWaiting({ conv: x.id, at: now() }, wire); pendingCount.set(x.id, (pendingCount.get(x.id) || 0) + 1); }
+            else { const at = now(); const id = await putWaiting({ invite: x.invite, at }, wire); requests.set(id, { id, invite: x.invite, at }); }
+          }
+        }
       }
     }
+    if (x.ct) { x.ct.lastPolled = t; polled = true; }
   }
+  if (polled) await saveList();
 }
 
 /** Open what's waiting. Only with a fresh check: the holder is proven live right now. */
@@ -527,7 +567,7 @@ export async function cancelInvite(id) {
   list.invites = list.invites.filter((i) => i !== inv);
   for (const r of [...requests.values()].filter((x) => x.invite === id)) { requests.delete(r.id); await R.store.delMsg(r.id); }
   await saveList();
-  if (retract) await freshRelay().retract(box, retract).catch(() => {});
+  if (retract) await oneShot((r) => r.retract(box, retract)).catch(() => {});
   publish();
 }
 
@@ -538,7 +578,7 @@ export async function openCode(code) {
     decoyBusy();
     const parsed = M.parseInviteCode(code);
     const box = M.inviteBoxOf(parsed.secret);
-    const { got } = await freshRelay().take([box], { keep: true });
+    const { got } = await oneShot((r) => r.take([box], { keep: true }));
     const wire = got[box]?.[0];
     if (!wire) throw Object.assign(new Error("No invite with that code. It may have expired or been cancelled. Ask for a new one."), { code: "no_invite" });
     const opened = await M.openInvite(parsed, wire, { now: now() });
@@ -570,7 +610,7 @@ export async function withdrawRequest(id) {
   if (!ct?.retract) return false;
   // still in the outbox (never posted): it never left this phone
   const unposted = convs.get(id)?.pending().some((p) => p.kind === "first");
-  const removed = unposted || await freshRelay().retract(ct.reqBox, ct.retract).catch(() => false);
+  const removed = unposted || await oneShot((r) => r.retract(ct.reqBox, ct.retract)).catch(() => false);
   if (removed) await forgetLocal(id);
   else toast("They've already seen your request. Delete the conversation instead.", "warn");
   publish();
@@ -698,7 +738,7 @@ export function deleteSteps(id) {
   return c ? c.forgetPlan({ forBoth: true, now: now(), perCheck: S.server.value?.policy?.messaging?.stampsPerCheck || 1 }).steps : 0;
 }
 
-const retractOnce = (u) => freshRelay().retract(u.box, u.retract).catch(() => false);
+const retractOnce = (u) => oneShot((r) => r.retract(u.box, u.retract)).catch(() => false);
 
 /**
  * Delete a conversation. For me: nothing is sent, no check needed beyond the unlock.

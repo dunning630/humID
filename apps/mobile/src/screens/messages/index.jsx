@@ -229,6 +229,7 @@ function Chat() {
       ) : (
         <div class="thread" aria-live="polite">
           {t.messages.length === 0 && t.notices.length === 0 && <p class="small muted center">No messages yet. Say hello.</p>}
+          {t.missing > 0 && <div class="notice" role="status">{t.missing === 1 ? "1 message" : `${t.missing} messages`} from {c.label} didn't arrive. A later one did, so it was sent, but it never reached this phone. Ask them to send it again if it mattered.</div>}
           {merge(t.messages, t.notices).map((x, i, all) => (
             <>
               {(i === 0 || dayLabel(x.at) !== dayLabel(all[i - 1].at)) && <div class="day-sep">{dayLabel(x.at)}</div>}

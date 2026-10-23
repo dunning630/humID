@@ -562,6 +562,48 @@ test("relay: a flood of new addresses can't reset a busy client's rate limit", (
   assert.throws(() => relay.put(box, w, { ip: "198.51.100.7" }), (e) => e.code === "rate_limited");
 });
 
+/* ---------------- polling: backfill and linkage (security review MSG-04, MSG-02) ---------------- */
+
+test("MSG-04: a phone away for days still gets what was sent meanwhile (backfill from lastPolled)", async () => {
+  const { a, b, relay } = await meet({ stamps: false });
+  const lastPolled = T0;
+  const sent = await a.encrypt("text", "are you ok?", { now: T0 + 3600_000 });
+  relay.put(sent.box, sent.wire);
+  const later = T0 + 2 * DAY + 600_000;
+  assert.ok(!b.inboxes(later).includes(sent.box), "today's poll alone would miss it");
+  const boxes = b.inboxesSince(lastPolled, later);
+  assert.ok(boxes.includes(sent.box), "the backfill covers the day it was sent");
+  const [w] = boxes.flatMap((x) => relay.take(x));
+  assert.equal((await b.decrypt(w, { now: later })).text, "are you ok?");
+  // never further back than the relay keeps anything; never polled before: just yesterday and today
+  assert.equal(b.inboxesSince(T0 - 60 * DAY, T0).length, M.BACKFILL_DAYS + 1);
+  assert.deepEqual(b.inboxesSince(null, T0), b.inboxes(T0));
+});
+
+test("MSG-04: a message that never arrives shows as a gap", async () => {
+  const { a, b } = await meet({ stamps: false });
+  await a.encrypt("text", "lost", { now: T0 });
+  const next = await a.encrypt("text", "arrived", { now: T0 + 1000 });
+  await b.decrypt(next.wire, { now: T0 + 1000 });
+  assert.equal(b.gaps({ now: T0 + 11 * 60_000 }).missing, 1);
+});
+
+test("MSG-02: one day's poll doesn't name the next day's mailbox (except near midnight UTC)", async () => {
+  const { b } = await meet({ stamps: false });
+  const noon = (k) => Date.UTC(2026, 9, 20 + k, 12);
+  for (let k = 0; k < 4; k++) {
+    const today = new Set(b.inboxes(noon(k))), tomorrow = b.inboxes(noon(k + 1));
+    // day k+1's poll asks for box(k) and box(k+1); day k's asks for box(k-1) and box(k): one shared,
+    // the one both phones must still check for a message sent late on day k
+    assert.equal(tomorrow.filter((x) => today.has(x)).length, 1, `day ${k} and ${k + 1} share only the day in between`);
+    const twoOn = b.inboxes(noon(k + 2));
+    assert.equal(twoOn.filter((x) => today.has(x)).length, 0, "polls two days apart share nothing: no chain");
+  }
+  const nearMidnight = Date.UTC(2026, 9, 20, 23, 59);
+  assert.equal(b.inboxes(nearMidnight).length, 3, "tomorrow's box only within 2 minutes of midnight");
+  assert.equal(b.inboxes(Date.UTC(2026, 9, 20, 23, 50)).length, 2);
+});
+
 
 /* ---------------- delete ---------------- */
 

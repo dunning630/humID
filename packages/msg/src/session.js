@@ -27,7 +27,7 @@ import {
   MsgError, kdf, mac, label, concat, u32, readU32, random, wipe, equal, toHex, b64u, unb64u,
   encodeJSON, decodeJSON, aeadSeal, aeadOpen, dayOf, utf8, fromUtf8, guard, toPlain, fromPlain,
 } from "./util.js";
-import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays, newRetract } from "./wire.js";
+import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays, daysSince, newRetract } from "./wire.js";
 
 export const MAX_SKIP = 1000;        // per chain step
 // A stamped message older than the relay's retention (plus a day of clock skew) can't be a real
@@ -216,10 +216,20 @@ export class Session {
   get timer() { return this.s.timer ?? 0; }
   get peerPub() { return decodePub(this.s.peer.pub); }
 
-  /** Mailboxes to poll for this conversation. */
+  /** Mailboxes to poll for this conversation now: yesterday and today (tomorrow near midnight UTC). */
   inboxes(now = Date.now()) {
     if (this.s.status === "erased") return [];
     return pollDays(now).map((d) => boxFor(this.s.recvBox, d));
+  }
+
+  /**
+   * Mailboxes to poll for a conversation last polled at `since` (ms, or null): every day since
+   * then that the relay may still hold (up to 14 days), so nothing sent while this phone was away
+   * is missed (MSG-04). Oldest first.
+   */
+  inboxesSince(since, now = Date.now()) {
+    if (this.s.status === "erased") return [];
+    return daysSince(since, now).map((d) => boxFor(this.s.recvBox, d));
   }
 
   /** Serialise every encrypt/decrypt: the ratchet must never run two steps at once. */

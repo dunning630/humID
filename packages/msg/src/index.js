@@ -27,7 +27,7 @@ export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,
   stampKeyFor, knowsStampKey, STAMP_SKEW_MS, MAX_ARCHIVED_STAMP_KEYS,
 } from "./stamp.js";
-export { BUCKETS, isWireSize, isBox, boxFor, pollDays, WIRE_VERSION, newRetract, retractTag } from "./wire.js";
+export { BUCKETS, isWireSize, isBox, boxFor, pollDays, daysSince, NEAR_MIDNIGHT_MS, BACKFILL_DAYS, WIRE_VERSION, newRetract, retractTag } from "./wire.js";
 export { memoryRelay, rateKey, RELAY_DEFAULTS } from "./relay.js";
 // Proving it's you (docs/MESSAGING.md, "Proving it's you"): answer live instead
 // of being matched. Nothing below looks at, records or compares a voice or face.
