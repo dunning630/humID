@@ -85,3 +85,21 @@ export const nativeAdapter = {
     try { await invoke("forget", { handle }); } catch { /* best effort */ }
   },
 };
+
+/**
+ * Android: the accessibility services switched on right now, `[{ id, label, canRead, canAct }]`
+ * (APP-09). An enabled service can read what HumID shows and tap its buttons, which FLAG_SECURE
+ * doesn't stop. Elsewhere, or when it can't be asked: []. Never throws.
+ */
+export async function enabledAccessibilityServices() {
+  if (!inTauri()) return [];
+  try {
+    const r = await invoke("enabled_accessibility_services");
+    return (Array.isArray(r?.services) ? r.services : []).slice(0, 32).map((s) => ({
+      id: String(s?.id || "").slice(0, 200),
+      label: String(s?.label || s?.id || "An app").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 80),
+      canRead: s?.canRead !== false, // unknown counts as able
+      canAct: s?.canAct === true,
+    }));
+  } catch { return []; }
+}

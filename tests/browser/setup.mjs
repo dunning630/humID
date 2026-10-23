@@ -12,6 +12,8 @@
 //     the rest is inert, and focus comes back to what opened them (APP-12)
 //   - preferences: theme, four text sizes, animations, lock time, sort; pins ride with the item
 //   - the back gesture closes what's on top, one level at a time, and never leaves HumID
+//   - an app that can read the screen (an Android accessibility service) is named before a
+//     document opens, and "Not now" shows nothing (APP-09; pretended in a development build)
 //   - leaving HumID while a check is running locks it; the document never opens (PC-17)
 //   - a deleted biometric key is explained, and setting up again starts from Welcome
 //   - an app built with a pinned server skips the "trust this server" step
@@ -397,6 +399,29 @@ try {
   await openDoc(0);
   await page.waitForTimeout(300);
   assert.equal(await saveAsk.count(), 0, "the next document opens without a stale question");
+  await page.locator(".viewer [data-back]").first().click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  // APP-09 (R15): another app that can read the screen is named before a document shows, and
+  // "Not now" shows nothing (an Android accessibility service, pretended in a development build)
+  await page.evaluate(() => { globalThis.__humidDemoA11y = [{ id: "com.example/.Reader", label: "Screen Helper", canAct: true }]; });
+  await rows.nth(0).click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  const warn = page.getByRole("dialog", { name: "Another app can read your screen" });
+  await warn.waitFor();
+  assert.match(await warn.innerText(), /Screen Helper is turned on as an accessibility service[\s\S]*this document, and tap buttons for you/);
+  assert.equal(await page.locator(".interrupt").count(), 0, "no live check before the holder answers");
+  await warn.getByRole("button", { name: "Not now" }).click();
+  await warn.waitFor({ state: "detached" });
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".viewer, .interrupt").count(), 0, "Not now: nothing shown, no check");
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  await warn.getByRole("button", { name: "Show this document" }).click();
+  await hold(page);
+  await page.locator(".viewer").waitFor();
+  await page.evaluate(() => { delete globalThis.__humidDemoA11y; });
+  step("APP-09: an app that can read the screen is named before a document opens; Not now shows nothing");
   await page.locator(".viewer [data-back]").first().click();
   await page.locator(".viewer").waitFor({ state: "detached" });
   await backOut(page);

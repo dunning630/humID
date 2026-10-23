@@ -19,6 +19,7 @@ import { mark } from "./perf.js";
 import { updateIdentity } from "./identity.js";
 import { PINNED_KID, SIM } from "./config.js";
 import { knownRevs, nextRev, noteRevs } from "./indexrev.js";
+import { screenReadersOk } from "./readers.js";
 
 /** A build pinned to its server's key id (every published build; never the simulation). */
 const pinnedRelease = () => !!PINNED_KID && !SIM;
@@ -342,6 +343,7 @@ export async function openItem(item) {
   const ep = epoch();
   try {
     needVault();
+    if (!(await screenReadersOk(item.type === CARD_TYPE ? "this card" : "this document"))) return;
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     if (stale(ep)) { wipe(bytes); return; } // locked while the check ran: the document is wiped, not shown
     const type = meta.type || item.type || "application/octet-stream";
