@@ -1,9 +1,9 @@
 // Vault: the list, search, kinds and tags; the item screen; the viewer.
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Print } from "../brand/mark.jsx";
 import { Icon, kindIcon } from "../brand/icons.jsx";
-import { Pushed, Sheet, Menu, Confirm, Banner, Empty, Row, AssurancePill, useNow } from "../ui/kit.jsx";
+import { Pushed, Sheet, Menu, Confirm, Banner, Empty, Row, AssurancePill, useNow, useModal } from "../ui/kit.jsx";
 import { fmtSize, fmtDate, fmtTime, fmtAgo, fmtLeft } from "../ui/format.js";
 import { sealTime } from "../core/sealtime.js";
 import { openExternal } from "../core/external.js";
@@ -129,7 +129,7 @@ function TagFilters() {
   const used = TAGS.filter((t) => tc[t.id]);
   if (!used.length) { if (S.tagFilter.value) S.tagFilter.value = null; return null; }
   const on = S.tagFilter.value;
-  if (!open && !on) return <button class="link muted" style={{ minHeight: 32 }} onClick={() => setOpen(true)}>More filters</button>;
+  if (!open && !on) return <button class="link muted" onClick={() => setOpen(true)}>More filters</button>;
   return (
     <div class="chips" role="group" aria-label="Filter by tag">
       <button class="chip" aria-pressed={!on} onClick={() => { S.tagFilter.value = null; setOpen(false); }}>Any tag</button>
@@ -295,8 +295,10 @@ export function Item() {
 function ViewerShell({ v, children, trailing }) {
   const now = useNow(1000);
   const open = Math.round((now - (v.openedAt || now)) / 1000);
+  const root = useRef(null);
+  useModal(root);
   return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
+    <section class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()} ref={root}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
         <div class="grow"><div class="title ellipsis">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
@@ -304,7 +306,7 @@ function ViewerShell({ v, children, trailing }) {
       </header>
       <div class="body">{children}</div>
       <div class="timer">Open for {open < 60 ? `${open} s` : fmtLeft(open * 1000)}. Close it when you're done.</div>
-    </div>
+    </section>
   );
 }
 

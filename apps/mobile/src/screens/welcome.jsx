@@ -10,7 +10,7 @@ export function Welcome() {
     <main class="screen">
       <div class="hero" style={{ paddingTop: "4vh" }}>
         <Mark size={168} label="HumID" />
-        <Wordmark height={34} />
+        <h1 class="brand"><Wordmark height={34} /></h1>
         <p class="lede">Your documents, opened only by a live face or fingerprint check. No password exists.</p>
       </div>
       <div class="rows">

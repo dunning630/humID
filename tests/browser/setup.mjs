@@ -7,7 +7,9 @@
 //   - the You hub shows what's left to protect, and each row opens the right screen
 //   - a new document's tag is suggested from its name, not always "Identity"
 //   - toasts drop in at the top, never over a back button, the stepper or the primary action
-//   - every button, link and checkbox is at least 44 px in both directions
+//   - every button, link and checkbox is at least 44 px in both directions, segmented controls too
+//   - Welcome and Lock have an h1; the viewer and its question are modal: focus goes in, stays in,
+//     the rest is inert, and focus comes back to what opened them (APP-12)
 //   - preferences: theme, four text sizes, animations, lock time, sort; pins ride with the item
 //   - the back gesture closes what's on top, one level at a time, and never leaves HumID
 //   - leaving HumID while a check is running locks it; the document never opens (PC-17)
@@ -66,7 +68,7 @@ async function targets(page, where) {
     .filter((el) => {
       const r = el.getBoundingClientRect(), s = getComputedStyle(el);
       if (!r.width || !r.height || s.visibility === "hidden" || el.closest("[aria-hidden=true]")) return false;
-      if (el.matches(".link, .linklike") || el.closest(".field, .search, .tabbar, .seg")) return false; // inline text links; fields, segmented controls and the tab bar are taller than 44 by their containers
+      if (el.matches(".link, .linklike") || el.closest(".field, .search, .tabbar")) return false; // inline text links; fields and the tab bar are taller than 44 by their containers (segmented controls are 44 themselves)
       return r.width < 43.5 || r.height < 43.5; // sub-pixel layout rounds 44 to 43.99
     })
     .map((el) => { const r = el.getBoundingClientRect(); return `${el.tagName.toLowerCase()}.${String(el.className).replace(/\s+/g, ".")} "${(el.innerText || el.getAttribute("aria-label") || "").trim().slice(0, 24)}" ${Math.round(r.width)}×${Math.round(r.height)}`; }));
@@ -86,6 +88,8 @@ try {
   await onScreen(page, page.getByRole("button", { name: "Create my HumID" }), "Create my HumID on a 375×667 phone");
   await page.getByText(/No password exists/).waitFor();
   await targets(page, "Welcome"); await shot(page, "small-welcome");
+  // one h1 per page, and Welcome and Lock have theirs (the wordmark)
+  assert.equal(await page.getByRole("heading", { level: 1, name: "HumID" }).count(), 1, "Welcome's h1 is the wordmark");
   step("welcome: the main button is on screen on a small phone, and the no-password promise is the first thing said");
 
   await page.getByRole("button", { name: "Create my HumID" }).click();
@@ -367,6 +371,20 @@ try {
   assert.equal(await back(), "sheet", "back closes the question first");
   await saveAsk.waitFor({ state: "detached" });
   assert.equal(await page.locator(".viewer").count(), 1, "the viewer is still open");
+  // APP-12: the viewer is a modal layer: focus is inside it, the vault behind it is inert, and the
+  // question it opens takes focus and gives it back
+  const where = () => page.evaluate(() => ({ viewer: !!document.activeElement?.closest(".viewer"), sheet: !!document.activeElement?.closest(".sheet"), name: document.activeElement?.getAttribute("aria-label") || document.activeElement?.innerText?.trim() }));
+  assert.ok((await where()).viewer, "focus is in the viewer");
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll(".tabbar, .pushed")].every((e) => e.closest("[inert]"))), true, "the tab bar and the item behind the viewer are inert");
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).focus();
+  await page.keyboard.press("Enter");
+  await saveAsk.waitFor();
+  const inSheet = await where();
+  assert.ok(inSheet.sheet, `the question takes focus (${inSheet.name})`);
+  for (let i = 0; i < 6; i++) { await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab"); await page.keyboard.press("Tab"); assert.ok((await where()).sheet, "Tab and Shift+Tab stay inside the question"); }
+  await page.keyboard.press("Escape");
+  await saveAsk.waitFor({ state: "detached" });
+  assert.equal((await where()).name, "Save a copy", "closing it gives focus back to what opened it");
   await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
   await saveAsk.waitFor();
   assert.equal(await back(), "sheet");
@@ -381,7 +399,7 @@ try {
   await page.locator(".viewer").waitFor({ state: "detached" });
   await backOut(page);
   await page.locator(".pushed").waitFor({ state: "detached" });
-  step("viewer: back closes its Save question first; the question never carries to the next document");
+  step("viewer: back closes its Save question first; the question never carries to the next document; focus stays in the top layer and comes back (APP-12)");
 
   // PC-17: HumID hidden while a check is running (here the demo hold, before the prompt)
   // locks at once; the document never opens behind the scenes, and isn't showing on return
@@ -424,7 +442,9 @@ try {
   assert.match(d.name, /^Unlock with your duress gesture \(shows only decoys, locks your vault\)$/);
   assert.ok(d.w > 40 && d.h >= 40, "drawn while focused");
   assert.equal(await page.getByText(/safe mode/i).count(), 0);
-  step("Lock: the duress unlock is named, drawn when focused, behind More ways to unlock");
+  assert.equal(await page.getByRole("heading", { level: 1, name: "HumID" }).count(), 1, "Lock's h1 is the wordmark");
+  assert.equal(await page.locator("main").count(), 1, "Lock is one main landmark");
+  step("Lock: the duress unlock is named, drawn when focused, behind More ways to unlock; an h1");
 
   await page.reload();
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });

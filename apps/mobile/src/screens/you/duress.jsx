@@ -66,7 +66,7 @@ export function Duress() {
       {enabled && <Practice gesture={gesture} />}
 
       <div class="card" style={{ marginTop: 12 }}>
-        <div class="row-x" style={{ justifyContent: "space-between" }}><h3>Decoy documents</h3><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
+        <div class="row-x" style={{ justifyContent: "space-between" }}><h2 class="h3">Decoy documents</h2><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
         <p class="small muted" style={{ marginTop: 4 }}>What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
         {items.length === 0 ? <p class="small muted" style={{ marginTop: 8 }}>Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
           <div class="checklist">
@@ -126,7 +126,7 @@ function Practice({ gesture }) {
   const hint = gesture === "taps" ? `Tap the mark three times, each within ${seconds(TAP_WINDOW_MS)} of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
   return (
     <div class="card" style={{ marginTop: 12 }}>
-      <h3>Practice</h3>
+      <h2 class="h3">Practice</h2>
       <p class="small muted" style={{ marginTop: 4 }}>Try it here as many times as you like. This sends nothing to your vault and locks nothing.</p>
       <div class="hero" style={{ padding: "12px 0" }}>
         {gesture === "taps"

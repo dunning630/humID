@@ -22,7 +22,9 @@ p, li, dd, .selectable { user-select: text; -webkit-user-select: text; }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: var(--t-2xl); font-weight: 700; letter-spacing: -0.015em; line-height: 1.15; }
 h2 { font-size: var(--t-xl); font-weight: 650; letter-spacing: -0.01em; line-height: 1.2; }
-h3 { font-size: var(--t-lg); font-weight: 600; line-height: 1.25; }
+h3, .h3 { font-size: var(--t-lg); font-weight: 600; line-height: 1.25; }
+/* the brand as a page's heading (Welcome, Lock): the wordmark is the h1, no extra line box */
+h1.brand { line-height: 0; }
 a { color: var(--mint); text-decoration: none; }
 button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
 button { cursor: pointer; background: none; border: 0; padding: 0; text-align: inherit; }
@@ -197,7 +199,7 @@ button.row:active, a.row:active { background: var(--surface-2); }
 textarea.input { min-height: 96px; resize: vertical; }
 .input.code { font-family: var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; font-size: var(--t-lg); text-align: center; }
 .search { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); padding: 0 var(--s-3); min-height: var(--tap); border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); }
-.search input { background: none; border: 0; min-width: 0; min-height: 40px; }
+.search input { background: none; border: 0; min-width: 0; min-height: calc(var(--tap) - 2px); } /* inside the 1 px border: the field is 44 */
 .search input:focus { outline: none; }
 .search .ico { color: var(--muted); width: 20px; height: 20px; }
 .toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); min-height: var(--tap); width: 100%; text-align: left; }
@@ -207,7 +209,7 @@ textarea.input { min-height: 96px; resize: vertical; }
 .toggle[aria-checked="true"] .switch { background: var(--mint-deep); border-color: var(--mint-deep); }
 .toggle[aria-checked="true"] .switch::after { transform: translateX(20px); background: var(--mint-ink); }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); }
-.seg button { min-height: 36px; border-radius: var(--r-sm); font-weight: 600; font-size: var(--t-sm); color: var(--text-2); }
+.seg button { min-height: var(--tap); border-radius: var(--r-sm); font-weight: 600; font-size: var(--t-sm); color: var(--text-2); }
 .seg button[aria-pressed="true"], .seg button[aria-checked="true"] { background: var(--surface-3); color: var(--text); }
 .option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; width: 100%; text-align: left; padding: var(--s-4); border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line); min-height: 64px; }
 .option[aria-pressed="true"], .option[aria-checked="true"] { border-color: var(--mint-deep); background: var(--mint-wash); }
@@ -294,7 +296,7 @@ textarea.input { min-height: 96px; resize: vertical; }
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-4); padding: var(--s-6) 0; }
 .hero .lede { max-width: 34ch; }
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-10) var(--s-4); color: var(--muted); }
-.empty h3 { color: var(--text); }
+.empty h3, .empty .h3 { color: var(--text); }
 .empty .ico { width: 40px; height: 40px; color: var(--line-strong); }
 
 /* ---------- lists of items (the vault) ---------- */
@@ -317,7 +319,7 @@ button.event { width: 100%; text-align: left; color: inherit; }
 button.event:active { background: var(--surface-2); }
 .checklist input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--mint-deep); flex: none; }
 .card.danger { border-color: var(--danger); }
-.card.danger h3 { color: var(--danger); }
+.card.danger h3, .card.danger .h3 { color: var(--danger); }
 .event .ico { width: 20px; height: 20px; margin-top: 2px; color: var(--text-2); }
 .event[data-kind="open"] .ico { color: var(--mint); } .event[data-kind="denied"] .ico, .event[data-kind="danger"] .ico { color: var(--danger); } .event[data-kind="change"] .ico { color: var(--amber); }
 .event .what { font-weight: 600; font-size: var(--t-md); }
