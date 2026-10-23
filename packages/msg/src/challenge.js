@@ -79,10 +79,15 @@ export function makeChallenge({ purpose = "call", note, now = Date.now(), ttl = 
   return { body, pending: { v: 1, id: toHex(id), purpose, note: n, created: now, expires: exp, outcome: null } };
 }
 
-/** Verifier: make a challenge and send it on `session`. Returns { box, wire, pending }. */
+/**
+ * Verifier: make a challenge and send it on `session`. Asking takes a live check like every other
+ * message (the human-to-human rule; security review MSG-11): without a stamp, a strict phone
+ * would discard the question unread. Returns { box, wire, pending }.
+ */
 export async function sendChallenge(session, opts = {}) {
+  if (typeof opts.stamper !== "function") throw new MsgError("stamp_required", "Asking takes a live check");
   const { body, pending } = makeChallenge(opts);
-  const sent = await session.encrypt("challenge", body, { now: opts.now ?? Date.now(), duress: !!opts.duress });
+  const sent = await session.encrypt("challenge", body, { now: opts.now ?? Date.now(), duress: !!opts.duress, stamper: opts.stamper, requireLive: true });
   return { ...sent, pending };
 }
 
@@ -120,7 +125,7 @@ export async function replyToChallenge(session, challenge, { answer, stamper, no
   if (now > challenge.expires + CLOCK_SKEW) throw new MsgError("challenge_expired", "This question has expired. Ask them to send a new one.");
   const nonce = random(ID);
   const body = encodeJSON({ v: 1, re: b64u(fromHex(challenge.id)), a: answer, r: b64u(nonce) });
-  const sent = await session.encrypt("challenge-reply", body, { now, stamper, duress });
+  const sent = await session.encrypt("challenge-reply", body, { now, stamper, duress, requireLive: true });
   return { ...sent, code: answer === "yes" ? spokenCode(session.convId, challenge.id, nonce) : null };
 }
 

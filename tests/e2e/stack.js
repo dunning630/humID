@@ -19,7 +19,7 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
-export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {} } = {}) {
+export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {}, demoStamps = false } = {}) {
   // checkin: HUMID_CHECKIN. keyshareClock: { now, mono, tickMs } for Check-in tests that move time.
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
   const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
@@ -47,7 +47,7 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
   const gateway = createGateway({
     port, dataDir: join(root, "gateway"), internalSk: ik.sk,
     upstreams,
-    allowedOrigins: ["http://localhost:5173"], trustProxy: false, devicePolicy, registration, passBuyUrl, admin, checkin, checkinSweepMs,
+    allowedOrigins: ["http://localhost:5173"], trustProxy: false, devicePolicy, registration, passBuyUrl, admin, checkin, checkinSweepMs, demoStamps,
   });
   await gateway.start();
   const stack = {
