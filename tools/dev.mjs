@@ -16,12 +16,16 @@ import { testCsca, testPassport } from "../tests/support/passport.js";
 import { simulatedChip } from "../tests/support/chip.js";
 import { simulatedKey } from "../tests/support/fido-sim.js";
 import { randomBytes } from "node:crypto";
+import { devFile } from "./devfiles.mjs";
 
 // Local development build: includes demo mode (no sensor) so you can try HumID on a
 // laptop. Release builds never contain it, and real servers refuse it.
 execFileSync(process.execPath, [fileURLToPath(new URL("../apps/mobile/build.mjs", import.meta.url))], { stdio: "inherit", env: { ...process.env, HUMID_ALLOW_DEMO: "1" } });
 
 const PORT = Number(process.env.PORT || 5173);
+// This computer only (PC-25): the dev stack mints access codes and runs demo mode for anyone who
+// reaches it. HOST=0.0.0.0 to show it on your network on purpose.
+const HOST = process.env.HOST || "127.0.0.1";
 const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
 // Recovery normally waits 72 hours; locally it's 2 minutes so you can try it (RECOVERY_DELAY_MS to change).
 // Demo passports: a throwaway country signing CA the dev server trusts, and one chip per holder name,
@@ -135,7 +139,8 @@ http.createServer(async (req, res) => {
     p.on("error", () => { res.writeHead(502); res.end(); });
     return req.pipe(p);
   }
-  let file = join(dist, decodeURIComponent(url.pathname));
+  let file = devFile(dist, url.pathname); // never outside dist (PC-25)
+  if (!file) { res.writeHead(400); return res.end(); }
   try { if ((await stat(file)).isDirectory()) file = join(file, "index.html"); }
   catch { file = join(dist, "index.html"); }
   try {
@@ -143,8 +148,8 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream", "cache-control": "no-store", ...(extname(file) === ".html" ? { "content-security-policy": APP_CSP } : {}) });
     res.end(body);
   } catch { res.writeHead(404); res.end(); }
-}).listen(PORT, () => {
-  console.log(`HumID dev: http://localhost:${PORT}  (gateway ${stack.baseUrl}, server fingerprint ${stack.gateway.htp.fingerprint}, key id ${stack.gateway.htp.kid})`);
+}).listen(PORT, HOST, () => {
+  console.log(`HumID dev: http://localhost:${PORT}${HOST === "127.0.0.1" ? "" : `  (listening on ${HOST})`}  (gateway ${stack.baseUrl}, server fingerprint ${stack.gateway.htp.fingerprint}, key id ${stack.gateway.htp.kid})`);
 });
 
 if (adminRoot) {
