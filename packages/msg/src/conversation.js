@@ -163,10 +163,11 @@ export class Conversation {
    *     how many it named that were yours (refused: a contact can't delete what you sent)
    * Disappearing messages count down from when they arrive (the shorter of the sender's timer and yours).
    */
-  receive(wire, { now = Date.now(), stampKeys = null, receivedAt = now } = {}) {
+  receive(wire, { now = Date.now(), stampKeys = null, receivedAt = now, holdUnknownKey = false } = {}) {
     return this.#serial(async () => {
       // receivedAt: when the wire came off the relay (the app may read it later)
-      const m = await this.session.decrypt(wire, { now, stampKeys, requireLive: this.requireLive, receivedAt });
+      // holdUnknownKey: a stamp under a key not in stampKeys throws unknown_stamp_key, nothing moved (MSG-07)
+      const m = await this.session.decrypt(wire, { now, stampKeys, requireLive: this.requireLive, receivedAt, holdUnknownKey });
       let out = m;
       if (m.refused) return this.#saved(m, now); // not approved live: nothing kept, nothing applied
       const pAt = peerLiveAt({ live: m.live, sentAt: m.at, receivedAt });

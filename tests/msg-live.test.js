@@ -498,6 +498,25 @@ test("MSG-01: a request's stamp covers when it was made, and must fall in its ke
   assert.equal((await M.readRequest(inv.state, personaA, ok.wire, { now: T0 + 2 * MIN, stampKeys: keys, requireLive: true })).live, true);
 });
 
+test("MSG-07: a message stamped under a key this phone hasn't fetched yet is held, not burned", async () => {
+  const { a, b } = await meetStrict();
+  const H = hourlyIssuer(T0, 2);
+  // the sender already has the new hour's key; the receiver still holds yesterday's list
+  const senderKeys = M.importStampKeys([H.view(H.keys[0], true), H.view(H.keys[1])]);
+  const st = M.makeStamper(senderKeys, async (bl, kid) => H.sign(kid, bl, T0 + MIN));
+  const w = await a.send("the new key is live", { now: T0 + MIN, stamper: st });
+  await code(b.receive(w.wire, { now: T0 + MIN, stampKeys, holdUnknownKey: true }), "unknown_stamp_key");
+  assert.equal(b.messages(T0 + MIN).filter((m) => m.dir === "in").length, 0);
+  // the app fetches the keys and opens the same wire again: nothing was used up
+  const fetched = M.importStampKeys([H.view(H.keys[0], true), H.view(H.keys[1])]);
+  const r = await b.receive(w.wire, { now: T0 + 2 * MIN, stampKeys: fetched, receivedAt: T0 + MIN });
+  assert.equal(r.text, "the new key is live");
+  assert.equal(r.live, true);
+  // a key that's still unknown after a fetch was never published: discarded, as before
+  const w2 = await a.send("forged", { now: T0 + 3 * MIN, stamper: rogueStamper });
+  assert.equal((await b.receive(w2.wire, { now: T0 + 3 * MIN, stampKeys: fetched })).refused, "not_live");
+});
+
 test("MSG-01: a published stamp key must say which epoch it issues for", () => {
   assert.throws(() => M.importStampKeys([{ ...issuer.publicView, issuing: true }]), (e) => e.code === "bad_stamp_key");
 });

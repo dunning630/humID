@@ -21,7 +21,7 @@
 
 import { backend, SIZES, checkKemPk } from "./backend.js";
 import { personaFingerprint, personaId, safetyCode, encodePub, decodePub } from "./persona.js";
-import { messageCommitment, verifyStamp } from "./stamp.js";
+import { messageCommitment, verifyStamp, knowsStampKey } from "./stamp.js";
 import { LIVE_SKEW_MS } from "./live.js";
 import {
   MsgError, kdf, mac, label, concat, u32, readU32, random, wipe, equal, toHex, b64u, unb64u,
@@ -337,9 +337,11 @@ export class Session {
    *   live: true (valid stamp), false (stamp present but invalid), null (no stamp, or no keys to check).
    * opts.requireLive: the human-to-human rule (live.js). A message without a valid live stamp is
  *   discarded: { kind, id, at, n, refused: "not_live" } and nothing it says is applied.
- * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys.
+ * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys,
+ *   unknown_stamp_key (only with opts.holdUnknownKey; retryable: nothing moved; fetch the stamp keys and decrypt
+ *   the same wire again, without holdUnknownKey).
    */
-  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false, receivedAt = now } = {}) {
+  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false, receivedAt = now, holdUnknownKey = false } = {}) {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       checkWire(wire);
       // The human-to-human rule needs the issuer's keys to check a stamp; without them nothing moves.
@@ -391,6 +393,15 @@ export class Session {
       const body = unb64u(p.b);
       const nonce = unb64u(p.nonce, NONCE);
       let live = null;
+      // A stamp under a key this phone hasn't fetched yet (a new epoch's, or a key published while
+      // this phone held an older list) may be perfectly good. With holdUnknownKey, say so BEFORE
+      // anything is committed, so the message stays unopened and can be retried once the keys are
+      // fetched, instead of using up its key and discarding it as "not live" (MSG-07). The caller
+      // retries once without it: a key still unknown after a fresh fetch was never published.
+      if (holdUnknownKey && requireLive && p.st && stampKeys && typeof p.st.kid === "string" && !knowsStampKey(stampKeys, p.st.kid)) {
+        wipe(body);
+        throw new MsgError("unknown_stamp_key", "This message was stamped under a key this phone doesn't have yet. Fetch the stamp keys and try again.");
+      }
       if (p.st && stampKeys) {
         const ta = p.k === "timer" && Number.isSafeInteger(p.ta) ? p.ta : 0;
         // at: the stamp's key must be the one of the epoch this message says it was sent in, so a
