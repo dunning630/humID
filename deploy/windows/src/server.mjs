@@ -270,6 +270,7 @@ async function run({ service }) {
       trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
       admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
       checkin: S("HUMID_CHECKIN", "off"), // docs/CHECKIN.md
+      sharedHelloPerMin: Number(S("HUMID_SHARED_HELLO_PER_MIN", "600")), // V76-03: the tunnel's visitors can't be told apart
     });
     await gateway.start();
     edge = createEdge({

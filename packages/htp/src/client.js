@@ -43,6 +43,9 @@ export class HtpClient {
     // The newest signed policy this client has accepted ({ policy, at, sig }), from the device's
     // storage or this run. A signed policy older than it is a replay and is never used.
     this.policySeen = null;
+    // A one-use pass the server handed a signed-in session, sent with the next handshake so a
+    // returning holder isn't held up by limits shared with strangers (V76-03). Spent on use.
+    this.helloPass = null;
   }
 
   /** fetch with the request timeout: a hung connection surfaces as TimeoutError (a network failure) instead of waiting forever. */
@@ -107,9 +110,12 @@ export class HtpClient {
   async connect() {
     const server = await this.serverKeys();
     const { wire, state } = clientHello(server);
+    const pass = this.helloPass;
+    this.helloPass = null;
+    if (pass) this.onHelloPassUsed?.();
     const res = await this.request(`${this.base}/htp/v1/hello`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(pass ? { "x-humid-hello-pass": pass } : {}) },
       body: JSON.stringify(wire),
     });
     if (!res.ok) {

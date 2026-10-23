@@ -84,8 +84,9 @@ export function runStatusFetcher({ url = STATUS_URL, file, refreshMs = 6 * 3600_
 export function revocationList({ url = STATUS_URL, file = "", refreshMs = 6 * 3600_000, retryMs = 10 * 60_000, fetch = globalThis.fetch, required = false, maxAgeMs = STATUS_MAX_AGE_MS, now = Date.now, log = () => {} } = {}) {
   let set = null, timer = null, at = 0, stopped = false;
   const source = file ? "file" : url ? "url" : "off";
-  // a file is re-read often (it's local and the fetcher replaces it when it likes)
-  const every = file ? Math.min(retryMs, refreshMs) : refreshMs;
+  // a file is re-read every minute (it's local, and the fetcher replaces it when it likes):
+  // a server that has just started waits a minute, not ten, for its first copy
+  const every = file ? Math.min(60_000, retryMs, refreshMs) : refreshMs;
   async function refresh() {
     if (source === "off") return false;
     try {
