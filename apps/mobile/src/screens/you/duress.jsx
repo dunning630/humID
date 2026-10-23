@@ -7,7 +7,7 @@ import { Icon } from "../../brand/icons.jsx";
 import { Mark } from "../../brand/mark.jsx";
 import { Pushed, Sheet, Row, Toggle, Empty } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
-import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, DURESS_HOLD_MS } from "../../core/index.js";
+import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, createTapCounter, createHoldTimer, isDuressHold, describeTaps, TAP_WINDOW_MS, DURESS_HOLD_MS } from "../../core/index.js";
 import { back, Check } from "./common.jsx";
 
 const HOLD_S = Math.round(DURESS_HOLD_MS / 1000);
@@ -93,22 +93,31 @@ export function Duress() {
   );
 }
 
-/** Try the gesture here. Nothing leaves the phone; the result is a line of text. */
+/**
+ * Try the gesture here. Nothing leaves the phone; the result is a line of text. The taps and
+ * the hold are recognised by the same code as the Lock screen (core/gesture.js), and the
+ * line says how far apart the taps were.
+ */
 function Practice({ gesture }) {
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null); // { yes, text }
   const [holding, setHolding] = useState(false);
-  const taps = useRef({ n: 0, t: null });
-  const press = useRef(0);
+  const taps = useRef(null);
+  if (!taps.current) taps.current = createTapCounter({ onDone: (r) => setResult({ yes: r.duress, text: describeTaps(r) }) });
+  const press = useRef(null);
+  if (!press.current) press.current = createHoldTimer();
   const timer = useRef(null);
-  useEffect(() => () => { clearTimeout(taps.current.t); clearTimeout(timer.current); }, []);
-  const onMark = () => {
-    const st = taps.current;
-    st.n += 1;
-    clearTimeout(st.t);
-    st.t = setTimeout(() => { const n = st.n; st.n = 0; setResult(n >= 3 ? "yes" : "no"); }, 650);
+  useEffect(() => () => { taps.current.cancel(); clearTimeout(timer.current); }, []);
+  const onMark = () => taps.current.tap();
+  const down = () => { press.current.down(); setHolding(true); clearTimeout(timer.current); timer.current = setTimeout(() => setHolding(false), DURESS_HOLD_MS); };
+  const up = () => {
+    const held = press.current.up();
+    if (held == null) return;
+    setHolding(false); clearTimeout(timer.current);
+    setResult(isDuressHold(held)
+      ? { yes: true, text: "That would have opened the decoy view." }
+      : { yes: false, text: `That would have been a normal unlock: you held for ${(held / 1000).toFixed(1)} s. Hold for ${HOLD_S} seconds.` });
   };
-  const down = () => { press.current = Date.now(); setHolding(true); clearTimeout(timer.current); timer.current = setTimeout(() => setHolding(false), DURESS_HOLD_MS); };
-  const up = () => { if (!press.current) return; const held = Date.now() - press.current; press.current = 0; setHolding(false); clearTimeout(timer.current); setResult(held >= DURESS_HOLD_MS ? "yes" : "no"); };
+  const hint = gesture === "taps" ? `Tap the mark three times, each within ${(TAP_WINDOW_MS / 1000).toFixed(1)} s of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
   return (
     <div class="card" style={{ marginTop: 12 }}>
       <h3>Practice</h3>
@@ -117,8 +126,8 @@ function Practice({ gesture }) {
         {gesture === "taps"
           ? <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999 }} aria-label="The HumID mark (tap it three times)" onClick={onMark}><Mark size={120} /></button>
           : <button class="btn primary lg block" style={{ opacity: holding ? 0.8 : 1 }} onPointerDown={down} onPointerUp={up} onPointerLeave={up} onPointerCancel={up} onContextMenu={(e) => e.preventDefault()}><Icon name="fingerprint" />Unlock (practice)</button>}
-        <p class="small" role="status" aria-live="polite" style={{ minHeight: 22, color: result === "yes" ? "var(--mint)" : result === "no" ? "var(--amber)" : "var(--muted)" }}>
-          {result === "yes" ? "That would have opened the decoy view." : result === "no" ? (gesture === "taps" ? "That would have been a normal unlock. Three quick taps." : `That would have been a normal unlock. Hold for ${HOLD_S} seconds.`) : gesture === "taps" ? "Tap the mark three times, quickly." : `Press and hold for ${HOLD_S} seconds, then let go.`}
+        <p class="small" role="status" aria-live="polite" data-practice={result ? (result.yes ? "decoy" : "normal") : ""} style={{ minHeight: 22, color: result?.yes ? "var(--mint)" : result ? "var(--amber)" : "var(--muted)" }}>
+          {result ? result.text : hint}
         </p>
       </div>
     </div>

@@ -4,6 +4,7 @@
 //   - nothing is kept on the device while it's armed (no offline copy)
 //   - the duress setting is sealed on the device: no gesture readable in its storage (F1)
 //   - checking in moves the deadline; a longer window can be chosen for the night
+//   - Duress Practice and the Lock screen agree: three taps 500 ms apart are duress in both (APP-01)
 //   - a duress unlock erases the vault at once, while the duress session looks calm and
 //     still shows Check-in on, and the decoy document
 //   - the next ordinary unlock says the vault was erased; only the decoy is left; Activity agrees
@@ -96,6 +97,12 @@ try {
   await youScreen(page, "Duress gesture");
   await page.getByRole("switch", { name: "Duress gesture" }).click();
   await page.getByRole("radio", { name: /Tap the mark three times/ }).click();
+  // APP-01: Practice and the Lock screen share one recognizer. Three taps 500 ms apart, an
+  // easy rhythm, must be called the decoy view here and must open the decoy on the Lock screen.
+  const practice = page.getByRole("button", { name: /The HumID mark \(tap it three times\)/ });
+  for (let i = 0; i < 3; i++) { if (i) await page.waitForTimeout(500); await practice.click(); }
+  await page.locator('[data-practice="decoy"]').waitFor({ timeout: 5000 });
+  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*0\.5 s, 0\.5 s apart/);
   await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
   await toast(page, /Duress protection is on/);
   await tab(page, "Vault");
@@ -166,7 +173,12 @@ try {
   /* ---------------- a forced unlock: duress ---------------- */
   await page.getByRole("button", { name: "Lock now" }).first().click();
   const mark = page.getByRole("button", { name: "Unlock HumID" });
-  for (let i = 0; i < 3; i++) await mark.click({ delay: 20 });
+  // the rhythm Practice accepted: 500 ms between taps (the check overlay waits for the window)
+  for (let i = 0; i < 3; i++) {
+    if (i) await page.waitForTimeout(500);
+    assert.equal(await page.locator(".interrupt").count(), 0, "no check opens while taps are still coming");
+    await mark.click({ delay: 20 });
+  }
   await hold(page);
   await page.locator(".rows .item").first().waitFor({ timeout: 20_000 });
   assert.deepEqual(await names(page), ["Library card"], "only the decoy");

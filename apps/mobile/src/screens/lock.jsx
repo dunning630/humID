@@ -3,13 +3,14 @@
 // holding Unlock for three seconds — because which one (if any) is the duress gesture
 // is sealed and only known after the check. Nothing on screen changes either way.
 // 3.0: a tap on the mark responds at once; a plain click (screen readers, switch control)
-// unlocks; "Unlock in safe mode" is reachable without any gesture.
-import { useRef, useState } from "preact/hooks";
+// unlocks; "Unlock in safe mode" is reachable without any gesture. The taps are recognised by
+// core/gesture.js, the same code Duress Practice uses, and the unlock waits for its window.
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark, Wordmark } from "../brand/mark.jsx";
 import { Icon } from "../brand/icons.jsx";
 import { Banner } from "../ui/kit.jsx";
 import * as S from "../core/state.js";
-import { unlock, resetLocal, DURESS_HOLD_MS } from "../core/index.js";
+import { unlock, resetLocal, createTapCounter, createHoldTimer, isDuressHold } from "../core/index.js";
 import { serverHost } from "../core/config.js";
 
 const ISSUES = {
@@ -30,23 +31,22 @@ const ISSUES = {
 const TERMINAL = new Set(["key_invalidated", "device_removed"]);
 
 function useUnlockGestures() {
-  const taps = useRef({ n: 0, t: null });
-  const press = useRef({ at: 0, fired: false });
   const [pressed, setPressed] = useState(false);
-  const onMark = () => {
-    const st = taps.current;
-    st.n += 1;
-    setPressed(true);
-    clearTimeout(st.t);
-    // one tap unlocks after a short window for a second; three within it mean the taps gesture
-    st.t = setTimeout(() => { const n = st.n; st.n = 0; setPressed(false); unlock(n >= 3 ? "taps" : false); }, st.n === 1 ? 420 : 650);
-  };
+  // One recognizer with Duress Practice (core/gesture.js). The unlock starts only once the
+  // tap window has closed, so the check overlay never opens over a second or third tap.
+  const taps = useRef(null);
+  if (!taps.current) taps.current = createTapCounter({ onDone: ({ duress }) => { setPressed(false); unlock(duress ? "taps" : false); } });
+  useEffect(() => () => taps.current.cancel(), []);
+  const hold = useRef(null);
+  if (!hold.current) hold.current = createHoldTimer();
+  const fired = useRef(false);
+  const onMark = () => { setPressed(true); taps.current.tap(); };
   const button = {
-    onPointerDown: () => { press.current = { at: Date.now(), fired: false }; },
-    onPointerUp: () => { const p = press.current; if (!p.at) return; const held = Date.now() - p.at; press.current = { at: 0, fired: true }; unlock(held >= DURESS_HOLD_MS ? "hold" : false); },
-    onPointerLeave: () => { press.current = { at: 0, fired: false }; },
+    onPointerDown: () => { hold.current.down(); fired.current = false; },
+    onPointerUp: () => { const held = hold.current.up(); if (held == null) return; fired.current = true; unlock(isDuressHold(held) ? "hold" : false); },
+    onPointerLeave: () => { hold.current.cancel(); fired.current = false; },
     // a synthesised click (screen reader, switch control, keyboard) with no pointer sequence
-    onClick: () => { const p = press.current; if (p.fired) { press.current = { at: 0, fired: false }; return; } unlock(false); },
+    onClick: () => { if (fired.current) { fired.current = false; return; } unlock(false); },
     onContextMenu: (e) => e.preventDefault(),
   };
   return { onMark, button, pressed };

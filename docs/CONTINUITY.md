@@ -165,8 +165,12 @@ ledger events, never whose they are.
 
 ## Duress
 
-If someone forces you to unlock, a gesture you chose (hold Unlock about two
-seconds, or tap the mark three times) unlocks exactly as usual. Then:
+If someone forces you to unlock, a gesture you chose (hold Unlock for three
+seconds, or tap the mark three times, each tap within 0.65 s of the last)
+unlocks exactly as usual. The Lock screen and Duress Practice recognise the
+gestures with the same code, and the Lock screen starts the check only once
+the tap window has closed, so what Practice accepts is what the Lock screen
+does. Then:
 
 - **Decoy view.** The app shows only documents you marked "Show in decoy
   view" (a flag inside the encrypted index), a calm Security screen (duress
