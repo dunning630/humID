@@ -178,8 +178,10 @@ browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=d
   128 random bits (what opens the invite) and an 80-bit pin of the inviter's
   persona (what the invite must contain), plus two check characters: `HI-` and
   eleven groups, best shown as a QR code. It lasts 24 hours by default (7 days at most) and admits one
-  person by default. Show it in person when you can: the audit's warning about
-  cloned voices applies to anything read over the phone.
+  person, always: every contact must get a persona of their own, and an invite
+  that admitted several would give them all the same one (precert PC-26). Show
+  it in person when you can: the audit's warning about cloned voices applies to
+  anything read over the phone.
 - **No one can read, swap or impersonate an invite.** The bundle is encrypted
   under a key from the invite secret, which the relay never sees, and the phone
   that opens it checks the persona inside against the code's pin. So even
@@ -502,7 +504,7 @@ fixed or stated as limits here.
 | Fake faces (T2) | Stamps come only from the phone's hardware-gated check; there is no camera path and must never be one. |
 | Coercion (T4) | Encrypted duress flag; constant-size wire objects so a duress session looks like any other; nothing on the relay to compel. |
 | Rogue operator (T3) | The relay can't read, forge or substitute anything; safety codes catch key substitution; dropped messages show up as gaps. |
-| AI-scale social engineering (T2) | Invites expire in 24 h and admit one person by default; requests carry a live stamp; approval takes a live check; the safety code is the defence against a cloned voice. |
+| AI-scale social engineering (T2) | Invites expire in 24 h and admit one person; requests carry a live stamp; approval takes a live check; the safety code is the defence against a cloned voice. |
 | SEC-S-13 (reveals whether an account exists) | The relay answers an empty box and a never-used box identically. Tested. |
 | SEC-S-02, -03, -08 (DoS) | Every relay dimension is capped (object size and count per box, bytes per box and in total, expiry), and rate limits key IPv6 by its /64. Tested. |
 | H-1 (signer not pinned) | A contact's persona keys are pinned at the handshake; every later message is authenticated by keys only that persona could hold. |

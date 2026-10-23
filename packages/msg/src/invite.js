@@ -84,7 +84,10 @@ const bindKey = (secret) => kdf(secret, undefined, "invite bind");
  */
 export async function createInvite(accountSeed, { now = Date.now(), ttlMs = DEFAULT_INVITE_TTL, uses = 1 } = {}) {
   if (!(ttlMs > 0 && ttlMs <= MAX_INVITE_TTL)) throw new MsgError("bad_ttl", "An invite lasts at most 7 days");
-  if (!(Number.isInteger(uses) && uses >= 1 && uses <= 20)) throw new MsgError("bad_uses", "An invite admits 1 to 20 people");
+  // One invite, one persona, one person (precert PC-26). An invite that admitted several people
+  // would show each of them the SAME persona ID, and two of them comparing notes would know they
+  // know the same person: the one thing personas exist to prevent. Make one invite per person.
+  if (uses !== 1) throw new MsgError("bad_uses", "An invite admits one person. Make a new invite for each person.");
   const b = backend();
   const persona = newPersona(accountSeed);
   const secret = random(INVITE_SECRET_BYTES);
@@ -214,7 +217,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
   return guard(async () => {
     // The human-to-human rule (live.js): a request without a valid live stamp is never shown.
     if (requireLive && !stampKeys) throw new MsgError("no_stamp_keys", "Can't check live stamps yet");
-    if (state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
+    if (state.used >= 1 || state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
     if (now > state.expires) throw new MsgError("invite_expired", "This invite has expired");
     checkWire(wire);
     let o = 1;
@@ -258,14 +261,15 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
 }
 
 /**
- * Approve (the app runs a live check first). Marks the invite used; once all
- * its uses are spent, its one-time secret keys are erased.
+ * Approve (the app runs a live check first). Marks the invite used and erases its one-time
+ * secret keys: an invite admits one person (PC-26; a saved invite from before that which said
+ * otherwise is treated the same).
  * @returns the Session (role "a"). Send its first message: session.encrypt("accept", "").
  */
 export function acceptRequest(state, persona, request, { now = Date.now() } = {}) {
   const a = request._accept;
   if (!a) throw new MsgError("malformed", "Not a request read by readRequest");
-  if (state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
+  if (state.used >= 1 || state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
   const thHex = toHex(a.th);
   if (state.seen.includes(thHex)) throw new MsgError("replay_or_old", "This request was already handled");
   const session = Session.create({
@@ -275,7 +279,7 @@ export function acceptRequest(state, persona, request, { now = Date.now() } = {}
   wipe(a.rk0);
   state.seen.push(thHex);
   state.used += 1;
-  if (state.used >= state.uses) closeInvite(state);
+  closeInvite(state);
   return session;
 }
 

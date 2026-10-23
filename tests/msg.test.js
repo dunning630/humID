@@ -155,19 +155,37 @@ test("a request made without the invite secret is refused, even with the real bu
 
 test("requests can't be replayed: a used invite, and a request already handled", async () => {
   const seedA = rnd(64);
-  const inv = await M.createInvite(seedA, { now: T0, uses: 2 });
+  const inv = await M.createInvite(seedA, { now: T0 });
   const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
   const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
-  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
-  const shown = await M.readRequest(inv.state, personaA, r1.wire, { now: T0 });
-  M.acceptRequest(inv.state, personaA, shown, { now: T0 });
-  await code(M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), "replay_or_old");
+  // declined: can't be shown again, and the invite stays open for the right person
   const r2 = await M.requestContact(rnd(64), opened, { now: T0 });
   M.declineRequest(inv.state, await M.readRequest(inv.state, personaA, r2.wire, { now: T0 }));
   await code(M.readRequest(inv.state, personaA, r2.wire, { now: T0 }), "replay_or_old");
+  // accepted: the invite is spent, for that request and any other
+  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
+  M.acceptRequest(inv.state, personaA, await M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), { now: T0 });
+  await code(M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), "invite_used");
   const r3 = await M.requestContact(rnd(64), opened, { now: T0 });
-  M.acceptRequest(inv.state, personaA, await M.readRequest(inv.state, personaA, r3.wire, { now: T0 }), { now: T0 });
   await code(M.readRequest(inv.state, personaA, r3.wire, { now: T0 }), "invite_used");
+});
+
+test("PC-26: an invite admits one person, so no two contacts ever share a persona ID", async () => {
+  await code(M.createInvite(rnd(64), { now: T0, uses: 20 }), "bad_uses");
+  await code(M.createInvite(rnd(64), { now: T0, uses: 2 }), "bad_uses");
+  // a saved invite from before this that claims several uses still admits only one
+  const seedA = rnd(64);
+  const inv = await M.createInvite(seedA, { now: T0 });
+  inv.state.uses = 20;
+  const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
+  const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
+  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
+  const r2 = await M.requestContact(rnd(64), opened, { now: T0 });
+  const s1 = await M.readRequest(inv.state, personaA, r1.wire, { now: T0 });
+  const s2 = await M.readRequest(inv.state, personaA, r2.wire, { now: T0 });
+  M.acceptRequest(inv.state, personaA, s1, { now: T0 });
+  assert.throws(() => M.acceptRequest(inv.state, personaA, s2, { now: T0 }), (e) => e.code === "invite_used");
+  assert.equal(inv.state.closed, true);
 });
 
 test("the requester can't send until approved", async () => {
@@ -1014,7 +1032,7 @@ test("fuzz: mutated wires, requests, invites and stored state fail only with Msg
     if (kind === 2) { const z = new Uint8Array(M.BUCKETS[Math.floor(r() * 3)]); crypto.getRandomValues(z); z[0] = 1; return z; }
     const z = new Uint8Array(y.length); z.set(y.subarray(0, Math.floor(r() * y.length))); return z;
   };
-  const st = { ...inv.state, used: 0, uses: 99 }; // a fresh view of the (closed) invite, for reading only
+  const st = { ...inv.state, used: 0, uses: 1, closed: false }; // a fresh view of the (closed) invite, for reading only
   st.otkSk = rnd(st.otkSk.length); st.otxSk = rnd(32); st.secret = rnd(16);
   for (let i = 0; i < n; i++) {
     const tries = [
