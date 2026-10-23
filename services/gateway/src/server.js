@@ -158,6 +158,27 @@ const ROUTES = [
   { m: "POST", p: re("/msg/relay/retract"), h: "relayRetract", relay: true, msg: true },
 ];
 
+/**
+ * Largest inner body each route takes (SRV-32). The frame cap is chosen from the session before
+ * the route is known (it's inside the encryption), so a signed-in session's frame may be as big
+ * as a vault upload; this is checked as soon as the frame is open, before anything parses the
+ * body. Every route not listed takes CALL_CAP_DEFAULT: JSON and control bodies are a few KiB.
+ * Keyed by handler, or by upstream service and path.
+ */
+const CALL_CAP_DEFAULT = 64 * 1024;
+const RECOVERY_ENVELOPE_CAP = 96 * 1024;  // one sealed envelope (recovery: 64 KiB), as bytes or base64 in JSON
+const RECOVERY_CHIP_CAP = 256 * 1024;     // up to three ID-chip reads (recovery: 3 × 48 KiB), base64 in JSON
+const CALL_CAPS = {
+  "h:upload": "max",                       // POST /vault/objects: the vault-sized cap (GATEWAY_MAX_CALL_BYTES)
+  "recovery:/links/$1/approve": RECOVERY_ENVELOPE_CAP,
+  "h:helpRecover": RECOVERY_ENVELOPE_CAP,
+  "recovery:/contacts": 6 * RECOVERY_ENVELOPE_CAP, // up to five contacts' envelopes
+  "recovery:/anchor": RECOVERY_CHIP_CAP,
+  "h:addEvidence": RECOVERY_CHIP_CAP,
+  "h:stationVerify": RECOVERY_CHIP_CAP,
+};
+const capKey = (route) => (route.h ? `h:${route.h}` : `${route.to}:${route.path}`);
+
 /** Check-in settings, as keyshare accepts them (CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS). Published in the policy hint. */
 const CHECKIN_POLICY = { windowsH: [1, 2, 4, 8, 24], graceMin: [0, 15, 30, 60] };
 const CHECKIN_WINDOWS = CHECKIN_POLICY.windowsH.map((h) => h * 3_600_000);
@@ -910,12 +931,19 @@ export function createGateway({
 
   /* ---------- the encrypted call ---------- */
 
+  /** SRV-32: the route's own cap. Relay routes keep the frame cap (they only ever come from a session that isn't signed in, capped at maxAnonCallBytes). */
+  const callCap = (route) => {
+    const c = route.relay ? "max" : CALL_CAPS[capKey(route)] ?? CALL_CAP_DEFAULT;
+    return c === "max" ? maxCallBytes : Math.min(c, maxCallBytes);
+  };
+
   async function dispatch(s, seq, meta, body) {
     const url = new URL(String(meta.p || "/"), "http://inner");
     const route = ROUTES.find((r) => r.m === meta.m && r.p.test(url.pathname));
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
     if (route.msg && !MESSAGING) throw new HttpError(404, "not_found", "No such endpoint");
+    if (body.length > callCap(route)) throw new HttpError(413, "too_large", "Request body is too large for this endpoint.");
     if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
     // Step-up: a fresh biometric signature over exactly this request, by this session's device key.

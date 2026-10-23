@@ -125,6 +125,13 @@ response meta       { s: status, h?: headers }
 - The server keeps a 256-entry sliding replay window per session. A `seq` is
   processed at most once, and anything older than the window is refused.
 - Frames with `ts` more than 2 minutes from server time are refused.
+- The meta JSON is at most 64 KiB (`bad_frame` otherwise). A frame from a
+  session that hasn't signed in is at most 512 KiB; a signed-in session's frame
+  may be as large as a vault upload, but once it is open the gateway holds the
+  body to the route's own cap before anything parses it (`413 too_large`):
+  64 KiB for JSON and control routes, a few hundred KiB for recovery routes
+  that carry envelopes or ID-chip reads, and the full frame cap only for
+  `POST /vault/objects`.
 - Sessions expire after 15 minutes idle and 8 hours absolute. Logout, closing
   the identity and expiry all erase the session keys on the server.
 
@@ -233,6 +240,7 @@ The client surfaces these codes:
 | `replay` / `stale_frame` | Sequence number reused, or frame time outside the window. |
 | `step_up_required` / `step_up_stale` / `bad_proof` | Sensitive request without a valid, fresh proof. Rejected proofs are logged as `access.denied`. |
 | `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, failed sign-in proofs: 10 per 5 minutes per identity, 20 per address, 200 in all (past the budget a failure is `rate_limited`; a valid proof is never refused). Frames: 512 KiB before sign-in, an unknown session `session_unknown` from the header alone. |
+| `too_large` | A body over the frame cap, or over the route's own cap once the frame is open. |
 | `audit_unavailable` | The ledger could not record an access, so the access was refused (fail closed). |
 | `device_removed` | This device was removed from the account. |
 | `device_not_proven` | The device can't prove a live check the way the server's device policy requires. |
