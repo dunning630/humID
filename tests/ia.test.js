@@ -41,6 +41,8 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
   assert.deepEqual(hits, []);
   const lock = read("screens/lock.jsx") + read("screens/welcome.jsx");
   assert.match(lock, /password/i, "Welcome and Lock say that no password exists");
+  // the duress unlock says what it is: "safe mode" sounded like the safer choice (APP-06)
+  for (const f of faces) assert.doesNotMatch(noComments(read(f)), /safe mode/i, `${f} calls the duress unlock "safe mode"`);
 });
 
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
