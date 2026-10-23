@@ -382,7 +382,7 @@ export function closeViewer() {
 
 /**
  * Save an unsealed copy to this device. Always its own live check, even from an open
- * viewer, so "every open, save and delete needs a fresh check" is true, and the save is
+ * viewer, so "every open, save and delete needs a live check" is true, and the save is
  * in Activity like any other release.
  */
 export async function saveCopy(item) {

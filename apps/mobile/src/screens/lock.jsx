@@ -22,7 +22,7 @@ const ISSUES = {
     warn: true,
   }),
   unknown_identity: (host) => ({ title: "Your vault doesn't know this HumID", text: `The server at ${host} has no record of this identity. It may have been reset or replaced, or this HumID came from an earlier test version.` }),
-  device_not_proven: () => ({ title: "Your vault needs a chip-proven check", text: "This vault server now accepts only devices whose secure chip proves every face or fingerprint check. Open HumID on your phone, or add this device again once it qualifies." }),
+  device_not_proven: () => ({ title: "Your vault needs a chip-proven check", text: "This vault server now accepts only devices whose secure chip proves every live check. Open HumID on your phone, or add this device again once it qualifies." }),
   key_invalidated: () => ({
     title: "This phone's HumID key is gone",
     text: "Android and iOS delete HumID's key when the phone's fingerprints or face change, or when HumID is reinstalled, and nothing can bring it back. Your vault and documents are safe. Set HumID up again on this phone, then use I already have HumID to get back in with another device or your recovery proofs.",

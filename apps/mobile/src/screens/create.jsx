@@ -6,6 +6,7 @@ import { Mark, Wordmark } from "../brand/mark.jsx";
 import { Icon } from "../brand/icons.jsx";
 import { Stepper, Banner, AssurancePill, Row } from "../ui/kit.jsx";
 import { CardBox, CardConfirm, PrintableCard, CAN_PRINT } from "../ui/codes.jsx";
+import { CARD_IS_ONE, RECOVERY_RULE } from "../ui/labels.js";
 import * as S from "../core/state.js";
 import { enroll, finishEnroll, connectServer, saveCard, redeemAccessCode, resumePass, demoAccessCode, serverPinned, toast, HOLDER_ONLY, HARDENED } from "../core/index.js";
 import { parseAccessCode } from "@humid/pass";
@@ -90,7 +91,7 @@ export function BindButtons({ onBind, label, sole, soleId = "sole" }) {
   return (
     <>
       {!hw?.probe.available && hw?.probe.reason && <Banner tone="amber" title="Open HumID in the app" text={`${hw.probe.reason} ${demo ? "This development server also allows demo mode." : "PINs and passwords are never accepted."}`} />}
-      {hw?.probe.available && !hw.probe.proof && policy === "attested" && <Banner tone="amber" title="Use your phone" text="This vault accepts only phones whose secure chip can prove each face or fingerprint check. Set up HumID on your iPhone or Android phone first." />}
+      {hw?.probe.available && !hw.probe.proof && policy === "attested" && <Banner tone="amber" title="Use your phone" text="This vault accepts only phones whose secure chip can prove each live check. Set up HumID on your iPhone or Android phone first." />}
       {hw?.probe.available && (hw.probe.proof || policy !== "attested") && <button class="btn primary lg block" onClick={guard(() => onBind(false))}><Icon name="fingerprint" />{label} with {hw.probe.label}</button>}
       {demo && <button class={`btn ${hw?.probe.available ? "ghost" : "primary"} block`} onClick={guard(() => onBind(true))}>Use demo mode (no sensor)</button>}
     </>
@@ -271,7 +272,7 @@ function RecoveryCardStep({ onNext }) {
       <h1 style={{ marginTop: 8 }}>{code ? "Your recovery card" : "No recovery set up yet"}</h1>
       {code ? (
         <>
-          <p class="lede" style={{ marginTop: 10 }}>One of two things that get your vault back on a new phone. Alone it opens nothing.</p>
+          <p class="lede" style={{ marginTop: 10 }}>{CARD_IS_ONE}</p>
           <div class="card" style={{ marginTop: 16 }}>
             <CardBox code={code} />
             <CardConfirm code={code} onChange={setSaved} />
@@ -283,7 +284,7 @@ function RecoveryCardStep({ onNext }) {
             <PrintableCard code={code} />
           </div>
         </>
-      ) : <div style={{ marginTop: 18 }}><Banner tone="amber" title="Set it up under You" text="Two proofs (witnesses, your ID chip, a recovery card), or a second device, so losing this phone doesn't lose your vault." /></div>}
+      ) : <div style={{ marginTop: 18 }}><Banner tone="amber" title="Set it up under You" text={`${RECOVERY_RULE} Set up two, or a second device, so losing this phone doesn't lose your vault.`} /></div>}
       <div class="foot">
         <button class="btn primary block" onClick={() => {
           if (!(code && !saved)) return onNext();

@@ -71,7 +71,7 @@ function HelpSheet({ onClose }) {
       {req && !people && (
         <>
           <Banner tone="mint" icon="check" title="Code matches that device's keys" text={`Requested ${fmtAgo(req.createdAt)}.`} />
-          <p class="small muted">Next, one check shows whose pieces you hold.</p>
+          <p class="small muted">Next, one live check shows whose pieces you hold.</p>
           <div class="actions">
             <button class="btn primary block" onClick={reveal}><Icon name="fingerprint" />Show who I protect</button>
             <button class="btn ghost block" data-back onClick={() => setReq(null)}>Back</button>

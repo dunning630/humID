@@ -24,7 +24,7 @@ export const enrollStep = signal("connect"); // connect · access (when the serv
 export const pass = signal(null);
 export const passBusy = signal(false);
 
-// A new device joining an existing account (another device, a recovery card, or recovery contacts).
+// A new device joining an existing account (another device, two recovery proofs, or an older card or witnesses).
 export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
 export const joinMethod = signal(null);      // link | quorum | card | contacts
 export const joinStatus = signal(null);      // last polled status from the server

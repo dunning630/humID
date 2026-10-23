@@ -64,13 +64,13 @@ export function Join() {
         </>
       )}
       {step === 2 && method === "link" && (
-        <JoinDetails eyebrow={n(2)} title="Approve from your other device" lede="First, lock this device to you with one check. Then it shows a code and a QR code. On your other device: You → Devices → Add a device."
+        <JoinDetails eyebrow={n(2)} title="Approve from your other device" lede="First, lock this device to you with one live check. Then it shows a code and a QR code. On your other device: You → Devices → Add a device."
           bindLabel="Continue" onBind={(demo, sole) => beginJoin("link", { useDemo: demo, soleBiometric: sole })} />
       )}
       {step === 2 && method === "quorum" && (prelude ? <Prelude eyebrow={n(2)} onNext={() => setPrelude(false)} /> : <QuorumEntry eyebrow={n(2)} />)}
       {step === 2 && method === "card" && <CardEntry eyebrow={n(2)} />}
       {step === 2 && method === "contacts" && (
-        <JoinDetails eyebrow={n(2)} title="Ask your witnesses" lede="Lock this device to you with one check, then send the code it shows to your witnesses. When enough of them approve, your vault opens here after 72 hours, unless you cancel from a device you still have."
+        <JoinDetails eyebrow={n(2)} title="Ask your witnesses" lede="Lock this device to you with one live check, then send the code it shows to your witnesses. When enough of them approve, your vault opens here after 72 hours, unless you cancel from a device you still have."
           bindLabel="Continue" onBind={(demo, sole) => beginJoin("contacts", { useDemo: demo, soleBiometric: sole })} />
       )}
       {step === 3 && <JoinWait eyebrow={n(3)} />}
@@ -132,7 +132,7 @@ function QuorumEntry({ eyebrow }) {
   const [text, setText] = useState("");
   const state = cardState(text);
   return (
-    <JoinDetails eyebrow={eyebrow} title="Prove it's you" lede="One check locks this device to you first. Then you show your proofs, one at a time."
+    <JoinDetails eyebrow={eyebrow} title="Prove it's you" lede="One live check locks this device to you first. Then you show your proofs, one at a time."
       bindLabel="Continue" disabled={!!text.trim() && state !== "ok"} onBind={(demo, sole) => beginJoin("quorum", { useDemo: demo, cardInput: state === "ok" ? text : "", soleBiometric: sole })}>
       <div class="field" style={{ marginTop: 16 }}>
         <label for="qcard">Recovery card (if you have it handy)</label>
@@ -150,7 +150,7 @@ function CardEntry({ eyebrow }) {
   const [text, setText] = useState("");
   const state = cardState(text);
   return (
-    <JoinDetails eyebrow={eyebrow} title="Use your recovery card" lede="Type the code from your card, then one check locks this device to you. Your vault opens here after 72 hours, and every device you still have is alerted and can cancel."
+    <JoinDetails eyebrow={eyebrow} title="Use your recovery card" lede="Type the code from your card, then one live check locks this device to you. Your vault opens here after 72 hours, and every device you still have is alerted and can cancel."
       bindLabel="Continue" disabled={state !== "ok"} onBind={(demo, sole) => beginJoin("card", { useDemo: demo, cardInput: text, soleBiometric: sole })}>
       <div class="field" style={{ marginTop: 16 }}>
         <label for="card">Recovery card</label>
@@ -188,7 +188,7 @@ function JoinWait({ eyebrow }) {
       ) : (
         <>
           <h1 style={{ marginTop: 8 }}>Enter this code on your other device</h1>
-          <p class="lede" style={{ marginTop: 10 }}>On the device that has your HumID: <b>You → Devices → Add a device</b>. It checks that this code matches this device's keys, then runs one check.</p>
+          <p class="lede" style={{ marginTop: 10 }}>On the device that has your HumID: <b>You → Devices → Add a device</b>. It checks that this code matches this device's keys, then runs one live check.</p>
           <CodeBox code={p.code} label="Device code" />
           <QrCode kind="link" code={p.code} expiresAt={p.expiresAt} />
           {!expired && <p class="fine center">Scan it from your other device, or type it. Expires in {fmtLeft(p.expiresAt - now)}</p>}

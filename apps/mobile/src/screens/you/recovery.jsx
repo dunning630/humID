@@ -19,6 +19,7 @@ import {
   switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY,
 } from "../../core/index.js";
 import { back, twelve, Countdown } from "./common.jsx";
+import { RECOVERY_IF_LOST } from "../../ui/labels.js";
 
 const MIN_WITNESSES = 2, MAX_WITNESSES = 5;
 const threshold = (n) => Math.floor(n / 2) + 1;
@@ -111,7 +112,7 @@ function ModeCard({ mode, off, onSwitch }) {
       <h2 style={{ marginTop: 6 }}>{holderOnly ? "Only my own devices" : "A safe way back in"}</h2>
       <p class="small t2" style={{ marginTop: 6 }}>{holderOnly
         ? "Your vault opens only on devices you've already set up. HumID keeps no recovery for you, so if you lose every one of them, no one can bring it back, not even HumID."
-        : "If you lose every device, any two of your proofs bring your vault back after a wait that any device you still have can cancel."}</p>
+        : `${RECOVERY_IF_LOST} Then there's a wait that any device you still have can cancel.`}</p>
       {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" role="alert" title="Your vault server's record of this choice doesn't check out"
         text={`${UNTRUSTED[mode.reason] || UNTRUSTED.unsigned} This phone won't act on it: it treats your HumID as Only my own devices and won't make any recovery piece until the server shows your real choice again. Your documents aren't affected. Tell whoever runs your vault server.`} /></div>}
       {!off && mode.trusted && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
@@ -134,7 +135,7 @@ function ModeSheet({ mode, onClose }) {
   ) : (
     <Sheet onClose={onClose} eyebrow="Recovery mode" title="Only my own devices">
       <p class="t2 small">Your vault will open only on devices you've already set up. If you lose every one of them, <b>no one can get your documents back</b>: not your witnesses, not your ID, not HumID.</p>
-      {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own check. Only then does the switch happen.`} />}
+      {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own live check. Only then does the switch happen.`} />}
       <Banner tone="danger" icon="alert" title="Old pieces still fit each other" text="This stops your vault server from keeping or using any recovery piece. But pieces made before (your printed recovery card, a witness's piece, copies in old server backups) can still rebuild your HumID's key offline if two of them come together, because the key itself doesn't change. Destroy your old recovery cards. Your witnesses' pieces are deleted from the server, but a witness or an old backup could have kept a copy. Full protection needs a new account key, which HumID can't make yet." />
       <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 10 }}>
         <span><span class="title">I understand: lose every device, lose my vault</span></span>

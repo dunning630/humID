@@ -531,7 +531,7 @@ async function readWaiting() {
           m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at });
         }
         if (m.refused) note(ct, "A message couldn't be confirmed as sent with a live check, so it was discarded unread.");
-        else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent from a duress unlock."); }
+        else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent after an unlock with their duress gesture."); }
         if (m.kind === "close" && !m.refused) note(ct, "They ended this conversation.");
         if (m.kind === "delete" && !m.refused && m.deleted) note(ct, `They deleted ${m.deleted === 1 ? "a message" : `${m.deleted} messages`} for both of you.`);
         if (m.kind === "accept" && !m.refused) note(ct, "They approved you with a live check. You're connected.");

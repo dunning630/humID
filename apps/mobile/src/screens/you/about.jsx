@@ -4,6 +4,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Sheet, Banner, Confirm, AssurancePill, proofLabel } from "../../ui/kit.jsx";
+import { gateDetail } from "../../ui/labels.js";
 import { CodeBox, CodeInput } from "../../ui/codes.jsx";
 import { fmtDate, groupKey } from "../../ui/format.js";
 import * as S from "../../core/state.js";
@@ -11,14 +12,6 @@ import { serverHost, VERSION, PLATFORM, SIM, MODULES } from "../../core/config.j
 import { eraseEverything, loadAdminSummary, findAdminRequest, approveAdminRequest, resetSimulation } from "../../core/index.js";
 import { back, twelve, Countdown, Fact, Disclosure } from "./common.jsx";
 
-const GATE = {
-  "ios-keychain-biometry": "Face ID / Touch ID · Secure Enclave policy",
-  "android-keystore-biometric": "Android Keystore · Class 3 biometric",
-  "macos-keychain-biometry": "Touch ID · Keychain",
-  "windows-winbio-fingerprint": "Fingerprint · Windows Biometric Framework",
-  "linux-fprintd-keyring": "Fingerprint · fprintd + keyring",
-  "demo-no-hardware": "Demo · press and hold",
-};
 const HEALTH = { ok: ["mint", "Running normally"], warn: ["amber", "Needs a look"], bad: ["danger", "Needs attention"] };
 
 export function About() {
@@ -49,7 +42,7 @@ export function About() {
           <div class="eyebrow" style={{ marginBottom: 8 }}>This device</div>
           <div class="rows">
             <Fact k="Protection" v={<AssurancePill assurance={id?.assurance} />} />
-            <Fact k="Check" v={GATE[id?.method] || id?.method} />
+            <Fact k="Live check" v={gateDetail(id?.method)} />
             <Fact k="Proof" v={proofLabel(id?.proof, id?.assurance)} />
             <Fact k="PIN or password" v={<span class="pill mint"><Icon name="check" />Never accepted</span>} />
             <Fact k="Device" v={PLATFORM} />

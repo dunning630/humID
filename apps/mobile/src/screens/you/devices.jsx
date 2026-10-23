@@ -4,13 +4,13 @@
 import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Sheet, Banner, Row, proofLabel } from "../../ui/kit.jsx";
+import { VIA } from "../../ui/labels.js";
 import { CodeBox, CodeInput } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { loadDevices, myAccountCheck, findLink, approveLink, removeDevice } from "../../core/index.js";
 import { back, twelve } from "./common.jsx";
 
-const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with older card", contacts: "Recovered with older witnesses", quorum: "Recovered with two proofs" };
 
 export function Devices() {
   const devices = S.devices.value;

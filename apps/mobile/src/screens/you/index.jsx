@@ -14,6 +14,7 @@ import { fmtAgo, fmtTime } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { loadDevices, loadRecovery, loadAlerts, loadDuress, loadAdminSummary, loadCheckin, checkinOffered, cancelRecovery, clearLockdown, lockNow, saveCard, forgetNewCard } from "../../core/index.js";
 import { Countdown, go } from "./common.jsx";
+import { RECOVERY_METHOD, proofsSetUp } from "../../ui/labels.js";
 import { Protect, protectionItems } from "./protect.jsx";
 import { Devices } from "./devices.jsx";
 import { Recovery } from "./recovery.jsx";
@@ -23,7 +24,6 @@ import { Help } from "./help.jsx";
 import { Settings } from "./settings.jsx";
 import { About } from "./about.jsx";
 
-const METHOD = { card: "recovery card", contacts: "witnesses", quorum: "two proofs" };
 const PUSHED = { protect: Protect, devices: Devices, recovery: Recovery, duress: Duress, heartbeat: Heartbeat, help: Help, settings: Settings, about: About };
 
 export function You() {
@@ -61,7 +61,7 @@ function Hub() {
 
       {S.alerts.value.map((a) => (
         <Banner tone="danger" icon="alert" role="alert" key={a.ref}
-          title={`Recovery in progress · ${METHOD[a.method] || a.method}`}
+          title={`Recovery in progress · ${RECOVERY_METHOD[a.method] || a.method}`}
           text={<>Requested from {a.platform} {fmtAgo(a.createdAt)}. {a.evidence ? `Proofs so far: ${a.evidence}. ` : ""}{a.releaseAt ? <>Opens in <Countdown until={a.releaseAt} /> unless you cancel.</> : a.method === "quorum" ? "It needs a second proof before any wait starts." : `${a.approvals ?? 0} witness${a.approvals === 1 ? " has" : "es have"} helped so far.`} Cancel it and that device gets nothing.</>}
           action="Cancel it" onAction={() => cancelRecovery(a)} />
       ))}
@@ -88,7 +88,7 @@ function Hub() {
           trail={!S.offline.value && rec && devices && done < items.length ? <span class="pill amber">{items.length - done} to do</span> : null} onClick={() => go("protect")} />
         <Row icon="key" title="Devices" sub={devices ? `${devices.length} ${devices.length === 1 ? "device" : "devices"}` : "Loading…"} onClick={() => go("devices")} />
         <Row icon="users" tone={rec?.ready ? "mint" : ""} title="Recovery"
-          sub={!rec ? "Loading…" : rec.ready ? "Ready · two proofs set up" : `${proofs} of 2 proofs set up`}
+          sub={!rec ? "Loading…" : rec.ready ? "Ready · two proofs set up" : proofsSetUp(proofs)}
           trail={rec ? (rec.ready ? <span class="pill mint"><Icon name="check" />Ready</span> : <span class="pill amber">Needs {2 - proofs} more</span>) : null} onClick={() => go("recovery")} />
         <Row icon="siren" tone={duressOn ? "mint" : ""} title="Duress gesture" sub={duressOn ? "On · a forced unlock shows only decoys" : "Off"} onClick={() => go("duress")} />
         {checkinOffered() && (

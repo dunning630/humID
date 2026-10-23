@@ -1,5 +1,6 @@
-// Words for things the kernel names by id: how a check was proven. One place, so a screen
-// never claims a secure chip the device that made the proof doesn't have.
+// Words for things the kernel names by id: gate methods, how a device joined, recovery
+// proofs, and how a check was proven. One place, so two screens never name one thing two
+// ways, and a screen never claims a secure chip the device that made the proof doesn't have.
 import * as S from "../core/state.js";
 
 /**
@@ -50,3 +51,35 @@ const PROOF = {
 };
 export const proofLabel = (proof, assurance) =>
   PROOF[proof] || (assurance === "os" ? "Checks are software-protected, not chip-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
+
+/* ---------- gate methods ---------- */
+const GATE = {
+  "ios-keychain-biometry": ["Face ID / Touch ID", "Face ID or Touch ID", "Face ID / Touch ID · Secure Enclave policy"],
+  "android-keystore-biometric": ["Fingerprint / face", "your face or fingerprint", "Android Keystore · Class 3 biometric"],
+  "macos-keychain-biometry": ["Touch ID", "Touch ID", "Touch ID · Keychain"],
+  "windows-winbio-fingerprint": ["Fingerprint", "your fingerprint", "Fingerprint · Windows Biometric Framework"],
+  "linux-fprintd-keyring": ["Fingerprint", "your fingerprint", "Fingerprint · fprintd + keyring"],
+  "demo-no-hardware": ["Demo hold", "a press and hold", "Demo · press and hold"],
+};
+/** A gate method, short (Activity), in a sentence ("Confirm with …"), or in full (About). */
+export const gateName = (m) => GATE[m]?.[0] || m || "";
+export const gateLabel = (m) => GATE[m]?.[1] || "your face or fingerprint";
+export const gateDetail = (m) => GATE[m]?.[2] || m || "";
+
+/* ---------- how a device joined; recovery proofs ---------- */
+/** How a device joined (`via`). Older single-proof routes keep their older names. */
+export const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with an older recovery card", contacts: "Recovered with older witnesses", quorum: "Recovered with two proofs" };
+/** A recovery's route (`method`), as a banner or Activity names it. */
+export const RECOVERY_METHOD = { card: "older recovery card", contacts: "older witnesses", quorum: "two proofs" };
+/** One kind of recovery proof. */
+export const PROOF_KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip", key: "security key" };
+
+/**
+ * How recovery works, in one sentence, everywhere it's said ("one of two things", "two of
+ * four" and "1 of 2 proofs" once disagreed). proofsSetUp(n): the You hub's count.
+ */
+const KINDS = "any two of your four kinds of proof: witnesses, your ID chip, a recovery card or a security key";
+export const RECOVERY_RULE = `Recovery needs ${KINDS}.`;
+export const RECOVERY_IF_LOST = `If you lose every device, recovery needs ${KINDS}.`;
+export const proofsSetUp = (n) => `${n} of 2 proofs set up`;
+export const CARD_IS_ONE = "Your card is one proof. Recovery needs two, for example this card and your witnesses. On its own it opens nothing.";

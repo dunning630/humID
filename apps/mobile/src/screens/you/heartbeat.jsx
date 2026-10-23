@@ -53,7 +53,7 @@ export function Heartbeat() {
           ? st.state === "locked"
             ? <>Your vault opens nothing until you send one. If you don't, it's erased for good in <Countdown until={st.erasesAt} offsetMs={offsetMs} />.</>
             : <><Countdown until={st.deadline} offsetMs={offsetMs} /> left. Miss it and your vault locks; {st.graceMs ? `${st.graceMs / MIN} minutes later` : "at once"} it's erased for good.</>
-          : "Turn this on before you go somewhere you could be detained or lose your phone. Send a heartbeat (one face or fingerprint check) before each deadline. Miss one and your vault locks; when the grace time runs out, your vault server destroys the keys to your documents, and they're gone for good."}
+          : "Turn this on before you go somewhere you could be detained or lose your phone. Send a heartbeat (one live check) before each deadline. Miss one and your vault locks; when the grace time runs out, your vault server destroys the keys to your documents, and they're gone for good."}
       </p>
       {on && skew && <p class="small amber" style={{ marginTop: 6 }}>Your phone's clock is {Math.round(Math.abs(offsetMs) / 60_000)} min off. Times here are your vault's, which is what counts.</p>}
 

@@ -8,31 +8,21 @@ import { TabBanners } from "./vault.jsx";
 import { dayLabel, fmtTime, fmtAgo, fmtDate } from "../ui/format.js";
 import * as S from "../core/state.js";
 import { loadLedger, lockNow } from "../core/index.js";
-import { eventProof } from "../ui/labels.js";
+import { eventProof, gateName, VIA, RECOVERY_METHOD, PROOF_KIND as KIND } from "../ui/labels.js";
 
-const METHOD = {
-  "ios-keychain-biometry": "Face ID / Touch ID",
-  "android-keystore-biometric": "Fingerprint / face",
-  "macos-keychain-biometry": "Touch ID",
-  "windows-winbio-fingerprint": "Fingerprint",
-  "linux-fprintd-keyring": "Fingerprint",
-  "demo-no-hardware": "Demo hold",
-};
-const method = (m) => METHOD[m] || m || "";
-const VIA = { register: "First device", link: "From another device", card: "Older recovery card", contacts: "Older witnesses", quorum: "Two proofs" };
+const method = gateName;
 
-const KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip", key: "security key" };
 const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport", key: "seckey" };
 const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
   device_not_proven: "Device can't prove its checks",
-  no_live_biometric: "No face or fingerprint check",
-  step_up_required: "No check",
-  bad_step_up: "Check rejected",
+  no_live_biometric: "No live check",
+  step_up_required: "No live check",
+  bad_step_up: "Live check rejected",
   bad_login_proof: "Sign-in proof rejected",
   bad_proof: "Proof rejected",
-  no_live_seal: "Sealed without a check",
+  no_live_seal: "Sealed without a live check",
   lockdown: "Blocked by lockdown",
   checkin_missed: "Locked: a heartbeat was missed",
   vault_erased: "Erased by Heartbeat",
@@ -71,13 +61,13 @@ function describe(e, names) {
     case "recovery.key_removed": return { icon: "seckey", tone: "", title: "Security key removed", meta: [], proof: d.proof };
     case "recovery.mode_set": return { icon: d.mode === "holder-only" ? "key" : "shield", tone: d.from ? "amber" : "mint", title: d.mode === "holder-only" ? "Recovery: only my own devices" : "Recovery: two proofs, a wait and a veto", meta: [d.at === "setup" ? "chosen at setup" : d.from ? `changed from ${d.from === "holder-only" ? "only my own devices" : "two-proof recovery"}` : null, d.newPieces ? "older recovery pieces no longer fit" : null], proof: d.proof };
     case "recovery.key_refused": return { icon: "alert", tone: "danger", title: d.reason === "key_cloned" ? "A copy of your security key was refused" : "A wrong answer from your security key was refused", meta: ["during a recovery; it didn't count"] };
-    case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${({ card: "older card", contacts: "older contacts", quorum: "two proofs" })[d.method] || d.method}`, meta: [d.platform] };
+    case "recovery.requested": return { icon: "alert", tone: "danger", title: `Recovery requested · ${RECOVERY_METHOD[d.method] || d.method}`, meta: [d.platform] };
     case "recovery.evidence": return { icon: KIND_ICON[d.kind] || "shield", tone: "amber", title: `Recovery proof added · ${KIND[d.kind] || d.kind}${d.anchorMode === "remote" ? " (live)" : ""}`, meta: [d.releaseAt ? `opens ${fmtDate(d.releaseAt)}, ${fmtTime(d.releaseAt)}` : "needs a second proof"] };
     case "recovery.station_verified": return { icon: "station", tone: "amber", title: "ID verified in person at a station", meta: [d.country, d.releaseAt ? `opens ${fmtDate(d.releaseAt)}, ${fmtTime(d.releaseAt)}` : null] };
     case "station.verified": return { icon: "station", tone: "mint", title: "You verified someone at your station", meta: [d.country], proof: d.proof };
     case "recovery.approved": return { icon: "users", tone: "amber", title: `A witness approved · ${d.approvals} of ${d.threshold}`, meta: [] };
     case "recovery.cancelled": return { icon: "x", tone: "mint", title: "Recovery cancelled", meta: [d.platform], proof: d.proof };
-    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : d.method === "card" ? "Older recovery card" : "Older witnesses", d.waitedMs ? `waited ${hours(d.waitedMs)}` : null] };
+    case "recovery.completed": return { icon: "check", tone: "amber", title: `Recovered on ${d.platform || "a new device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.method] || d.method, d.waitedMs ? `waited ${hours(d.waitedMs)}` : null] };
     case "duress.signaled": return { icon: "siren", tone: "danger", title: "Duress signal", meta: [d.platform] };
     case "duress.cleared": return { icon: "siren", tone: "mint", title: "Lockdown lifted", meta: [], proof: d.proof };
     case "settings.changed": return { icon: "siren", tone: "", title: d.duressAlert ? "Witnesses will see duress signals" : "Witnesses won't see duress signals", meta: [], proof: d.proof };

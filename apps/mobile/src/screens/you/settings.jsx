@@ -26,7 +26,7 @@ export function Settings() {
         <Choice id="theme" label="Theme" value={p.theme} options={opts("theme")} onPick={(v) => setPref({ theme: v })} />
         <Choice id="text" label="Text size" hint={`${TEXT_HINT[p.text]} · on top of your phone's own text size setting`} value={p.text} options={opts("text")} onPick={(v) => setPref({ text: v })} />
         <Toggle label="Animations" hint="The rings and transitions. Off keeps everything still." checked={p.motion} onChange={(v) => setPref({ motion: v })} />
-        <Toggle label="Haptics" hint="A short buzz when a check passes or a photo is taken." checked={p.haptics} onChange={(v) => setPref({ haptics: v })} />
+        <Toggle label="Haptics" hint="A short buzz when a live check passes or a photo is taken." checked={p.haptics} onChange={(v) => setPref({ haptics: v })} />
       </div>
 
       <div class="card" style={{ marginTop: 12 }}>
