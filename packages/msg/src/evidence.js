@@ -116,7 +116,7 @@ export async function makeRelease(item, { persona, recipient, purpose, days = 30
   const hash = mediaHash(item.bytes);
   const fields = { hash, recipient: r, purpose: p, releasedAt: now, expiresAt: now + days * DAY, fp: personaFingerprint(persona.pub) };
   const st = releaseStatement(fields);
-  const stamp = await stamper(releaseCommitment(st));
+  const stamp = await stamper(releaseCommitment(st), { at: now });
   const sig = dualSign("evidence release", concat(st, utf8(JSON.stringify(stamp))), persona.keys);
   return {
     credential: item.credential,
@@ -151,7 +151,8 @@ export function verifyRelease(packet, bytes, { stampKeys, expectSigner, now = Da
     const st = releaseStatement({ hash, recipient: clean(rel.recipient, "Recipient"), purpose: clean(rel.purpose, "Purpose"), releasedAt: rel.releasedAt, expiresAt: rel.expiresAt, fp: personaFingerprint(pub) });
     const sigs = { dsa: unb64u(rel.sig?.dsa, SIZES.dsaSig), slh: unb64u(rel.sig?.slh, SIZES.slhSig) };
     if (!dualVerify("evidence release", concat(st, utf8(JSON.stringify(rel.stamp))), sigs, pub)) return no("bad_signature");
-    if (!verifyStamp(stampKeys, rel.stamp, releaseCommitment(st), { now })) return no("not_live");
+    // by the release's own time, inside its stamp key's epoch, against retired keys too (MSG-10)
+    if (!verifyStamp(stampKeys, rel.stamp, releaseCommitment(st), { now, at: rel.releasedAt, longLived: true })) return no("not_live");
     const base = { signer: media.signer, recipient: rel.recipient, purpose: rel.purpose, releasedAt: rel.releasedAt, expiresAt: rel.expiresAt, capturedAt: media.capturedAt, kind: media.kind };
     if (now > rel.expiresAt) return no("expired", base);
     return { ok: true, ...base };

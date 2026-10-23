@@ -72,7 +72,9 @@ export class HtpClient {
     const checkin = ck && ints(ck.windowsH, 168) && ints(ck.graceMin, 1440) ? { windowsH: ints(ck.windowsH, 168), graceMin: ints(ck.graceMin, 1440) } : null;
     // 4.0: whether this server runs a messaging relay and stamp issuer (shows the Messages tab).
     const spc = Number(j.policy?.messaging?.stampsPerCheck);
-    const messaging = j.policy?.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
+    // stampNeeds: "hardware" (stamps only for a phone whose secure chip proves the check) or "any" (dev server)
+    const stampNeeds = j.policy?.messaging?.stampNeeds === "any" ? "any" : "hardware";
+    const messaging = j.policy?.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc, stampNeeds } : null;
     this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging } };
     return this.server;
   }

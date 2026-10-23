@@ -13,8 +13,10 @@ const rnd = (n) => new Uint8Array(randomBytes(n));
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 9, 20, 13, 0, 0);
 
+// Tests that aren't about stamp-key epochs use one key whose epoch covers every test date.
+const ALWAYS = { notBefore: 0, notAfter: Date.UTC(2200, 0, 1) };
 const issuer = newIssuerKey(2048);
-const stampKeys = M.importStampKeys([{ ...issuer.publicView, issuing: true }]);
+const stampKeys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }]);
 const issuerLog = [];
 const stamper = M.makeStamper(stampKeys, async (blinded) => { issuerLog.push(Buffer.from(blinded).toString("hex")); return blindSign(issuer, blinded); });
 
@@ -153,19 +155,37 @@ test("a request made without the invite secret is refused, even with the real bu
 
 test("requests can't be replayed: a used invite, and a request already handled", async () => {
   const seedA = rnd(64);
-  const inv = await M.createInvite(seedA, { now: T0, uses: 2 });
+  const inv = await M.createInvite(seedA, { now: T0 });
   const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
   const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
-  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
-  const shown = await M.readRequest(inv.state, personaA, r1.wire, { now: T0 });
-  M.acceptRequest(inv.state, personaA, shown, { now: T0 });
-  await code(M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), "replay_or_old");
+  // declined: can't be shown again, and the invite stays open for the right person
   const r2 = await M.requestContact(rnd(64), opened, { now: T0 });
   M.declineRequest(inv.state, await M.readRequest(inv.state, personaA, r2.wire, { now: T0 }));
   await code(M.readRequest(inv.state, personaA, r2.wire, { now: T0 }), "replay_or_old");
+  // accepted: the invite is spent, for that request and any other
+  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
+  M.acceptRequest(inv.state, personaA, await M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), { now: T0 });
+  await code(M.readRequest(inv.state, personaA, r1.wire, { now: T0 }), "invite_used");
   const r3 = await M.requestContact(rnd(64), opened, { now: T0 });
-  M.acceptRequest(inv.state, personaA, await M.readRequest(inv.state, personaA, r3.wire, { now: T0 }), { now: T0 });
   await code(M.readRequest(inv.state, personaA, r3.wire, { now: T0 }), "invite_used");
+});
+
+test("PC-26: an invite admits one person, so no two contacts ever share a persona ID", async () => {
+  await code(M.createInvite(rnd(64), { now: T0, uses: 20 }), "bad_uses");
+  await code(M.createInvite(rnd(64), { now: T0, uses: 2 }), "bad_uses");
+  // a saved invite from before this that claims several uses still admits only one
+  const seedA = rnd(64);
+  const inv = await M.createInvite(seedA, { now: T0 });
+  inv.state.uses = 20;
+  const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
+  const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
+  const r1 = await M.requestContact(rnd(64), opened, { now: T0 });
+  const r2 = await M.requestContact(rnd(64), opened, { now: T0 });
+  const s1 = await M.readRequest(inv.state, personaA, r1.wire, { now: T0 });
+  const s2 = await M.readRequest(inv.state, personaA, r2.wire, { now: T0 });
+  M.acceptRequest(inv.state, personaA, s1, { now: T0 });
+  assert.throws(() => M.acceptRequest(inv.state, personaA, s2, { now: T0 }), (e) => e.code === "invite_used");
+  assert.equal(inv.state.closed, true);
 });
 
 test("the requester can't send until approved", async () => {
@@ -543,12 +563,12 @@ test("skipped message keys are forgotten after the relay's retention time", asyn
 });
 
 test("stamps: a retired key stops counting; a stamp key that is also a pass key is refused", async () => {
-  const keys = M.importStampKeys([{ ...issuer.publicView, issuing: true, acceptUntil: "2026-12-31" }]);
+  const keys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true, acceptUntil: "2026-12-31" }]);
   const c = rnd(32);
   const st = await M.makeStamper(keys, async (bl) => blindSign(issuer, bl))(c);
   assert.ok(M.verifyStamp(keys, st, c, { now: Date.UTC(2026, 11, 31, 23) }));
   assert.ok(!M.verifyStamp(keys, st, c, { now: Date.UTC(2027, 0, 1, 1) }));
-  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, issuing: true }], { passKeys: [{ id: issuer.publicView.id }] }), (e) => e.code === "bad_stamp_key");
+  assert.throws(() => M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }], { passKeys: [{ id: issuer.publicView.id }] }), (e) => e.code === "bad_stamp_key");
 });
 
 test("relay: a flood of new addresses can't reset a busy client's rate limit", () => {
@@ -558,6 +578,52 @@ test("relay: a flood of new addresses can't reset a busy client's rate limit", (
   relay.put(box, w, { ip: "198.51.100.7" }); relay.put(box, w, { ip: "198.51.100.7" });
   for (let i = 0; i < 100; i++) { try { relay.put(box, w, { ip: `203.0.113.${i}` }); } catch {} }
   assert.throws(() => relay.put(box, w, { ip: "198.51.100.7" }), (e) => e.code === "rate_limited");
+  // ...and they can't lock a new one out either (MSG-05: the limiter never fails closed)
+  const fresh = M.memoryRelay({ now: () => t, maxRateKeys: 50 });
+  for (let i = 0; i < 200; i++) fresh.take("e".repeat(32), { ip: `2001:db8:0:${i.toString(16)}::1` });
+  assert.deepEqual(fresh.take("e".repeat(32), { ip: "198.51.100.9" }), []);
+});
+
+/* ---------------- polling: backfill and linkage (security review MSG-04, MSG-02) ---------------- */
+
+test("MSG-04: a phone away for days still gets what was sent meanwhile (backfill from lastPolled)", async () => {
+  const { a, b, relay } = await meet({ stamps: false });
+  const lastPolled = T0;
+  const sent = await a.encrypt("text", "are you ok?", { now: T0 + 3600_000 });
+  relay.put(sent.box, sent.wire);
+  const later = T0 + 2 * DAY + 600_000;
+  assert.ok(!b.inboxes(later).includes(sent.box), "today's poll alone would miss it");
+  const boxes = b.inboxesSince(lastPolled, later);
+  assert.ok(boxes.includes(sent.box), "the backfill covers the day it was sent");
+  const [w] = boxes.flatMap((x) => relay.take(x));
+  assert.equal((await b.decrypt(w, { now: later })).text, "are you ok?");
+  // never further back than the relay keeps anything; never polled before: just yesterday and today
+  assert.equal(b.inboxesSince(T0 - 60 * DAY, T0).length, M.BACKFILL_DAYS + 1);
+  assert.deepEqual(b.inboxesSince(null, T0), b.inboxes(T0));
+});
+
+test("MSG-04: a message that never arrives shows as a gap", async () => {
+  const { a, b } = await meet({ stamps: false });
+  await a.encrypt("text", "lost", { now: T0 });
+  const next = await a.encrypt("text", "arrived", { now: T0 + 1000 });
+  await b.decrypt(next.wire, { now: T0 + 1000 });
+  assert.equal(b.gaps({ now: T0 + 11 * 60_000 }).missing, 1);
+});
+
+test("MSG-02: one day's poll doesn't name the next day's mailbox (except near midnight UTC)", async () => {
+  const { b } = await meet({ stamps: false });
+  const noon = (k) => Date.UTC(2026, 9, 20 + k, 12);
+  for (let k = 0; k < 4; k++) {
+    const today = new Set(b.inboxes(noon(k))), tomorrow = b.inboxes(noon(k + 1));
+    // day k+1's poll asks for box(k) and box(k+1); day k's asks for box(k-1) and box(k): one shared,
+    // the one both phones must still check for a message sent late on day k
+    assert.equal(tomorrow.filter((x) => today.has(x)).length, 1, `day ${k} and ${k + 1} share only the day in between`);
+    const twoOn = b.inboxes(noon(k + 2));
+    assert.equal(twoOn.filter((x) => today.has(x)).length, 0, "polls two days apart share nothing: no chain");
+  }
+  const nearMidnight = Date.UTC(2026, 9, 20, 23, 59);
+  assert.equal(b.inboxes(nearMidnight).length, 3, "tomorrow's box only within 2 minutes of midnight");
+  assert.equal(b.inboxes(Date.UTC(2026, 9, 20, 23, 50)).length, 2);
 });
 
 
@@ -753,10 +819,12 @@ test("forget: the conversation and every key gone from this phone; for both, you
 
 test("forget for me only: nothing is sent; the contact's phone is untouched", async () => {
   const { A, B, relay } = await conv();
-  postTo(relay, await A.send("still on B's phone", { now: T0 }));
+  const sent = await A.send("still on B's phone", { now: T0 });
+  postTo(relay, sent);
+  await A.posted([sent.id]);
   await deliver(relay, B);
   const out = await A.forget({ now: T0 });
-  assert.deepEqual(out, { send: [], unsend: [] });
+  assert.deepEqual(out, { done: true, send: [], unsend: [], pending: [], left: 0 });
   assert.equal(B.messages(T0).length, 1);
   assert.equal(B.status, "connected");
 });
@@ -964,7 +1032,7 @@ test("fuzz: mutated wires, requests, invites and stored state fail only with Msg
     if (kind === 2) { const z = new Uint8Array(M.BUCKETS[Math.floor(r() * 3)]); crypto.getRandomValues(z); z[0] = 1; return z; }
     const z = new Uint8Array(y.length); z.set(y.subarray(0, Math.floor(r() * y.length))); return z;
   };
-  const st = { ...inv.state, used: 0, uses: 99 }; // a fresh view of the (closed) invite, for reading only
+  const st = { ...inv.state, used: 0, uses: 1, closed: false }; // a fresh view of the (closed) invite, for reading only
   st.otkSk = rnd(st.otkSk.length); st.otxSk = rnd(32); st.secret = rnd(16);
   for (let i = 0; i < n; i++) {
     const tries = [

@@ -50,23 +50,28 @@ export function rateKey(ip) {
 }
 
 /**
- * Fixed-window counter per key, with a bounded table. When the table is full,
- * entries from past windows are dropped; if it is still full, a NEW key is
- * refused rather than evicting anyone's live counter (fail closed: cycling
- * through many addresses can't reset a busy client's limit).
+ * Calls per key per minute, in a fixed-size count-min sketch (security review MSG-05): it never
+ * fills up, so a flood of new addresses can neither reset a busy client's count nor lock new
+ * clients out (a bounded table that refuses new keys when full did the second). It can only
+ * over-count. `maxKeys` is accepted for compatibility and unused.
  */
-function limiter(perMinute, now, maxKeys = 100_000) {
-  const windows = new Map();
+function limiter(perMinute, now, maxKeys = 0, rows = 4, width = 1 << 12) {
+  void maxKeys;
+  let win = -1, t = null;
+  const idx = (key) => {
+    // FNV-1a per row: enough to spread keys; the counts can only be over, never under
+    return Array.from({ length: rows }, (_, r) => {
+      let h = 2166136261 ^ r;
+      for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return (h >>> 0) % width;
+    });
+  };
   return (key) => {
     const w = Math.floor(now() / 60_000);
-    const e = windows.get(key);
-    if (e && e.w === w) { e.n += 1; return e.n <= perMinute; }
-    if (e) { e.w = w; e.n = 1; return true; }
-    if (windows.size >= maxKeys) {
-      for (const [k, v] of windows) if (v.w !== w) windows.delete(k);
-      if (windows.size >= maxKeys) return false;
-    }
-    windows.set(key, { w, n: 1 });
+    if (w !== win || !t) { win = w; t = Array.from({ length: rows }, () => new Uint32Array(width)); }
+    const ix = idx(key);
+    if (Math.min(...ix.map((i, r) => t[r][i])) + 1 > perMinute) return false;
+    ix.forEach((i, r) => { t[r][i] += 1; });
     return true;
   };
 }
