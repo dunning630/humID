@@ -57,6 +57,13 @@ function parseCosigners(s) {
   return out;
 }
 
+/** A cached head signature is re-made after this long, so `signedAt` stays recent. */
+const HEAD_RESIGN_MS = 60 * 60 * 1000;
+/** How many accounts' signed heads are kept in memory. */
+const HEAD_CACHE = 50_000;
+/** Superseded, uncosigned checkpoints are deleted after this long. */
+const CHECKPOINT_KEEP_MS = 60 * 60 * 1000;
+
 export function createLedger({
   /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
   tls = serviceTlsFromEnv(),
@@ -66,6 +73,12 @@ export function createLedger({
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
   cosigners = parseCosigners(env("HUMID_TLOG_COSIGNERS", "")),
+  /**
+   * At most one new signed checkpoint this often (ms). A phone asking about an entry the latest
+   * checkpoint doesn't cover yet waits for the next one; everyone else gets the latest. Bounds
+   * the ML-DSA signing and the stored checkpoints to one per interval, not one per entry.
+   */
+  checkpointEveryMs = Number(env("HUMID_TLOG_CHECKPOINT_MS", "5000")),
 } = {}) {
   const log = logger("ledger");
   mkdirSync(dataDir, { recursive: true });
@@ -96,7 +109,10 @@ export function createLedger({
   const insert = db.prepare("INSERT INTO entries (owner, seq, at, type, body, prev, hash, tlog_idx) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   const getNode = db.prepare("SELECT hash FROM tlog_nodes WHERE level = ? AND idx = ?");
   const putNode = db.prepare("INSERT OR REPLACE INTO tlog_nodes (level, idx, hash) VALUES (?, ?, ?)");
-  const sizeQ = db.prepare("SELECT COUNT(*) AS n FROM tlog_nodes WHERE level = 0");
+  // Leaves are numbered 0, 1, 2… with no gaps, so the size is the highest index plus one: one
+  // lookup on the primary key, where COUNT(*) read every leaf on every write.
+  const sizeQ = db.prepare("SELECT COALESCE(MAX(idx) + 1, 0) AS n FROM tlog_nodes WHERE level = 0");
+  const latestCp = db.prepare("SELECT * FROM tlog_checkpoints ORDER BY size DESC LIMIT 1");
 
   /* ---------- the tree ---------- */
 
@@ -158,21 +174,67 @@ export function createLedger({
     } catch (e) { db.exec("ROLLBACK"); throw e; }
   }
 
-  /** The signed checkpoint for the current tree (signed once per size). */
-  function checkpoint() {
+  /**
+   * Sign a checkpoint for the tree as it is now (one per size, ever). Superseded checkpoints
+   * are kept for an hour (long enough for a cosigner to sign one it fetched) and for good once
+   * cosigned; proofs never need the old rows, only the tree.
+   */
+  const prune = db.prepare("DELETE FROM tlog_checkpoints WHERE at < ? AND size < ? AND size NOT IN (SELECT size FROM tlog_cosigs)");
+  function cut() {
     const size = treeSize();
-    let cp = db.prepare("SELECT * FROM tlog_checkpoints WHERE size = ?").get(size);
-    if (!cp) {
+    if (!db.prepare("SELECT 1 FROM tlog_checkpoints WHERE size = ?").get(size)) {
       const root = th(0, size);
       const at = Date.now();
       const sig = ml_dsa87.sign(checkpointMessage(size, root, at), key.sk);
       db.prepare("INSERT OR IGNORE INTO tlog_checkpoints (size, root, at, sig) VALUES (?, ?, ?, ?)").run(size, root, at, sig);
-      cp = db.prepare("SELECT * FROM tlog_checkpoints WHERE size = ?").get(size);
+      prune.run(at - CHECKPOINT_KEEP_MS, size);
     }
+    return latestCp.get();
+  }
+
+  /**
+   * The latest signed checkpoint. A new one is signed only when the tree has grown and the
+   * latest is at least `checkpointEveryMs` old; `atLeast`: wait (once, shared by everyone
+   * waiting) for a checkpoint that covers that many leaves.
+   */
+  let cutting = null;
+  async function currentCheckpoint(atLeast = 0) {
+    for (;;) {
+      const cp = latestCp.get();
+      const due = !cp || Date.now() - cp.at >= checkpointEveryMs;
+      const grown = !cp || treeSize() > cp.size;
+      if (cp && cp.size >= atLeast && !(grown && due)) return cp;
+      if (cp && cp.size >= atLeast) return cut(); // grown and due: no one waits for it
+      cutting ||= new Promise((r) => setTimeout(r, cp ? Math.max(0, cp.at + checkpointEveryMs - Date.now()) : 0))
+        .then(() => cut()).finally(() => { cutting = null; });
+      await cutting;
+    }
+  }
+
+  /** The signed checkpoint, its cosignatures and the ledger key, as the routes serve them. */
+  async function checkpoint(atLeast) {
+    const cp = await currentCheckpoint(atLeast);
+    const size = cp.size;
     const cosigs = db.prepare("SELECT name, sig FROM tlog_cosigs WHERE size = ?").all(size)
       .filter((c) => cosigners.has(c.name))
       .map((c) => ({ name: c.name, pk: b64u(cosigners.get(c.name)), sig: b64u(c.sig) }));
     return { checkpoint: { size: cp.size, root: toHex(new Uint8Array(cp.root)), at: cp.at, sig: b64u(cp.sig) }, cosignatures: cosigs, ledgerKey };
+  }
+
+  /**
+   * The account's head, signed. The signature is kept and served again until the head moves
+   * or it's an hour old: an ML-DSA-87 signature is ~12 ms, and Activity reads far more often
+   * than anything is written. Bounded; the least recently used account is forgotten first.
+   */
+  const heads = new Map();
+  function signedHead(owner, row, now = Date.now()) {
+    const c = heads.get(owner);
+    heads.delete(owner);
+    const fresh = c && c.seq === row.seq && c.hash === row.hash && now - c.signedAt < HEAD_RESIGN_MS && c.signedAt <= now;
+    const h = fresh ? c : { seq: row.seq, hash: row.hash, signedAt: now, sig: b64u(ml_dsa87.sign(headMessage(owner, row.seq, row.hash, now), key.sk)) };
+    heads.set(owner, h);
+    if (heads.size > HEAD_CACHE) heads.delete(heads.keys().next().value);
+    return h;
   }
 
   const sizeParam = (v, max) => {
@@ -203,10 +265,7 @@ export function createLedger({
       const limit = Math.min(Math.max(Number(query.get("limit")) || 200, 1), 1000);
       const rows = db.prepare("SELECT seq, body, prev, hash FROM entries WHERE owner = ? ORDER BY seq DESC LIMIT ?").all(owner, limit).reverse();
       const headRow = rows[rows.length - 1];
-      const head = headRow ? (() => {
-        const signedAt = Date.now();
-        return { seq: headRow.seq, hash: headRow.hash, signedAt, sig: b64u(ml_dsa87.sign(headMessage(owner, headRow.seq, headRow.hash, signedAt), key.sk)) };
-      })() : null;
+      const head = headRow ? signedHead(owner, headRow) : null;
       return json(200, {
         owner,
         entries: rows.map((r) => ({ seq: r.seq, body: r.body, prev: r.prev, hash: r.hash })),
@@ -218,7 +277,7 @@ export function createLedger({
     /* ---------- the public log ---------- */
 
     // Latest signed checkpoint, with cosignatures. Public.
-    ["GET", "/tlog/checkpoint", () => json(200, checkpoint())],
+    ["GET", "/tlog/checkpoint", async () => json(200, await checkpoint())],
 
     // Proof that the tree of size `to` extends the tree of size `from`. Public.
     ["GET", "/tlog/consistency", ({ query }) => {
@@ -229,14 +288,15 @@ export function createLedger({
     }],
 
     // The signed-in holder: where their ledger entry `seq` (default: latest) sits in the tree, with its proof.
-    ["GET", "/tlog/inclusion", ({ claims, query }) => {
+    ["GET", "/tlog/inclusion", async ({ claims, query }) => {
       const owner = claims.sub;
       if (!owner) throw new HttpError(401, "unauthenticated", "Sign in first");
-      const cp = checkpoint();
-      const size = cp.checkpoint.size;
       const seq = query.get("seq") ? Number(query.get("seq")) : last.get(owner)?.seq;
       const row = seq && db.prepare("SELECT seq, hash, tlog_idx FROM entries WHERE owner = ? AND seq = ?").get(owner, seq);
-      if (!row || row.tlog_idx == null || row.tlog_idx >= size) throw new HttpError(404, "not_in_log", "That entry isn't in the public log yet.");
+      if (!row || row.tlog_idx == null) throw new HttpError(404, "not_in_log", "That entry isn't in the public log yet.");
+      // An entry written since the latest checkpoint waits for the next one (at most checkpointEveryMs).
+      const cp = await checkpoint(row.tlog_idx + 1);
+      const size = cp.checkpoint.size;
       return json(200, { ...cp, owner, seq: row.seq, hash: row.hash, index: row.tlog_idx, proof: inclusionProof(leafAt, row.tlog_idx, 0, size, th).map(toHex) });
     }],
 
