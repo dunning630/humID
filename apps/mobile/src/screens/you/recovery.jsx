@@ -5,7 +5,7 @@
 //
 // Witnesses are gathered one at a time: each code is checked the moment it's complete,
 // the list is kept as a draft across a lock, and one check saves the set.
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Sheet, Banner, Row, Toggle } from "../../ui/kit.jsx";
 import { CodeInput, ChipAccess, ProofMeter, PROOFS, WAITS } from "../../ui/codes.jsx";
@@ -13,8 +13,8 @@ import { fmtDate } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
 import {
-  loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, readChipFiles, demoPassport, setAnchor, removeAnchor,
-  readChip, chipReader, markPicking, setDraft, clearDraft, draft, toast,
+  loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor,
+  readChip, chipReader, setDraft, clearDraft, draft, toast,
   keyReader, addSecurityKey, removeSecurityKey,
   switchToHardened, switchToHolderOnly, escrowWords, HOLDER_ONLY,
 } from "../../core/index.js";
@@ -296,61 +296,56 @@ function WitnessesSheet({ onClose }) {
 
 /* ---------------- ID chip (the identity anchor) ---------------- */
 
+/**
+ * Linking the ID chip needs the chip itself, live: it answers a fresh challenge from the vault
+ * server in the same read, so copied chip files can't link anyone's identity. Your recovery
+ * piece is sealed on this phone to that one chip before it's sent (core/recovery.js setAnchor).
+ */
 function AnchorSheet({ onClose }) {
   const a = S.recovery.value?.anchor;
-  const [chip, setChip] = useState(null);
   const [name, setName] = useState("Demo Person");
   const [nfcOpen, setNfcOpen] = useState(false);
   const [access, setAccess] = useState(null);
+  const [busy, setBusy] = useState(false);
   const nfc = S.nfc.value;
-  const read = async () => { const r = await readChip(access, { purpose: "anchor" }); if (r) { setChip(r); setNfcOpen(false); } };
-  const files = useRef(null);
-  const pick = () => { markPicking(); files.current.click(); };
-  const onFiles = async (e) => { const c = await readChipFiles(e.currentTarget.files); e.currentTarget.value = ""; if (c) setChip(c); };
+  const link = async (read) => { setBusy(true); try { if (await setAnchor(read)) onClose(); } finally { setBusy(false); } };
+  const fromNfc = (nonce) => readChip(access, { nonce, purpose: "anchor" });
+  const fromDemo = async (nonce) => { const c = await demoPassport(name); return c ? { ...c, aaSignature: await c.answer(nonce) } : null; };
+  const older = a?.exists && a.version === 1;
   return (
     <Sheet onClose={onClose} eyebrow="ID chip · one of four proofs" title={a?.exists ? `Linked to your ${a.document}'s chip` : "Link HumID to your passport or ID chip"}>
-      <p class="t2 small">The chip in your passport or ID card is signed by the country that issued it. HumID checks that signature and keeps only a keyed fingerprint of the details that stay the same when you renew. Later, your chip proves it's you: in person at a HumID station, or live on your phone.</p>
-      {!a?.exists && <Banner tone="amber" icon="info" title="The one proof that isn't anonymous" text="Someone holding this vault's secret and your passport details could confirm you have a HumID. Witnesses and your recovery card don't reveal who you are. Skip this if anonymity matters more than convenience." />}
+      <p class="t2 small">The chip in your passport or ID card is signed by the country that issued it, and has a key of its own it never gives out. Your recovery piece is sealed on this phone to that one chip, so only that chip can unlock it: not another passport, not an old one, not someone with the same name. Later your chip proves it's you, live on your phone or in person at a HumID station.</p>
+      <Banner tone="amber" icon="info" title="What HumID's server holds" text="Your recovery piece, sealed to your chip, which the server can't open; a fingerprint of your chip's key, to find it; your document type and country. Your name and birth date pass through when you link or recover, and aren't kept. Someone who runs the server and also has your chip could match it to your HumID: it's the one proof that isn't anonymous." />
+      {older && <Banner tone="amber" icon="alert" title="Read your chip again" text="This link was made before recovery pieces were sealed to the chip, so the server could open it. Read your passport or ID once more and HumID replaces it with one only your chip unlocks." />}
+      <p class="fine" style={{ marginTop: 8 }}>Renewed your passport? Link the new one here: the old one stops counting. Chips that can't prove they're present (some older ID cards) can't be a proof.</p>
       {!a?.available && <Banner tone="amber" icon="globe" title="Not available on this server yet" text="Its operator hasn't added the countries' signing certificates. Use witnesses and a recovery card for now." />}
       {a?.exists && <div class="rows" style={{ marginTop: 12 }}><Row chevron={false} title="Document" trail={`${a.document}${a.country ? ` · ${a.country}` : ""}`} /><Row chevron={false} title="Linked" trail={fmtDate(a.createdAt)} /></div>}
       {a?.available && (
         <>
-          <input ref={files} type="file" multiple hidden accept=".json,.bin,.dat,application/json,application/octet-stream" onChange={onFiles} />
-          {!chip && nfcOpen && (
+          {nfcOpen ? (
             <>
               <ChipAccess onChange={setAccess} />
               <div class="actions">
-                <button class="btn primary block" disabled={!access} onClick={read}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
+                <button class="btn primary block" disabled={!access || busy} onClick={() => link(fromNfc)}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
                 <button class="btn ghost block" data-back onClick={() => setNfcOpen(false)}>Back</button>
               </div>
             </>
-          )}
-          {!chip && !nfcOpen && (
+          ) : (
             <div class="actions">
-              <button class="btn primary block" disabled={!nfc?.available} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
-              {!nfc?.available && nfc?.reason && <p class="small muted">{nfc.reason}</p>}
-              <button class="btn ghost block" onClick={pick}><Icon name="file" />Load chip data from a file</button>
+              <button class="btn primary block" disabled={!nfc?.available || busy} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{a?.exists ? (older ? "Read my chip again" : "Link a different ID") : nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
+              {!nfc?.available && <p class="small muted">{nfc?.reason || "Linking needs the chip itself, read live by a phone with NFC or a card reader."}</p>}
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>
                   <label for="demo-holder">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-holder" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-                  <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await demoPassport(name))}><Icon name="passport" />Use a demo passport</button>
+                  <button class="btn ghost block" style={{ marginTop: 8 }} disabled={busy} onClick={() => link(fromDemo)}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
             </div>
           )}
-          {chip && (
-            <>
-              <Banner tone="mint" icon="check" title={chip.access ? `Chip read · ${chip.access}` : `Chip data loaded${chip.demo ? " (demo)" : ""}`} text={`Your vault server checks its country signature next. ${chip.dg15 ? "This chip can also prove it's present, live." : "This chip can't prove it's present live, so recovering with it will need a HumID station."}`} />
-              <div class="actions">
-                <button class="btn primary block" onClick={async () => { if (await setAnchor(chip)) onClose(); }}><Icon name="fingerprint" />{a?.exists ? "Replace with this ID" : "Link this ID chip"}</button>
-                <button class="btn ghost block" data-back onClick={() => setChip(null)}>Choose another</button>
-              </div>
-            </>
-          )}
         </>
       )}
-      {a?.exists && !chip && <div class="actions" style={{ paddingTop: 8 }}><button class="btn danger block" onClick={async () => { if (await removeAnchor()) onClose(); }}><Icon name="fingerprint" />Unlink this ID chip</button></div>}
+      {a?.exists && !nfcOpen && <div class="actions" style={{ paddingTop: 8 }}><button class="btn danger block" onClick={async () => { if (await removeAnchor()) onClose(); }}><Icon name="fingerprint" />Unlink this ID chip</button></div>}
     </Sheet>
   );
 }

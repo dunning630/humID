@@ -4,8 +4,10 @@
 //   card       a seal card: the seed (v1) or the card part (v2) under the owner's card
 //   contacts   Shamir shares, each sealed to one recovery contact: of the seed (v1),
 //              or of the witness part (v2)
-//   anchor     the anchor part (v2), encrypted under the owner's identity anchor:
-//              a passport or ID card chip, checked with ICAO passive authentication
+//   anchor     the anchor part, sealed ON THE PHONE under a key from one passport or ID
+//              card chip's Active Authentication key (DG15), found by a keyed fingerprint of
+//              that key. The chip is checked with ICAO passive authentication and must answer
+//              a fresh challenge when it's linked and when it's used (docs/CONTINUITY.md)
 //   requests   a new device asks for its parts back; released only after a wait
 //              that depends on the evidence, cancellable by the owner's devices
 //   stations   operators who check a person and their ID in person
@@ -22,10 +24,13 @@
 // witnesses, anchor or security key here, ever. Its mode is a statement signed by its account
 // key; every escrow route checks that signature and refuses (409 holder_only).
 //
-// Everything stored here is ciphertext or public keys, except the anchor part,
-// which is encrypted under a key derived from this server's secret AND the
-// holder's identity fields (never stored), so a copy of the database alone
-// opens nothing. See docs/RECOVERY.md and docs/CONTINUITY.md.
+// Everything stored here is ciphertext or public keys. The anchor part is sealed on the
+// holder's phone under a key made from the chip's DG15, which this service never stores, and
+// wrapped again under this service's own secret: so neither this database, nor its secret,
+// nor the holder's name and birth date (which pass through here) open it. Anchors linked
+// before that (v1, sealed under the server's secret and identity fields) are still found
+// and used, and are re-linked by the app on the holder's next live chip read. See
+// docs/RECOVERY.md and docs/CONTINUITY.md.
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv, createHash, createPublicKey, verify as verifySig } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
@@ -35,7 +40,7 @@ import { isEnvelope } from "@humid/codec";
 import { sha3_256, toHex, identityId, verify as verifyDsa, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
-  QUORUM, decodeQuorumPart, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES,
+  QUORUM, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES, ANCHOR_PART_BLOB_BYTES,
   RECOVERY_MODES, isRecoveryMode, recoveryModeMessage,
 } from "@humid/recovery";
 
@@ -44,7 +49,7 @@ const KEY_RP_ID = "recovery.humid.invalid";
 const KEY_RP_HASH = createHash("sha256").update(KEY_RP_ID).digest();
 const KEY_FLAGS = { UP: 0x01, UV: 0x04, BE: 0x08, BS: 0x10, AT: 0x40 };
 const keyClientDataHash = (purpose, challenge) => createHash("sha256").update(`HUMID-KEY-v1 ${purpose} `).update(challenge).digest();
-import { passiveAuth, activeAuth, anchorOf, anchorSummary, stableIdentity, loadCscas, loadCscasFromTrustFile, AnchorError } from "@humid/anchor";
+import { passiveAuth, activeAuth, anchorOf, chipAnchorOf, anchorSummary, stableIdentity, loadCscas, loadCscasFromTrustFile, AnchorError } from "@humid/anchor";
 
 const HOUR = 3600_000;
 const SIZES = { kemPk: 1568, xPk: 32, dsaPk: 2592 };
@@ -119,6 +124,13 @@ export function createRecovery({
      ALTER TABLE requests ADD COLUMN key_id TEXT`,
     // Recovery modes: the account's signed choice, and the account key that signed it.
     `CREATE TABLE modes (account TEXT PRIMARY KEY, mode TEXT NOT NULL, version INTEGER NOT NULL, epoch INTEGER NOT NULL, sig BLOB NOT NULL, dsa_pk BLOB NOT NULL, updated_at TEXT NOT NULL)`,
+    // Anchors v2 (VAULT-01, CREDS-01..03): `anchor` is chipAnchorOf(DG15), one chip, not one
+    // person; the blob is the phone's sealed part, wrapped again here. A v1 row keeps the old
+    // identity-field hash and server-only wrap until it's re-linked. Link challenges per account.
+    `ALTER TABLE anchors ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE anchors ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE requests ADD COLUMN anchor_key BLOB;
+     CREATE TABLE anchor_challenges (account TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL)`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -200,6 +212,20 @@ export function createRecovery({
     if (!v.ok) throw new HttpError(400, "bad_signature", "Envelope signature is invalid");
     if (fp(Buffer.from(v.manifest.signer.mldsa87Pk, "base64")) !== signerFp) throw new HttpError(403, "wrong_signer", "Envelope was not sealed by your account key");
     if (v.manifest.recipient.kemPkFp !== fp(recipientKemPk)) throw new HttpError(403, "wrong_recipient", "Envelope is not sealed to the expected device");
+  }
+
+  /** A one-use Active Authentication challenge, kept under `table`/`id`; taken whatever the outcome. */
+  const takeChallenge = (table, col, id) => {
+    const ch = db.prepare(`SELECT nonce FROM ${table} WHERE ${col} = ? AND expires_at > ?`).get(id, now());
+    db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(id);
+    return ch ? Buffer.from(ch.nonce) : null;
+  };
+  /** The chip in front of the phone answered `nonce` with the key behind its DG15. */
+  function liveChip(chip, ok, nonce, r) {
+    if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", ok.aaRequired ? "Send the chip's authentication key (DG15) too." : "This ID's chip can't prove it's present, so it can't hold a recovery part. Use witnesses, a recovery card or a security key.");
+    if (!nonce) throw new HttpError(409, "challenge_expired", "The chip challenge expired. Scan your ID again.");
+    try { activeAuth({ dg15: chip.dg15, nonce, signature: unb64u(String(r.signature || "")), hash: r.hash }); }
+    catch (e) { if (e instanceof AnchorError) throw new HttpError(422, e.code, e.message); throw e; }
   }
 
   /** Chip data from a request body: { dg1, sod, dg15? } as bytes. */
@@ -457,26 +483,45 @@ export function createRecovery({
 
   const anchor = [
     ["GET", "/anchor", ({ claims }) => {
-      const a = db.prepare("SELECT document, country, created_at FROM anchors WHERE account = ?").get(needUser(claims));
-      return json(200, { available: currentCscas().length > 0, exists: !!a, ...(a ? { document: a.document, country: a.country, createdAt: a.created_at } : {}) });
+      const a = db.prepare("SELECT document, country, created_at, version FROM anchors WHERE account = ?").get(needUser(claims));
+      // version 1: linked before chip binding; the app re-links it on the holder's next chip read.
+      return json(200, { available: currentCscas().length > 0, exists: !!a, ...(a ? { document: a.document, country: a.country, createdAt: a.created_at, version: a.version } : {}) });
     }],
-    // The owner binds their passport or ID chip. The anchor part arrives over the encrypted channel
-    // and is stored only encrypted under the identity fields, which aren't stored.
+    // A fresh challenge for the chip being linked (CREDS-02): copied chip files can't answer it.
+    ["POST", "/anchor/challenge", ({ claims }) => {
+      const sub = needUser(claims);
+      requireHardened(sub);
+      const nonce = randomBytes(8);
+      db.prepare("INSERT OR REPLACE INTO anchor_challenges (account, nonce, expires_at) VALUES (?, ?, ?)").run(sub, nonce, now() + challengeTtlMs);
+      return json(200, { nonce: b64u(nonce), expiresAt: now() + challengeTtlMs });
+    }],
+    // The owner links one passport or ID chip. The chip must be live (it answers the challenge
+    // above), and the part arrives already sealed by the phone under a key from that chip's DG15
+    // (sealAnchorPart): this service never sees it openable, and stores only a fingerprint of
+    // DG15. One chip anchors one HumID; a renewed passport is linked again.
     ["PUT", "/anchor", ({ claims, body }) => {
       needStepUp(claims);
       requireHardened(claims.sub);
       const r = parseObject(body);
-      const part = decodeQuorumPart(unb64u(String(r.part || "")));
-      if (part.x !== QUORUM.anchor) throw new HttpError(400, "bad_part", "That isn't the anchor part.");
-      const ok = checkChip(chipOf(r.chip));
-      const anchorHash = anchorOf(ok.mrz, hmacKey);
+      const sealed = unb64u(String(r.sealedPart || ""));
+      if (r.part != null) throw new HttpError(400, "update_required", "Update HumID to link your ID: the part must be sealed to your chip first.");
+      if (sealed.length !== ANCHOR_PART_BLOB_BYTES) throw new HttpError(400, "bad_part", "That isn't a sealed anchor part.");
+      const epoch = Number(r.epoch ?? 1);
+      if (!Number.isSafeInteger(epoch) || epoch < 1) throw new HttpError(400, "bad_part", "Unknown recovery epoch.");
+      const chip = chipOf(r.chip);
+      const ok = checkChip(chip);
+      liveChip(chip, ok, takeChallenge("anchor_challenges", "account", claims.sub), r);
+      const anchorHash = chipAnchorOf(chip.dg15, hmacKey);
       const taken = db.prepare("SELECT account FROM anchors WHERE anchor = ?").get(anchorHash);
       if (taken && taken.account !== claims.sub) throw new HttpError(409, "anchor_taken", "This ID already anchors another HumID.");
-      const blob = wrap(stableIdentity(ok.mrz), claims.sub, Buffer.from(unb64u(String(r.part))));
+      const blob = wrap("chip v2", claims.sub, Buffer.from(sealed));
       const { document, country } = anchorSummary(ok.mrz);
       const at = new Date().toISOString();
-      db.prepare("INSERT OR REPLACE INTO anchors (account, anchor, blob, document, country, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, anchorHash, blob, document, country, at);
-      return json(200, { createdAt: at, document, country });
+      db.exec("BEGIN");
+      db.prepare("DELETE FROM anchors WHERE account = ?").run(claims.sub);
+      db.prepare("INSERT INTO anchors (account, anchor, blob, document, country, created_at, version, epoch) VALUES (?, ?, ?, ?, ?, ?, 2, ?)").run(claims.sub, anchorHash, blob, document, country, at, epoch);
+      db.exec("COMMIT");
+      return json(200, { createdAt: at, document, country, version: 2 });
     }, { bodyLimit: 3 * CHIP_MAX }],
     ["DELETE", "/anchor", ({ claims }) => {
       needStepUp(claims);
@@ -587,11 +632,17 @@ export function createRecovery({
     }],
   ];
 
-  /** Find the anchored account for a verified chip and decrypt its anchor part. */
-  function openAnchor(mrz) {
-    const a = db.prepare("SELECT * FROM anchors WHERE anchor = ?").get(anchorOf(mrz, hmacKey));
-    if (!a) throw new HttpError(404, "unknown_anchor", "This ID doesn't anchor any HumID on this server.");
-    return { account: a.account, part: unwrap(stableIdentity(mrz), a.account, a.blob) };
+  /**
+   * Find the anchored account for a verified, live chip. v2: by that chip's own key, and what
+   * comes back is the phone-sealed part (only DG15 opens it, which the recovering device
+   * holds). v1 (linked before chip binding): by identity fields, the part itself.
+   */
+  function openAnchor(mrz, dg15) {
+    const a2 = dg15 && db.prepare("SELECT * FROM anchors WHERE anchor = ? AND version = 2").get(chipAnchorOf(dg15, hmacKey));
+    if (a2) return { account: a2.account, part: unwrap("chip v2", a2.account, a2.blob), sealed: true, epoch: a2.epoch };
+    const a1 = db.prepare("SELECT * FROM anchors WHERE anchor = ? AND version = 1").get(anchorOf(mrz, hmacKey));
+    if (!a1) throw new HttpError(404, "unknown_anchor", "This ID doesn't anchor any HumID on this server. If you renewed it, recover with your other proofs and link the new one.");
+    return { account: a1.account, part: unwrap(stableIdentity(mrz), a1.account, a1.blob), sealed: false, epoch: 1 };
   }
 
   /* ---------- recovery contacts ---------- */
@@ -776,7 +827,13 @@ export function createRecovery({
           const c = db.prepare("SELECT blob, scheme FROM cards WHERE account = ?").get(q.account);
           if (c?.scheme === "quorum") out.blob = b64u(c.blob);
         }
-        if (kinds.includes("anchor") && q.anchor_blob) out.anchorPart = b64u(unwrap(`request ${q.id}`, q.ref, q.anchor_blob));
+        if (kinds.includes("anchor") && q.anchor_blob) {
+          const p = unwrap(`request ${q.id}`, q.ref, q.anchor_blob);
+          // v2: the phone-sealed part (65-byte v1 parts are the part itself); a station recovery
+          // also hands over the chip key the station read, sealed to this request's own keys.
+          if (p.length === ANCHOR_PART_BLOB_BYTES) out.anchorSealed = b64u(p); else out.anchorPart = b64u(p);
+          if (q.anchor_key) out.anchorKey = b64u(q.anchor_key);
+        }
         if (kinds.includes("key")) out.keyBlob = b64u(db.prepare("SELECT blob FROM seckeys WHERE id = ?").get(q.key_id).blob);
         return json(200, out);
       }
@@ -804,20 +861,16 @@ export function createRecovery({
       const r = parseObject(body);
       const chip = chipOf(r.chip);
       const ok = checkChip(chip);
-      if (!ok.hasAaKey) throw new HttpError(422, "no_chip_proof", ok.aaRequired ? "Send the chip's authentication key (DG15) too." : "This ID's chip can't prove it's present. Verify at a HumID station instead.");
-      const ch = db.prepare("SELECT nonce FROM challenges WHERE request_id = ? AND expires_at > ?").get(q.id, now());
-      db.prepare("DELETE FROM challenges WHERE request_id = ?").run(q.id); // one answer per challenge
-      if (!ch) throw new HttpError(409, "challenge_expired", "The chip challenge expired. Scan your ID again.");
-      try { activeAuth({ dg15: chip.dg15, nonce: ch.nonce, signature: unb64u(String(r.signature || "")), hash: r.hash }); }
-      catch (e) { if (e instanceof AnchorError) throw new HttpError(422, e.code, e.message); throw e; }
-      const { account, part } = openAnchor(ok.mrz);
+      liveChip(chip, ok, takeChallenge("challenges", "request_id", q.id), r); // one answer per challenge
+      const { account, part, sealed, epoch } = openAnchor(ok.mrz, chip.dg15);
       const first = bindAccount(q, account);
       if (q.anchor_mode !== "station") {
         db.prepare("UPDATE requests SET anchor_mode = 'remote', anchor_blob = ? WHERE id = ?").run(wrap(`request ${q.id}`, q.ref, part), q.id);
       }
       part.fill(0);
       const e = evaluate(q.id);
-      return json(200, { ...requestView(e), account: e.account, first });
+      // sealed: the device opens the part with the key from the DG15 it just read.
+      return json(200, { ...requestView(e), account: e.account, first, anchorSealed: sealed, anchorEpoch: epoch });
     }, { bodyLimit: 3 * CHIP_MAX }],
 
     // Gateway only (PC-02): may a device join this account on the strength of this recovery?
@@ -959,7 +1012,9 @@ export function createRecovery({
     ["GET", "/station/requests/:code", ({ params, claims }) => {
       needStation(claims);
       const q = stationRequest(params.code);
-      return json(200, { code: q.code, platform: q.platform, createdAt: q.created_at, status: q.status, kinds: kindsOf(q), anchorMode: q.anchor_mode || undefined });
+      // The recovering device's public keys: a station seals the chip's key to them (the app
+      // checks them against the code it scanned, so a server can't swap in its own).
+      return json(200, { code: q.code, platform: q.platform, createdAt: q.created_at, status: q.status, kinds: kindsOf(q), anchorMode: q.anchor_mode || undefined, kemPk: b64u(q.kem_pk), xPk: b64u(q.x_pk) });
     }],
     // A fresh challenge for the chip in front of the operator. A chip that can answer
     // (its SOD lists an Active Authentication key) must, so copied chip data isn't enough.
@@ -990,10 +1045,18 @@ export function createRecovery({
         try { activeAuth({ dg15: chip.dg15, nonce: ch.nonce, signature: unb64u(String(r.signature || "")), hash: r.hash }); }
         catch (e) { if (e instanceof AnchorError) throw new HttpError(422, e.code, e.message); throw e; }
       }
-      const { account, part } = openAnchor(ok.mrz);
+      const { account, part, sealed } = openAnchor(ok.mrz, chip.dg15);
       if (account === claims.sub) throw new HttpError(400, "self", "A station can't verify its own operator.");
+      // A v2 part opens only with the chip's DG15: the station seals that to the recovering
+      // device's own keys (it already has them, from the recovery code) and signs it with its account key.
+      let anchorKey = null;
+      if (sealed) {
+        anchorKey = unb64u(String(r.chipKey || ""));
+        if (!anchorKey.length) throw new HttpError(400, "update_required", "Update HumID on this station: it must hand the chip's key to the recovering phone.");
+        checkEnvelope(anchorKey, { signerFp: claims.dsaFp, recipientKemPk: new Uint8Array(q.kem_pk) });
+      }
       const first = bindAccount(q, account);
-      db.prepare("UPDATE requests SET anchor_mode = 'station', anchor_blob = ?, station = ? WHERE id = ?").run(wrap(`request ${q.id}`, q.ref, part), claims.sub, q.id);
+      db.prepare("UPDATE requests SET anchor_mode = 'station', anchor_blob = ?, station = ?, anchor_key = ? WHERE id = ?").run(wrap(`request ${q.id}`, q.ref, part), claims.sub, anchorKey, q.id);
       part.fill(0);
       const e = evaluate(q.id);
       // The operator learns the outcome, not whose HumID it is.

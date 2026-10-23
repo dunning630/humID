@@ -102,7 +102,8 @@ const ROUTES = [
   { m: "GET", p: re("/recovery/protecting/alerts"), to: "recovery", path: "/protecting/alerts", auth: true },
   // identity anchor (passport or ID chip) and recovery settings
   { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
-  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
+  { m: "POST", p: re("/recovery/anchor/challenge"), to: "recovery", path: "/anchor/challenge", auth: true },
+  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, version: r?.version, proof: su?.proof }) },
   { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
   // security keys (4.0, docs/SECURITY-KEY.md): adding or removing one is a guarded change
   { m: "GET", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true },

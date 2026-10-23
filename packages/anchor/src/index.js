@@ -379,6 +379,14 @@ export function activeAuth({ dg15, nonce, signature, hash }) {
  */
 export const anchorOf = (mrz, key) => createHmac("sha3-256", key).update(stableIdentity(mrz)).digest("hex");
 
+/**
+ * The v2 anchor: a keyed fingerprint of ONE chip's Active Authentication key (DG15), not of
+ * the person's details. Another passport, an old one or a namesake's, has a different key and
+ * never matches; a renewed passport is linked again on purpose. The server keeps only this
+ * value: DG15 itself, which the anchor part's key is made from, is never stored.
+ */
+export const chipAnchorOf = (dg15, key) => createHmac("sha3-256", key).update("HUMID-ANCHOR-CHIP-v2|").update(createHash("sha3-256").update(dg15).digest()).digest("hex");
+
 /** Country and document kind only, for display ("Passport · USA"). Never names or numbers. */
 export const anchorSummary = (mrz) => ({ document: mrz.documentCode?.startsWith("P") ? "passport" : "ID card", country: mrz.issuer });
 

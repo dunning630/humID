@@ -362,6 +362,42 @@ export async function openKeyPart(secret, blob, accountId) {
   } finally { wipe(plain); }
 }
 
+/* ID chip anchor (v2): the anchor part, sealed on the holder's phone under a key from the chip's
+ * Active Authentication public key (DG15), before it is sent. The server adds a layer of its
+ * own and keeps only a keyed fingerprint of the chip to find it by: it never stores DG15, so
+ * what it keeps (its database, its secret, the holder's name and birth date) can't open the
+ * part. Only a reader of that exact chip can make the key; the chip proves it's there by
+ * answering a fresh challenge when it's linked and when it's used. */
+export const ANCHOR_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
+const aadAnchor = (accountId, epoch) => utf8(`HUMID-ANCHOR-PART-v2|${accountId}|epoch ${epoch}`);
+
+/** The 32-byte key the anchor part is sealed under, from the chip's DG15 file (as read from the chip). */
+export function anchorPartKey(dg15) {
+  if (!(dg15 instanceof Uint8Array) || dg15.length < 16) throw new Error("This chip has no authentication key, so it can't hold a recovery part.");
+  return hkdf(sha3_256, dg15, undefined, utf8("HUMID-ANCHOR-PART-v2 key"), 32);
+}
+
+export async function sealAnchorPart(key, part, accountId, epoch = 1) {
+  if (part?.x !== QUORUM.anchor) throw new Error("That isn't the anchor part");
+  const k = await subtle().importKey("raw", key, "AES-GCM", false, ["encrypt"]);
+  const nonce = random(12);
+  const plain = encodeQuorumPart(part);
+  try { return concat(nonce, new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadAnchor(accountId, epoch) }, k, plain))); }
+  finally { wipe(plain); }
+}
+
+export async function openAnchorPart(key, blob, accountId, epoch = 1) {
+  const k = await subtle().importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+  let plain;
+  try { plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadAnchor(accountId, epoch) }, k, blob.subarray(12))); }
+  catch { throw new Error("This ID chip doesn't open this vault's part. Use the passport or ID card you linked."); }
+  try {
+    const part = decodeQuorumPart(plain);
+    if (part.x !== QUORUM.anchor) throw new Error("This ID chip doesn't open this vault's part.");
+    return part;
+  } finally { wipe(plain); }
+}
+
 /* ---------------- how long a recovery waits ----------------
  * The stronger the evidence, the shorter the wait. `base` is the server's
  * RECOVERY_DELAY_MS (72 hours in production). Kinds: witness | card | anchor | key;

@@ -6,7 +6,7 @@ import { suite } from "@humid/crypto";
 import { readFile } from "@humid/io";
 import {
   newCard, cardTag, sealCardPart, split, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
-  quorumParts, encodeQuorumPart,
+  quorumParts, anchorPartKey, sealAnchorPart,
 } from "@humid/recovery";
 import * as S from "./state.js";
 import { SERVER_URL } from "./config.js";
@@ -267,14 +267,25 @@ export async function demoPassport(name = "Demo Person") {
   } catch (e) { toast(friendly(e), "error"); return null; }
 }
 
-/** Bind your passport or ID to your HumID: the anchor part, stored under the chip's identity. */
-export async function setAnchor(chip) {
+/**
+ * Link your passport or ID to your HumID. The chip must be read live: `read(nonce)` reads it
+ * and has it answer the server's fresh challenge, so copied chip files can't link someone's
+ * identity (CREDS-02). The anchor part is sealed here, under a key from that chip's own
+ * authentication key (DG15), before it leaves the phone: the server never sees it openable
+ * and never keeps DG15 (VAULT-01, CREDS-03). A chip with no authentication key can't hold it.
+ */
+export async function setAnchor(read) {
   try {
+    const nonce = await R.api.anchorChallenge();
+    const chip = await read(nonce);
+    if (!chip) return false;
+    if (!chip.dg15 || !chip.aaSignature) throw new Error("This ID's chip can't prove it's present, so it can't be one of your proofs. Use witnesses, a recovery card or a security key.");
     const r = await withStepUp("setAnchor", [], "anchor", "Link your HumID to your ID chip", async ({ seed, proof }) => {
-      showInterrupt({ progress: 0.6, message: "Checking your ID chip's signature with its issuing country…" });
+      showInterrupt({ progress: 0.6, message: "Sealing your recovery piece to your ID chip…" });
       const part = partOf(seed, "anchor");
-      try { return await R.api.setAnchor({ chip, part: encodeQuorumPart(part) }, proof); }
-      finally { wipe(part.y); }
+      const key = anchorPartKey(chip.dg15);
+      try { return await R.api.setAnchor({ chip, sealedPart: await sealAnchorPart(key, part, S.identity.value.server.id), signature: chip.aaSignature }, proof); }
+      finally { wipe(part.y, key); }
     });
     toast(`Linked to your ${r.document}'s chip${r.country ? ` (${r.country})` : ""}.`);
     loadRecovery();
