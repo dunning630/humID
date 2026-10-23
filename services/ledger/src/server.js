@@ -156,13 +156,15 @@ export function createLedger({
     const missing = db.prepare("SELECT rowid, owner, seq, hash FROM entries WHERE tlog_idx IS NULL ORDER BY rowid").all();
     if (missing.length) {
       db.exec("BEGIN IMMEDIATE");
-      let idx = treeSize();
-      for (const r of missing) {
-        addLeaf(idx, leafHash(r.owner, r.seq, r.hash));
-        db.prepare("UPDATE entries SET tlog_idx = ? WHERE rowid = ?").run(idx, r.rowid);
-        idx++;
-      }
-      db.exec("COMMIT");
+      try {
+        let idx = treeSize();
+        for (const r of missing) {
+          addLeaf(idx, leafHash(r.owner, r.seq, r.hash));
+          db.prepare("UPDATE entries SET tlog_idx = ? WHERE rowid = ?").run(idx, r.rowid);
+          idx++;
+        }
+        db.exec("COMMIT");
+      } catch (e) { try { db.exec("ROLLBACK"); } catch { /* already closed */ } throw e; }
       log.info("transparency log backfilled", { entries: missing.length });
     }
   }

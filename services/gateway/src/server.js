@@ -646,8 +646,18 @@ export function createGateway({
       // The recovery mode chosen at setup, signed by the account key. The recovery service learns
       // it first: if it can't, nothing is created, so a holder-only account is never one it would
       // store recovery material for.
-      const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, prev: r.recoveryMode.prev, sig: r.recoveryMode.sig } : null;
+      const setupMode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, prev: r.recoveryMode.prev, sig: r.recoveryMode.sig } : null;
       let modeHash;
+      // Only a NEW account's setup choice is pushed. On an account that already exists, holding its
+      // seed signs a valid statement too, and pushing it here, before identity refuses the device,
+      // retired every recovery piece and cancelled recoveries under way with no live check (review
+      // 2026-10-23, SRV-01 follow-up). A holder changes the mode only through the step-up route.
+      let mode = setupMode;
+      if (mode) {
+        const known = await internalJson("identity", "GET", `/internal/recovery-mode/${identityOf(r.dsaPk)}`).catch(() => ({ status: 503 }));
+        if (known.status === 200 || known.status === 409) mode = null; // existing (or closed): identity decides the device; the mode is left alone
+        else if (known.status !== 404) { await refund(); throw new HttpError(503, "identity_unavailable", "identity service is unavailable"); }
+      }
       if (mode) {
         const m = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: identityOf(r.dsaPk), dsaPk: r.dsaPk, ...mode } }).catch(() => ({ status: 503, data: { error: "recovery_unavailable", message: "recovery service is unavailable" } }));
         if (m.status !== 200) { await refund(); fail(m); }
