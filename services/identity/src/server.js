@@ -18,7 +18,7 @@
 // anything (local development only).
 
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
-import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, ml_dsa87, STEP_UP_MAX_AGE_MS } from "@humid/htp";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
@@ -93,6 +93,9 @@ export function createIdentity({
   const useChallenge = db.prepare("INSERT OR IGNORE INTO attest_challenges (th, device_id, used_at) VALUES (?, ?, ?)");
 
   const getAccount = db.prepare("SELECT * FROM identities WHERE id = ?");
+  // A key no device has: sign-in proofs for an account or device that doesn't exist are checked
+  // against it, so they cost the same as a wrong signature from a real device (SRV-24).
+  const nobodyPk = ml_dsa87.keygen().publicKey;
   const getDevice = db.prepare("SELECT * FROM device_keys WHERE id = ?");
   const activeDevices = db.prepare("SELECT * FROM device_keys WHERE account_id = ? AND revoked_at IS NULL ORDER BY enrolled_at");
 
@@ -247,18 +250,26 @@ export function createIdentity({
     }],
 
     // Check a sign-in signature made by one device of an account.
+    // SRV-24: an unknown account, an unknown device and a wrong key get one answer (401
+    // bad_signature) after the same work: the signature is checked first, against a throwaway
+    // key when there is no such device, so neither the answer nor its timing says which. Only a
+    // caller who has just proved they hold this device's key learns more (closed, removed, no
+    // live check). `known` is for the gateway alone (whether to note it in a ledger); it strips it.
     ["POST", "/internal/verify", ({ body, claims }) => {
       gatewayOnly(claims);
       const r = parseObject(body);
-      const account = active(String(r.account));
-      const device = getDevice.get(String(r.device));
-      if (!device || device.account_id !== account.id) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
+      const account = getAccount.get(String(r.account));
+      const found = getDevice.get(String(r.device));
+      const device = account && found && found.account_id === account.id ? found : null;
+      let message, sig;
+      try { message = unb64u(String(r.message)); sig = unb64u(String(r.sig)); } catch { message = new Uint8Array(0); sig = new Uint8Array(0); }
+      const signedOk = verify(sig, message, device ? new Uint8Array(device.dsa_pk) : nobodyPk);
+      if (!device || !signedOk) return json(401, { ok: false, error: "bad_signature", message: "Sign-in proof was rejected.", known: !!(device && account.status === "active" && !device.revoked_at) });
+      if (account.status !== "active") throw new HttpError(404, "unknown_identity", "No such identity");
       if (device.revoked_at) throw new HttpError(403, "device_removed", "This device was removed from your HumID.");
-      const message = unb64u(String(r.message));
       // The liveness key signs the challenge it was given before the prompt; the device key may
       // sign a longer message that also carries what the check decided (the duress flag).
       const liveMessage = r.liveMessage != null ? unb64u(String(r.liveMessage)) : message;
-      if (!verify(unb64u(String(r.sig)), message, new Uint8Array(device.dsa_pk))) return json(401, { ok: false, error: "bad_signature" });
       // A device with a liveness key must prove a live biometric on every sign-in.
       if (device.live_pub && !verifyLiveSig(device.live_pub, liveMessage, r.live ? unb64u(String(r.live)) : null)) {
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
