@@ -9,10 +9,11 @@ import { toB64, fromB64, toHex } from "@humid/codec";
 import { suite, random } from "@humid/crypto";
 import { adapter as gateAdapter, ASSURANCE } from "@humid/gate";
 import { ml_dsa87, identityId } from "@humid/htp";
-import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, openKeyPart, decodeQuorumPart, combineQuorum, QUORUM, KEY_SECRET_BYTES, accountCheck } from "@humid/recovery";
+import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, openKeyPart, decodeQuorumPart, combineQuorum, QUORUM, KEY_SECRET_BYTES, accountCheck, anchorPartKey, openAnchorPart } from "@humid/recovery";
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, CARD, wipe, concat, localChallenge } from "./runtime.js";
+import { createIdentity, updateIdentity, clearIdentity } from "./identity.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { showInterrupt, endInterrupt, waitForHold, holdMessage, gateLabel, sessionKeys } from "./interrupt.js";
 import { connectServer, serverPinned, chooseGate, serverRecord } from "./session.js";
@@ -20,30 +21,37 @@ import { refresh } from "./vault.js";
 import { loadAlerts, demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
 import { readKeyForRecovery } from "./seckey.js";
+import { routesFor, HOLDER_ONLY } from "./recmode.js";
 
 /*
- * What a two-proof recovery keeps under this device's lock while it waits (layout 2, 4.0):
- *   device seed (64) ‖ recovery key seed (64) ‖ card slot (15) ‖ security key slot (32)
- * A slot is zeros until that proof is added (pending.hasCard / pending.hasKey say which are
- * real). Layout 1 (3.x): device seed ‖ recovery key seed ‖ card (if any).
+ * What a two-proof recovery keeps under this device's lock while it waits (layout 3):
+ *   device seed (64) ‖ recovery key seed (64) ‖ card slot (15) ‖ security key slot (32) ‖ ID chip slot (32)
+ * A slot is zeros until that proof is added (pending.hasCard / hasKey / hasChip say which are
+ * real). The ID chip slot holds the key made from the chip's DG15 (anchorPartKey), which opens
+ * the anchor part the holder's phone sealed: the server never has it. Layout 2 (4.0) had no
+ * chip slot; layout 1 (3.x): device seed ‖ recovery key seed ‖ card (if any).
  */
-const QUORUM_LAYOUT = 2;
+const QUORUM_LAYOUT = 3;
+const ANCHOR_KEY_BYTES = 32;
 function quorumSlots(both, p) {
   const dseed = both.subarray(0, SEED), x = both.subarray(SEED, 2 * SEED);
-  if (p.layout === QUORUM_LAYOUT) {
+  if (p.layout === 2 || p.layout === QUORUM_LAYOUT) {
+    const k = 2 * SEED + CARD;
     return {
       dseed, x,
-      card: p.hasCard ? both.subarray(2 * SEED, 2 * SEED + CARD) : null,
-      key: p.hasKey ? both.subarray(2 * SEED + CARD, 2 * SEED + CARD + KEY_SECRET_BYTES) : null,
+      card: p.hasCard ? both.subarray(2 * SEED, k) : null,
+      key: p.hasKey ? both.subarray(k, k + KEY_SECRET_BYTES) : null,
+      chip: p.layout === QUORUM_LAYOUT && p.hasChip ? both.subarray(k + KEY_SECRET_BYTES, k + KEY_SECRET_BYTES + ANCHOR_KEY_BYTES) : null,
     };
   }
-  return { dseed, x, card: both.length >= 2 * SEED + CARD ? both.subarray(2 * SEED, 2 * SEED + CARD) : null, key: null };
+  return { dseed, x, card: both.length >= 2 * SEED + CARD ? both.subarray(2 * SEED, 2 * SEED + CARD) : null, key: null, chip: null };
 }
-function packQuorum({ dseed, x, card, key }) {
-  const out = new Uint8Array(2 * SEED + CARD + KEY_SECRET_BYTES);
+function packQuorum({ dseed, x, card, key, chip }) {
+  const out = new Uint8Array(2 * SEED + CARD + KEY_SECRET_BYTES + ANCHOR_KEY_BYTES);
   out.set(dseed, 0); out.set(x, SEED);
   if (card) out.set(card, 2 * SEED);
   if (key) out.set(key, 2 * SEED + CARD);
+  if (chip) out.set(chip, 2 * SEED + CARD + KEY_SECRET_BYTES);
   return out;
 }
 
@@ -52,13 +60,25 @@ let joinTimer = null;
 // waits every 30 s, and nothing at all while HumID is off the screen.
 const POLL_LINK = 3000, POLL_COLLECT = 5000, POLL_SLOW = 30_000;
 
-export function startJoin() { S.joinStep.value = serverPinned() ? 1 : 0; S.joinMethod.value = null; S.joinStatus.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
+export function startJoin() { S.joinStep.value = serverPinned() ? 1 : 0; S.joinMethod.value = null; S.joinStatus.value = null; S.joinMode.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
+
+/** The routes this device may offer for the HumID being joined (only a link, for holder-only). */
+export const joinRoutes = () => routesFor(S.joinMode.value);
+/** The holder says (or the vault said) this HumID opens only on its own devices. */
+export function setJoinMode(mode) { S.joinMode.value = mode === HOLDER_ONLY ? HOLDER_ONLY : null; if (S.joinMethod.value && !joinRoutes().includes(S.joinMethod.value)) { S.joinMethod.value = null; S.joinStep.value = 1; } }
+/** The vault refused a recovery because the HumID is holder-only: from now on offer only a link. */
+function holderOnlyRefusal(e) {
+  if (e?.code !== "holder_only") return false;
+  setJoinMode(HOLDER_ONLY);
+  return true;
+}
 
 /**
  * Bind this device and start the chosen route.
  * method: "link" | "quorum" (two proofs) | "card" | "contacts" (older single-proof routes).
  */
 export async function beginJoin(method, { useDemo = false, cardInput = "", soleBiometric = false } = {}) {
+  if (!joinRoutes().includes(method)) { toast("This HumID opens only on its own devices. Add this one from a device you already use.", "warn"); return; }
   let cardSecret = null;
   if (method === "card" || (method === "quorum" && cardInput.trim())) {
     try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return; }
@@ -86,8 +106,9 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
       const lk = Suite.deriveKeys(x);
       // The link names this device's key (PC-02): only this device can join with it once it's approved.
       const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: dkeys.dsaPk });
+      // The link's PUBLIC keys stay with the record: the match code commits to them (CRYPTO-08).
+      pending = { method, code: r.code, expiresAt: r.expiresAt, linkKem: toB64(lk.kemPk), linkX: toB64(lk.xPk) };
       Suite.wipeKeys(lk);
-      pending = { method, code: r.code, expiresAt: r.expiresAt };
     } else if (method === "card") {
       const r = await R.api.startRecovery({ method: "card", tag: cardTag(cardSecret), platform: PLATFORM });
       pending = { method, requestId: r.id, account: r.account, releaseAt: r.releaseAt, expiresAt: r.expiresAt };
@@ -111,13 +132,14 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
       pending: { ...pending, devicePub: toB64(dkeys.dsaPk), startedAt: Date.now(), soleBiometric }, device: null, pub: null, commit: null,
       server: serverRecord(srv),
     };
-    await R.store.putIdentity(record);
-    batch(() => { S.identity.value = { ...record, schema: 4 }; S.joinMethod.value = method; S.joinStep.value = 3; S.joinStatus.value = null; });
+    await createIdentity(record);
+    batch(() => { S.joinMethod.value = method; S.joinStep.value = 3; S.joinStatus.value = null; });
     R.api.htp.pinnedKid = srv.kid;
     await endInterrupt(true, "This device is bound. Keys wiped from memory.", 650);
     pollJoin();
   } catch (err) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 1800);
+    holderOnlyRefusal(err);
   } finally {
     wipe(secret, dseed, x, both, cardSecret);
     if (dkeys) Suite.wipeKeys(dkeys);
@@ -147,13 +169,12 @@ export async function renewLink() {
     const lk = Suite.deriveKeys(x);
     // A fresh code for the same bound device key (PC-02).
     const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: fromB64(p.devicePub) });
+    const linkKeys = { linkKem: toB64(lk.kemPk), linkX: toB64(lk.xPk) };
     Suite.wipeKeys(lk);
     next = concat(both.subarray(0, SEED), x);
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now() } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    batch(() => { S.identity.value = { ...record, schema: 4 }; S.joinStatus.value = null; });
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now(), ...linkKeys }; }))) throw cancelledJoin();
+    S.joinStatus.value = null;
     await endInterrupt(true, "New code ready.", 500);
     pollJoin();
     return true;
@@ -181,9 +202,15 @@ export async function pollJoin() {
   }
   if (st && ["approved", "released"].includes(st.status)) {
     // Adding a device: the person compares the match code on both screens first.
-    if (p.method === "link") { S.joinStatus.value = { ...st, check: accountCheck(st.account) }; return; }
+    if (p.method === "link") {
+      // A link from before the record kept its keys can't show a match code: get a fresh one.
+      if (!p.linkKem) { S.joinStatus.value = { status: "expired" }; return; }
+      S.joinStatus.value = { ...st, check: accountCheck(st.account, fromB64(p.linkKem), fromB64(p.linkX)) };
+      return;
+    }
     return finishJoin(st);
   }
+  if (st?.reason === "holder_only") setJoinMode(HOLDER_ONLY);
   if (st && ["expired", "cancelled", "completed"].includes(st.status)) return;
   const quick = p.method === "link" || (st?.releaseAt && st.releaseAt - Date.now() < 60_000);
   if (p.method === "quorum" && st?.status === "collecting") { joinTimer = setTimeout(pollJoin, POLL_COLLECT); return; }
@@ -200,7 +227,7 @@ async function finishJoin(st) {
   const account = st.account;
   R.busy = true;
   showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Connecting to your vault…" });
-  let secret, both, seed, keys, dkeys, xkeys, released;
+  let secret, both, seed, keys, dkeys, xkeys, released, linkedPin = null;
   const pieces = [];
   try {
     const sess = await R.api.enrollDevice({
@@ -217,7 +244,12 @@ async function finishJoin(st) {
         if (p.method === "link") {
           xkeys = Suite.deriveKeys(x);
           const opened = await Suite.open(st.envelope, xkeys);
-          seed = opened.bytes;
+          // The seed (64 bytes), then the approving device's recovery-mode pin, if it sent one.
+          seed = opened.bytes.slice(0, SEED);
+          if (opened.bytes.length > SEED) {
+            try { linkedPin = JSON.parse(new TextDecoder().decode(opened.bytes.subarray(SEED))).modePin || null; } catch { linkedPin = null; }
+          }
+          wipe(opened.bytes);
           keys = Suite.deriveKeys(seed);
           if (opened.manifest.signer.mldsa87Pk !== toB64(keys.dsaPk)) throw new Error("The key that arrived was not sealed by its own account. Nothing was added.");
         } else if (p.method === "card") {
@@ -228,12 +260,24 @@ async function finishJoin(st) {
           if (st.shares?.length) {
             xkeys = Suite.deriveKeys(x);
             for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
-            parts.push({ x: QUORUM.witness, y: combine(pieces) });
+            parts.push({ x: QUORUM.witness, y: combine(pieces), epoch: pieces[0]?.epoch ?? 1 });
           }
           const slot = quorumSlots(both, p);
-          if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account));
-          if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account));
-          if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart));
+          if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account, st.epoch ?? 1));
+          if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account, st.epoch ?? 1));
+          if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart)); // linked before chip binding (v1)
+          if (st.anchorSealed) {
+            // The part the holder's phone sealed to their chip: opened with the chip key this
+            // device kept from its own live read, or the one a station sealed to this device.
+            let chipKey = slot.chip;
+            if (!chipKey && st.anchorKey) {
+              xkeys ||= Suite.deriveKeys(x);
+              const dg15 = (await Suite.open(st.anchorKey, xkeys)).bytes;
+              chipKey = anchorPartKey(dg15);
+              wipe(dg15);
+            }
+            if (chipKey) parts.push(await openAnchorPart(chipKey, st.anchorSealed, account, st.epoch ?? st.anchorEpoch ?? 1));
+          }
           seed = combineQuorum(parts);
           for (const pt of parts) wipe(pt.y);
           keys = Suite.deriveKeys(seed);
@@ -260,20 +304,19 @@ async function finishJoin(st) {
     const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
     wipe(rewrapped);
     const pub = Suite.publicOf(keys);
-    const record = {
-      ...id, wrapped, pending: null,
+    const done = {
+      wrapped, pending: null,
+      // The approving device's pin came inside the envelope its account key signed.
+      ...(linkedPin?.version ? { modePin: { mode: linkedPin.mode, version: linkedPin.version, epoch: linkedPin.epoch ?? 1, prev: linkedPin.prev }, recoveryMode: linkedPin.mode } : {}),
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
       assurance: sess.assurance, proof: sess.proof,
       mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: p.devicePub },
-      server: { ...id.server, id: account, registeredAt: new Date().toISOString() },
     };
-    delete record.schema;
-    await R.store.putIdentity(record);
+    if (!(await updateIdentity((cur) => { Object.assign(cur, done); cur.server = { ...cur.server, id: account, registeredAt: new Date().toISOString() }; }))) throw cancelledJoin();
     sessionKeys(Suite, seed);
     batch(() => {
-      S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.joinStatus.value = null;
       S.view.value = "app";
@@ -316,16 +359,14 @@ export async function addCardToJoin(cardInput) {
     showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your recovery card…" });
     const r = await R.api.recoveryAddCard(p.requestId, cardTag(cardSecret));
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasCard: true, layout: QUORUM_LAYOUT, account: r.account } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: 4 };
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasCard: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
     await endInterrupt(true, "Recovery card added.", 600);
     pollJoin();
     return true;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    holderOnlyRefusal(e);
     return false;
   } finally {
     wipe(secret, both, next, cardSecret);
@@ -365,10 +406,7 @@ export async function addKeyToJoin(pin) {
     if (!match) throw new Error("Your vault matched a key this phone didn't read. Nothing was kept; try again.");
     next = packQuorum({ ...quorumSlots(both, p), key: match.secret });
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasKey: true, layout: QUORUM_LAYOUT, account: r.account } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: 4 };
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasKey: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
     const { tag: _t, ...status } = r;
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...status };
     await endInterrupt(true, "Security key added.", 600);
@@ -376,6 +414,7 @@ export async function addKeyToJoin(pin) {
     return true;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    holderOnlyRefusal(e);
     return false;
   } finally {
     wipe(secret, both, next);
@@ -398,11 +437,39 @@ export async function addChipToJoin(source) {
     const { chip, signature } = got;
     if (!signature) throw new Error("This ID's chip can't answer challenges. Verify at a HumID station instead.");
     const r = await R.api.recoveryAddAnchor(p.requestId, { chip, signature });
+    // The holder's part is sealed to this chip: keep the key from its DG15 under this device's
+    // lock until the wait is over (one live check). A part linked the old way needs nothing kept.
+    if (r.anchorSealed && chip.dg15) await keepChipKey(anchorPartKey(chip.dg15), r);
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
     toast("Your ID chip is verified.");
     pollJoin();
     return true;
-  } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); return false; }
+  } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); holderOnlyRefusal(e); return false; }
+}
+
+async function keepChipKey(chipKey, r) {
+  const id = S.identity.value, p = id.pending;
+  const gate = gateAdapter(id.gate.adapter);
+  const Suite = suite(id.suite);
+  R.busy = true;
+  showInterrupt({ purpose: "anchor", label: "Keep your ID chip's key", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  let secret, both, next;
+  try {
+    await waitForHold(gate);
+    const rel = await gate.release(id.gate.handle, { purpose: "anchor", prompt: "Keep your ID chip's key", challenge: localChallenge("anchor") });
+    secret = rel.secret;
+    both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
+    next = packQuorum({ ...quorumSlots(both, p), chip: chipKey });
+    const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasChip: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
+    await endInterrupt(true, "Your ID chip's key is locked to this device.", 500);
+  } catch (e) {
+    await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    throw e;
+  } finally {
+    wipe(secret, both, next, chipKey);
+    R.busy = false;
+  }
 }
 
 /** Development builds: a demo passport as a live chip source for addChipToJoin. */
@@ -435,8 +502,10 @@ export async function cancelJoin() {
   clearTimeout(joinTimer);
   const id = S.identity.value;
   try { if (id?.gate) await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
-  await R.store.clearIdentity();
+  await clearIdentity();
   batch(() => { S.identity.value = null; S.joinStatus.value = null; S.joinStep.value = 1; S.joinMethod.value = null; });
 }
 
 export const prettyCode = formatCode;
+/** The join was given up (cancelJoin cleared the record) while this step ran. */
+const cancelledJoin = () => new Error("This device's setup was cancelled. Start again.");

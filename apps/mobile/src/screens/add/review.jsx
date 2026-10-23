@@ -113,7 +113,7 @@ export function Review({ kind, preview, name, setName, focusName, fields, tags, 
         <button class="btn primary block" disabled={!!disabled} onClick={() => onSeal(place.take())}><Icon name="fingerprint" />Seal</button>
         {secondary && <button class="btn ghost block" onClick={secondary.onClick}>{secondary.label}</button>}
       </div>
-      <p class="fine">{fine || "One check seals it on this phone."} <HowProtectedLink /></p>
+      <p class="fine">{fine || "One live check seals it on this phone."} <HowProtectedLink /></p>
     </div>
   );
 }

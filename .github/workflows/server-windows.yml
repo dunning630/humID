@@ -35,20 +35,27 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
+# Least privilege (PC-20 / SRV-35): the job that installs dependencies and builds has a
+# read-only token, no persisted git credentials and no dependency install scripts; only
+# the publish job, which installs nothing, may write (create the draft release).
+permissions: {}
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       HUMID: C:\Program Files\HumID Server\humid.ps1
       NODE_NO_WARNINGS: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - run: npm ci --ignore-scripts # no dependency install scripts (esbuild's binary comes from its optional dependency)
       - name: A release key is pinned (the console refuses unsigned updates; see release-keys.mjs)
         if: github.ref_type == 'tag' || inputs.publish
         shell: bash
@@ -102,10 +109,29 @@ jobs:
         if: failure()
         shell: pwsh
         run: Get-Content C:\ProgramData\HumID\logs\humid-server.log -Tail 150 -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 · also when publishing: Release apps bundles it
+        with:
+          name: HumID-Server-Windows
+          path: deploy/windows/out/HumID-Server-Windows-*.zip
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # the only job that may create the (draft) release; it installs and runs no dependencies
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false, sparse-checkout: deploy/windows/CHANGELOG.md, sparse-checkout-cone-mode: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: HumID-Server-Windows, path: out }
       - name: Release notes from the changelog
         shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          $v = '${{ steps.version.outputs.version }}'
+          $v = $env:VERSION
+          if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$') { throw "unexpected version '$v'" }
           $log = Get-Content deploy/windows/CHANGELOG.md -Raw
           $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($v))\s*\r?\n(.*?)(?=^## |\z)")
           $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' }
@@ -119,21 +145,16 @@ jobs:
           **Signed:** ``HumID-Server-Windows-$($v).zip.sig`` is its signature by the HumID release key (ML-DSA-87). The admin console installs it only if that signature checks out against the key it pins; check it by hand with ``node tools/release-key.mjs verify HumID-Server-Windows-$($v).zip``.
 
           Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
-          "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
-          Get-Content "$env:RUNNER_TEMP\notes.md"
+          "@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/notes.md"
+          Get-Content "$env:RUNNER_TEMP/notes.md"
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        if: github.ref_type == 'tag' || inputs.publish
         with:
-          tag_name: server-win-v${{ steps.version.outputs.version }}
+          tag_name: server-win-v${{ needs.build.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: HumID Server for Windows ${{ steps.version.outputs.version }}
+          name: HumID Server for Windows ${{ needs.build.outputs.version }}
           body_path: ${{ runner.temp }}/notes.md
           # A draft, unsigned: the maintainer signs the zip offline, uploads the .sig and
           # publishes (RELEASING.md). Consoles never see drafts, and refuse unsigned zips.
           draft: true
           prerelease: false
-          files: deploy/windows/out/HumID-Server-Windows-*.zip
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 · also when publishing: Release apps bundles it
-        with:
-          name: HumID-Server-Windows
-          path: deploy/windows/out/HumID-Server-Windows-*.zip
+          files: out/HumID-Server-Windows-*.zip

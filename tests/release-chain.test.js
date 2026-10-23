@@ -118,3 +118,17 @@ test("secret material stays out of git and every new commit is scanned", () => {
   assert.match(run, /sha256sum -c/);
   assert.match(run, /gitleaks" git \. --config \.gitleaks\.toml/);
 });
+
+test("server-windows.yml: install scripts never run next to a token that can write (PC-20 / SRV-35)", () => {
+  const w = wf("server-windows.yml");
+  assert.deepEqual(w.permissions, {}, "workflow-level permissions are empty");
+  for (const [name, job] of Object.entries(w.jobs)) {
+    const write = Object.entries(job.permissions || {}).filter(([, v]) => v === "write").map(([k]) => k);
+    const installs = steps(job).some((s) => /\bnpm (ci|install|i)\b/.test(s.run || ""));
+    for (const s of steps(job).filter((s) => s.uses?.startsWith("actions/checkout@"))) assert.equal(s.with?.["persist-credentials"], false, `${name}: checkout keeps no credentials`);
+    for (const s of steps(job).filter((s) => /\bnpm ci\b/.test(s.run || ""))) assert.match(s.run, /--ignore-scripts/, `${name}: no dependency install scripts`);
+    if (installs) assert.deepEqual(write, [], `${name} installs dependencies, so it can't write`);
+    if (name === "publish") assert.deepEqual(write, ["contents"], "publish may write contents only");
+  }
+  assert.equal(w.jobs.publish.needs, "build");
+});

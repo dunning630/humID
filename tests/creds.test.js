@@ -252,8 +252,13 @@ test("minimise: only the facts asked for, ages derived when not stated, identify
   const { request, state } = credentialRequest({ types: ["mdl"], ask: "vault", origin: ORIGIN, protocols: ["org-iso-mdoc"] });
   const [r] = verifyCredentialResponse(state, { protocol: "org-iso-mdoc", data: await answerAnnexC(w, request.digital.requests[0], { origin: ORIGIN }) }, { trust });
   const now = new Date("2026-10-20T12:00:00Z");
-  const c = minimise(r, { share: ["age_over_21", "age_over_65", "valid_document", "issuing_jurisdiction"], now });
+  // This license names no status list: "valid document" rests on its expiry date alone, so it must be asked for and is stated.
+  assert.throws(() => minimise(r, { share: ["valid_document"], now }), code("unchecked"));
+  await checkStatus(r, {});
+  assert.throws(() => minimise(r, { share: ["valid_document"], now }), code("unchecked"));
+  const c = minimise(r, { share: ["age_over_21", "age_over_65", "valid_document", "issuing_jurisdiction"], allowUnchecked: true, now });
   assert.deepEqual(c.facts, { age_over_21: true, age_over_65: false, valid_document: true, issuing_jurisdiction: "US-IL" });
+  assert.deepEqual(c.basis.valid_document, { expiry: c.basis.valid_document.expiry, revocation: "no-list", holder: "proven" });
   assert.deepEqual(c.derived, ["age_over_21", "age_over_65"], "the vault ask doesn't include age flags, so they come from the birth date");
   assert.equal(c.assurance, "issuer+holder");
   assert.ok(!JSON.stringify(c).includes("SPECIMEN") && !JSON.stringify(c).includes("D1234567"), "no name, no number");
@@ -269,6 +274,40 @@ test("minimise: only the facts asked for, ages derived when not stated, identify
   assert.throws(() => minimise(r, { share: ["age_over_21"], persona: "not-a-persona" }), code("bad_request"));
   assert.equal(ageOn("2005-10-21", now), 20);
   assert.equal(ageOn("2005-10-20", now), 21);
+});
+
+test("CREDS-08: a SHA-1 passport chip is refused through creds/server unless allowed, and then marked weaker", () => {
+  const csca = testCsca();
+  const p = testPassport({ csca, aaKind: null, hash: "sha1" });
+  assert.throws(() => verifyPassportChip(p, { cscas: [csca.pem] }), code("weak_hash"));
+  const r = verifyPassportChip(p, { cscas: [csca.pem], allowSha1: true });
+  assert.equal(r.weakHash, true);
+  assert.match(r.note, /SHA-1/);
+  assert.equal(verifyPassportChip(testPassport({ csca, aaKind: null }), { cscas: [csca.pem] }).weakHash, false);
+});
+
+test("CREDS-05: valid_document is never asserted when revocation wasn't checked or the holder wasn't proven, unless asked and stated", async () => {
+  const csca = testCsca("Utopia");
+  const now = new Date();
+  // A passport chip with no Active Authentication key: issuer-signed, but the data could be a copy.
+  const r = verifyPassportChip(testPassport({ csca, aaKind: null }), { cscas: [csca.pem], now });
+  assert.equal(r.holderBound, false);
+  assert.equal(r.status, null, "revocation never consulted");
+  assert.throws(() => minimise(r, { share: ["valid_document"], now }), code("unchecked"));
+  // A passport has no status list; even checked, the basis is still weaker than "valid".
+  await checkStatus(r, {});
+  assert.throws(() => minimise(r, { share: ["valid_document"], now }), code("unchecked"));
+  const weak = minimise(r, { share: ["valid_document"], allowUnchecked: true, now, persona: "HC-7F3K-QM4T-9ZXA-B2C1-R8W0" });
+  assert.equal(weak.facts.valid_document, true);
+  assert.equal(weak.assurance, "issuer");
+  assert.deepEqual(weak.basis.valid_document, { expiry: "2034-12-31", revocation: "no-list", holder: "not-proven" });
+  assert.ok(checkCommitment(weak), "the basis is inside the commitment");
+  assert.ok(!checkCommitment({ ...weak, basis: { valid_document: { ...weak.basis.valid_document, holder: "proven" } } }), "and can't be upgraded afterwards");
+  // A negative answer needs no status check: once expired, the document is simply not valid.
+  assert.equal(minimise(r, { share: ["valid_document"], now: new Date("2035-06-01T00:00:00Z") }).facts.valid_document, false);
+  // An answer from the issuer that isn't valid, revoked or suspended can't back it either way.
+  const odd = { ...r, holderBound: true, status: { status: "application-specific" } };
+  assert.throws(() => minimise(odd, { share: ["valid_document"], allowUnchecked: true, now }), code("not_available"));
 });
 
 /* ---------------- license barcode ---------------- */

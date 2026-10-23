@@ -43,6 +43,11 @@ export async function openStore() {
     putOffline: (blob, account) => backend.put("vault", "offline", { id: "offline", v: 1, account, blob }),
     clearOffline: () => backend.del("vault", "offline"),
 
+    // The highest index-entry rev this device has seen per item (CRYPTO-05), sealed like the
+    // offline copy, and kept in "vault" so it goes when this device's vault is erased.
+    getIndexRevs: () => backend.get("vault", "index-revs").then((r) => (r?.blob ? r : null)),
+    putIndexRevs: (blob, account) => backend.put("vault", "index-revs", { id: "index-revs", v: 1, account, blob }),
+
     // An access pass between buying and spending it (docs/ANONYMITY.md). Survives
     // clearIdentity on purpose: it was paid for. Removed once the account exists.
     getPass: () => backend.get("wallet", "pass").then((p) => p || null),

@@ -1,7 +1,7 @@
 // HumID Comms — the contract for secure human-to-human communication (3.0 boundary).
 //
-// What the vault proves today: a document was sealed by a living person and opens only
-// for a living person. Comms extends the same proof to a message between two people:
+// What the vault proves today: a document was sealed during a live check on an enrolled
+// device and opens only after another. Comms extends the same proof to a message between two people:
 // sealed on the sender's phone to the recipient's HumID keys, opened only after the
 // recipient's live check, and every send and open on both ledgers. No server reads it,
 // no password exists, no phone number or name is needed: a HumID is a set of keys.

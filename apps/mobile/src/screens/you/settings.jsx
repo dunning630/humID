@@ -26,24 +26,24 @@ export function Settings() {
         <Choice id="theme" label="Theme" value={p.theme} options={opts("theme")} onPick={(v) => setPref({ theme: v })} />
         <Choice id="text" label="Text size" hint={`${TEXT_HINT[p.text]} · on top of your phone's own text size setting`} value={p.text} options={opts("text")} onPick={(v) => setPref({ text: v })} />
         <Toggle label="Animations" hint="The rings and transitions. Off keeps everything still." checked={p.motion} onChange={(v) => setPref({ motion: v })} />
-        <Toggle label="Haptics" hint="A short buzz when a check passes or a photo is taken." checked={p.haptics} onChange={(v) => setPref({ haptics: v })} />
+        <Toggle label="Haptics" hint="A short buzz when a live check passes or a photo is taken." checked={p.haptics} onChange={(v) => setPref({ haptics: v })} />
       </div>
 
-      <div class="card" style={{ marginTop: 12 }}>
+      <div class="card mt-3">
         <div class="eyebrow">Locking</div>
         <Choice id="idle" label="Lock after no activity" hint="5 minutes is the longest HumID allows. Leaving the screen always locks."
           value={p.idleMs} options={IDLE_CHOICES.map((ms) => [ms, idleLabel(ms)])} onPick={(v) => setPref({ idleMs: v })} />
       </div>
 
-      <div class="card" style={{ marginTop: 12 }}>
+      <div class="card mt-3">
         <div class="eyebrow">Vault</div>
         <Choice id="sort" label="Sort the vault by" value={p.sort} options={opts("sort")} onPick={(v) => setPref({ sort: v })} />
         <Choice id="expiry" label="Warn before an ID expires" value={p.expiryWarnDays}
           options={CHOICES.expiryWarnDays.map((d) => [d, d < 90 ? `${d} days` : `${Math.round(d / 30)} months`])} onPick={(v) => setPref({ expiryWarnDays: v })} />
         <Toggle label="Location stamp when sealing" hint="Off unless you turn it on. Sealed inside the encrypted index: your vault never sees it. You can still change it on each seal." checked={!!p.placeStamp} onChange={(v) => setPref({ placeStamp: v })} />
-        <p class="small muted" style={{ marginTop: 10 }}><Icon name="pushpin" /> {pinned ? `${pinned} pinned ${pinned === 1 ? "item stays" : "items stay"} at the top.` : "Pin items from their details to keep them at the top."} Pins are sealed with each item, so they show on all your devices and the server can't see them.</p>
+        <p class="small muted mt-3"><Icon name="pushpin" /> {pinned ? `${pinned} pinned ${pinned === 1 ? "item stays" : "items stay"} at the top.` : "Pin items from their details to keep them at the top."} Pins are sealed with each item, so they show on all your devices and the server can't see them.</p>
       </div>
-      <p class="fine" style={{ marginTop: 14 }}>Settings are kept on this device. Pins follow you.</p>
+      <p class="fine mt-3">Settings are kept on this device. Pins follow you.</p>
     </Pushed>
   );
 }

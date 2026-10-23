@@ -9,7 +9,7 @@ const len = (n) => (n < 128 ? [n] : n < 256 ? [0x81, n] : n < 65536 ? [0x82, n >
 const tlv = (tag, content) => Buffer.concat([Buffer.from(tag), Buffer.from(len(content.length)), Buffer.from(content)]);
 const sha = (alg, ...p) => { const h = createHash(alg); for (const x of p) h.update(x); return h.digest(); };
 
-const OIDS = { sha256: "2.16.840.1.101.3.4.2.1", sha1: "1.3.14.3.2.26", ecdsaSha256: "1.2.840.10045.4.3.2", rsa: "1.2.840.113549.1.1.1", sha256Rsa: "1.2.840.113549.1.1.11", pss: "1.2.840.113549.1.1.10" };
+const OIDS = { sha256: "2.16.840.1.101.3.4.2.1", sha1: "1.3.14.3.2.26", ecdsaSha256: "1.2.840.10045.4.3.2", ecdsaSha1: "1.2.840.10045.4.1", rsa: "1.2.840.113549.1.1.1", sha256Rsa: "1.2.840.113549.1.1.11", sha1Rsa: "1.2.840.113549.1.1.5", pss: "1.2.840.113549.1.1.10" };
 
 /**
  * A country signing CA (self-signed). country: the alpha-2 code in its name; "UT" is
@@ -40,9 +40,11 @@ export function td3({ issuer = "UTO", surname = "ERIKSSON", given = "ANNA MARIA"
  * A chip. dsKind: "ec" | "rsa" | "pss" (how the document signer signs the SOD).
  * aaKind: "rsa" | "ec" | null (Active Authentication key in DG15, or none).
  * photo: a JPEG or JPEG 2000 image for DG2 (the holder's face), or null for none.
+ * hash: "sha256" (default), or "sha1" for an older (Doc 9303 6th edition) SOD: data group
+ * hashes, signer digest and signature all SHA-1 (ec and rsa signers only).
  * Returns { dg1, dg2, dg15, sod, mrz, answer(nonce) } — answer() is the chip signing a challenge.
  */
-export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null, photo = null, ds: dsOpts = {} } = {}) {
+export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", tamper = null, photo = null, hash = "sha256", ds: dsOpts = {} } = {}) {
   const text = typeof mrz === "string" ? mrz : td3(mrz);
   const dg1 = tlv([0x61], tlv([0x5f, 0x1f], Buffer.from(text, "latin1")));
   const dg2 = photo ? faceGroup(photo) : null;
@@ -63,16 +65,16 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
   const dsDer = certificate({ subject: dsName, issuer: csca.name || csca.cn, publicKey: ds.publicKey, signingKey: csca.privateKey, serialNumber: dsSerial, extensions: dsExts, ca: !!dsOpts.ca });
 
   const hashes = [[1, dg1], ...(dg2 ? [[2, dg2]] : []), ...(dg15 ? [[15, dg15]] : [])]
-    .map(([n, b]) => seq(int(n), octet(sha("sha256", (tamper === "dg1" && n === 1) || (tamper === "dg2" && n === 2) ? Buffer.from("x") : b))));
-  const lds = seq(int(0), seq(oid(OIDS.sha256)), seq(...hashes));
+    .map(([n, b]) => seq(int(n), octet(sha(hash, (tamper === "dg1" && n === 1) || (tamper === "dg2" && n === 2) ? Buffer.from("x") : b))));
+  const lds = seq(int(0), seq(oid(OIDS[hash])), seq(...hashes));
   const attrs = [
     ...(tamper === "contentType" ? [] : [seq(oid("1.2.840.113549.1.9.3"), set(oid("2.23.136.1.1.1")))]),
-    seq(oid("1.2.840.113549.1.9.4"), set(octet(sha("sha256", lds)))),
+    seq(oid("1.2.840.113549.1.9.4"), set(octet(sha(hash, lds)))),
   ].sort(Buffer.compare);
   const attrsSet = set(...attrs);
   let sigAlg, signature;
-  if (dsKind === "ec") { sigAlg = seq(oid(OIDS.ecdsaSha256)); signature = sign("sha256", attrsSet, ds.privateKey); }
-  else if (dsKind === "rsa") { sigAlg = seq(oid(OIDS.sha256Rsa), Buffer.from([0x05, 0])); signature = sign("sha256", attrsSet, ds.privateKey); }
+  if (dsKind === "ec") { sigAlg = seq(oid(hash === "sha1" ? OIDS.ecdsaSha1 : OIDS.ecdsaSha256)); signature = sign(hash, attrsSet, ds.privateKey); }
+  else if (dsKind === "rsa") { sigAlg = seq(oid(hash === "sha1" ? OIDS.sha1Rsa : OIDS.sha256Rsa), Buffer.from([0x05, 0])); signature = sign(hash, attrsSet, ds.privateKey); }
   else {
     const params = seq(explicit(0, seq(oid(OIDS.sha256))), explicit(1, seq(oid("1.2.840.113549.1.1.8"), seq(oid(OIDS.sha256)))), explicit(2, int(32)));
     sigAlg = seq(oid(OIDS.pss), params);
@@ -81,8 +83,8 @@ export function testPassport({ csca, mrz = {}, dsKind = "ec", aaKind = "rsa", ta
   if (tamper === "signature") signature = Buffer.from(signature).fill(1, 10, 20);
   const sid = dsOpts.sid === "ski" ? explicit(0, Buffer.from("0123456789abcdef0123", "latin1")).fill(0x80, 0, 1)
     : seq(name(csca.name || csca.cn), int(dsOpts.sid === "wrong" ? dsSerial + 1 : dsSerial));
-  const signerInfo = seq(int(dsOpts.sid === "ski" ? 3 : 1), sid, seq(oid(OIDS.sha256)), explicit(0, Buffer.concat(attrs)), sigAlg, octet(signature));
-  const signedData = seq(int(3), set(seq(oid(OIDS.sha256))), seq(oid("2.23.136.1.1.1"), explicit(0, octet(lds))), explicit(0, dsDer), set(signerInfo));
+  const signerInfo = seq(int(dsOpts.sid === "ski" ? 3 : 1), sid, seq(oid(OIDS[hash])), explicit(0, Buffer.concat(attrs)), sigAlg, octet(signature));
+  const signedData = seq(int(3), set(seq(oid(OIDS[hash]))), seq(oid("2.23.136.1.1.1"), explicit(0, octet(lds))), explicit(0, dsDer), set(signerInfo));
   const sod = tlv([0x77], seq(oid("1.2.840.113549.1.7.2"), explicit(0, signedData)));
 
   /** The chip answers an Active Authentication challenge. */

@@ -21,13 +21,13 @@
 
 import { backend, SIZES, checkKemPk } from "./backend.js";
 import { personaFingerprint, personaId, safetyCode, encodePub, decodePub } from "./persona.js";
-import { messageCommitment, verifyStamp } from "./stamp.js";
+import { messageCommitment, verifyStamp, knowsStampKey } from "./stamp.js";
 import { LIVE_SKEW_MS } from "./live.js";
 import {
   MsgError, kdf, mac, label, concat, u32, readU32, random, wipe, equal, toHex, b64u, unb64u,
   encodeJSON, decodeJSON, aeadSeal, aeadOpen, dayOf, utf8, fromUtf8, guard, toPlain, fromPlain,
 } from "./util.js";
-import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays, newRetract } from "./wire.js";
+import { pad, unpad, checkWire, WIRE_VERSION, boxFor, pollDays, daysSince, newRetract } from "./wire.js";
 
 export const MAX_SKIP = 1000;        // per chain step
 // A stamped message older than the relay's retention (plus a day of clock skew) can't be a real
@@ -216,10 +216,20 @@ export class Session {
   get timer() { return this.s.timer ?? 0; }
   get peerPub() { return decodePub(this.s.peer.pub); }
 
-  /** Mailboxes to poll for this conversation. */
+  /** Mailboxes to poll for this conversation now: yesterday and today (tomorrow near midnight UTC). */
   inboxes(now = Date.now()) {
     if (this.s.status === "erased") return [];
     return pollDays(now).map((d) => boxFor(this.s.recvBox, d));
+  }
+
+  /**
+   * Mailboxes to poll for a conversation last polled at `since` (ms, or null): every day since
+   * then that the relay may still hold (up to 14 days), so nothing sent while this phone was away
+   * is missed (MSG-04). Oldest first.
+   */
+  inboxesSince(since, now = Date.now()) {
+    if (this.s.status === "erased") return [];
+    return daysSince(since, now).map((d) => boxFor(this.s.recvBox, d));
   }
 
   /** Serialise every encrypt/decrypt: the ratchet must never run two steps at once. */
@@ -261,8 +271,10 @@ export class Session {
       // A change you make is always newer than the one you last saw, even if the clocks disagree.
       const timerAt = Math.max(now, (s0.timerAt ?? 0) + 1);
       const ta = newTimer !== null ? timerAt : 0;
+      // `at` picks the stamp key: the issuer signs only with the key of the epoch it's in, and the
+      // receiver counts the stamp only if `at` is inside that key's epoch (MSG-01).
       const stamp = stamper
-        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes, at: now, x: ttl, ta }))
+        ? await stamper(messageCommitment({ convId: s0.convId, senderFp: s0.me.fp, nonce, kind, body: bodyBytes, at: now, x: ttl, ta }), { at: now })
         : null;
       if (requireLive && !stamp) throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
 
@@ -325,9 +337,11 @@ export class Session {
    *   live: true (valid stamp), false (stamp present but invalid), null (no stamp, or no keys to check).
    * opts.requireLive: the human-to-human rule (live.js). A message without a valid live stamp is
  *   discarded: { kind, id, at, n, refused: "not_live" } and nothing it says is applied.
- * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys.
+ * Throws MsgError: not_for_us, replay_or_old, decrypt_failed, malformed, too_many_skipped, closed, erased, no_stamp_keys,
+ *   unknown_stamp_key (only with opts.holdUnknownKey; retryable: nothing moved; fetch the stamp keys and decrypt
+ *   the same wire again, without holdUnknownKey).
    */
-  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false, receivedAt = now } = {}) {
+  decrypt(wire, { now = Date.now(), stampKeys = null, requireLive = false, receivedAt = now, holdUnknownKey = false } = {}) {
     return this.#serial(() => guard(() => this.#step(async (track) => {
       checkWire(wire);
       // The human-to-human rule needs the issuer's keys to check a stamp; without them nothing moves.
@@ -379,9 +393,20 @@ export class Session {
       const body = unb64u(p.b);
       const nonce = unb64u(p.nonce, NONCE);
       let live = null;
+      // A stamp under a key this phone hasn't fetched yet (a new epoch's, or a key published while
+      // this phone held an older list) may be perfectly good. With holdUnknownKey, say so BEFORE
+      // anything is committed, so the message stays unopened and can be retried once the keys are
+      // fetched, instead of using up its key and discarding it as "not live" (MSG-07). The caller
+      // retries once without it: a key still unknown after a fresh fetch was never published.
+      if (holdUnknownKey && requireLive && p.st && stampKeys && typeof p.st.kid === "string" && !knowsStampKey(stampKeys, p.st.kid)) {
+        wipe(body);
+        throw new MsgError("unknown_stamp_key", "This message was stamped under a key this phone doesn't have yet. Fetch the stamp keys and try again.");
+      }
       if (p.st && stampKeys) {
         const ta = p.k === "timer" && Number.isSafeInteger(p.ta) ? p.ta : 0;
-        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body, at: p.at, x: p.x ?? 0, ta }), { now });
+        // at: the stamp's key must be the one of the epoch this message says it was sent in, so a
+        // stamp bought now can't be dated later and released as "live" then (MSG-01)
+        live = verifyStamp(stampKeys, p.st, messageCommitment({ convId: s.convId, senderFp: s.peer.fp, nonce, kind: p.k, body, at: p.at, x: p.x ?? 0, ta }), { now, at: p.at });
         // One stamp, one message, once (security review H1): a stamp dated outside what the relay
         // could still be holding, or one this conversation has already seen, is not live.
         if (live && (p.at > receivedAt + LIVE_SKEW_MS || p.at < receivedAt - STAMP_MAX_AGE_MS)) live = false;

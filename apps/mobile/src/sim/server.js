@@ -25,11 +25,12 @@
 
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import {
-  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage,
+  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage, sealShare,
   identityId, deviceId, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS,
   ml_dsa87, sha3_256, toHex, fromHex, b64u, unb64u, utf8, fromUtf8, random,
 } from "@humid/htp";
 import { GENESIS, entryHash, headMessage, leafHash, treeHash, inclusionProof, consistencyProof, checkpointMessage } from "@humid/audit";
+import { recoveryModeMessage, isRecoveryMode } from "@humid/recovery";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { p256 } from "@noble/curves/nist.js";
@@ -63,7 +64,8 @@ const tx = (db, store, mode, fn) => new Promise((resolve, reject) => {
 
 function liveOk(spki, message, sig) {
   if (!spki || !sig) return false;
-  try { return p256.verify(sig, message, spki.subarray(spki.length - 65), { format: "der", lowS: false }); }
+  // low-S only, like the real servers (ATT-01, packages/attest/src/ecdsa.js)
+  try { return p256.verify(sig, message, spki.subarray(spki.length - 65), { format: "der", lowS: true }); }
   catch { return false; }
 }
 
@@ -153,6 +155,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   const accountView = (a, current) => ({
     id: a.id, status: a.status, createdAt: a.createdAt, commit: a.commit,
     dsaFp: toHex(sha3_256(unb64u(a.dsaPk))), kemFp: toHex(sha3_256(unb64u(a.kemPk))),
+    recoveryMode: a.recoveryMode || null,
     devices: Object.values(st.devices).filter((d) => d.account === a.id && !d.revokedAt).map((d) => deviceView(d, current)),
   });
   const deviceView = (d, current) => ({
@@ -272,7 +275,14 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!verify(unb64u(String(r.sig || "")), registerMessage(s.th, keys, r.commit), keys.dsaPk)) throw fail(401, "bad_proof", "Proof of possession failed: the device does not hold this identity key.");
     const id = identityId(keys.dsaPk);
     const created = !st.accounts[id];
-    if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso() };
+    // The recovery mode, signed by the account key: the same check the identity and recovery services make.
+    let mode = null;
+    if (created && r.recoveryMode) {
+      const m = r.recoveryMode;
+      if (!isRecoveryMode(m.mode) || !verify(unb64u(String(m.sig || "")), recoveryModeMessage(id, m.mode, Number(m.version), Number(m.epoch), m.prev), keys.dsaPk)) throw fail(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+      mode = { mode: m.mode, version: Number(m.version), epoch: Number(m.epoch), prev: m.prev, sig: m.sig };
+    }
+    if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso(), recoveryMode: mode };
     const a = st.accounts[id];
     let enrolled;
     try { enrolled = enrolDevice(a, s.th, r.device, "register"); }
@@ -285,7 +295,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     record(id, "device.added", { device: device.id, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, checks: checks.filter((c) => c.ok).length });
     record(id, "session.opened", { device: device.id, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
     let cardSet = false;
-    if (created && r.card?.tag) { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
+    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: device.id });
+    if (created && r.card?.tag && mode?.mode !== "holder-only") { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
     report("Your HumID was registered", checks, { kind: "enrol" });
     return [created ? 201 : 200, sessionView(s, { created, cardSet })];
   });
@@ -376,7 +387,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!a.lockdownAt) return [200, { cleared: false, lockdown: false }];
     if (now() < Date.parse(a.lastDuressAt) + LOCKDOWN_COOLOFF_MS) throw fail(409, "too_soon", "Lockdown can be lifted once it has been calm for a while.");
     const since = a.lockdownAt; a.lockdownAt = null;
-    record(a.id, "duress.cleared", { device: s.deviceId, since, proof: su.proof });
+    record(a.id, "duress.cleared", { device: s.deviceId, since, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { cleared: true, lockdown: false, since }];
   }, { auth: true });
 
@@ -388,7 +399,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!d || d.account !== s.subject || d.revokedAt) throw fail(404, "unknown_device", "No such device on your HumID.");
     if (d.id === s.deviceId) throw fail(400, "current_device", "You can't remove the device you're using. Remove it from another device.");
     d.revokedAt = iso();
-    record(s.subject, "device.removed", { device: d.id, platform: d.platform, proof: su.proof });
+    record(s.subject, "device.removed", { device: d.id, platform: d.platform, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { removed: true, device: deviceView(d, s.deviceId) }];
   }, { auth: true, guard: true });
 
@@ -397,11 +408,11 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     const a = account(s);
     let n = 0;
     for (const o of Object.values(st.objects)) if (o.owner === a.id) { delete st.objects[o.id]; delete st.keyshare[o.id]; tx(db, "blobs", "readwrite", (b) => b.delete(o.id)); n++; }
-    record(a.id, "vault.erased", { count: n, proof: su.proof });
+    record(a.id, "vault.erased", { count: n, proof: su.proof, assurance: su.assurance, by: su.by });
     delete st.cards[a.id];
     a.status = "closed";
     for (const d of Object.values(st.devices)) if (d.account === a.id) d.revokedAt ||= iso();
-    record(a.id, "identity.closed", { proof: su.proof });
+    record(a.id, "identity.closed", { proof: su.proof, assurance: su.assurance, by: su.by });
     s.closeAfterReply = true;
     return [200, { closed: true, erasedItems: n }];
   }, { auth: true, guard: true });
@@ -440,7 +451,9 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       checks.push(pass("Its second key went to the keyshare service", "the vault never sees it; the account keys alone can't open this document"));
     }
     if (usage(s.subject).bytes + body.length > QUOTA) throw fail(507, "quota_exceeded", "Your vault is full");
-    const id = crypto.randomUUID(), t = iso();
+    const asked = headers["x-humid-object-id"];
+    if (asked != null && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(asked)) || st.objects[asked])) throw fail(409, "id_taken", "That item id can't be used");
+    const id = asked != null ? String(asked) : crypto.randomUUID(), t = iso();
     if (share) st.keyshare[id] = { owner: s.subject, share: b64u(share) };
     await tx(db, "blobs", "readwrite", (b) => b.put(body, id));
     st.objects[id] = { id, owner: s.subject, size: body.length, index, sealedAt: v.manifest.created, uploadedAt: t, updatedAt: t, method: v.manifest.interrupt?.method || null, assurance: v.manifest.interrupt?.assurance || null };
@@ -453,9 +466,17 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     needStepUp(su, "Opening a document");
     const o = own(s, m[1]);
     const k = st.keyshare[o.id];
-    record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance });
+    // Like keyshare (CRYPTO-03): the key goes back sealed to the one-time key in the signed body.
+    let sealed = null;
+    if (k) {
+      let to = null;
+      try { to = { kemPk: unb64u(String(r.to?.kemPk ?? "")), xPk: unb64u(String(r.to?.xPk ?? "")) }; } catch {}
+      if (!to || to.kemPk.length !== 1568 || to.xPk.length !== 32) throw fail(426, "update_required", "Update HumID to open this document: its key now travels sealed to your phone.");
+      sealed = b64u(await sealShare(unb64u(k.share), to, { account: s.subject, object: o.id }));
+    }
+    record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance, by: su.by });
     report("Document released", [...su.checks, ...(k ? [pass("Its second key released for this document only", "inside this same live check")] : [])], { kind: "open", quiet: true });
-    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(k ? { "x-humid-share": k.share } : {}) }];
+    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(sealed ? { "x-humid-share": sealed } : {}) }];
   }, { auth: true });
 
   route("PATCH", `/vault/objects/${OBJ}`, (s, r, su, m, body, headers) => {
@@ -471,12 +492,16 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     delete st.objects[o.id];
     delete st.keyshare[o.id];
     await tx(db, "blobs", "readwrite", (b) => b.delete(o.id));
-    record(s.subject, "object.deleted", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance });
+    record(s.subject, "object.deleted", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance, by: su.by });
     return [200, { deleted: o.id }];
   }, { auth: true });
 
   /* ledger + public log */
   route("GET", "/ledger/events", (s, r, su, m, body, headers, q) => {
+    if (q.get("from") != null) {
+      const from = Number(q.get("from")), to = Number(q.get("to") ?? from + 999);
+      return [200, { owner: s.subject, entries: (st.ledger[s.subject] || []).filter((e) => e.seq >= from && e.seq <= to).slice(0, 1000), ledgerKey: ledgerKeyView }];
+    }
     const limit = Math.min(Math.max(Number(q.get("limit")) || 200, 1), 1000);
     const rows = (st.ledger[s.subject] || []).slice(-limit);
     const last = rows[rows.length - 1];
@@ -485,10 +510,10 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     return [200, { owner: s.subject, entries: rows, head, ledgerKey: ledgerKeyView }];
   }, { auth: true });
   route("GET", "/ledger/tlog/checkpoint", () => [200, checkpoint()], { auth: true });
-  route("GET", "/ledger/tlog/inclusion", (s) => {
+  route("GET", "/ledger/tlog/inclusion", (s, r, su, m, body, headers, q) => {
     const cp = checkpoint();
     const chain = st.ledger[s.subject] || [];
-    const lastE = chain[chain.length - 1];
+    const lastE = q.get("seq") ? chain[Number(q.get("seq")) - 1] : chain[chain.length - 1];
     if (!lastE) throw fail(404, "not_in_log", "That entry isn't in the public log yet.");
     const leaf = b64u(leafHash(s.subject, lastE.seq, lastE.hash));
     const index = st.leaves.lastIndexOf(leaf);
@@ -502,17 +527,22 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
 
   /* recovery: the parts one person on one phone can do */
   route("GET", "/recovery/card", (s) => { const c = st.cards[s.subject]; return [200, c ? { exists: true, createdAt: c.createdAt, scheme: c.scheme } : { exists: false }]; }, { auth: true });
+  route("GET", "/recovery/mode", (s) => {
+    const m = st.accounts[s.subject]?.recoveryMode;
+    return [200, { ...(m || { mode: "hardened", version: 0, epoch: 1, sig: null }), escrow: st.cards[s.subject] ? ["card"] : [] }];
+  }, { auth: true });
   route("PUT", "/recovery/card", (s, r, su) => {
     needStepUp(su, "Making a seal card");
+    if (st.accounts[s.subject]?.recoveryMode?.mode === "holder-only") throw fail(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
     const scheme = unb64u(String(r.blob || "")).length === 12 + 65 + 16 ? "quorum" : "full";
     st.cards[s.subject] = { tag: r.tag, blob: r.blob, createdAt: iso(), scheme };
-    record(s.subject, "recovery.card_set", { scheme, proof: su.proof });
+    record(s.subject, "recovery.card_set", { scheme, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { createdAt: st.cards[s.subject].createdAt, replaced: true, scheme }];
   }, { auth: true, guard: true });
   route("DELETE", "/recovery/card", (s, r, su) => {
     needStepUp(su, "Removing your seal card");
     const had = !!st.cards[s.subject]; delete st.cards[s.subject];
-    record(s.subject, "recovery.card_removed", { proof: su.proof });
+    record(s.subject, "recovery.card_removed", { proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { removed: had }];
   }, { auth: true, guard: true });
   route("GET", "/recovery/contacts", () => [200, { n: 0, guardians: [] }], { auth: true });
@@ -521,7 +551,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   route("PUT", "/recovery/settings", (s, r, su) => {
     needStepUp(su, "Changing settings");
     st.settings[s.subject] = { duressAlert: !!r.duressAlert };
-    record(s.subject, "settings.changed", { duressAlert: !!r.duressAlert, proof: su.proof });
+    record(s.subject, "settings.changed", { duressAlert: !!r.duressAlert, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { duressAlert: !!r.duressAlert }];
   }, { auth: true, guard: true });
   route("GET", "/recovery/alerts", () => [200, { alerts: [] }], { auth: true });
@@ -535,6 +565,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     ["POST", "/recovery/requests.*", "Recovering"], ["GET", "/recovery/requests/.*", "Recovering"], ["GET", "/recovery/help/.*", "Helping someone recover"], ["POST", "/recovery/help/.*", "Helping someone recover"],
     ["PUT", "/recovery/anchor", "Anchoring your ID"],
     ["POST", "/recovery/keys.*", "Adding a security key"], ["DELETE", "/recovery/keys/.*", "Removing a security key"],
+    ["POST", "/recovery/mode", "Changing how you recover"],
   ]) route(m, p, NOT_HERE(what));
 
   /* ---------- a step-up: both signatures over this exact request ---------- */
@@ -569,7 +600,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       }
       checks.push(pass("Signed by the secure chip during a live match", "this request slot was signed inside the biometric check"));
     }
-    return { at, proof: proofHash(sig), method: String(p.interrupt?.method || s.gateMethod).slice(0, 64), assurance: s.assurance, checks };
+    return { at, proof: proofHash(sig), method: String(p.interrupt?.method || s.gateMethod).slice(0, 64), assurance: s.assurance, by: s.deviceId, checks };
   }
 
   async function dispatch(s, seq, meta, body) {
@@ -621,7 +652,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   async function fetchFn(input, init = {}) {
     const path = new URL(String(input), "sim://humid").pathname;
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90)); // a little network latency
-    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass", splitKeys: true } });
+    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy: platformPolicy, registration: "pass", splitKeys: true }) });
     if (path.endsWith("/htp/v1/hello")) {
       try { return jsonRes(200, htp.hello(JSON.parse(init.body))); }
       catch (e) { return jsonRes(e.status || 400, { error: e.code || "handshake_failed", message: e.message }); }

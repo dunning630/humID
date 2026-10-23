@@ -52,7 +52,9 @@ const SOURCE = { chip: "Chip", barcode: "Barcode", mrz: "Scanned", typed: "You" 
 
 /** The three plain tiers of where an ID's details came from (UX-26). */
 export function proofTier(level) {
+  // Mint only when the issuing country's signature was checked; a phone-only read is amber (CREDS-04).
   if (level === "chip") return { icon: "nfc", text: "Read from the chip", tone: "mint" };
+  if (level === "chip-issuer-unverified") return { icon: "nfc", text: "Read from the chip, issuer not verified on this phone", tone: "amber" };
   if (level === "chip-edited") return { icon: "nfc", text: "Read from the chip, then edited", tone: "" };
   if (level === "barcode") return { icon: "barcode", text: "Read from the barcode", tone: "mint" };
   if (level === "mrz") return { icon: "scan", text: "Read from the document's lines", tone: "mint" };
@@ -192,7 +194,7 @@ export function IdFlow({ start, onExit, onDraft }) {
       return;
     }
     if (ok) {
-      setNote({ tone: "ok", text: "Read from the chip. Its files match the chip's own signed list." });
+      setNote({ tone: "ok", text: "Read from the chip. Its files match the chip's own list of hashes; the issuing country's signature isn't checked on this phone." });
       setName(recordTitle(rec.current));
       setStep("review");
       redraw();
@@ -257,7 +259,7 @@ export function IdFlow({ start, onExit, onDraft }) {
             error={missing.length > 0 ? `Add the ${missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.` : null}
             onSeal={seal}
             secondary={next ? { label: `Scan the ${next.side}`, onClick: () => retake(next) } : done.length ? { label: "Retake", onClick: () => retake(plan[0]) } : null}
-            fine={`One check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
+            fine={`One live check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
         )}
       </Step>
       {cam && (
@@ -391,7 +393,7 @@ export function IdView({ record: rec, item }) {
       <div class="id-card-hero">
         {rec.images[side] && <img src={imageUrl(rec.images[side])} alt={side === "portrait" ? "Photo from the chip" : `${side} of the document`} data-side={side} />}
         {sides.length > 1 && (
-          <div class="seg" role="tablist" aria-label="Which side" style={{ marginTop: 10 }}>
+          <div class="seg mt-3" role="tablist" aria-label="Which side">
             {sides.map((s) => <button role="tab" aria-selected={side === s} aria-pressed={side === s} onClick={() => setSide(s)}>{sideName(s)}</button>)}
           </div>
         )}
@@ -411,7 +413,7 @@ export function IdView({ record: rec, item }) {
       </div>
       <details class="pass-back">
         <summary>Details</summary>
-        <p class="fine">{p.text}.{rec.edited?.length ? ` You edited: ${rec.edited.map((k) => fieldsFor(rec.kind).find((f) => f.key === k)?.label.toLowerCase() || k).join(", ")}.` : ""}{p.level?.startsWith("chip") ? " The chip's files match its own signed list; the issuing country's signature isn't checked on this phone." : ""}</p>
+        <p class="fine">{p.text}.{rec.edited?.length ? ` You edited: ${rec.edited.map((k) => fieldsFor(rec.kind).find((f) => f.key === k)?.label.toLowerCase() || k).join(", ")}.` : ""}{p.level === "chip-edited" ? " The chip's files match its own list of hashes; the issuing country's signature isn't checked on this phone." : ""}</p>
         {rec.raw?.mrz && <pre class="mrz-lines" aria-label="The lines read from the document">{rec.raw.mrz.join("\n")}</pre>}
       </details>
       <div class="actions"><button class="btn quiet block" onClick={() => saveCopy(item)}><Icon name="download" />Save a copy (JSON with photos)</button></div>

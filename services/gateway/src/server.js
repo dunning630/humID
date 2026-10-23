@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, identityId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8, sha3_256, toHex } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 import { rateKey, isBox, TAG_RE } from "@humid/msg/relay-rules";
 
@@ -17,6 +17,8 @@ const ID_RE = "hid_[0-9a-f]{40}";
 const DEV_RE = "dev_[0-9a-f]{24}";
 const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
+/** A recovery request's code: 16 characters, it lives up to a week (CRYPTO-08). Older 12-character ones still work. */
+const RCODE_RE = "[0-9A-HJKMNP-TV-Z]{12}(?:[0-9A-HJKMNP-TV-Z]{4})?";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
 const KEY_RE = "[0-9a-f]{32}";
@@ -39,6 +41,8 @@ const REGISTRATION = ["pass", "open"];
 const re = (s) => new RegExp(`^${s}$`);
 /** How a device may join an existing account: an approved link, or a released recovery (never "register"). */
 const ENROL_VIA = new Set(["link", "card", "contacts", "quorum"]);
+/** The account id a registration's ML-DSA-87 key will have (base64url key → hid_…). */
+const identityOf = (dsaPkB64) => { try { return identityId(unb64u(String(dsaPkB64 || ""))); } catch { return ""; } };
 
 /**
  * Inner routes the app may call. Anything else is a 404, so internal routes
@@ -56,6 +60,8 @@ const ROUTES = [
   { m: "POST", p: re("/auth/challenge"), h: "challenge" },
   { m: "POST", p: re("/auth/login"), h: "login" },
   { m: "POST", p: re("/auth/logout"), h: "logout" },
+  // a device whose biometric keys Android or iOS destroyed says so (LIVE-06); no sign-in possible
+  { m: "POST", p: re("/auth/key-invalidated"), h: "keyInvalidated" },
   // duress: every unlock reports presence the same way; only the flag inside differs
   { m: "POST", p: re("/auth/presence"), h: "presence", auth: true },
   // a step-up approval for one action: the device signs it during the live check
@@ -100,20 +106,25 @@ const ROUTES = [
   { m: "GET", p: re("/recovery/protecting/alerts"), to: "recovery", path: "/protecting/alerts", auth: true },
   // identity anchor (passport or ID chip) and recovery settings
   { m: "GET", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true },
-  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, proof: su?.proof }) },
+  { m: "POST", p: re("/recovery/anchor/challenge"), to: "recovery", path: "/anchor/challenge", auth: true },
+  { m: "PUT", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_set", detail: (r, su) => ({ document: r?.document, country: r?.country, version: r?.version, proof: su?.proof }) },
   { m: "DELETE", p: re("/recovery/anchor"), to: "recovery", path: "/anchor", auth: true, guard: true, event: "recovery.anchor_removed", detail: (r, su) => ({ proof: su?.proof }) },
   // security keys (4.0, docs/SECURITY-KEY.md): adding or removing one is a guarded change
   { m: "GET", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true },
   { m: "POST", p: re("/recovery/keys/challenge"), to: "recovery", path: "/keys/challenge", auth: true },
   { m: "POST", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_added", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
   { m: "DELETE", p: re(`/recovery/keys/(${KEY_RE})`), to: "recovery", path: "/keys/$1", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: r?.count, proof: su?.proof }) },
+  { m: "DELETE", p: re("/recovery/keys"), to: "recovery", path: "/keys", auth: true, guard: true, event: "recovery.key_removed", detail: (r, su) => ({ count: 0, removed: r?.removed, proof: su?.proof }) },
+  // Recovery mode (docs/RECOVERY.md#two-recovery-modes): holder-only or hardened, signed by the account key.
+  { m: "GET", p: re("/recovery/mode"), to: "recovery", path: "/mode", auth: true },
+  { m: "POST", p: re("/recovery/mode"), h: "setRecoveryMode", auth: true, guard: true },
   { m: "GET", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true },
   { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
   // verification stations
   { m: "GET", p: re("/recovery/station"), to: "recovery", path: "/station", auth: true },
-  { m: "GET", p: re(`/recovery/station/requests/(${CODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/station/requests/(${RCODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
   // recovering on a new device
   { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
   { m: "GET", p: re(`/recovery/requests/(${REQ_RE})`), to: "recovery", path: "/requests/$1", anon: true },
@@ -122,8 +133,8 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key/challenge`), to: "recovery", path: "/requests/$1/key/challenge", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key`), h: "addEvidence", kind: "key", anon: true },
-  { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
-  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/help/(${RCODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
+  { m: "POST", p: re(`/recovery/help/(${RCODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
   { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
 
@@ -158,6 +169,27 @@ const ROUTES = [
   { m: "POST", p: re("/msg/relay/retract"), h: "relayRetract", relay: true, msg: true },
 ];
 
+/**
+ * Largest inner body each route takes (SRV-32). The frame cap is chosen from the session before
+ * the route is known (it's inside the encryption), so a signed-in session's frame may be as big
+ * as a vault upload; this is checked as soon as the frame is open, before anything parses the
+ * body. Every route not listed takes CALL_CAP_DEFAULT: JSON and control bodies are a few KiB.
+ * Keyed by handler, or by upstream service and path.
+ */
+const CALL_CAP_DEFAULT = 64 * 1024;
+const RECOVERY_ENVELOPE_CAP = 96 * 1024;  // one sealed envelope (recovery: 64 KiB), as bytes or base64 in JSON
+const RECOVERY_CHIP_CAP = 256 * 1024;     // up to three ID-chip reads (recovery: 3 × 48 KiB), base64 in JSON
+const CALL_CAPS = {
+  "h:upload": "max",                       // POST /vault/objects: the vault-sized cap (GATEWAY_MAX_CALL_BYTES)
+  "recovery:/links/$1/approve": RECOVERY_ENVELOPE_CAP,
+  "h:helpRecover": RECOVERY_ENVELOPE_CAP,
+  "recovery:/contacts": 6 * RECOVERY_ENVELOPE_CAP, // up to five contacts' envelopes
+  "recovery:/anchor": RECOVERY_CHIP_CAP,
+  "h:addEvidence": RECOVERY_CHIP_CAP,
+  "h:stationVerify": RECOVERY_CHIP_CAP,
+};
+const capKey = (route) => (route.h ? `h:${route.h}` : `${route.to}:${route.path}`);
+
 /** Check-in settings, as keyshare accepts them (CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS). Published in the policy hint. */
 const CHECKIN_POLICY = { windowsH: [1, 2, 4, 8, 24], graceMin: [0, 15, 30, 60] };
 const CHECKIN_WINDOWS = CHECKIN_POLICY.windowsH.map((h) => h * 3_600_000);
@@ -166,21 +198,29 @@ const CHECKIN_GRACES = CHECKIN_POLICY.graceMin.map((m) => m * 60_000);
 /** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
 const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
 
-const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
+const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index", "x-humid-object-id"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
-const SHARE_HEADER = "x-humid-share"; // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
+const SHARE_HEADER = "x-humid-share";
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]); // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
 
-class Buckets {
-  constructor(capacity, perMs) { this.capacity = capacity; this.perMs = perMs; this.m = new Map(); }
+/**
+ * Token buckets per key. At `max` keys the least recently used one is forgotten, never the
+ * whole table: clearing everything (as before, CRYPTO-04) let anyone with 100k addresses
+ * reset every limit, failed sign-in counts included. A key that's forgotten is one nobody
+ * has used for longer than any other, so it was close to full again anyway.
+ */
+export class Buckets {
+  constructor(capacity, perMs, { max = 100_000 } = {}) { this.capacity = capacity; this.perMs = perMs; this.max = max; this.m = new Map(); }
   take(key, now = Date.now()) {
     const b = this.m.get(key) || { tokens: this.capacity, at: now };
+    this.m.delete(key); // re-inserted below, so the Map's order is least recently used first
     b.tokens = Math.min(this.capacity, b.tokens + ((now - b.at) / this.perMs) * this.capacity);
     b.at = now;
-    if (b.tokens < 1) { this.m.set(key, b); return false; }
-    b.tokens -= 1;
+    const ok = b.tokens >= 1;
+    if (ok) b.tokens -= 1;
     this.m.set(key, b);
-    if (this.m.size > 100_000) this.m.clear();
-    return true;
+    while (this.m.size > this.max) this.m.delete(this.m.keys().next().value);
+    return ok;
   }
 }
 
@@ -203,6 +243,8 @@ export function createGateway({
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
   /** Largest frame accepted from a session that has not signed in (recovery requests carry up to three ID-chip reads). */
   maxAnonCallBytes = Number(env("GATEWAY_MAX_ANON_CALL_BYTES", String(512 * 1024))),
+  /** New recovery requests per source network (IPv4 address or IPv6 /64) per hour (SRV-34). */
+  recoveryStartsPerHour = Number(env("HUMID_RECOVERY_STARTS_PER_HOUR", "20")),
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
   registration = env("HUMID_REGISTRATION", "pass"),
   passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
@@ -218,6 +260,14 @@ export function createGateway({
   checkin = env("HUMID_CHECKIN", "off"),
   /** How often the gateway tidies up after a Check-in erase: the vault's envelopes, and the ledger entry. */
   checkinSweepMs = 10_000,
+  /**
+   * Handshakes a minute, server-wide, from visitors whose address the proxy in front couldn't
+   * know (it forwards its own loopback address: the Windows edge behind Tailscale Funnel with
+   * HUMID_TRUST_FORWARDED=off). Per-address limits would put every visitor in one bucket of 30,
+   * so one visitor could lock everyone out (V76-03). Returning holders skip this bucket with a
+   * one-use hello pass (below).
+   */
+  sharedHelloPerMin = Number(env("HUMID_SHARED_HELLO_PER_MIN", "600")),
   /** Server secrets sealed at rest (packages/svc/src/seal.js): HUMID_SEAL_KEY_FILE, or the host's sealer. */
   seal = sealerFromEnv(),
   /**
@@ -226,48 +276,116 @@ export function createGateway({
    * Default: HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY files, if set.
    */
   internalTls = tlsFromEnv(),
+  /**
+   * Development only: let a `demo` server stamp without a hardware liveness key, so the dev
+   * server's messaging can be tried in a browser. Not read from the environment, and ignored
+   * under any other policy, so no deployed server can turn it on.
+   */
+  demoStamps = false,
+  /** /msg/stats shows only days with at least this many live checks, rounded to 100 (MSG-13). */
+  msgStatsMin = Number(env("HUMID_MSG_STATS_MIN", "1000")),
+  /** Signed-in sessions one account may hold at once (CRYPTO-04): its own oldest makes room. */
+  sessionsPerAccount = Number(env("HUMID_SESSIONS_PER_ACCOUNT", "16")),
 } = {}) {
   const log = logger("gateway");
+  const DEMO_STAMPS = demoStamps === true && devicePolicy === "demo";
+  const STATS_MIN = Number.isFinite(msgStatsMin) && msgStatsMin >= 100 ? msgStatsMin : 1000;
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
   const CHECKIN = checkin === "on";
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
   if (!REGISTRATION.includes(registration)) throw new Error(`HUMID_REGISTRATION must be one of ${REGISTRATION.join(", ")}`);
   if (passBuyUrl && !/^https:\/\//.test(passBuyUrl)) throw new Error("HUMID_PASS_BUY_URL must be an https:// URL");
+  if (!(Number.isInteger(sharedHelloPerMin) && sharedHelloPerMin >= 30)) throw new Error("HUMID_SHARED_HELLO_PER_MIN must be a whole number, at least 30");
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
   // Sealed under the server's seal key when it has one; a plain file from before 3.0 is sealed in place (same keys, same kid).
   const keyFile = `${dataDir}/htp-keys.json`;
   const statics = importStatics(JSON.parse(secretFile(keyFile, { seal, name: "gateway/htp-keys", make: () => JSON.stringify(exportStatics(createStatics())), log }).toString("utf8")));
-  const htp = new HtpServer(statics);
+  const htp = new HtpServer(statics, { perSubject: sessionsPerAccount });
   log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
 
-  const helloLimit = new Buckets(30, 60_000);   // per client IP
+  const helloLimit = new Buckets(30, 60_000);   // per client network: an IPv4 address or an IPv6 /64 (rateKey)
+  const sharedHello = new Buckets(sharedHelloPerMin, 60_000); // server-wide, for visitors with no knowable address
+  /**
+   * Hello passes (V76-03). Each sign-in hands the app a random one-use pass inside the encrypted
+   * session; at its next handshake the app presents it and skips the address limits, so a holder
+   * can always open a session (and check in) however much anonymous traffic shares their
+   * address. One use each, so an observer of the tunnel never sees the same value twice and
+   * can't link a device's sessions. Kept in memory: after a gateway restart a holder's first
+   * handshake goes through the ordinary limits again.
+   */
+  const helloPasses = new Map(); // sha3(pass) hex -> { device, exp }
+  const passByDevice = new Map(); // device -> sha3(pass) hex (one live pass per device)
+  const HELLO_PASS_MS = 30 * 24 * 3_600_000;
+  function issueHelloPass(device) {
+    const pass = random(32);
+    const h = toHex(sha3_256(pass));
+    const old = passByDevice.get(device);
+    if (old) helloPasses.delete(old);
+    if (helloPasses.size >= 200_000) { helloPasses.clear(); passByDevice.clear(); }
+    helloPasses.set(h, { device, exp: Date.now() + HELLO_PASS_MS });
+    passByDevice.set(device, h);
+    return b64u(pass);
+  }
+  /** Spend the pass a hello carries: true if it was live (it is gone either way). */
+  function spendHelloPass(req) {
+    const v = req.headers["x-humid-hello-pass"];
+    if (typeof v !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(v)) return false;
+    const h = toHex(sha3_256(unb64u(v)));
+    const p = helloPasses.get(h);
+    if (!p) return false;
+    helloPasses.delete(h);
+    if (passByDevice.get(p.device) === h) passByDevice.delete(p.device);
+    return p.exp > Date.now();
+  }
+  /** The proxy in front forwarded its own loopback address: it doesn't know the visitor's. */
+  const addressUnknown = (ip) => trustProxy && LOOPBACK.has(ip);
+  /** May this request open a handshake (or another anonymous, costly call)? */
+  const helloAllowed = (req, { pass = false } = {}) => {
+    if (pass && spendHelloPass(req)) return true;
+    const ip = clientIp(req);
+    return addressUnknown(ip) ? sharedHello.take("*") : helloLimit.take(rateKey(ip || ""));
+  };
   const callLimit = new Buckets(600, 60_000);   // per session
   // Sign-in throttles count FAILED proofs only and never refuse a request before its proof has been
   // checked. See the note at `login` and docs/CHECKIN.md: a lockout must never keep the holder from
   // checking in, because a missed Check-in erases the vault.
   const loginFailId = new Buckets(10, 300_000);     // failed proofs per identity
-  const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source address
+  const loginFailIp = new Buckets(20, 300_000);     // failed proofs per source network (IPv4 address or IPv6 /64)
   const loginFailAll = new Buckets(200, 300_000);   // failed proofs, whole server (ledger-write budget)
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
+  // one "keys gone" line in a device's Activity a day, spent only once identity has marked that
+  // device for the account the report named (V76-01: a wrong-account report spends nothing)
+  const keysGoneNote = new Buckets(1, 24 * 3_600_000);
+  // SRV-34: new recovery requests per source network (IPv4 address or IPv6 /64). Anonymous and
+  // kept by the recovery service, so a session's own limit isn't enough: one person recovering
+  // starts one or two. The recovery service also caps how many unproven requests exist at all.
+  const recoveryStartLimit = new Buckets(recoveryStartsPerHour, 3_600_000);
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
   const inflight = new Map();
   let inflightAll = 0;
   const admitBody = (perIp = 16, all = 1024) => (req) => {
+    // an unknown address is everyone's (V76-03): only the server-wide cap applies to it
     const ip = clientIp(req);
-    const n = inflight.get(ip) || 0;
+    const n = addressUnknown(ip) ? 0 : inflight.get(ip) || 0;
     if (n >= perIp || inflightAll >= all) throw new HttpError(429, "rate_limited", "Too many requests in flight");
     inflight.set(ip, n + 1); inflightAll++;
     let released = false;
     return () => { if (released) return; released = true; inflightAll--; const k = (inflight.get(ip) || 1) - 1; if (k > 0) inflight.set(ip, k); else inflight.delete(ip); };
   };
 
-  const clientIp = (req) => (trustProxy && req.headers["x-forwarded-for"]?.split(",")[0].trim()) || req.socket.remoteAddress;
+  /**
+   * The visitor's address. With trustProxy, the LAST X-Forwarded-For entry: the one the proxy in
+   * front of the gateway wrote (V76-04). Caddy 2.5+ (the Docker edge, no trusted_proxies) replaces
+   * the header with the connection's address, and the Windows edge sends a single entry, so today
+   * there is one; a proxy that appends would leave the visitor's own claims to the left of it.
+   */
+  const clientIp = (req) => (trustProxy && String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean).pop()) || req.socket.remoteAddress;
 
   /* ---------- internal calls ---------- */
 
@@ -312,16 +430,49 @@ export function createGateway({
     if (r.status !== 201) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
     return r.data;
   }
+  /**
+   * What a ledger entry says about the live check behind it: the proof, how strongly the device
+   * that made it proves its checks, and which device that was, so Activity on another device
+   * never describes it by its own (APP-09). `withMethod`: the gate method too (opens, deletes).
+   */
+  const proved = (s, stepUp, withMethod = false) => (stepUp
+    ? { proof: stepUp.proof, assurance: stepUp.assurance, by: s.deviceId, ...(withMethod ? { method: stepUp.method } : {}) }
+    : {});
   const recordQuietly = (sub, type, detail) => record(sub, type, detail).catch((e) => log.warn("ledger write failed", { type, err: e.message }));
 
-  const claimsFor = (s, extra = {}) => ({
-    sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance,
-    ...(s.livePub ? { livePub: b64u(s.livePub) } : {}), ...extra,
-  });
+  const claimsFor = (s, extra = {}) => {
+    const out = {
+      sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance,
+      ...(s.livePub ? { livePub: b64u(s.livePub) } : {}), ...extra,
+    };
+    // SRV-30: the holder's own step-up proof goes with it, so the service that releases or
+    // destroys a secret checks it itself; the gateway's word (stepUp) is a hint, not the proof.
+    // The proof travels in the assertion header, so a large signed body (an envelope) stays out;
+    // no service that checks proofs needs one, and a caller that does sends it in the request body.
+    if (extra.stepUp?.holder) {
+      const { body, ...h } = extra.stepUp.holder;
+      out.holder = body.length <= 8 * 1024 ? { ...h, body } : h;
+    }
+    return out;
+  };
+
+  /**
+   * SRV-30: everything a back-end service needs to check this step-up itself: the request as the
+   * holder's device signed it, its signatures, and identity's statement that this device key
+   * belongs to the account (vault and keyshare hold no device keys).
+   */
+  async function holderProof(s, seq, meta, body, proof, nonce, exp) {
+    const v = await internalJson("identity", "POST", "/internal/vouch", { json: { account: s.subject, device: s.deviceId } }).catch(() => ({ status: 503 }));
+    if (v.status !== 200) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
+    return { th: b64u(s.th), seq, at: Number(proof.at), m: meta.m, p: meta.p, body: b64u(body || new Uint8Array(0)), nonce, exp, device: s.deviceId, sig: String(proof.sig), ...(proof.live ? { live: String(proof.live) } : {}), vouch: v.data.vouch };
+  }
+  /** The holder proof with its body left out, for a caller that sends the body in the request instead (Check-in's settings). */
+  const withoutBody = (stepUp) => ({ ...stepUp, holder: { ...stepUp.holder, body: "" } });
 
   /** Bind a session to an account and the device that proved itself. */
   function bindSession(s, view, interrupt) {
     s.subject = view.id;
+    htp.signedIn(s); // at most sessionsPerAccount signed-in sessions per account: its own oldest makes room
     s.deviceId = view.device.id;
     s.dsaPk = unb64u(view.deviceDsaPk); // device key: verifies step-up proofs
     s.dsaFp = view.dsaFp;               // account key: signs envelopes
@@ -333,7 +484,8 @@ export function createGateway({
     s.platform = String(view.device.platform || "unknown").slice(0, 40);
     s.authAt = Date.now();
   }
-  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, proof: s.proof, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, ...extra });
+  // helloPass: for this device's next handshake only (V76-03); a new one with every sign-in
+  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, proof: s.proof, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, helloPass: issueHelloPass(s.deviceId), ...extra });
   const dropWhere = (pred) => { for (const x of [...htp.sessions.values()]) if (pred(x)) htp.drop(x); };
 
   /* ---------- handlers (run inside the encrypted channel) ---------- */
@@ -346,10 +498,14 @@ export function createGateway({
    * erases the vault. Every sign-in asks keyshare where Check-in stands, so a duress sign-in
    * takes the same time, and the work happens after the reply, so the answer looks the same.
    */
-  async function presence(s, duress) {
+  async function presence(s, duress, signIn) {
     const ck = CHECKIN ? await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null) : null;
     if (!duress || s.duress) return;
     s.duress = true;
+    // The duress sign-in as the device signed it: keyshare erases an armed vault only on this.
+    const vouch = CHECKIN ? await internalJson("identity", "POST", "/internal/vouch", { json: { account: s.subject, device: s.deviceId } }).catch(() => null) : null;
+    s.duressProof = vouch?.status === 200 ? { ...signIn, device: s.deviceId, vouch: vouch.data.vouch } : null;
+    const duressProof = s.duressProof;
     const st = ck?.status === 200 ? ck.data : null;
     s.decoyCheckin = st && (st.state === "armed" || st.state === "locked")
       ? decoyFrom({ ...st, deadline: st.state === "armed" ? st.deadline : Date.now() + st.windowMs })
@@ -357,7 +513,7 @@ export function createGateway({
     const account = s.subject, device = s.deviceId, platform = s.platform;
     setImmediate(async () => {
       // Check-in first: a duress signal while it's armed erases the vault now (decoys stay).
-      if (CHECKIN) await eraseNow(account);
+      if (CHECKIN) await eraseNow(account, duressProof);
       await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
       await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
       await recordQuietly(account, "duress.signaled", { device, platform });
@@ -392,29 +548,53 @@ export function createGateway({
           throw new HttpError(503, "keyshare_unavailable", "Your document's key couldn't be stored, so it wasn't saved. Try again.");
         }
       }
-      await recordQuietly(s.subject, "object.sealed", { id: out.id, size: body.length, split: !!share, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      await recordQuietly(s.subject, "object.sealed", { id: out.id, size: body.length, split: !!share, ...proved(s, stepUp, true) });
       return res;
     },
 
     // Open: the envelope from the vault and, for a split document, its key from keyshare,
     // both under this one live step-up. Recorded in the ledger before either is released.
+    // SRV-30: the open is written to the ledger FIRST, and the vault releases the envelope only
+    // against the ledger's signed receipt for it, so an open can't happen without its entry.
+    // The document key leaves keyshare sealed to a one-time key in the body the holder signed
+    // (CRYPTO-03), so this gateway forwards it without being able to read it.
     async download(s, body, stepUp, m) {
       const id = m[1], path = `/vault/objects/${id}`;
-      const claims = claimsFor(s, stepUp ? { stepUp } : {});
+      if (!stepUp) {
+        const e = new HttpError(403, "step_up_required", "This needs a fresh biometric check on your device.");
+        await denied(s, path, { body: utf8(JSON.stringify({ error: e.code })) });
+        throw e;
+      }
+      const own = await internalJson("vault", "GET", `/objects/${id}/meta`, { claims: claimsFor(s) });
+      if (own.status !== 200) fail(own);
+      // The document key is asked for only when the signed body names a one-time key to seal it
+      // to (downloadWithShare); a plain download (exporting the sealed copy) gets the envelope alone.
+      const wantShare = !!safeJson(body)?.to;
+      // Would keyshare release this document's key now (and is it split)? Releases nothing.
+      const keyshareRefused = async (ks) => {
+        // 423: a missed check-in locks the vault; 410: Check-in erased this document's key
+        if ([403, 410, 423].includes(ks.status)) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
+        throw new HttpError([403, 410, 423, 426, 429].includes(ks.status) ? ks.status : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+      };
+      let split = false;
+      if (wantShare) {
+        const pre = await internalJson("keyshare", "GET", `/internal/shares/${id}/state`, { claims: claimsFor(s) }).catch(() => ({ status: 503 }));
+        if (pre.status !== 200) await keyshareRefused(pre);
+        split = !!pre.data.split;
+      }
+      const opened = await record(s.subject, "object.opened", { id, split, ...proved(s, stepUp, true) });
+      if (!opened?.receipt) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
+      const claims = claimsFor(s, { stepUp, receipt: opened.receipt });
       const res = await internal("vault", "GET", `/objects/${id}`, { claims });
       if (res.status !== 200) {
         if (res.status === 403) await denied(s, path, res);
         return res;
       }
-      const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
-      if (ks.status !== 200 && ks.status !== 404) {
-        // 423: a missed check-in locks the vault; 410: Check-in erased this document's key
-        if ([403, 410, 423].includes(ks.status)) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
-        throw new HttpError([403, 410, 423, 429].includes(ks.status) ? ks.status : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+      if (split) {
+        const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
+        if (ks.status !== 200) await keyshareRefused(ks);
+        res.headers[SHARE_HEADER] = ks.data.sealed;
       }
-      const split = ks.status === 200;
-      await record(s.subject, "object.opened", { id, split, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
-      if (split) res.headers[SHARE_HEADER] = ks.data.share;
       return res;
     },
 
@@ -427,7 +607,7 @@ export function createGateway({
         if (res.status === 403) await denied(s, path, res);
         return res;
       }
-      await record(s.subject, "object.deleted", { id, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      await record(s.subject, "object.deleted", { id, ...proved(s, stepUp, true) });
       const ks = await internalJson("keyshare", "DELETE", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
       if (ks.status !== 200 && ks.status !== 404) log.warn("keyshare delete failed; the key is useless without its envelope", { status: ks.status });
       return res;
@@ -463,10 +643,18 @@ export function createGateway({
         spent = sp.data.spent;
       }
       const refund = () => spent && internalJson("access", "POST", "/internal/refund", { json: { spent } }).catch((e) => log.warn("pass refund failed", { err: e.message }));
+      // The recovery mode chosen at setup, signed by the account key. The recovery service learns
+      // it first: if it can't, nothing is created, so a holder-only account is never one it would
+      // store recovery material for.
+      const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, prev: r.recoveryMode.prev, sig: r.recoveryMode.sig } : null;
+      if (mode) {
+        const m = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: identityOf(r.dsaPk), dsaPk: r.dsaPk, ...mode } }).catch(() => ({ status: 503, data: { error: "recovery_unavailable", message: "recovery service is unavailable" } }));
+        if (m.status !== 200) { await refund(); fail(m); }
+      }
       let reg;
       try {
         reg = await internalJson("identity", "POST", "/internal/register", {
-          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy },
+          json: { kemPk: r.kemPk, dsaPk: r.dsaPk, xPk: r.xPk, commit: r.commit, sig: r.sig, th: b64u(s.th), sessionAgeMs: Date.now() - s.createdAt, device: r.device, policy: devicePolicy, ...(mode ? { recoveryMode: mode } : {}) },
         });
       } catch (e) { await refund(); throw e; }
       if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
@@ -475,13 +663,17 @@ export function createGateway({
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
+      if (reg.status === 201 && mode) await recordQuietly(s.subject, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: s.deviceId });
       // A recovery card made with the account: the registration itself was the live check.
       let cardSet = false;
       if (reg.status === 201 && r.card) {
         const stepUp = { at: Date.now(), proof: proofHash(unb64u(r.sig)), method: s.gateMethod, assurance: s.assurance, live: !!s.livePub };
-        const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp }), json: r.card }).catch(() => ({ status: 503 }));
+        // No step-up exists yet: the account key signed this card in the registration's live check,
+        // and identity says the account was made in this session. Recovery checks both (SRV-30).
+        const setupCard = { created: reg.data.created, dsaPk: r.dsaPk, th: b64u(s.th), sig: r.card.sig };
+        const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp, setupCard }), json: { tag: r.card.tag, blob: r.card.blob } }).catch(() => ({ status: 503 }));
         cardSet = c.status === 200;
-        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup", scheme: c.data?.scheme });
+        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { ...proved(s, stepUp), at: "setup", scheme: c.data?.scheme });
       }
       return { status: reg.status, json: sessionView(s, { created: reg.status === 201, cardSet }) };
     },
@@ -517,6 +709,7 @@ export function createGateway({
         if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
       } else if (!rejoin) {
         if (!re(REQ_RE).test(String(r.recoveryId || ""))) await refuse(new HttpError(403, "not_released", "This device can join only through a released recovery."));
+        await syncMode(r.account); // the release check below then sees the account's newest mode
         const c = await internalJson("recovery", "POST", `/internal/requests/${r.recoveryId}/check`, { json: { account: r.account, method: via } }).catch(() => ({ status: 503 }));
         if (c.status === 403) await refuse(new HttpError(403, "not_released", c.data?.message || "That recovery isn't released yet."));
         if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
@@ -576,24 +769,56 @@ export function createGateway({
           message: b64u(reported ? loginPresenceMessage(s.th, who, c.nonce, r.d) : liveMsg), liveMessage: b64u(liveMsg) },
       });
       const failed = v.status >= 400 && v.status < 500;
-      const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(s.clientIp), loginFailAll.take("*")].every(Boolean);
+      // SRV-24: identity gives an unknown account, an unknown device and a wrong key one answer
+      // after the same work; `known` (gateway only) says whether there is a ledger to note it in.
+      // The note is written after the reply, so it can't make a real account's refusal slower.
+      const known = v.status !== 401 || v.data?.error !== "bad_signature" || v.data?.known === true;
+      const noteLater = (detail) => { if (known) setImmediate(() => recordQuietly(r.id, "access.denied", { ...detail, device: r.device })); };
+      // an unknown address (V76-03) is everyone's: only the per-identity and server-wide budgets count
+      const throttled = failed && ![loginFailId.take(r.id), addressUnknown(s.clientIp) || loginFailIp.take(rateKey(s.clientIp || "")), loginFailAll.take("*")].every(Boolean);
       if (throttled) {
-        if (loginNote.take(r.id)) await recordQuietly(r.id, "access.denied", { reason: "sign_in_throttled", device: r.device });
+        if (loginNote.take(r.id)) noteLater({ reason: "sign_in_throttled" });
         throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
       }
       if (v.status === 401) {
         const live = v.data?.error === "bad_live_proof";
-        await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
+        noteLater({ reason: live ? "no_live_biometric" : "bad_login_proof" });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
-      if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
+      if (v.status === 403 && ["device_removed", "device_not_proven", "attestation_revoked", "reattest_required"].includes(v.data?.error)) {
         await recordQuietly(r.id, "access.denied", { reason: v.data.error, device: r.device });
+        if (v.data.error === "attestation_revoked") {
+          await recordQuietly(r.id, "device.removed", { device: r.device, reason: "attestation_revoked" });
+          dropWhere((x) => x.subject === r.id && x.deviceId === r.device); // and its open sessions end now
+        }
       }
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
-      await presence(s, reported && r.d === 1);
+      await presence(s, reported && r.d === 1, { th: b64u(s.th), nonce: b64u(c.nonce), sig: String(r.sig), ...(r.live ? { live: String(r.live) } : {}) });
       return { status: 200, json: sessionView(s) };
+    },
+
+    /**
+     * LIVE-06. The phone's keys are gone, so it holds nothing it can sign with: the report is
+     * unauthenticated, and so it does as little as possible. The device is marked as needing
+     * setup again and its owner's Activity says so, once per mark (its next sign-in clears it).
+     * The answer is the same whether or not the account or device exists, so it tells a
+     * stranger nothing, and a report naming the wrong account spends nothing (V76-01).
+     */
+    async keyInvalidated(s, body) {
+      const { id, device } = parseJson(body) || {};
+      if (!re(ID_RE).test(String(id)) || !re(DEV_RE).test(String(device))) throw new HttpError(400, "bad_identity", "Unknown identity format");
+      const ok = { status: 202, json: { ok: true } }; // the same answer whatever happens below: no oracle
+      if (s.subject && s.subject !== id) return ok; // a signed-in session speaks only for its own account
+      // Identity marks the device only when it is an active device of that account and not
+      // already marked; the mark itself is the once-per-device allowance (until the device's
+      // next sign-in clears it), so a wrong account or a repeat changes and spends nothing.
+      // No per-source bucket: one a stranger could drain would drop the genuine report (V76-01);
+      // the call is one indexed lookup, inside the per-session anonymous limit (20 a minute).
+      const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
+      if (r?.status === 200 && r.data?.marked && keysGoneNote.take(`${id}/${device}`)) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
+      return ok;
     },
 
     async logout(s) {
@@ -608,7 +833,7 @@ export function createGateway({
       const r = await internalJson("identity", "DELETE", `/devices/${id}`, { claims: claimsFor(s, { stepUp }) });
       if (r.status !== 200) fail(r);
       dropWhere((x) => x.subject === s.subject && x.deviceId === id); // its open sessions end now
-      await recordQuietly(s.subject, "device.removed", { device: id, platform: r.data.device?.platform, proof: stepUp.proof });
+      await recordQuietly(s.subject, "device.removed", { device: id, platform: r.data.device?.platform, ...proved(s, stepUp) });
       return { status: 200, json: r.data };
     },
 
@@ -617,24 +842,58 @@ export function createGateway({
       const claims = claimsFor(s, { stepUp });
       const wiped = await internalJson("vault", "DELETE", "/objects", { claims });
       if (wiped.status !== 200) return { status: wiped.status, json: wiped.data };
-      await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
+      await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, ...proved(s, stepUp) });
       await internalJson("keyshare", "DELETE", "/shares", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
-      await internalJson("recovery", "DELETE", "/keys", { claims }).catch(() => {});
+      // every piece of recovery material, under the holder's approval for closing the account (SRV-30)
+      await internalJson("recovery", "DELETE", "/escrow", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
-      if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
+      if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { ...proved(s, stepUp) });
       const subject = s.subject;
       s.closeAfterReply = true;
       dropWhere((x) => x !== s && x.subject === subject);
       return { status: closed.status, json: { closed: closed.status === 200, erasedItems: wiped.data.deleted } };
     },
 
+    /**
+     * Change this account's recovery mode, with a fresh live check. The statement is signed by
+     * the account key (only a device holding the seed can make one), and every service checks
+     * it again. To holder-only, the recovery service goes first: it refuses while any card,
+     * witnesses, ID anchor or security key is left (the app deletes each one first, each under
+     * its own step-up). To hardened, identity goes first. Either way a half-done switch leaves
+     * the stricter answer in force, and the ledger entry is written before the second service
+     * is told: if the ledger can't record it, the switch stops there.
+     */
+    async setRecoveryMode(s, body, stepUp) {
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Changing how you recover needs a fresh biometric check.");
+      const r = parseJson(body) || {};
+      const statement = { mode: r.mode, version: r.version, epoch: r.epoch, prev: r.prev, sig: r.sig };
+      await syncMode(s.subject); // both services on the newest statement first, so the new one chains to it
+      const cur = await internalJson("identity", "GET", `/internal/recovery-mode/${s.subject}`).catch(() => ({ status: 503 }));
+      if (cur.status !== 200) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
+      const toRecovery = () => internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: s.subject, dsaPk: cur.data.dsaPk, ...statement } });
+      const toIdentity = () => internalJson("identity", "POST", "/internal/recovery-mode", { json: { account: s.subject, ...statement } });
+      const steps = r.mode === "holder-only" ? [toRecovery, toIdentity] : [toIdentity, toRecovery];
+      // Checked once before anything is written, so a bad statement leaves no ledger entry.
+      const probe = await steps[0]();
+      if (probe.status !== 200) fail(probe);
+      const from = cur.data.recoveryMode || { mode: "hardened", epoch: 1 };
+      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), ...proved(s, stepUp) });
+      const done = await steps[1]();
+      if (done.status !== 200) fail(done);
+      return { status: 200, json: { mode: r.mode, version: r.version, epoch: r.epoch } };
+    },
+
     // A new device asks to recover. For a card the account is known now, so its devices are alerted now.
     async startRecovery(s, body) {
-      const r = await internalJson("recovery", "POST", "/requests", { body });
+      if (!recoveryStartLimit.take(rateKey(s.clientIp || ""))) throw new HttpError(429, "rate_limited", "Too many recoveries started from this network. Wait an hour and try again.");
+      let r = await internalJson("recovery", "POST", "/requests", { body });
       if (r.status >= 300) fail(r);
+      // The recovery service's mode for that account may be stale (a deleted or rolled-back row):
+      // bring it up to identity's. Switching it to holder-only cancels this request at once.
+      if (r.data.account && await syncMode(r.data.account)) {
+        const again = await internalJson("recovery", "GET", `/internal/recovery-mode/${r.data.account}`).catch(() => null);
+        if (again?.data?.mode !== "hardened") throw new HttpError(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
+      }
       if (r.data.account) {
         await recordQuietly(r.data.account, "recovery.requested", { method: r.data.method, ref: r.data.ref, platform: r.data.platform, releaseAt: r.data.releaseAt, kinds: r.data.kinds });
         if (r.data.method === "quorum") await recordQuietly(r.data.account, "recovery.evidence", { ref: r.data.ref, kind: "card", kinds: r.data.kinds, releaseAt: r.data.releaseAt });
@@ -646,6 +905,10 @@ export function createGateway({
     // Two-proof recovery: the new device adds its seal card, its live ID chip or its security key.
     async addEvidence(s, body, stepUp, m, route) {
       const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
+      if (r.status === 200 && r.data?.account && await syncMode(r.data.account)) {
+        const again = await internalJson("recovery", "GET", `/internal/recovery-mode/${r.data.account}`).catch(() => null);
+        if (again?.data?.mode !== "hardened") throw new HttpError(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
+      }
       if (r.status !== 200) {
         // A stored security key's signature checked and failed, or its counter went backwards: its
         // owner sees it in Activity, at most once an hour, so a stranger can't flood the record.
@@ -669,7 +932,7 @@ export function createGateway({
       const d = r.data;
       if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
       await recordQuietly(d.account, "recovery.station_verified", { ref: d.ref, station: s.subject, country: d.country, kinds: d.kinds, releaseAt: d.releaseAt, chipProof: !!d.chipProof });
-      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, proof: stepUp.proof, chipProof: !!d.chipProof });
+      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, ...proved(s, stepUp), chipProof: !!d.chipProof });
       return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country, chipProof: !!d.chipProof } };
     },
 
@@ -698,24 +961,42 @@ export function createGateway({
 
     // The stamp keys, and the pass key ids beside them so the app can refuse a server that
     // stamps with its pass key (a blind signer signs whatever it's handed).
-    async msgKeys() {
-      const [st, pk] = await Promise.all([internalJson("access", "GET", "/internal/stamp/keys"), internalJson("access", "GET", "/internal/keys")]);
+    // ?since=ms: only retired stamp keys whose epoch ended after it (a phone that has the rest).
+    async msgKeys(s, body, stepUp, m, route, meta) {
+      const sp = new URL(String(meta?.p || "/"), "http://inner").searchParams;
+      const since = Number(sp.get("since") || 0);
+      // all=1: every retired key (a page of them, from `since`), for stamped media and evidence (MSG-10)
+      const q = [Number.isSafeInteger(since) && since > 0 ? `since=${since}` : "", sp.get("all") === "1" ? "all=1" : ""].filter(Boolean).join("&");
+      const qs = q ? `?${q}` : "";
+      const [st, pk] = await Promise.all([internalJson("access", "GET", `/internal/stamp/keys${qs}`), internalJson("access", "GET", "/internal/keys")]);
       if (st.status !== 200) fail(st);
       if (pk.status !== 200) fail(pk);
       return { status: 200, json: { stamp: st.data, passKeyIds: (pk.data.keys || []).map((k) => k.id) } };
     },
 
+    // Public, so on a small server exact daily counts would show one person's activity (and
+    // checks − stamps would count "delete for both"). Only days with at least STATS_MIN live
+    // checks are shown, both numbers rounded down to a hundred, and "checks" only as the rounded
+    // total (security review MSG-13).
     async msgStats() {
       const r = await internalJson("access", "GET", "/internal/stamp/stats");
       if (r.status !== 200) fail(r);
-      return { status: 200, json: r.data };
+      const round = (n) => Math.floor(n / 100) * 100;
+      const days = (r.data?.days || []).filter((d) => d.checks >= STATS_MIN).map((d) => ({ day: d.day, stamps: round(d.stamps), checks: round(d.checks) }));
+      return { status: 200, json: { days, min: STATS_MIN, rounded: 100 } };
     },
 
     // One live check → the stamps it approved. The step-up's signature covers this request's
     // body, so the device's secure chip approved exactly these blinded values. The issuer is
     // told nothing about the account; it signs blind and counts.
+    // A stamp says "a live face or fingerprint check on a proven phone", so it needs exactly that,
+    // whatever the device policy lets sign in: a desktop under `biometric` (or anything under
+    // `demo`) has no hardware liveness key, and a script could stamp in a loop (MSG-03).
     async msgStamp(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "A live stamp needs a fresh live check.");
+      if (!(stepUp.live === true && stepUp.assurance === "hardware") && !DEMO_STAMPS) {
+        throw new HttpError(403, "stamp_needs_proven_phone", "Sending needs a phone whose secure chip proves a live face or fingerprint check. This device can't.");
+      }
       const r = parseJson(body) || {};
       if (!Array.isArray(r.blinded) || r.blinded.length < 1 || r.blinded.length > 2) throw new HttpError(400, "bad_request", "One check approves 1 or 2 stamps");
       const out = await internalJson("access", "POST", "/internal/stamp/sign", { json: { kid: r.kid, blinded: r.blinded } });
@@ -779,10 +1060,10 @@ export function createGateway({
         return { status: 200, json: decoyView(s.decoyCheckin) };
       }
       const out = await internalJson("keyshare", "POST", "/internal/checkin/arm", {
-        claims, json: { ...settings, objects: list.data.items.map((i) => i.id), keep: Array.isArray(r.keep) ? r.keep : [] },
+        claims: claimsFor(s, { stepUp: withoutBody(stepUp) }), json: { objects: list.data.items.map((i) => i.id), holderBody: stepUp.holder.body },
       }).catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be turned on right now. Try again." } }));
       if (out.status !== 200) return { status: out.status, json: out.data }; // e.g. unsplit_items, with which ones
-      await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, proof: stepUp.proof });
+      await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, ...proved(s, stepUp) });
       return { status: 200, json: out.data };
     },
 
@@ -795,7 +1076,7 @@ export function createGateway({
       if (s.duress) {
         // It looks like a check-in. The vault was already erased when this session opened.
         await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
-        setImmediate(() => eraseNow(s.subject));
+        setImmediate(() => eraseNow(s.subject, s.duressProof));
         const d = s.decoyCheckin, v = decoyView(d);
         if (v.state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
         if (v.state === "off") throw new HttpError(409, "checkin_off", "Check-in isn't on.");
@@ -816,7 +1097,7 @@ export function createGateway({
       if (!stepUp) throw new HttpError(403, "step_up_required", "Turning off Check-in needs a fresh biometric check.");
       if (s.duress) {
         await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
-        setImmediate(() => eraseNow(s.subject));
+        setImmediate(() => eraseNow(s.subject, s.duressProof));
         if (decoyView(s.decoyCheckin).state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
         s.decoyCheckin = null;
         return { status: 200, json: { state: "off" } };
@@ -824,7 +1105,7 @@ export function createGateway({
       const out = await internalJson("keyshare", "POST", "/internal/checkin/disarm", { claims: claimsFor(s, { stepUp }) })
         .catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be reached right now. Try again." } }));
       if (out.status !== 200) fail(out);
-      await recordQuietly(s.subject, "checkin.disarmed", { proof: stepUp.proof });
+      await recordQuietly(s.subject, "checkin.disarmed", { ...proved(s, stepUp) });
       return { status: 200, json: out.data };
     },
 
@@ -838,9 +1119,9 @@ export function createGateway({
     async clearDuress(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "Lifting lockdown needs a fresh biometric check.");
       if (s.duress) throw busy();
-      const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`);
+      const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`, { claims: claimsFor(s, { stepUp }) });
       if (r.status !== 200) fail(r);
-      if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, proof: stepUp.proof });
+      if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, ...proved(s, stepUp) });
       return { status: 200, json: r.data };
     },
 
@@ -871,7 +1152,7 @@ export function createGateway({
       const r = await adminLookup(s, code);
       const b = parseJson(body) || {};
       if (typeof b.digest !== "string" || b.digest !== r.digest) throw new HttpError(409, "admin_request_changed", "This request changed on the server. Look it up again.");
-      await record(s.subject, "admin.approved", { kind: r.kind, title: String(r.title || "").slice(0, 80), digest: r.digest.slice(0, 16), device: s.deviceId, proof: stepUp.proof });
+      await record(s.subject, "admin.approved", { kind: r.kind, title: String(r.title || "").slice(0, 80), digest: r.digest.slice(0, 16), device: s.deviceId, ...proved(s, stepUp) });
       const raw = stepUp.raw;
       await adminCall(() => admin.approved(code, {
         code, account: s.subject, device: s.deviceId, platform: s.platform, proofLevel: s.proof, assurance: s.assurance,
@@ -891,7 +1172,7 @@ export function createGateway({
       const d = r.data;
       if (d.first) await recordQuietly(d.owner, "recovery.requested", { method: d.method, ref: d.ref, platform: d.platform });
       await recordQuietly(d.owner, "recovery.approved", { ref: d.ref, contact: s.subject, approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt, kinds: d.kinds });
-      await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, proof: stepUp.proof });
+      await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, ...proved(s, stepUp) });
       return { status: 200, json: { approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt } };
     },
   };
@@ -905,12 +1186,19 @@ export function createGateway({
 
   /* ---------- the encrypted call ---------- */
 
+  /** SRV-32: the route's own cap. Relay routes keep the frame cap (they only ever come from a session that isn't signed in, capped at maxAnonCallBytes). */
+  const callCap = (route) => {
+    const c = route.relay ? "max" : CALL_CAPS[capKey(route)] ?? CALL_CAP_DEFAULT;
+    return c === "max" ? maxCallBytes : Math.min(c, maxCallBytes);
+  };
+
   async function dispatch(s, seq, meta, body) {
     const url = new URL(String(meta.p || "/"), "http://inner");
     const route = ROUTES.find((r) => r.m === meta.m && r.p.test(url.pathname));
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
     if (route.msg && !MESSAGING) throw new HttpError(404, "not_found", "No such endpoint");
+    if (body.length > callCap(route)) throw new HttpError(413, "too_large", "Request body is too large for this endpoint.");
     if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
     // Step-up: a fresh biometric signature over exactly this request, by this session's device key.
@@ -943,6 +1231,8 @@ export function createGateway({
       }
       const i = meta.proof.interrupt || {};
       stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: s.assurance, live: !!s.livePub };
+      // The proof as signed, for the service that acts on it to check again (SRV-30).
+      Object.defineProperty(stepUp, "holder", { value: await holderProof(s, seq, meta, body, meta.proof, nonceKey, issued.exp), enumerable: true });
       // The proof as signed, for a handler that hands it on to be checked again elsewhere (admin approvals).
       Object.defineProperty(stepUp, "raw", { value: { seq, at, sig: meta.proof.sig, live: meta.proof.live || null, nonce: nonceKey, exp: issued.exp }, enumerable: false });
     }
@@ -952,6 +1242,9 @@ export function createGateway({
       await recordQuietly(s.subject, "access.denied", { path: url.pathname.replace(/[0-9a-f-]{36}/, ":id"), reason: "lockdown" });
       throw busy();
     }
+
+    // Before any recovery route of a signed-in account: the recovery service on its newest mode.
+    if (s.subject && url.pathname.startsWith("/recovery/") && !url.pathname.startsWith("/recovery/links")) await syncMode(s.subject);
 
     if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p), route, meta);
 
@@ -974,8 +1267,8 @@ export function createGateway({
       if (res.status >= 200 && res.status < 300) {
         const out = safeJson(res.body);
         const detail = route.detail
-          ? route.detail(out, stepUp)
-          : { id: objectId || out?.id, size: route.event === "object.sealed" ? body.length : undefined, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) };
+          ? { ...route.detail(out, stepUp), ...proved(s, stepUp) }
+          : { id: objectId || out?.id, size: route.event === "object.sealed" ? body.length : undefined, ...proved(s, stepUp, true) };
         if (route.audited) await record(s.subject, route.event, detail); // fail closed: no record, no release
         else await recordQuietly(s.subject, route.event, detail);
       } else if (res.status === 403) {
@@ -983,6 +1276,35 @@ export function createGateway({
       }
     }
     return res;
+  }
+
+  /**
+   * Recovery modes (V74-01/02): identity and the recovery service each keep the account's signed
+   * statement. Bring whichever is behind (a row deleted, rolled back, or restored from an old
+   * backup) up to the newest one either holds. Both are signed by the account key and chained,
+   * so "newest" can't be forged, only withheld; the holder's own devices check for that.
+   * Returns true when the recovery service's answer changed.
+   */
+  async function syncMode(account) {
+    if (!re(ID_RE).test(String(account || ""))) return false;
+    try {
+      const [idr, rec] = await Promise.all([
+        internalJson("identity", "GET", `/internal/recovery-mode/${account}`),
+        internalJson("recovery", "GET", `/internal/recovery-mode/${account}`),
+      ]);
+      if (idr.status !== 200 || rec.status !== 200) return false;
+      const i = idr.data.recoveryMode, r = rec.data;
+      if (i?.version && (r.broken || r.version < i.version)) {
+        const pushed = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account, dsaPk: idr.data.dsaPk, mode: i.mode, version: i.version, epoch: i.epoch, prev: i.prev, sig: i.sig, sync: true } });
+        if (pushed.status !== 200) log.warn("recovery mode: couldn't bring recovery up to identity", { status: pushed.status, error: pushed.data?.error });
+        return pushed.status === 200;
+      }
+      if (r.statement && r.version > (i?.version || 0)) {
+        const pushed = await internalJson("identity", "POST", "/internal/recovery-mode", { json: { account, ...r.statement } });
+        if (pushed.status !== 200) log.warn("recovery mode: couldn't bring identity up to recovery", { status: pushed.status, error: pushed.data?.error });
+      }
+    } catch (e) { log.warn("recovery mode sync failed", { err: e.message }); }
+    return false;
   }
 
   async function adminCall(fn) {
@@ -1025,8 +1347,9 @@ export function createGateway({
   }
 
   /** A duress signal: if this account is armed, keyshare destroys its fuse key now. Then tidy up. */
-  async function eraseNow(account) {
-    const r = await internalJson("keyshare", "POST", "/internal/checkin/erase", { claims: { sub: account } })
+  async function eraseNow(account, duressProof) {
+    if (!duressProof) return; // only a duress sign-in can set off an erase (keyshare checks it: SRV-30)
+    const r = await internalJson("keyshare", "POST", "/internal/checkin/erase", { claims: { sub: account, duress: duressProof } })
       .catch((e) => { log.warn("check-in erase: keyshare", { err: e.message }); return null; });
     if (r?.data?.erased) await sweepCheckin().catch(() => {});
   }
@@ -1046,7 +1369,7 @@ export function createGateway({
       const r = await list().catch(() => list()).catch(() => null); // once more: keyshare may have just restarted
       for (const e of r?.status === 200 ? r.data.erased : []) {
         const claims = { sub: e.owner };
-        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { keep: e.keep, before: e.erasedAt } }).catch(() => null);
+        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { token: e.token } }).catch(() => null);
         if (v?.status !== 200) continue;
         // Once per erase, however many sweeps it takes (a lost "cleaned" mustn't write it twice).
         // The count is keyshare's: how many document keys were destroyed.
@@ -1113,16 +1436,22 @@ export function createGateway({
   const cors = (req) => {
     const o = req.headers.origin;
     if (!o || !allowedOrigins.includes(o)) return {};
-    return { "access-control-allow-origin": o, vary: "origin", "access-control-allow-methods": "GET, POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+    return { "access-control-allow-origin": o, vary: "origin", "access-control-allow-methods": "GET, POST", "access-control-allow-headers": "content-type, x-humid-hello-pass", "access-control-max-age": "600" };
   };
 
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
-    // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    // UI; the gateway enforces it on every sign-in and step-up. It's signed with the server's
+    // ML-DSA-87 key (CRYPTO-07), so the app believes it only from the server it pinned.
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2, stampNeeds: DEMO_STAMPS ? "any" : "hardware" } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) }) }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
-      if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
-      try { return json(200, htp.hello(parseJson(body))); }
+      if (!helloAllowed(req, { pass: true })) return json(429, { error: "rate_limited", message: "Too many handshakes" });
+      // The per-network cap on sessions that haven't signed in (CRYPTO-04) needs a knowable
+      // network: visitors who all share the tunnel's address each get their own group, and only
+      // the table-wide eviction applies to them (V76-03), so a stranger can't evict them.
+      const ip = clientIp(req);
+      const group = addressUnknown(ip) ? `u:${toHex(random(8))}` : rateKey(ip || "");
+      try { return json(200, htp.hello(parseJson(body), Date.now(), { group })); }
       catch (e) { if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message }); throw e; }
     }, { public: true, bodyLimit: 16 * 1024 }],
     // The frame header names the session, so the cap is chosen from its first bytes: an unknown
@@ -1138,7 +1467,7 @@ export function createGateway({
       return internal("ledger", "GET", `/tlog/consistency?${q}`);
     }, { public: true }],
     ["POST", "/tlog/v1/cosign", ({ req, body }) => {
-      if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Slow down" });
+      if (!helloAllowed(req)) return json(429, { error: "rate_limited", message: "Slow down" });
       return internal("ledger", "POST", "/tlog/cosign", { body, headers: { "content-type": "application/json" } });
     }, { public: true, bodyLimit: 16 * 1024, admit: admitBody() }],
     ["OPTIONS", "/htp/v1/keys", () => ({ status: 204, headers: {}, body: "" }), { public: true }],
@@ -1161,8 +1490,13 @@ export function tlsFromEnv(env = process.env, seal = sealerFromEnv(env)) {
 if (isMain(import.meta.url)) {
   if (process.argv.includes("keygen")) {
     // `docker compose run --rm gateway server.mjs keygen` -> lines for deploy/.env
-    const { newInternalKeys } = await import("@humid/svc");
+    const { newInternalKeys, newStatementKeys } = await import("@humid/svc");
     const k = newInternalKeys();
     process.stdout.write(`HUMID_INTERNAL_SK=${k.sk}\nHUMID_INTERNAL_PK=${k.pk}\n`);
+    if (process.argv.includes("statements") || !process.argv.includes("internal-only")) {
+      // SRV-30: what the gateway's key alone can't do. Only identity, ledger (core) and keyshare (keys) get the private halves.
+      const c = newStatementKeys(), ks = newStatementKeys();
+      process.stdout.write(`HUMID_CORE_STATEMENT_SK=${c.sk}\nHUMID_CORE_STATEMENT_PK=${c.pk}\nHUMID_KEYS_STATEMENT_SK=${ks.sk}\nHUMID_KEYS_STATEMENT_PK=${ks.pk}\n`);
+    }
   } else createGateway().start();
 }

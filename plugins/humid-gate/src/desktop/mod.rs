@@ -107,11 +107,17 @@ impl<R: Runtime> HumidGate<R> {
             assurance: os::ASSURANCE.into(),
             detail: s.detail,
             live: None,
+            handle: None,
         })
     }
 
     pub async fn forget(&self, req: ForgetRequest) -> Result<()> {
         let id = handle_id(&req.handle)?;
         blocking(move || os::forget(&id)).await
+    }
+
+    /// Desktops: not listed (the warning is an Android one).
+    pub async fn enabled_accessibility_services(&self) -> Result<AccessibilityServices> {
+        Ok(AccessibilityServices::default())
     }
 }

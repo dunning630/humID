@@ -59,8 +59,11 @@
   --danger-wash: rgba(255, 107, 94, 0.14);
   --focus: var(--mint);
 
-  /* --- type: the system face. Zero bytes, native rendering, Dynamic Type and
-         font-size accessibility settings work without any code. --- */
+  /* --- type: the system face. Zero bytes, native rendering. Android's system font size
+         reaches the WebView (textZoom) and scales every rem. iOS Dynamic Type does NOT reach
+         a WKWebView through a 16 px root on its own: it needs `font: -apple-system-body` on
+         the root (or the native side setting the text size), which hasn't been tried on a
+         device yet. Until then iOS users have the four in-app text sizes. --- */
   --f-ui: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
   /* scale in rem so the user's text-size setting scales everything */
@@ -104,12 +107,14 @@
   --amber:      #9A5E00;   /* 4.9:1 on paper: amber as text */
   --amber-hi:   #F5A623;   /* amber as a fill, with --amber-ink on it */
   --amber-wash: rgba(245, 166, 35, 0.18);
-  --mint:       #117A52;
-  --mint-deep:  #0E6343;
-  --mint-wash:  rgba(17, 122, 82, 0.12);
+  /* mint as text, on paper and on its own wash over any surface: ≥ 4.5:1 (lowest: 4.56, on
+     the wash over --surface-3). #117A52 was 4.26:1 on the wash, an axe failure (app review). */
+  --mint:       #0E6B47;
+  --mint-deep:  #0B5A3B;
+  --mint-wash:  rgba(14, 107, 71, 0.12);
   --danger:      #B3261E;
   --danger-wash: rgba(179, 38, 30, 0.10);
-  --focus: #117A52;
+  --focus: #0E6B47;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -92,17 +92,17 @@ test("keyshare holds only encrypted keys: no envelopes, names or account keys, a
 test("a key is released only with a live step-up for that document", async () => {
   // no step-up: the vault refuses before keyshare is even asked
   await assert.rejects(api.downloadWithShare(splitId), (e) => e.code === "step_up_required");
-  // keyshare itself refuses a request that carries no step-up
+  // keyshare itself refuses a request that carries no proof of the holder's own, even signed with
+  // the gateway's key and claiming a fresh step-up (SRV-30: tests/pen/gateway-key.test.js has more)
   const { signRequest } = await import("@humid/svc");
   const claims = (extra = {}) => signRequest(stack.internalSk, { aud: "keyshare", method: "GET", path: `/shares/${splitId}`, claims: { sub: alice.id, ...extra } });
   let r = await fetch(`${stack.upstreams.keyshare}/shares/${splitId}`, { headers: { "x-humid-assertion": claims() } });
   assert.equal(r.status, 403);
-  // a stale step-up
-  r = await fetch(`${stack.upstreams.keyshare}/shares/${splitId}`, { headers: { "x-humid-assertion": claims({ stepUp: { at: Date.now() - 120_000 } }) } });
+  r = await fetch(`${stack.upstreams.keyshare}/shares/${splitId}`, { headers: { "x-humid-assertion": claims({ stepUp: { at: Date.now() } }) } });
   assert.equal(r.status, 403);
   // someone else's account
   r = await fetch(`${stack.upstreams.keyshare}/shares/${splitId}`, { headers: { "x-humid-assertion": claims({ sub: "hid_" + "1".repeat(40), stepUp: { at: Date.now() } }) } });
-  assert.equal(r.status, 404);
+  assert.equal(r.status, 403);
 });
 
 test("a hijacked phone can't drain the vault: releases are capped per hour", async () => {

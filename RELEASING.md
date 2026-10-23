@@ -133,12 +133,18 @@ repository-level secrets from a branch: upgrading is the fix.
   re-signed or rebuilt copy can't join. If you build and sign your own, add your
   certificate's SHA-256 with `HUMID_ANDROID_CERT_DIGESTS` (Play App Signing: the
   app-signing key's certificate). `HUMID_ANDROID_ALLOW_ANY_SIGNER=1` accepts any
-  signer, for a test server only. Neither setting admits a revoked certificate
+  signer, for a test server only: with `HUMID_DEVICE_POLICY=attested` the
+  server refuses to start unless `HUMID_INSECURE_TEST=1` is set too, and it
+  warns at every start. Neither setting admits a revoked certificate
   (`REVOKED_ANDROID_CERTS`: the leaked `tools/android-test.keystore`).
 - **Android, optional:** `HUMID_ANDROID_MIN_PATCH=YYYYMM` refuses phones on an
-  older security patch. Google's attestation revocation list is fetched every
-  6 hours (`HUMID_ATTESTATION_STATUS_URL`; `HUMID_ATTESTATION_STATUS_REQUIRED=1`
-  refuses phones until a copy has been fetched).
+  older security patch.
+- **Android, revocation:** Google's attestation revocation list is fetched every
+  6 hours: by identity itself (`HUMID_ATTESTATION_STATUS_URL`), or, in Docker,
+  by the `attestation-status` sidecar into `HUMID_ATTESTATION_STATUS_FILE`.
+  `HUMID_ATTESTATION_STATUS_REQUIRED=1` (the default with the attested policy)
+  refuses Android phones while the copy is missing or older than
+  `HUMID_ATTESTATION_STATUS_MAX_AGE_MS` (48 hours); `0` accepts them unchecked.
 
 ## 4. Shipping the server
 
