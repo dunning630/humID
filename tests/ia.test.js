@@ -45,6 +45,48 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
   for (const f of faces) assert.doesNotMatch(noComments(read(f)), /safe mode/i, `${f} calls the duress unlock "safe mode"`);
 });
 
+/** The quoted strings and JSX text on each line of the screens, the kit and the kernel. */
+function strings() {
+  const out = [];
+  const files = [...faces, ...all.filter((x) => x.startsWith("core/") && x.endsWith(".js")), "ui/labels.js"];
+  for (const f of files) noComments(read(f)).split("\n").forEach((line, i) => {
+    const s = [...line.matchAll(/"((?:[^"\\]|\\.)*)"|`([^`]*)`|>([^<>{}]+)</g)].map((m) => m[1] ?? m[2] ?? m[3]).join(" | ");
+    if (s) out.push([`${f}:${i + 1}`, s]);
+  });
+  return out;
+}
+
+test("one vocabulary: the act is a 'live check'; helpers are witnesses; the duress unlock is the duress gesture", () => {
+  const RULES = [
+    // "a check", "one check", "a fresh check", "a face or fingerprint check" → "a live check" (app.md 3b)
+    [/\b(?:a|one|its own|another|fresh|biometric) (?:face or fingerprint )?check\b(?![- ]?(?:in|box|list|ed|s)\b)/i, 'say "live check"'],
+    [/(?<!live )face or fingerprint check/i, 'say "live check" (or "face or fingerprint match")'],
+    [/biometric check/i, 'say "live check"'],
+    [/\b(?:recovery |older )contacts\b/i, 'the people are "witnesses"'],
+    [/duress unlock/i, 'say "the duress gesture"'],
+    [/one of (?:the )?two (?:things|proofs)/i, "use RECOVERY_RULE / CARD_IS_ONE (ui/labels.js)"],
+  ];
+  const hits = [];
+  for (const [where, s] of strings()) for (const [re, why] of RULES) if (re.test(s)) hits.push(`${where}: ${why}: ${s.slice(0, 110)}`);
+  assert.deepEqual(hits, []);
+});
+
+test("label maps live once, in ui/labels.js (gate methods, how a device joined, recovery proofs)", () => {
+  for (const f of [...faces, ...all.filter((x) => x.startsWith("core/") && x.endsWith(".js"))]) {
+    const t = noComments(read(f));
+    assert.doesNotMatch(t, /"ios-keychain-biometry":/, `${f} has its own gate-method names`);
+    assert.doesNotMatch(t, /\{ register: "/, `${f} has its own "via" names`);
+    assert.doesNotMatch(t, /\bquorum: "(?:t|T)wo proofs"/, `${f} has its own recovery-method names`);
+    assert.doesNotMatch(t, /\{ witness: "witnesses"/, `${f} has its own proof-kind names`);
+  }
+  const labels = read("ui/labels.js");
+  for (const k of ["gateName", "gateLabel", "gateDetail", "VIA", "RECOVERY_METHOD", "PROOF_KIND", "RECOVERY_RULE", "CARD_IS_ONE", "proofsSetUp"]) assert.match(labels, new RegExp(`export (?:const|function) ${k}\\b`));
+  // ui/labels.js is words only: the kernel may import it, it imports nothing of the kernel's but state
+  assert.doesNotMatch(noComments(labels), /from "\.\.\/core\/(?!state\.js)/);
+  // the recovery proof count: the same sentence on create, Protection and Recovery
+  for (const f of ["screens/create.jsx", "screens/you/protect.jsx", "screens/you/recovery.jsx"]) assert.match(read(f), /RECOVERY_RULE|RECOVERY_IF_LOST|CARD_IS_ONE/, `${f} says the recovery rule in its own words`);
+});
+
 // The honest promise (overnight review, Oct 2026): what the app and the documents an assessor
 // reads first must not claim. Any enrolled face or finger opens a phone, two-proof recovery
 // opens a vault, a computer's checks aren't chip-proven, and HumID does no liveness detection

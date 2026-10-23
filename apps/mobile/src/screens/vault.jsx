@@ -237,7 +237,7 @@ export function Item() {
               ) : (
                 <span class="icon-btn" style={{ width: 72, height: 72, background: "var(--surface-3)", color: "var(--text-2)" }}><Icon name={pi ? "ticket" : itemIcon(item)} /></span>
               )}
-              <div class="small muted">{card ? "The number and code open only after a check, for 30 seconds." : pi ? `${PASS_STYLES[pi.style] || "Pass"} · ${pi.issuer || pi.organization} · checked against its issuer when it was added` : id ? `${ID_KINDS[id.kind] || "ID"} · sealed with its photos` : "Sealed. Nothing here can show it until a check opens it."}</div>
+              <div class="small muted">{card ? "The number and code open only after a live check, for 30 seconds." : pi ? `${PASS_STYLES[pi.style] || "Pass"} · ${pi.issuer || pi.organization} · checked against its issuer when it was added` : id ? `${ID_KINDS[id.kind] || "ID"} · sealed with its photos` : "Sealed. Nothing here can show it until a live check opens it."}</div>
               <button class="btn primary block" disabled={off} onClick={open}><Icon name="fingerprint" />{card ? "Show the number" : "Open"}</button>
             </div>
             {off && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="signal" title="Opening needs a connection" text="The document and its key are only in your vault. Nothing here can open it offline." /></div>}
@@ -252,7 +252,7 @@ export function Item() {
               {(id?.expiry || card?.expiry || pi?.expires) && <Fact k="Expires" v={id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)} />}
               <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} mine={false} />} />
             </div>
-            <p class="fine" style={{ marginTop: 12 }}>Opening, saving a copy and deleting each need a fresh check. Every one is recorded in Activity.</p>
+            <p class="fine" style={{ marginTop: 12 }}>Opening, saving a copy and deleting each need a live check. Every one is recorded in Activity.</p>
           </>
         )}
         {mode === "edit" && (
@@ -337,7 +337,7 @@ function FileViewer({ v }) {
           <button class="btn primary" onClick={() => setConfirm(true)}><Icon name="download" />Save a copy</button>
         </Empty>
       )}
-      {confirm && <Confirm title="Save an unsealed copy?" text="The copy on this device won't be sealed: any app, backup or person with the phone can read it. Saving needs its own check and is recorded in Activity." action="Save a copy" danger={false} onClose={() => setConfirm(false)} onConfirm={() => saveCopy(v.item)} />}
+      {confirm && <Confirm title="Save an unsealed copy?" text="The copy on this device won't be sealed: any app, backup or person with the phone can read it. Saving needs its own live check and is recorded in Activity." action="Save a copy" danger={false} onClose={() => setConfirm(false)} onConfirm={() => saveCopy(v.item)} />}
     </ViewerShell>
   );
 }

@@ -185,7 +185,7 @@ export const serverPinned = () => !!PINNED_KID && String(S.server.value?.kid || 
 /** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 export function chooseGate(useDemo) {
   if (useDemo) {
-    if (!S.demoAllowed.value) { toast("HumID needs a face or fingerprint check.", "warn"); return null; }
+    if (!S.demoAllowed.value) { toast("HumID needs a live face or fingerprint check.", "warn"); return null; }
     return demoGate();
   }
   const hw = S.hwGate.value;

@@ -259,7 +259,7 @@ export function IdFlow({ start, onExit, onDraft }) {
             error={missing.length > 0 ? `Add the ${missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.` : null}
             onSeal={seal}
             secondary={next ? { label: `Scan the ${next.side}`, onClick: () => retake(next) } : done.length ? { label: "Retake", onClick: () => retake(plan[0]) } : null}
-            fine={`One check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
+            fine={`One live check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
         )}
       </Step>
       {cam && (

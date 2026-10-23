@@ -6,6 +6,7 @@ import { Pushed, Row, Banner, protection } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
 import { protectionItems } from "../../core/index.js";
 import { go, back } from "./common.jsx";
+import { RECOVERY_IF_LOST } from "../../ui/labels.js";
 
 // The checklist lives in the kernel (core/recmode.js) so the hub can count it too.
 export { protectionItems };
@@ -46,7 +47,7 @@ export function Protect() {
           </div>
           <p class="fine" style={{ marginTop: 12 }}>{holderOnly
             ? "You chose Only my own devices: HumID keeps no way back in for you. Your devices are your recovery."
-            : "If you lose every device, any two of four proofs bring your vault back. HumID never holds a key that opens it, and one proof alone never does."}</p>
+            : `${RECOVERY_IF_LOST} One alone never does, and HumID never holds a key that opens your vault on its own.`}</p>
         </section>
       )}
       {S.offline.value && <p class="fine" style={{ marginTop: 16 }}>Offline: nothing here can be set up until you reconnect.</p>}

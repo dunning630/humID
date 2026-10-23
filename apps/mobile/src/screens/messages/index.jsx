@@ -63,7 +63,7 @@ function List() {
               <div class="rows">
                 {m.requests.map((r) => (
                   <Row key={r.id} icon="users" tone="amber" title={r.label ? `${r.label} is asking to connect` : "Someone is asking to connect"}
-                    sub={<>{r.count > 1 ? `${r.count} requests used your invite; one check opens them all` : "Used your invite"} · {fmtAgo(r.at)}</>}
+                    sub={<>{r.count > 1 ? `${r.count} requests used your invite; one live check opens them all` : "Used your invite"} · {fmtAgo(r.at)}</>}
                     onClick={() => go("request", { id: r.id })} />
                 ))}
               </div>
@@ -155,7 +155,7 @@ function WhatLive({ onClose, name }) {
   return (
     <Sheet onClose={onClose} title="Here, away, and live checks">
       <div class="rows">
-        <Row icon="fingerprint" tone="mint" chevron={false} title="A live check" sub="A face or fingerprint check on your phone, signed by its secure chip. It proves a face or finger enrolled on that phone was matched, not whose. Opening, sending and approving each take one." />
+        <Row icon="fingerprint" tone="mint" chevron={false} title="A live check" sub="A face or fingerprint match on your phone, signed by its secure chip. It proves a face or finger enrolled on that phone was matched, not whose. Opening, sending and approving each take one." />
         <Row icon="person" tone="mint" chevron={false} title="Here" sub="You've had a live check in the last 5 minutes. Then you're away, and your messages lock on this phone until your next one." />
         <Row icon="users" tone="mint" chevron={false} title="Both here" sub={`You and ${name || "they"} have both had a live check in the last few minutes, each confirmed by their own phone. It doesn't prove who wrote the words.`} />
       </div>
@@ -216,7 +216,7 @@ function Chat() {
       )}
       {c.status === "closed" && <Banner icon="info" title="This conversation has ended" text="You can still read and delete what's here." />}
       {c.safetyMismatch > 0 && <SafetyAlert id={id} name={c.label} />}
-      {c.duressAt > 0 && <Banner tone="danger" icon="siren" role="alert" title={`${c.label} may be under duress`} text={`Their message ${fmtAgo(c.duressAt)} came from a duress unlock. Check on them in a safe way.`} />}
+      {c.duressAt > 0 && <Banner tone="danger" icon="siren" role="alert" title={`${c.label} may be under duress`} text={`Their message ${fmtAgo(c.duressAt)} came after an unlock with their duress gesture. Check on them in a safe way.`} />}
       {sealed ? (
         <div class="thread sealed-thread">
           {Array.from({ length: t?.count || 0 }, (_, i) => <span class={`ghost ${i % 3 === 1 ? "out" : "in"}`}><Icon name="lock" />Message · locked</span>)}
@@ -540,7 +540,7 @@ function Contact() {
             <p class="hint small muted" style={{ padding: "6px 0 10px" }}>For both of you. Changing it takes a live check.</p>
           </div>
           <div style={{ padding: "0 16px" }}><Toggle checked={c.showHere} onChange={(v) => Msg.updateContact(id, { showHere: v })} label={`Show ${c.label} when you're here`} hint="When you open this conversation with a live check, they see you're here, even if you don't write. Nothing else is sent." /></div>
-          <div style={{ padding: "0 16px 6px" }}><Toggle checked={c.duressAlert} onChange={(v) => Msg.updateContact(id, { duressAlert: v })} label="Tell me if they may be under duress" hint="Their app marks messages sent after a duress unlock. Only you see it." /></div>
+          <div style={{ padding: "0 16px 6px" }}><Toggle checked={c.duressAlert} onChange={(v) => Msg.updateContact(id, { duressAlert: v })} label="Tell me if they may be under duress" hint="Their app marks messages sent after an unlock with their duress gesture. Only you see it." /></div>
         </div>
       )}
       <div class="rows" style={{ marginTop: 14 }}>
