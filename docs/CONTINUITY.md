@@ -166,6 +166,11 @@ On each Activity view the phone checks three things, and shows "Verified" and
   back to it.
 - **The log only grew.** The checkpoint extends the one it saw last time.
 
+If more than 20,000 events have happened since the phone last checked, it
+doesn't fetch them all: Activity says "Not verified on this phone" (not a
+tamper alarm, and never "Verified"), shows the events as the server sent
+them, and keeps the head it saw before as the one to check against.
+
 The ledger key is built into release builds (`HUMID_LEDGER_KEY_FP`, printed
 by `deploy/setup.sh`), like the cosigners, so a new install doesn't have to
 trust the first key it's shown; a build without it pins the first key it

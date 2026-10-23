@@ -114,7 +114,8 @@ export function Activity() {
 
       {S.ledgerLoading.value && !l && <p class="muted small">Checking your record…</p>}
 
-      {l && !l.ok && <Banner tone="danger" icon="alert" role="alert" title="This record failed its check" text={`${l.reason}. Treat this history as untrusted.`} />}
+      {l && !l.ok && l.unverified && <Banner tone="amber" icon="alert" title="Not verified on this phone" text={`${l.reason}. These events are shown as the server sent them; nothing here says they're complete.`} />}
+      {l && !l.ok && !l.unverified && <Banner tone="danger" icon="alert" role="alert" title="This record failed its check" text={`${l.reason}. Treat this history as untrusted.`} />}
       {l?.ok && c && !c.ok && !c.pending && <Banner tone="danger" icon="alert" role="alert" title="Public log check failed" text={`${c.reason}. Your history may have been altered on the server. Keep this screen and report it.`} />}
       {l?.ok && (
         <button class="row-x small" style={{ width: "100%", textAlign: "left", minHeight: "var(--tap)", color: "var(--mint)" }} aria-expanded={details} onClick={() => setDetails(!details)}>

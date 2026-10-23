@@ -80,6 +80,8 @@ export class HumidApi {
     this.session = null;
     this.onSignedOut = null;
     this.htp.onSessionLost = () => { this.session = null; this.onSignedOut?.("expired"); };
+    /** The most entries ledger() fetches to link a page back to the head seen last (BRIDGE_MAX). */
+    this.bridgeMax = BRIDGE_MAX;
   }
 
   /**
@@ -332,8 +334,14 @@ export class HumidApi {
     const l = verifyLedger(page, { expectedOwner: this.session?.id, trustedKeyFp, previousHead });
     if (l.ok && l.previousHeadOnPage === false) {
       const first = page.entries[0];
+      // More has happened since this phone last checked than it will fetch to link the two.
+      // That isn't evidence of tampering, but nothing here proves the history either: say so,
+      // show the entries as unverified, and remember nothing (the old head stays the anchor).
+      if (first.seq - previousHead.seq > this.bridgeMax) {
+        return { ...l, ok: false, pending: true, unverified: true, reason: `More than ${this.bridgeMax.toLocaleString("en-US")} events since this phone last checked, too many to check here`, head: undefined, count: page.entries.length };
+      }
       const bridge = [];
-      for (let from = previousHead.seq; from < first.seq && bridge.length <= BRIDGE_MAX;) {
+      for (let from = previousHead.seq; from < first.seq && bridge.length <= this.bridgeMax;) {
         const r = await this.#json("GET", `/ledger/events?from=${from}&to=${first.seq - 1}`);
         if (!r.entries?.length) break;
         bridge.push(...r.entries);
