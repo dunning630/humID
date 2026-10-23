@@ -271,6 +271,8 @@ export async function unlock(used = false) {
         return { sig: ml_dsa87.sign(presence(d), dkeys.dsaSk), d, interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
+    // A new session starts from nothing, whatever an earlier one left behind (verify-71 #4).
+    freshSession();
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
     if (duress) dropDrafts(); // nothing from the real session waits in memory behind a decoy one
     if (!S.server.value) await connectServer(); // its policy says whether it offers Heartbeat
@@ -330,6 +332,16 @@ async function readOffline() {
   } catch { return null; }
 }
 
+/**
+ * The offline copy as a decoy session may hold it: the documents (filtered to the decoys by
+ * refresh), the devices (the same in every session) and the ledger (filtered by decoyView).
+ * The real recovery setup and duress status are dropped before any screen can read them.
+ */
+export const decoyCopy = (copy) => {
+  const { recovery, duress, ...rest } = copy || {};
+  return { ...rest, recovery: recovery ? { anchor: { available: !!recovery.anchor?.available }, keys: { available: !!recovery.keys?.available, max: recovery.keys?.max } } : null };
+};
+
 /** Update part of the offline copy. Only from a real, online session. */
 export function keepOffline(patch) {
   const account = S.identity.value?.server?.id;
@@ -362,7 +374,8 @@ async function unlockOffline(used) {
       clearKeys();
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
-    R.offline = copy;
+    freshSession();
+    R.offline = duress ? decoyCopy(copy) : copy;
     if (duress) dropDrafts();
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
@@ -375,6 +388,17 @@ async function unlockOffline(used) {
     clearKeys();
     if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
   }
+}
+
+/**
+ * At unlock, once the check has passed: every session signal back as it started, and a new
+ * epoch, so an answer still in flight from before is dropped. The live-check time stays: this
+ * check just set it, and messaging's human-to-human rule reads it.
+ */
+function freshSession() {
+  const live = S.liveAt.value, idle = S.idleDeadline.value; // a reconnect keeps its idle clock
+  R.epoch++;
+  batch(() => { S.resetSession(); S.liveAt.value = live; S.idleDeadline.value = idle; });
 }
 
 /** Back online: one live check signs in and replaces the offline copy with the vault. A decoy session stays a decoy session. */

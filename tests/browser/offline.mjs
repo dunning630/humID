@@ -168,8 +168,17 @@ try {
   await offlineBanner(page).waitFor({ timeout: 15_000 });
   assert.deepEqual(await names(page), ["Gym membership"], "duress offline shows only the decoy");
   await shot(page, "6-duress-offline");
+  // verify-71 #1: the copy was written by the real session (it has a recovery card); the
+  // offline decoy session shows a calm account, as the online one does
+  await youScreen(page, "Recovery");
+  const recRows = await page.locator(".pushed .rows").first().innerText();
+  assert.doesNotMatch(recRows, /Made [A-Z][a-z]{2}/, "no recovery card date from the real setup");
+  assert.match(recRows, /A code you keep offline/, "the card row reads as not set up");
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  assert.match(await page.locator("main .row", { hasText: "Recovery" }).first().innerText(), /0 of 2 proofs/);
   await page.getByRole("button", { name: "Lock now" }).first().click();
-  step("duress gesture offline: only the decoy document");
+  step("duress gesture offline: only the decoy document; Recovery shows nothing set up");
 
   /* ---------------- 2. a network, but the vault server is down ---------------- */
   await ctx.setOffline(false);

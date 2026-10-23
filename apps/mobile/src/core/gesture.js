@@ -54,12 +54,19 @@ export function createHoldTimer({ now = Date.now } = {}) {
   };
 }
 
+/**
+ * Seconds, as Practice says them: as many decimals as the number needs (0.65 s, 0.5 s, 3 s),
+ * so the limit shown is the limit used (0.65 s was once shown as "0.7 s").
+ */
+export const seconds = (ms) => `${+(ms / 1000).toFixed(2)} s`;
+
 /** Is a press this long the hold gesture? */
 export const isDuressHold = (ms) => ms != null && ms >= DURESS_HOLD_MS;
 
 /** What Practice tells the person about a tap sequence, in words, from the measured gaps. */
 export function describeTaps({ count, gaps, duress }, windowMs = TAP_WINDOW_MS) {
-  const s = (ms) => `${(ms / 1000).toFixed(1)} s`;
+  // gaps and the limit in the same exact form: a gap of 0.65 s must never read as "0.7 s"
+  const s = seconds;
   const apart = gaps.length ? ` Your taps were ${gaps.map(s).join(", ")} apart.` : "";
   if (duress) {
     const slowest = Math.max(...gaps);

@@ -12,7 +12,7 @@
 import { suite } from "@humid/crypto";
 import * as S from "./state.js";
 import { sealDuress, openDuress, DEFAULT as DURESS_OFF } from "./duress.js";
-import { R } from "./runtime.js";
+import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, buzz } from "./notify.js";
 import { withStepUp, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
@@ -40,11 +40,23 @@ export async function loadDuressSetting(Suite) {
   return setting;
 }
 
-/** The setting as the session opened it ({ enabled, gesture }); "off" in a decoy session or before unlock. */
-const currentDuress = () => (S.decoy.value || !R.duressSetting ? { ...DURESS_OFF } : { ...R.duressSetting });
+/**
+ * The setting as the session opened it ({ enabled, gesture }); "off" before unlock. A decoy
+ * session sees "off" (the screen promises nothing will say duress is on), or what it saved itself.
+ */
+const currentDuress = () => {
+  if (S.decoy.value) { const e = S.decoyEcho.value; return e ? { enabled: !!e.enabled, gesture: e.gesture === "hold" ? "hold" : "taps" } : { ...DURESS_OFF }; }
+  return R.duressSetting ? { ...R.duressSetting } : { ...DURESS_OFF };
+};
 
 export async function saveDuress({ enabled, gesture }) {
-  if (S.decoy.value) { toast(enabled ? "Duress protection is on." : "Duress protection is off."); return true; } // the same words, nothing saved
+  if (S.decoy.value) {
+    // the same words as a real save; nothing is saved, the screen only echoes it until the lock
+    S.decoyEcho.value = { ...(S.decoyEcho.value || {}), enabled: !!enabled, gesture };
+    S.duressInfo.value = { ...(S.duressInfo.value || {}), setting: currentDuress() };
+    toast(enabled ? "Duress protection is on." : "Duress protection is off.");
+    return true;
+  }
   try {
     await updateIdentity((cur) => sealDuress(suite(cur.suite), R.settingsKey, cur, { enabled, gesture }));
     R.duressSetting = { enabled: !!enabled, gesture: gesture === "hold" ? "hold" : "taps" };
@@ -57,7 +69,9 @@ export async function saveDuress({ enabled, gesture }) {
 export async function loadDuress() {
   if (S.decoy.value) { S.duressInfo.value = { lockdown: false, setting: currentDuress() }; return; }
   if (S.offline.value) { S.duressInfo.value = { ...(R.offline?.duress || { lockdown: false }), setting: currentDuress() }; return; }
+  const ep = epoch();
   const [st, settings] = await Promise.all([R.api.duressStatus().catch(() => null), R.api.settings().catch(() => null)]);
+  if (stale(ep)) return;
   const info = { ...(st || {}), alert: !!settings?.duressAlert };
   S.duressInfo.value = { ...info, setting: currentDuress() };
   if (st && settings) keepOffline({ duress: info });
@@ -106,8 +120,11 @@ export const clockOffset = () => R.api?.htp?.clockOffsetMs?.() ?? 0;
 
 export async function loadCheckin() {
   if (!checkinOffered() || S.offline.value || !S.session.value) { S.checkin.value = null; return; }
+  const ep = epoch();
   try {
-    S.checkin.value = { ...(await R.api.checkin()), offsetMs: clockOffset() };
+    const st = await R.api.checkin();
+    if (stale(ep)) return;
+    S.checkin.value = { ...st, offsetMs: clockOffset() };
     if (checkinArmed()) dropOfflineCopy();
   } catch { /* keep what's shown; the next look tries again */ }
   watchCheckin();

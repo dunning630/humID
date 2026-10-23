@@ -2,7 +2,7 @@
 // managing a HumID server (docs/ADMIN.md). Ordinary holders never see these.
 import { adminCheck } from "@humid/recovery";
 import * as S from "./state.js";
-import { R } from "./runtime.js";
+import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { KEY_TYPE } from "./runtime.js";
@@ -54,7 +54,8 @@ export async function stationVerify(code, chip, checks) {
 /** How the server is doing, for its administrators; null for everyone else (asked quietly). */
 export async function loadAdminSummary() {
   if (S.offline.value || S.decoy.value || (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) { S.adminSummary.value = null; return; }
-  try { S.adminSummary.value = await R.api.adminSummary(); } catch { S.adminSummary.value = null; }
+  const ep = epoch();
+  try { const a = await R.api.adminSummary(); if (!stale(ep)) S.adminSummary.value = a; } catch { if (!stale(ep)) S.adminSummary.value = null; }
 }
 
 /** What a code from the server's admin console asks for. */

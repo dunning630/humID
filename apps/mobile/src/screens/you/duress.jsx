@@ -7,7 +7,7 @@ import { Icon } from "../../brand/icons.jsx";
 import { Mark } from "../../brand/mark.jsx";
 import { Pushed, Sheet, Row, Toggle, Empty } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
-import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, createTapCounter, createHoldTimer, isDuressHold, describeTaps, TAP_WINDOW_MS, DURESS_HOLD_MS } from "../../core/index.js";
+import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, createTapCounter, createHoldTimer, isDuressHold, describeTaps, seconds, TAP_WINDOW_MS, DURESS_HOLD_MS } from "../../core/index.js";
 import { back, Check } from "./common.jsx";
 
 const HOLD_S = Math.round(DURESS_HOLD_MS / 1000);
@@ -19,14 +19,16 @@ const GESTURES = [
 export function Duress() {
   const decoy = S.decoy.value;
   const info = S.duressInfo.value;
-  const d = decoy ? { enabled: false, gesture: "taps" } : info?.setting || { enabled: false, gesture: "taps" };
+  // a decoy session: "off" with nothing picked, like an account that never set duress up, or
+  // what it saved itself this session (core/safety.js currentDuress, S.decoyEcho)
+  const d = info?.setting || { enabled: false, gesture: "taps" };
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "taps");
   const [alert, setAlert] = useState(!!info?.alert);
   // In a decoy session S.items holds only the decoys, so the list looks like any account's.
   // Saving there changes nothing anywhere (saveDuress and setDecoys know the session).
   const items = S.items.value;
-  const [decoys, setDecoys] = useState(() => new Set(items.filter((i) => i.decoy).map((i) => i.id)));
+  const [decoys, setDecoys] = useState(() => new Set(decoy ? S.decoyEcho.value?.decoys || [] : items.filter((i) => i.decoy).map((i) => i.id)));
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => { loadDuress(); }, []);
@@ -117,9 +119,11 @@ function Practice({ gesture }) {
     setHolding(false); clearTimeout(timer.current);
     setResult(isDuressHold(held)
       ? { yes: true, text: "That would have opened the decoy view." }
-      : { yes: false, text: `That would have been a normal unlock: you held for ${(held / 1000).toFixed(1)} s. Hold for ${HOLD_S} seconds.` });
+      : { yes: false, text: `That would have been a normal unlock: you held for ${seconds(held)}. Hold for ${seconds(DURESS_HOLD_MS)}.` });
   };
-  const hint = gesture === "taps" ? `Tap the mark three times, each within ${(TAP_WINDOW_MS / 1000).toFixed(1)} s of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
+  // as on the Lock screen: a press that slides off the button, or is cancelled, counts as nothing
+  const leave = () => { press.current.cancel(); setHolding(false); clearTimeout(timer.current); };
+  const hint = gesture === "taps" ? `Tap the mark three times, each within ${seconds(TAP_WINDOW_MS)} of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
   return (
     <div class="card" style={{ marginTop: 12 }}>
       <h3>Practice</h3>
@@ -127,7 +131,7 @@ function Practice({ gesture }) {
       <div class="hero" style={{ padding: "12px 0" }}>
         {gesture === "taps"
           ? <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999 }} aria-label="The HumID mark (tap it three times)" onClick={onMark}><Mark size={120} /></button>
-          : <button class="btn primary lg block" style={{ opacity: holding ? 0.8 : 1 }} onPointerDown={down} onPointerUp={up} onPointerLeave={up} onPointerCancel={up} onContextMenu={(e) => e.preventDefault()}><Icon name="fingerprint" />Unlock (practice)</button>}
+          : <button class="btn primary lg block" style={{ opacity: holding ? 0.8 : 1 }} onPointerDown={down} onPointerUp={up} onPointerLeave={leave} onPointerCancel={leave} onContextMenu={(e) => e.preventDefault()}><Icon name="fingerprint" />Unlock (practice)</button>}
         <p class="small" role="status" aria-live="polite" data-practice={result ? (result.yes ? "decoy" : "normal") : ""} style={{ minHeight: 22, color: result?.yes ? "var(--mint)" : result ? "var(--amber)" : "var(--muted)" }}>
           {result ? result.text : hint}
         </p>

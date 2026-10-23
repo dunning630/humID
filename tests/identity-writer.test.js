@@ -70,10 +70,42 @@ test("APP-11: duress turned on during the public-log check stays on", async () =
   assert.deepEqual(rec.tlog, { size: 7, root: "r", at: "2026-10-22" }, "and the checkpoint was written too");
 });
 
-test("every identity write in ledger.js, safety.js and vault.js goes through updateIdentity", () => {
-  for (const f of ["ledger.js", "safety.js", "vault.js"]) {
+test("every identity write in core/ goes through identity.js", () => {
+  for (const f of ["ledger.js", "safety.js", "vault.js", "join.js", "enroll.js", "account.js"]) {
     const s = readFileSync(new URL(`../apps/mobile/src/core/${f}`, import.meta.url), "utf8");
-    assert.doesNotMatch(s, /putIdentity\(/, `${f} writes the record itself`);
-    assert.match(s, /updateIdentity\(/, `${f} uses updateIdentity`);
+    assert.doesNotMatch(s, /R\.store\.(putIdentity|clearIdentity)\(/, `${f} writes the record itself`);
+    assert.match(s, /(updateIdentity|createIdentity|clearIdentity)\(/, `${f} uses identity.js`);
   }
+});
+
+test("a write after the record was erased writes nothing, and doesn't bring it back (verify-71 #5)", async () => {
+  const { clearIdentity } = await import("../apps/mobile/src/core/identity.js");
+  R.store = slowStore(base);
+  R.store.clearIdentity = async function () { await tick(5); this.cleared = true; };
+  const realPeek = R.store.peek;
+  let gone = false;
+  const get = R.store.getIdentity.bind(R.store);
+  R.store.getIdentity = async () => (gone ? null : get());
+  // eraseEverything: the store is cleared while S.identity still holds the record
+  gone = true;
+  const out = await updateIdentity((cur) => { cur.tlog = { size: 9 }; });
+  assert.equal(out, null);
+  assert.equal(R.store.writes, 0, "no write");
+  // and a clear queued after a write runs after it
+  gone = false;
+  const w = updateIdentity(async (cur) => { await tick(15); cur.late = true; });
+  const c = clearIdentity();
+  await Promise.all([w, c]);
+  assert.equal(realPeek().late, true, "the write ran first");
+  assert.ok(R.store.cleared, "then the clear");
+});
+
+test("createIdentity writes a new record and publishes it", async () => {
+  const { createIdentity } = await import("../apps/mobile/src/core/identity.js");
+  R.store = slowStore(null);
+  S.identity.value = null;
+  const shown = await createIdentity({ ...base, fresh: true });
+  assert.equal(R.store.peek().fresh, true);
+  assert.equal(S.identity.value.fresh, true);
+  assert.equal(shown.schema, 4);
 });

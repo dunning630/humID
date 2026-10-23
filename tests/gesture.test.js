@@ -88,9 +88,26 @@ test("the hold gesture: held for the full time or longer", () => {
 });
 
 test("Practice reports the measured gaps", () => {
-  assert.match(describeTaps({ count: 3, gaps: [500, 520], duress: true }), /decoy view.*0\.5 s, 0\.5 s apart/);
+  assert.match(describeTaps({ count: 3, gaps: [500, 520], duress: true }), /decoy view.*0\.5 s, 0\.52 s apart/);
+  assert.match(describeTaps({ count: 3, gaps: [650, 650], duress: true }), /0\.65 s, 0\.65 s apart.*limit of 0\.65 s/, "a gap at the limit reads as the limit");
   assert.match(describeTaps({ count: 3, gaps: [600, 610], duress: true }), /close to the limit/);
   assert.match(describeTaps({ count: 2, gaps: [400], duress: false }), /normal unlock: 2 taps\. Your taps were 0\.4 s apart\./);
+});
+
+test("the limit Practice states is the limit used: 0.65 s, never rounded to 0.7 s (verify-71 #6)", async () => {
+  const { seconds } = await import("../apps/mobile/src/core/gesture.js");
+  assert.equal(seconds(TAP_WINDOW_MS), `${TAP_WINDOW_MS / 1000} s`);
+  assert.equal(seconds(650), "0.65 s");
+  assert.equal(seconds(500), "0.5 s");
+  assert.equal(seconds(3000), "3 s");
+  assert.match(describeTaps({ count: 2, gaps: [400], duress: false }), new RegExp(`within ${TAP_WINDOW_MS / 1000} s of the last`));
+  assert.match(describeTaps({ count: 3, gaps: [600, 610], duress: true }), new RegExp(`limit of ${TAP_WINDOW_MS / 1000} s`));
+  const practice = readFileSync(new URL("../apps/mobile/src/screens/you/duress.jsx", import.meta.url), "utf8");
+  assert.match(practice, /within \$\{seconds\(TAP_WINDOW_MS\)\} of the last/);
+  assert.doesNotMatch(practice, /toFixed\(1\)/, "no seconds rounded on their own");
+  // and the hold behaves as on the Lock screen: sliding off the button counts as nothing
+  assert.match(practice, /onPointerLeave=\{leave\} onPointerCancel=\{leave\}/);
+  assert.match(readFileSync(new URL("../apps/mobile/src/screens/lock.jsx", import.meta.url), "utf8"), /onPointerLeave: \(\) => \{ hold\.current\.cancel\(\)/);
 });
 
 test("the Lock screen and Practice both use the shared recognizer, with no tap window of their own", () => {

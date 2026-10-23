@@ -11,13 +11,14 @@ import { go, back } from "./common.jsx";
 export { protectionItems };
 
 export function Protect() {
-  const decoy = S.decoy.value;
+  // A decoy session shows the same checklist, from its calm recovery state (core/recovery.js)
+  // and the account's real devices: an ordinary account with nothing set up (verify-71 #3).
   const rec = S.recovery.value, devices = S.devices.value;
-  const items = decoy || S.offline.value ? [] : protectionItems(rec, devices);
+  const items = S.offline.value ? [] : protectionItems(rec, devices);
   const n = items.filter((i) => i.done).length;
-  const duressOn = !decoy && !!S.duressInfo.value?.setting?.enabled;
+  const duressOn = !!S.duressInfo.value?.setting?.enabled;
   const holderOnly = S.recoveryMode.value?.mode === "holder-only";
-  const alone = !decoy && holderOnly && devices && devices.length <= 1;
+  const alone = holderOnly && devices && devices.length <= 1;
   return (
     <Pushed title="Protection" onBack={back}>
       <div class="eyebrow">Safe. Secure. Simple.</div>
