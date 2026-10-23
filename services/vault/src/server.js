@@ -217,10 +217,12 @@ export function createVault({
   ];
 
   if (!corePk || !keysPk) throw new Error("vault needs HUMID_CORE_STATEMENT_PK and HUMID_KEYS_STATEMENT_PK (run setup again, or init on Windows)");
-  return createService({ tls,
+  const svc = createService({ tls,
     name: "vault", port, routes, bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "vault"),
   });
+  // close: release the database file (Windows can't delete an open one; tests remove their data)
+  return { ...svc, close: () => db.close() };
 }
 
 if (isMain(import.meta.url)) createVault().start();

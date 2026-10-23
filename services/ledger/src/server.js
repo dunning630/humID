@@ -328,7 +328,8 @@ export function createLedger({
     }],
   ];
 
-  return createService({ tls, name: "ledger", port, routes, bodyLimit: 32 * 1024, verify: (t) => verifyAssertion(internalPk, t, "ledger") });
+  const svc = createService({ tls, name: "ledger", port, routes, bodyLimit: 32 * 1024, verify: (t) => verifyAssertion(internalPk, t, "ledger") });
+  return { ...svc, close: () => db.close() }; // release the database file (Windows can't delete an open one)
 }
 
 if (isMain(import.meta.url)) createLedger().start();

@@ -20,7 +20,8 @@ const all = walk(src).map(rel).filter((f) => !f.startsWith("favicon/") && !f.sta
 const screens = all.filter((f) => f.startsWith("screens/") && f.endsWith(".jsx"));
 const ui = all.filter((f) => f.startsWith("ui/") && f.endsWith(".jsx"));
 const faces = [...screens, ...ui, "main.jsx"];
-const read = (f) => readFileSync(`${src}${f}`, "utf8");
+// Windows checks files out with CRLF line endings; the checks below look for "\n}\n" and the like.
+const read = (f) => readFileSync(`${src}${f}`, "utf8").replace(/\r\n/g, "\n");
 const noComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
 
 const JARGON = /ML-KEM|ML-DSA|HTP\/1|AES-256|step-up|Biological interrupt|seal card|recovery contact/;
@@ -101,7 +102,7 @@ const OVERCLAIM = [
 ];
 const userText = (f) => noComments(read(f));
 const DOCS = ["README.md", "docs/SECURITY.md", "docs/ARCHITECTURE.md"];
-const docText = (f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf8");
+const docText = (f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf8").replace(/\r\n/g, "\n");
 
 test("no screen, toast or first-read document overclaims the promise", () => {
   const hits = [];

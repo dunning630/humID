@@ -78,8 +78,9 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
     async stop() {
       // whatever is running now (a test may have restarted one)
       await Promise.all([stack.gateway, stack.identity, stack.vault, stack.ledger, stack.recovery, stack.access, stack.keyshare, stack.relay].filter(Boolean).map((s) => s.stop()));
-      stack.access.close(); stack.keyshare.close(); stack.relay?.close();
-      if (!dataDir) rmSync(root, { recursive: true, force: true });
+      // every database closed before the data is removed: Windows can't delete an open file
+      for (const s of [stack.identity, stack.vault, stack.ledger, stack.recovery, stack.access, stack.keyshare, stack.relay]) s?.close?.();
+      if (!dataDir) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
   return stack;

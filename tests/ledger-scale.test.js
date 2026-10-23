@@ -19,7 +19,7 @@ before(async () => {
   await ledger.start();
   base = `http://127.0.0.1:${ledger.server.address().port}`;
 });
-after(async () => { await ledger?.stop(); rmSync(dir, { recursive: true, force: true }); });
+after(async () => { await ledger?.stop(); ledger?.close?.(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 async function call(method, path, json, claims = { sub: owner }) {
   const body = json ? Buffer.from(JSON.stringify(json)) : undefined;

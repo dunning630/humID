@@ -71,6 +71,10 @@ export function useModal(ref, active = true, { self = false } = {}) {
     const m = { el, self };
     const inerted = outside(el);
     for (const x of inerted) { held.set(x, (held.get(x) || 0) + 1); x.inert = true; }
+    // A newer layer may have been made inert by an older one (the camera opens beside the ID
+    // flow's pushed screen, as its sibling): it is on top now, so it takes itself back while open.
+    const lifted = [];
+    for (let n = el; n && n !== document.body; n = n.parentElement) if (n.inert) { n.inert = false; lifted.push(n); }
     if (!modals.length) document.addEventListener("keydown", wrapTab);
     modals.push(m);
     // Under an open check, a new layer waits (focus comes to it when the check closes); a layer
@@ -78,6 +82,7 @@ export function useModal(ref, active = true, { self = false } = {}) {
     if (!modals.some((o) => o !== m && (o.self || el.contains(o.el)))) focusInto(m);
     return () => {
       for (const x of inerted) { const n = (held.get(x) || 1) - 1; if (n > 0) held.set(x, n); else { held.delete(x); x.inert = false; } }
+      for (const n of lifted) if (held.get(n) > 0) n.inert = true; // still behind an older layer that's open
       modals.splice(modals.indexOf(m), 1);
       if (!modals.length) document.removeEventListener("keydown", wrapTab);
       const lost = !document.activeElement || document.activeElement === document.body || el.contains(document.activeElement);
