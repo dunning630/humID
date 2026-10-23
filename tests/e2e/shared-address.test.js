@@ -45,9 +45,10 @@ after(async () => { await edge?.stop(); await gw?.stop(); await stack?.stop(); }
 
 async function flood(n) {
   const j = await (await fetch(`${base}/htp/v1/keys`)).json();
-  const body = JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
+  // a fresh hello each time: the gateway refuses a replayed one before any work (CRYPTO-04)
+  const fresh = () => JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
   let ok = 0;
-  for (let i = 0; i < n; i++) if ((await fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json" }, body })).status === 200) ok++;
+  for (let i = 0; i < n; i++) if ((await fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json" }, body: fresh() })).status === 200) ok++;
   return ok;
 }
 
@@ -70,9 +71,10 @@ test("a returning holder signs in and checks in while strangers exhaust the shar
 
 test("a hello pass works once, and a made-up one is just an ordinary hello", async () => {
   const j = await (await fetch(`${base}/htp/v1/keys`)).json();
-  const body = JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
+  // a fresh hello each time: the gateway refuses a replayed one before any work (CRYPTO-04)
+  const fresh = () => JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
   await flood(80);
-  const hello = (pass) => fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json", ...(pass ? { "x-humid-hello-pass": pass } : {}) }, body }).then((r) => r.status);
+  const hello = (pass) => fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json", ...(pass ? { "x-humid-hello-pass": pass } : {}) }, body: fresh() }).then((r) => r.status);
   assert.equal(await hello("A".repeat(43)), 429, "an unknown pass doesn't skip the limit");
   assert.equal(await hello(bobPass), 200);
   assert.equal(await hello(bobPass), 429, "spent");

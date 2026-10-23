@@ -19,8 +19,9 @@ after(async () => { await gw?.stop(); await stack?.stop(); });
 
 test("a rotating first X-Forwarded-For entry doesn't buy a fresh bucket; the proxy's entry decides", async () => {
   const j = await (await fetch(`${base}/htp/v1/keys`)).json();
-  const body = JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
-  const hello = (xff) => fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": xff }, body }).then((r) => r.status);
+  // a fresh hello each time: the gateway refuses a replayed one before any work (CRYPTO-04)
+  const fresh = () => JSON.stringify(clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) }).wire);
+  const hello = (xff) => fetch(`${base}/htp/v1/hello`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": xff }, body: fresh() }).then((r) => r.status);
   let ok = 0;
   for (let i = 0; i < 40; i++) if ((await hello(`198.51.100.${i}, 203.0.113.9`)) === 200) ok++;
   assert.equal(ok, 30, "one visitor (203.0.113.9, as the proxy saw it), one bucket of 30");
