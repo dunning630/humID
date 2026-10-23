@@ -1,4 +1,4 @@
-// vault — zero-knowledge document storage.
+// vault — document storage that can't read what it stores (end-to-end encrypted).
 //
 // Receives HumID envelopes that were sealed ON THE PHONE (ML-KEM-1024 + X25519
 // to the holder's own keys, signed with ML-DSA-87). The vault checks the

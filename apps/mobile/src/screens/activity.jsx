@@ -8,6 +8,7 @@ import { TabBanners } from "./vault.jsx";
 import { dayLabel, fmtTime, fmtAgo, fmtDate } from "../ui/format.js";
 import * as S from "../core/state.js";
 import { loadLedger, lockNow } from "../core/index.js";
+import { eventProof } from "../ui/labels.js";
 
 const METHOD = {
   "ios-keychain-biometry": "Face ID / Touch ID",
@@ -19,9 +20,6 @@ const METHOD = {
 };
 const method = (m) => METHOD[m] || m || "";
 const VIA = { register: "First device", link: "From another device", card: "Older recovery card", contacts: "Older witnesses", quorum: "Two proofs" };
-/** How a check was proven, in words that match this device (never claiming a chip it doesn't have). */
-const proofWords = () => ({ hardware: "proved by this phone's chip", os: "software-protected check", none: "demo check" }[S.session.value?.assurance] || "signed by this device");
-const proofLong = () => ({ hardware: "This phone's secure chip", os: "A software-protected check on this device", none: "A demo check (no sensor)" }[S.session.value?.assurance] || "This device's key");
 
 const KIND = { witness: "witnesses", card: "recovery card", anchor: "ID chip", key: "security key" };
 const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport", key: "seckey" };
@@ -152,7 +150,7 @@ export function Activity() {
                   <Icon name={x.icon} />
                   <span style={{ minWidth: 0 }}>
                     <span class="what" style={{ display: "block" }}>{x.title}</span>
-                    <span class="where" style={{ display: "block" }}>{[...x.meta.filter(Boolean), x.proof ? proofWords() : null].filter(Boolean).join(" · ")}</span>
+                    <span class="where" style={{ display: "block" }}>{[...x.meta.filter(Boolean), x.proof ? eventProof(e).short : null].filter(Boolean).join(" · ")}</span>
                   </span>
                   <time dateTime={new Date(e.at).toISOString()}>{fmtTime(e.at)}</time>
                 </button>
@@ -170,6 +168,8 @@ export function Activity() {
 /** One event, in full: when, where, what proved it. */
 function EventSheet({ e, x, onClose }) {
   const d = e.detail || {};
+  // what the server recorded about the device that made this proof, never this device's own (APP-09)
+  const proof = eventProof(e);
   const Fact = ({ k, v, stacked }) => (stacked
     ? <Row chevron={false} title={k} sub={<span class="selectable" style={{ wordBreak: "break-all" }}>{v}</span>} />
     : <Row chevron={false} title={k} trail={<span class="t2" style={{ textAlign: "right", whiteSpace: "normal" }}>{v}</span>} />);
@@ -179,7 +179,7 @@ function EventSheet({ e, x, onClose }) {
         <Fact k="When" v={`${fmtDate(e.at)}, ${fmtTime(e.at)}`} />
         {d.platform && <Fact k="Device" v={d.platform} />}
         {d.method && <Fact k="Check" v={method(d.method)} />}
-        {x.proof && <Fact k="Proved by" v={<><span class={`pill ${S.session.value?.assurance === "hardware" ? "mint" : "amber"}`}><Icon name="fingerprint" />{proofLong()}</span><br /><span class="mono small muted">{x.proof.slice(0, 16)}</span></>} />}
+        {x.proof && <Fact k="Proved by" v={<><span class={`pill ${proof.strong ? "mint" : "amber"}`}><Icon name="fingerprint" />{proof.long}</span><br /><span class="mono small muted">{x.proof.slice(0, 16)}</span></>} />}
         {d.checks && <Fact k="Server verifications" v={`${d.checks} passed`} />}
         {x.digest && <Fact k="Console match code" v={<span class="mono">{String(x.digest).slice(0, 8).toUpperCase().replace(/(.{4})/, "$1-")}</span>} />}
         <Fact k="Entry" v={`#${e.seq}`} />

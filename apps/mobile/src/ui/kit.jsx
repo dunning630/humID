@@ -6,6 +6,7 @@ import { Icon } from "../brand/icons.jsx";
 import { Mark } from "../brand/mark.jsx";
 import * as S from "../core/state.js";
 import { holdComplete, holdCancel, dismissChipRead } from "../core/index.js";
+import { checkPromise } from "./labels.js";
 
 /* ---------- time ---------- */
 /** Re-render every `ms`; returns now. Stops while the page is hidden (battery). */
@@ -257,32 +258,29 @@ export function Stepper({ step, steps, label = "Progress" }) {
 }
 
 /* ---------- assurance ---------- */
-const PROOF = {
-  "android-strongbox": "Each check is proven by this phone's StrongBox chip",
-  "android-tee": "Each check is proven by this phone's secure chip",
-  "apple-secure-enclave": "Each check is proven by the Secure Enclave",
-};
-export const proofLabel = (proof, assurance) =>
-  PROOF[proof] || (assurance === "os" ? "Checks are software-protected, not chip-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
-export function AssurancePill({ assurance }) {
-  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Proven by this phone's secure chip</span>;
-  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />Software-protected on this computer</span>;
+export { proofLabel } from "./labels.js";
+/** How a check was proven. `mine`: it was this device's (otherwise "a phone's", "a computer"). */
+export function AssurancePill({ assurance, mine = true }) {
+  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />{mine ? "Proven by this phone's secure chip" : "Proven by a phone's secure chip"}</span>;
+  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />{mine ? "Software-protected on this computer" : "Software-protected, on a computer"}</span>;
   return <span class="pill amber"><Icon name="info" />Demo · no sensor</span>;
 }
 
 /* ---------- how HumID protects you ---------- */
-export const PROTECTION = [
-  { icon: "fingerprint", title: "Only a living you opens it", text: "Every open, save and delete needs your face or fingerprint right then, proven by your phone's secure chip. A PIN or password is never accepted." },
+// The first promise is said only as strongly as this device can keep it (ui/labels.js): a
+// computer's checks aren't chip-proven, and the web app can't check at all.
+export const protection = () => [
+  { icon: "fingerprint", title: "A live check, every time", text: checkPromise() },
   { icon: "lock", title: "Sealed on this phone first", text: "Every document is encrypted here before it goes anywhere." },
-  { icon: "server", title: "Your vault can't read it", text: "Not your documents, not even their names. It stores sealed copies, and half of each key lives elsewhere." },
-  { icon: "shield", title: "Post-quantum encryption", text: "Built to stay sealed against the computers of the future." },
+  { icon: "server", title: "Your vault can't read it", text: "Not your documents, not even their names. It stores sealed copies, and each new document's second key lives on a separate service." },
+  { icon: "shield", title: "Post-quantum encryption", text: "Sealed with a new and a proven kind of encryption together, so a copy taken today stays sealed even against the quantum computers of the future." },
   { icon: "chain", title: "Every access on the record", text: "Activity is a tamper-evident log your phone checks for itself." },
 ];
 export function HowProtected({ onClose }) {
   return (
     <Sheet onClose={onClose} eyebrow="Safe. Secure. Simple." title="How HumID protects you">
       <div class="rows">
-        {PROTECTION.map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
+        {protection().map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
       </div>
       <div class="actions"><button class="btn primary mint block" onClick={onClose}>Got it</button></div>
     </Sheet>
