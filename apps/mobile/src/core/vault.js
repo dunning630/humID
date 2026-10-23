@@ -60,7 +60,35 @@ async function decodeIndex(it, revs) {
   try { entry = await suite().openIndex(R.indexKey, fromB64u(it.index), { id: it.id }); }
   catch { return classify({ name: "Unreadable item", type: "" }); }
   if (entry.rev < (revs.get(it.id) || 0)) return classify({ name: "Changed on the server", type: "", rolledBack: true });
-  return classify(entry);
+  // An entry from before index v2 (rev 0) is kept as it was opened, to be sealed again as v2.
+  return entry.rev === 0 ? { ...classify(entry), v1: entry } : classify(entry);
+}
+
+/** How many old (v1) index entries one refresh re-seals as v2, so a large vault upgrades over a few visits. */
+const UPGRADE_PER_REFRESH = 25;
+const upgrading = new Set();
+
+/**
+ * Re-seal entries from before index v2 as v2 ({ id, rev }), unchanged otherwise (CRYPTO-05
+ * round 2). Until this runs for an item, the vault could still serve an older v1 entry for
+ * it; from then on the phone refuses anything older. Only in a real online session (a decoy
+ * session writes nothing), quietly, and never over an entry that came back stale.
+ */
+async function upgradeOldEntries(items, ep) {
+  if (S.offline.value || S.decoy.value || !R.indexKey) return;
+  const todo = items.filter((i) => i.v1 && !i.rolledBack && !upgrading.has(i.id)).slice(0, UPGRADE_PER_REFRESH);
+  for (const it of todo) {
+    if (stale(ep)) return;
+    upgrading.add(it.id);
+    try {
+      const { rev: _old, ...entry } = it.v1;
+      const rev = await nextRev(it);
+      await R.api.rename(it.id, await suite().sealIndex(R.indexKey, entry, { id: it.id, rev }));
+      await noteRevs([[it.id, rev]]);
+      it.rev = rev; delete it.v1;
+    } catch { /* tried again on the next refresh */ }
+    finally { upgrading.delete(it.id); }
+  }
 }
 
 export async function refresh() {
@@ -85,6 +113,7 @@ export async function refresh() {
     for (const i of shown) R.knownNames.set(i.id, i.name);
     const u = S.decoy.value ? { ...usage, bytes: shown.reduce((n, i) => n + (i.envelopeSize || 0), 0), count: shown.length } : usage;
     batch(() => { S.items.value = shown; S.usage.value = u; });
+    await upgradeOldEntries(decoded, ep);
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 401)) toast(friendly(e), "error");
   } finally { S.loading.value = false; }
