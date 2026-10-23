@@ -131,6 +131,10 @@ export function createRecovery({
      ALTER TABLE anchors ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
      ALTER TABLE requests ADD COLUMN anchor_key BLOB;
      CREATE TABLE anchor_challenges (account TEXT PRIMARY KEY, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL)`,
+    // Recovery epochs (CRYPTO-02): which set of recovery pieces each stored piece belongs to.
+    `ALTER TABLE cards ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE guardian_sets ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE seckeys ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -306,6 +310,29 @@ export function createRecovery({
     ...(db.prepare("SELECT 1 FROM anchors WHERE account = ?").get(account) ? ["anchor"] : []),
     ...(db.prepare("SELECT 1 FROM seckeys WHERE account = ?").get(account) ? ["key"] : []),
   ];
+  /**
+   * The epoch a new piece claims must be the account's current one (from its signed statement).
+   * An app that doesn't say is taken as epoch 1, which is right only while the account is still
+   * on its first set: after a new set, a piece from an older app would silently never fit.
+   */
+  function requireEpoch(account, claimed) {
+    const cur = statementOf(account).epoch || 1;
+    const e = claimed == null ? 1 : Number(claimed);
+    if (claimed == null && cur > 1) throw new HttpError(400, "update_required", "Update HumID to set up recovery: your recovery pieces were renewed.");
+    if (e !== cur) throw new HttpError(409, "stale_epoch", "These recovery pieces are from an older set, so they wouldn't fit. Make them again.");
+    return e;
+  }
+  /** A new set of pieces: everything stored from older sets is deleted, and no recovery under way can finish. */
+  function retireOlderPieces(account, epoch) {
+    db.exec("BEGIN");
+    db.prepare("DELETE FROM cards WHERE account = ? AND epoch < ?").run(account, epoch);
+    const sets = db.prepare("SELECT 1 FROM guardian_sets WHERE owner = ? AND epoch < ?").get(account, epoch);
+    if (sets) { db.prepare("DELETE FROM guardians WHERE owner = ?").run(account); db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account); }
+    db.prepare("DELETE FROM anchors WHERE account = ? AND epoch < ?").run(account, epoch);
+    db.prepare("DELETE FROM seckeys WHERE account = ? AND epoch < ?").run(account, epoch);
+    db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
+    db.exec("COMMIT");
+  }
   /** Keep a newer signed statement. The same one again is fine; an older one never replaces it. */
   function learnMode(account, st) {
     const m = checkStatement(account, st);
@@ -323,6 +350,7 @@ export function createRecovery({
     db.prepare(`INSERT INTO modes (account, mode, version, epoch, sig, dsa_pk, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account) DO UPDATE SET mode = excluded.mode, version = excluded.version, epoch = excluded.epoch, sig = excluded.sig, dsa_pk = excluded.dsa_pk, updated_at = excluded.updated_at`)
       .run(account, m.mode, m.version, m.epoch, m.sig, m.dsaPk, new Date().toISOString());
+    if (m.epoch > (cur?.epoch || 1)) retireOlderPieces(account, m.epoch);
     return m;
   }
 
@@ -455,10 +483,11 @@ export function createRecovery({
       // v1 cards hold the whole seed; v2 cards hold only the card part of two-proof recovery.
       const scheme = blob.length === CARD_PART_BLOB_BYTES ? "quorum" : blob.length === CARD_FULL_BLOB_BYTES ? "full" : null;
       if (!scheme) throw new HttpError(400, "bad_blob", "Card blob has the wrong size");
+      const epoch = requireEpoch(claims.sub, r.epoch);
       const at = new Date().toISOString();
       db.exec("BEGIN");
       db.prepare("DELETE FROM cards WHERE account = ?").run(claims.sub);
-      db.prepare("INSERT INTO cards (account, tag, blob, created_at, scheme) VALUES (?, ?, ?, ?, ?)").run(claims.sub, tag, blob, at, scheme);
+      db.prepare("INSERT INTO cards (account, tag, blob, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, tag, blob, at, scheme, epoch);
       // The old card no longer counts as a proof in a recovery under way.
       db.prepare("UPDATE requests SET card_ok = 0 WHERE account = ? AND method = 'quorum' AND status IN ('collecting', 'waiting')").run(claims.sub);
       db.exec("COMMIT");
@@ -506,8 +535,7 @@ export function createRecovery({
       const sealed = unb64u(String(r.sealedPart || ""));
       if (r.part != null) throw new HttpError(400, "update_required", "Update HumID to link your ID: the part must be sealed to your chip first.");
       if (sealed.length !== ANCHOR_PART_BLOB_BYTES) throw new HttpError(400, "bad_part", "That isn't a sealed anchor part.");
-      const epoch = Number(r.epoch ?? 1);
-      if (!Number.isSafeInteger(epoch) || epoch < 1) throw new HttpError(400, "bad_part", "Unknown recovery epoch.");
+      const epoch = requireEpoch(claims.sub, r.epoch);
       const chip = chipOf(r.chip);
       const ok = checkChip(chip);
       liveChip(chip, ok, takeChallenge("anchor_challenges", "account", claims.sub), r);
@@ -607,6 +635,7 @@ export function createRecovery({
       if (credId.length < 16 || credId.length > 1023) throw new HttpError(400, "bad_credential", "That security key's credential id is malformed.");
       const label = r.label ? unb64u(String(r.label)) : null;
       if (label && label.length > 512) throw new HttpError(400, "bad_label", "Label too long");
+      const epoch = requireEpoch(claims.sub, r.epoch);
       const challenge = takeKeyChallenge(`add:${claims.sub}`);
       const count = checkKeyAnswer({ pub, authData: unb64u(String(r.authData || "")), signature: unb64u(String(r.signature || "")) }, "add", challenge);
       const mine = db.prepare("SELECT tag, pub, cred_id FROM seckeys WHERE account = ?").all(claims.sub);
@@ -614,7 +643,7 @@ export function createRecovery({
       if (mine.length >= maxKeysPerAccount) throw new HttpError(409, "too_many_keys", `You can keep up to ${maxKeysPerAccount} security keys. Remove one first.`);
       if (db.prepare("SELECT 1 FROM seckeys WHERE tag = ?").get(tag)) throw new HttpError(409, "key_exists", "This security key is already in use.");
       const id = keyIdOf(tag), at = new Date().toISOString();
-      db.prepare("INSERT INTO seckeys (id, account, tag, blob, pub, cred_id, sign_count, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, claims.sub, tag, blob, pub, credId, count, label, at);
+      db.prepare("INSERT INTO seckeys (id, account, tag, blob, pub, cred_id, sign_count, label, created_at, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, claims.sub, tag, blob, pub, credId, count, label, at, epoch);
       return json(201, { id, createdAt: at, count: mine.length + 1 });
     }],
     ["DELETE", "/keys/:id", ({ params, claims }) => {
@@ -673,6 +702,7 @@ export function createRecovery({
       requireHardened(claims.sub);
       const r = parseObject(body);
       const scheme = r.scheme === "quorum" ? "quorum" : "full";
+      const epoch = requireEpoch(claims.sub, r.epoch);
       const list = Array.isArray(r.guardians) ? r.guardians : [];
       const n = list.length, t = Number(r.threshold);
       if (n < MIN_CONTACTS || n > MAX_CONTACTS) throw new HttpError(400, "bad_count", `Choose ${MIN_CONTACTS} to ${MAX_CONTACTS} recovery contacts.`);
@@ -694,7 +724,7 @@ export function createRecovery({
       const at = new Date().toISOString();
       db.exec("BEGIN");
       db.prepare("DELETE FROM guardians WHERE owner = ?").run(claims.sub);
-      db.prepare("INSERT OR REPLACE INTO guardian_sets (owner, threshold, n, created_at, scheme) VALUES (?, ?, ?, ?, ?)").run(claims.sub, t, n, at, scheme);
+      db.prepare("INSERT OR REPLACE INTO guardian_sets (owner, threshold, n, created_at, scheme, epoch) VALUES (?, ?, ?, ?, ?, ?)").run(claims.sub, t, n, at, scheme, epoch);
       for (const g of rows) db.prepare("INSERT INTO guardians (owner, contact, envelope, label, created_at) VALUES (?, ?, ?, ?, ?)").run(claims.sub, g.contact, g.envelope, g.label, at);
       db.exec("COMMIT");
       return json(200, { threshold: t, n, createdAt: at, scheme });
@@ -821,7 +851,8 @@ export function createRecovery({
         // Quorum: every part the request earned. The device needs any two.
         const kinds = kindsOf(q);
         if (kinds.length < 2) { demote(q.account); const d = getRequest.get(q.id); return json(200, { ...requestView(d, { secret: true }), account: d.account }); }
-        const out = { ...v, status: "released" };
+        // Which set of pieces these are: the device opens the card and key with it.
+        const out = { ...v, status: "released", epoch: statementOf(q.account).epoch || 1 };
         if (kinds.includes("witness")) out.shares = shares;
         if (kinds.includes("card")) {
           const c = db.prepare("SELECT blob, scheme FROM cards WHERE account = ?").get(q.account);

@@ -16,7 +16,7 @@ import {
   loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor,
   readChip, chipReader, setDraft, clearDraft, draft, toast,
   keyReader, addSecurityKey, removeSecurityKey,
-  switchToHardened, switchToHolderOnly, escrowWords, HOLDER_ONLY,
+  switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY,
 } from "../../core/index.js";
 import { back, twelve, Countdown } from "./common.jsx";
 
@@ -52,6 +52,7 @@ export function Recovery() {
           onClick={off ? undefined : () => setOpen("key")} />
       </div>
       {rec?.legacy && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="info" title="Upgrade to two-proof recovery" text="You have an older card or witnesses that work on their own. Make a new recovery card and save your witnesses again to switch." /></div>}
+      {!off && <NewPieces />}
       <section style={{ marginTop: 20 }}>
         <div class="eyebrow" style={{ marginBottom: 8 }}>How long a recovery waits</div>
         <div class="rows">{WAITS.map((w) => <Row chevron={false} title={w.pair} trail={w.wait} />)}</div>
@@ -64,6 +65,27 @@ export function Recovery() {
       </>}
       {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
     </Pushed>
+  );
+}
+
+/**
+ * Removing a witness or replacing a card only stops it counting on this server: the old piece
+ * still fits with the others. New pieces (a new epoch) make every old one useless everywhere.
+ */
+function NewPieces() {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!open) return <button class="link muted" style={{ marginTop: 12 }} onClick={() => setOpen(true)}>Lost a card, or dropped a witness you don't trust? Make new recovery pieces</button>;
+  return (
+    <div class="card" style={{ marginTop: 12 }}>
+      <h3>Make new recovery pieces</h3>
+      <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces make every old one useless, everywhere: a lost card, a removed witness's piece, copies in old backups.</p>
+      <p class="small t2" style={{ marginTop: 6 }}>Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
+      <div class="actions row" style={{ paddingTop: 8 }}>
+        <button class="btn ghost" data-back onClick={() => setOpen(false)}>Not now</button>
+        <button class="btn danger" disabled={busy} onClick={async () => { setBusy(true); try { if (await newRecoveryPieces()) { setOpen(false); loadRecovery(); } } finally { setBusy(false); } }}><Icon name="fingerprint" />Make new pieces</button>
+      </div>
+    </div>
   );
 }
 
