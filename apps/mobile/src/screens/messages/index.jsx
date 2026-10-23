@@ -48,11 +48,12 @@ function List() {
     <main class="screen tabs">
       <header class="top">
         <div class="grow"><h1>Messages</h1><div class="small muted">Only people you've approved. Each message confirmed by its sender's face or fingerprint.</div></div>
-        {!off && m?.ready && <button class="icon-btn" aria-label="New" onClick={() => setChoosing(true)}><Icon name="plus" /></button>}
+        {!off && m?.ready && m.canStamp && <button class="icon-btn" aria-label="New" onClick={() => setChoosing(true)}><Icon name="plus" /></button>}
       </header>
       {off && <Banner tone="amber" icon="info" title="Messages need a connection" text="Your conversations are safe on this phone. They open again when you're back online." />}
       {!m && !off && <Row chevron={false} title="Opening your messages…" />}
       {m?.error && <Banner tone="amber" icon="info" title="Messages aren't available" text={m.error} />}
+      {m?.ready && !m.canStamp && <Banner tone="amber" icon="info" title="This device can't send" text="Connecting and sending each need a live face or fingerprint check that a phone's secure chip proves. This device has no such chip, so here you can only read what's already on it. Use HumID on your phone to talk." />}
       {m?.ready && (
         <>
           {m.contacts.length > 0 && <YouLive waiting={waiting} />}
@@ -91,11 +92,11 @@ function List() {
           {m.contacts.length === 0 && m.requests.length === 0 && m.invites.length === 0 && (
             <Empty icon="chat" title="Talk only with people you've approved"
               text="You each know the other only by an ID made for the two of you. Messages are encrypted so only your two phones can open them, and each one is confirmed by its sender's face or fingerprint.">
-              <div class="actions" style={{ width: "100%" }}>
+              {m.canStamp && <div class="actions" style={{ width: "100%" }}>
                 <button class="btn primary block" onClick={() => go("invite")}><Icon name="qr" />Invite someone</button>
                 <button class="btn quiet block" onClick={() => go("code")}><Icon name="scan" />I have their code</button>
                 <p class="fine center">One of you shows a code; the other scans it.</p>
-              </div>
+              </div>}
             </Empty>
           )}
           {today > 0 && <p class="fine center" style={{ marginTop: 18 }}>Today, {today.toLocaleString()} messages on HumID were sent with a live check.</p>}
@@ -202,7 +203,7 @@ function Chat() {
     if (await Msg.send(id, text)) setText("");
     setBusy(false);
   };
-  const canSend = c.status === "connected" && !S.offline.value;
+  const canSend = c.status === "connected" && !S.offline.value && S.msg.value?.canStamp !== false;
   const sealed = t?.locked !== false;
   const left = ownLeft(now);
   const firstSend = !sealed && !t.messages.some((x) => x.dir === "out");
