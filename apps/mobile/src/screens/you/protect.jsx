@@ -21,7 +21,7 @@ export function Protect() {
   const rec = S.recovery.value, devices = S.devices.value;
   const items = decoy || S.offline.value ? [] : protectionItems(rec, devices);
   const n = items.filter((i) => i.done).length;
-  const duressOn = !decoy && !!S.duressInfo.value?.setting?.enabled;
+  const duressOn = !!S.duressInfo.value?.setting?.enabled;
   return (
     <Pushed title="Protection" onBack={back}>
       <div class="eyebrow">Safe. Secure. Simple.</div>

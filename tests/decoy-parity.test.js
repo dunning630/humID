@@ -43,7 +43,9 @@ test("the Duress screen lists the session's documents in a decoy session too", (
   assert.doesNotMatch(d, /decoy \? \[\] : S\.items\.value/);
   // and saving there sounds the same as a real save while changing nothing
   const safety = src("core/safety.js");
-  assert.match(safety, /if \(S\.decoy\.value\) \{ toast\(enabled \? "Duress protection is on\." : "Duress protection is off\."\); return true; \}/);
+  const decoyBranch = safety.slice(safety.indexOf("export async function saveDuress"), safety.indexOf("try {", safety.indexOf("export async function saveDuress")));
+  assert.match(decoyBranch, /if \(S\.decoy\.value\) \{[\s\S]*toast\(enabled \? "Duress protection is on\." : "Duress protection is off\."\);\s*return true;/);
+  assert.doesNotMatch(decoyBranch, /putIdentity|updateIdentity|sealDuress/, "and saves nothing");
 });
 
 test("Recovery in a decoy session: calm and generic, no names, no anchor, no card date", async () => {
@@ -80,6 +82,26 @@ test("Recovery in a decoy session: calm and generic, no names, no anchor, no car
   assert.equal(S.recovery.value.card.exists, true);
   assert.equal(S.recovery.value.contacts.n, 2);
   S.resetSession();
+});
+
+test("decoy Duress screen: off with nothing picked, then echoes what it saved, until the lock (verify-71 #2)", async () => {
+  const { loadDuress, saveDuress } = await import("../apps/mobile/src/core/safety.js");
+  S.resetSession();
+  S.decoy.value = true;
+  R.duressSetting = { enabled: true, gesture: "taps" }; // the real setting, open in memory
+  await loadDuress();
+  assert.deepEqual(S.duressInfo.value.setting, { enabled: false, gesture: "taps" }, "never the real setting");
+  const d = src("screens/you/duress.jsx");
+  assert.match(d, /new Set\(decoy \? S\.decoyEcho\.value\?\.decoys \|\| \[\] : items\.filter/, "nothing picked unless this session picked it");
+  assert.ok(await saveDuress({ enabled: true, gesture: "hold" }));
+  assert.deepEqual(S.duressInfo.value.setting, { enabled: true, gesture: "hold" }, "the save is echoed");
+  await loadDuress();
+  assert.deepEqual(S.duressInfo.value.setting, { enabled: true, gesture: "hold" }, "and still there when the screen opens again");
+  S.resetSession();
+  S.decoy.value = true;
+  await loadDuress();
+  assert.deepEqual(S.duressInfo.value.setting, { enabled: false, gesture: "taps" }, "gone after the lock");
+  S.resetSession(); R.duressSetting = null;
 });
 
 test("an offline decoy session takes nothing personal from the offline copy (verify-71 #1)", async () => {

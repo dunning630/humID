@@ -19,14 +19,16 @@ const GESTURES = [
 export function Duress() {
   const decoy = S.decoy.value;
   const info = S.duressInfo.value;
-  const d = decoy ? { enabled: false, gesture: "taps" } : info?.setting || { enabled: false, gesture: "taps" };
+  // a decoy session: "off" with nothing picked, like an account that never set duress up, or
+  // what it saved itself this session (core/safety.js currentDuress, S.decoyEcho)
+  const d = info?.setting || { enabled: false, gesture: "taps" };
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "taps");
   const [alert, setAlert] = useState(!!info?.alert);
   // In a decoy session S.items holds only the decoys, so the list looks like any account's.
   // Saving there changes nothing anywhere (saveDuress and setDecoys know the session).
   const items = S.items.value;
-  const [decoys, setDecoys] = useState(() => new Set(items.filter((i) => i.decoy).map((i) => i.id)));
+  const [decoys, setDecoys] = useState(() => new Set(decoy ? S.decoyEcho.value?.decoys || [] : items.filter((i) => i.decoy).map((i) => i.id)));
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => { loadDuress(); }, []);

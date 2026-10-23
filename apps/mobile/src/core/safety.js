@@ -40,11 +40,23 @@ export async function loadDuressSetting(Suite) {
   return setting;
 }
 
-/** The setting as the session opened it ({ enabled, gesture }); "off" in a decoy session or before unlock. */
-const currentDuress = () => (S.decoy.value || !R.duressSetting ? { ...DURESS_OFF } : { ...R.duressSetting });
+/**
+ * The setting as the session opened it ({ enabled, gesture }); "off" before unlock. A decoy
+ * session sees "off" (the screen promises nothing will say duress is on), or what it saved itself.
+ */
+const currentDuress = () => {
+  if (S.decoy.value) { const e = S.decoyEcho.value; return e ? { enabled: !!e.enabled, gesture: e.gesture === "hold" ? "hold" : "taps" } : { ...DURESS_OFF }; }
+  return R.duressSetting ? { ...R.duressSetting } : { ...DURESS_OFF };
+};
 
 export async function saveDuress({ enabled, gesture }) {
-  if (S.decoy.value) { toast(enabled ? "Duress protection is on." : "Duress protection is off."); return true; } // the same words, nothing saved
+  if (S.decoy.value) {
+    // the same words as a real save; nothing is saved, the screen only echoes it until the lock
+    S.decoyEcho.value = { ...(S.decoyEcho.value || {}), enabled: !!enabled, gesture };
+    S.duressInfo.value = { ...(S.duressInfo.value || {}), setting: currentDuress() };
+    toast(enabled ? "Duress protection is on." : "Duress protection is off.");
+    return true;
+  }
   try {
     await updateIdentity((cur) => sealDuress(suite(cur.suite), R.settingsKey, cur, { enabled, gesture }));
     R.duressSetting = { enabled: !!enabled, gesture: gesture === "hold" ? "hold" : "taps" };
