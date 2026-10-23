@@ -475,7 +475,7 @@ export function createGateway({
       // The recovery mode chosen at setup, signed by the account key. The recovery service learns
       // it first: if it can't, nothing is created, so a holder-only account is never one it would
       // store recovery material for.
-      const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, sig: r.recoveryMode.sig } : null;
+      const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, prev: r.recoveryMode.prev, sig: r.recoveryMode.sig } : null;
       if (mode) {
         const m = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: identityOf(r.dsaPk), dsaPk: r.dsaPk, ...mode } }).catch(() => ({ status: 503, data: { error: "recovery_unavailable", message: "recovery service is unavailable" } }));
         if (m.status !== 200) { await refund(); fail(m); }
@@ -535,6 +535,7 @@ export function createGateway({
         if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
       } else if (!rejoin) {
         if (!re(REQ_RE).test(String(r.recoveryId || ""))) await refuse(new HttpError(403, "not_released", "This device can join only through a released recovery."));
+        await syncMode(r.account); // the release check below then sees the account's newest mode
         const c = await internalJson("recovery", "POST", `/internal/requests/${r.recoveryId}/check`, { json: { account: r.account, method: via } }).catch(() => ({ status: 503 }));
         if (c.status === 403) await refuse(new HttpError(403, "not_released", c.data?.message || "That recovery isn't released yet."));
         if (c.status !== 200) throw new HttpError(503, "recovery_unavailable", "recovery service is unavailable");
@@ -661,7 +662,8 @@ export function createGateway({
     async setRecoveryMode(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "Changing how you recover needs a fresh biometric check.");
       const r = parseJson(body) || {};
-      const statement = { mode: r.mode, version: r.version, epoch: r.epoch, sig: r.sig };
+      const statement = { mode: r.mode, version: r.version, epoch: r.epoch, prev: r.prev, sig: r.sig };
+      await syncMode(s.subject); // both services on the newest statement first, so the new one chains to it
       const cur = await internalJson("identity", "GET", `/internal/recovery-mode/${s.subject}`).catch(() => ({ status: 503 }));
       if (cur.status !== 200) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
       const toRecovery = () => internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: s.subject, dsaPk: cur.data.dsaPk, ...statement } });
@@ -679,8 +681,14 @@ export function createGateway({
 
     // A new device asks to recover. For a card the account is known now, so its devices are alerted now.
     async startRecovery(s, body) {
-      const r = await internalJson("recovery", "POST", "/requests", { body });
+      let r = await internalJson("recovery", "POST", "/requests", { body });
       if (r.status >= 300) fail(r);
+      // The recovery service's mode for that account may be stale (a deleted or rolled-back row):
+      // bring it up to identity's. Switching it to holder-only cancels this request at once.
+      if (r.data.account && await syncMode(r.data.account)) {
+        const again = await internalJson("recovery", "GET", `/internal/recovery-mode/${r.data.account}`).catch(() => null);
+        if (again?.data?.mode !== "hardened") throw new HttpError(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
+      }
       if (r.data.account) {
         await recordQuietly(r.data.account, "recovery.requested", { method: r.data.method, ref: r.data.ref, platform: r.data.platform, releaseAt: r.data.releaseAt, kinds: r.data.kinds });
         if (r.data.method === "quorum") await recordQuietly(r.data.account, "recovery.evidence", { ref: r.data.ref, kind: "card", kinds: r.data.kinds, releaseAt: r.data.releaseAt });
@@ -692,6 +700,10 @@ export function createGateway({
     // Two-proof recovery: the new device adds its seal card, its live ID chip or its security key.
     async addEvidence(s, body, stepUp, m, route) {
       const r = await internalJson("recovery", "POST", `/requests/${m[1]}/${route.kind}`, { body });
+      if (r.status === 200 && r.data?.account && await syncMode(r.data.account)) {
+        const again = await internalJson("recovery", "GET", `/internal/recovery-mode/${r.data.account}`).catch(() => null);
+        if (again?.data?.mode !== "hardened") throw new HttpError(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
+      }
       if (r.status !== 200) {
         // A stored security key's signature checked and failed, or its counter went backwards: its
         // owner sees it in Activity, at most once an hour, so a stranger can't flood the record.
@@ -999,6 +1011,9 @@ export function createGateway({
       throw busy();
     }
 
+    // Before any recovery route of a signed-in account: the recovery service on its newest mode.
+    if (s.subject && url.pathname.startsWith("/recovery/") && !url.pathname.startsWith("/recovery/links")) await syncMode(s.subject);
+
     if (route.h) return handlers[route.h](s, body, stepUp, url.pathname.match(route.p), route, meta);
 
     const headers = {};
@@ -1029,6 +1044,35 @@ export function createGateway({
       }
     }
     return res;
+  }
+
+  /**
+   * Recovery modes (V74-01/02): identity and the recovery service each keep the account's signed
+   * statement. Bring whichever is behind (a row deleted, rolled back, or restored from an old
+   * backup) up to the newest one either holds. Both are signed by the account key and chained,
+   * so "newest" can't be forged, only withheld; the holder's own devices check for that.
+   * Returns true when the recovery service's answer changed.
+   */
+  async function syncMode(account) {
+    if (!re(ID_RE).test(String(account || ""))) return false;
+    try {
+      const [idr, rec] = await Promise.all([
+        internalJson("identity", "GET", `/internal/recovery-mode/${account}`),
+        internalJson("recovery", "GET", `/internal/recovery-mode/${account}`),
+      ]);
+      if (idr.status !== 200 || rec.status !== 200) return false;
+      const i = idr.data.recoveryMode, r = rec.data;
+      if (i?.version && (r.broken || r.version < i.version)) {
+        const pushed = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account, dsaPk: idr.data.dsaPk, mode: i.mode, version: i.version, epoch: i.epoch, prev: i.prev, sig: i.sig, sync: true } });
+        if (pushed.status !== 200) log.warn("recovery mode: couldn't bring recovery up to identity", { status: pushed.status, error: pushed.data?.error });
+        return pushed.status === 200;
+      }
+      if (r.statement && r.version > (i?.version || 0)) {
+        const pushed = await internalJson("identity", "POST", "/internal/recovery-mode", { json: { account, ...r.statement } });
+        if (pushed.status !== 200) log.warn("recovery mode: couldn't bring identity up to recovery", { status: pushed.status, error: pushed.data?.error });
+      }
+    } catch (e) { log.warn("recovery mode sync failed", { err: e.message }); }
+    return false;
   }
 
   async function adminCall(fn) {

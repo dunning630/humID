@@ -506,10 +506,43 @@ export const RECMODE_LABEL = "HUMID-RECMODE-v1";
 export const isRecoveryMode = (m) => m === RECOVERY_MODES.holderOnly || m === RECOVERY_MODES.hardened;
 const u32ok = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
 
-/** The bytes the account key signs to set the recovery mode (and the recovery epoch). */
-export function recoveryModeMessage(accountId, mode, version, epoch) {
+/**
+ * Statements form a chain (V74-01/02): each names the hash of the one before it (`prev`, 64 hex
+ * characters; all zeros for version 1), and versions go up by one. So a server can't put an
+ * older genuine statement back, show a different one to different devices, or delete the
+ * record and pass the account off as "from before modes", without the holder's devices
+ * noticing: each keeps the highest statement it has checked and compares.
+ */
+export const RECMODE_GENESIS = "0".repeat(64);
+const prevBytes = (prev) => {
+  const h = String(prev ?? RECMODE_GENESIS);
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new Error("Not a recovery mode statement");
+  return Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+};
+const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+
+/** The bytes the account key signs to set the recovery mode, the recovery epoch, and the link to the statement before. */
+export function recoveryModeMessage(accountId, mode, version, epoch, prev = RECMODE_GENESIS) {
   if (!accountId || !isRecoveryMode(mode) || !u32ok(version) || !u32ok(epoch)) throw new Error("Not a recovery mode statement");
-  return concat(utf8(RECMODE_LABEL), lp(utf8(String(accountId)), utf8(mode), u32(version), u32(epoch)));
+  if ((version === 1) !== (String(prev) === RECMODE_GENESIS)) throw new Error("Not a recovery mode statement");
+  return concat(utf8(RECMODE_LABEL), lp(utf8(String(accountId)), utf8(mode), u32(version), u32(epoch), prevBytes(prev)));
+}
+
+/** A statement's hash: what the next one names as `prev`. */
+export const recoveryModeHash = (accountId, { mode, version, epoch, prev }) => hex(sha3_256(recoveryModeMessage(accountId, mode, version, epoch, prev)));
+
+/**
+ * May `next` replace `cur` (both already signature-checked, so both came from the holder)?
+ * The same statement again is fine (a retried request). Otherwise its version is higher and its
+ * epoch no lower; the very next version must name `cur`'s hash (a gap is fine: the holder's
+ * other device may have switched in between, and only the account key can sign). Never back.
+ * `cur` null or version 0: an account from before modes.
+ */
+export function followsMode(accountId, cur, next) {
+  if (!cur || !cur.version) return next.version >= 1;
+  if (next.version === cur.version) return recoveryModeHash(accountId, next) === recoveryModeHash(accountId, cur);
+  if (next.version < cur.version || next.epoch < cur.epoch) return false;
+  return next.version > cur.version + 1 || next.prev === recoveryModeHash(accountId, cur);
 }
 
 /** What a holder-only account may use to bring a device in: only another of its own devices. */

@@ -91,6 +91,14 @@ function NewPieces() {
 
 /* ---------------- the recovery mode ---------------- */
 
+/** Why this phone doesn't trust what the server shows (core/recmode.js judgeMode). */
+const UNTRUSTED = {
+  unsigned: "It isn't signed by your HumID's own key.",
+  missing: "It has disappeared from the server, though this phone remembers your choice.",
+  "rolled back": "It's older than the choice this phone (or your activity record) remembers, as if someone put an old one back.",
+  forked: "It doesn't follow from the choice this phone remembers.",
+};
+
 function ModeCard({ mode, off, onSwitch }) {
   if (!mode) return <div class="card"><span class="muted small">Checking how you can get back in…</span></div>;
   const holderOnly = mode.mode === HOLDER_ONLY;
@@ -101,8 +109,9 @@ function ModeCard({ mode, off, onSwitch }) {
       <p class="small t2" style={{ marginTop: 6 }}>{holderOnly
         ? "Your vault opens only on devices you've already set up. HumID keeps no recovery for you, so if you lose every one of them, no one can bring it back, not even HumID."
         : "If you lose every device, any two of your proofs bring your vault back after a wait that any device you still have can cancel."}</p>
-      {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" title="Your vault's record of this choice doesn't check out" text="It isn't signed by your HumID's own key, so this phone won't trust it. HumID treats your account as Only my own devices until you choose again here. Tell whoever runs your vault server." /></div>}
-      {!off && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
+      {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" role="alert" title="Your vault server's record of this choice doesn't check out"
+        text={`${UNTRUSTED[mode.reason] || UNTRUSTED.unsigned} This phone won't act on it: it treats your HumID as Only my own devices and won't make any recovery piece until the server shows your real choice again. Your documents aren't affected. Tell whoever runs your vault server.`} /></div>}
+      {!off && mode.trusted && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
     </div>
   );
 }
