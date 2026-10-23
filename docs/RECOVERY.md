@@ -26,7 +26,7 @@ lose every device, how do you want to be able to get back in?"**
 | | Only my own devices (holder-only) | A safe way back in (hardened, recommended) |
 |---|---|---|
 | Who can open the vault | a live check on a device you already set up | the same, plus a new device after two proofs and a wait |
-| What HumID's servers keep for recovery | **nothing** | a recovery card blob, witness pieces, an ID-chip part and security-key parts, each locked so the server can't open it on its own |
+| What HumID's servers keep for recovery | **nothing** | a recovery card blob, witness pieces and security-key parts, each locked so the server can't open it on its own; and, if you link a passport, a passport piece **the server can open** (see below) |
 | Lose one device | add a new one from another of your devices | the same, or recover |
 | Lose every device | **the vault is gone for good. No one can bring it back, not HumID** | any two proofs, then a wait any surviving device can cancel |
 | What setup asks for next | a second device, at once (it's your only safety net) | your recovery card, then a second proof and a second device |
@@ -95,8 +95,8 @@ also starts a new epoch.
 | | Holder-only | Hardened |
 |---|---|---|
 | Open a document | no | no |
-| Rebuild the account seed from what it stores | no: it stores no recovery parts | no: every part it stores is locked by something it doesn't have (the card code, a witness's key, the chip, a security key) |
-| …with one more thing stolen from the holder | no | **still no.** It holds no part it can open, so it needs two of the holder's proofs, like anyone else. Before the ID-chip change ([CONTINUITY.md](CONTINUITY.md#the-identity-anchor-icao-9303)) the server could open the anchor part, so one stolen card was enough |
+| Rebuild the account seed from what it stores | no: it stores no recovery parts | no: one part is never enough, and the card, witness and key parts are locked by something it doesn't have (the card code, a witness's key, a security key) |
+| …with one more thing stolen from the holder | no | **without a passport link: no**, it needs two of the holder's proofs like anyone else. **With a passport link: yes.** The passport piece is locked with a key made from the chip's public data, which the server sees whenever the passport is linked or used. So an operator who records that once holds the passport piece, and the passport plus any ONE other stolen proof (a photo of the card, say) rebuilds the account key, with no wait and no veto. Holders who don't want to trust the operator that far should use witnesses or a security key, not a passport, or choose holder-only. The real fix is an open decision ([CONTINUITY.md](CONTINUITY.md#the-anchor-and-the-operator)) |
 | Skip the wait or the veto | no recovery to skip | the waits and the veto are server rules: a dishonest server that also had two of the holder's proofs could release early. The cryptography guarantees confidentiality, not the clock |
 | Turn recovery on behind the holder's back | no: the mode is signed by the holder's account key, and each of the holder's devices checks it | n/a |
 | Turn recovery off, or deny one | yes: it can refuse service. That's availability, not access | yes, same |

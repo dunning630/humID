@@ -7,8 +7,11 @@
 // and birth date (+ one stolen card = the whole seed, no wait, no veto); an old passport or a
 // namesake's passport opened it; and a copy of someone's chip files squatted their identity.
 //
-// Now: the phone seals the part under a key from the chip's DG15, which the server never
-// stores; the anchor is that one chip's key fingerprint; and linking needs the live chip.
+// Now: the phone seals the part under a key from the chip's DG15 (the server doesn't store it);
+// the anchor is that one chip's key fingerprint; and linking needs the live chip. That closes
+// CREDS-01/02 and the at-rest half of VAULT-01/CREDS-03. It does NOT stop an operator who
+// records DG15 in transit (V74-03): the last test here documents that limit as it stands, and
+// that the app and the docs say so.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -51,7 +54,7 @@ const PERSON = { surname: "SMITH", given: "JOHN", birth: "800101", sex: "M", iss
 const dir = () => join(stack.root, "recovery");
 const anchorRow = (account) => { const db = new DatabaseSync(join(dir(), "recovery.db")); try { return db.prepare("SELECT * FROM anchors WHERE account = ?").get(account); } finally { db.close(); } };
 
-test("VAULT-01: the operator can't rebuild the seed from its own files, the holder's details and a stolen card", async () => {
+test("VAULT-01 (at rest): the server's stored files, its secret and the holder's details don't open the anchor part", async () => {
   const alice = makeHolder("alice-anchor");
   const phone = await register(alice, stack.baseUrl);
   const parts = quorumParts(alice.seed);
@@ -81,16 +84,17 @@ test("VAULT-01: the operator can't rebuild the seed from its own files, the hold
   for (const guess of [new TextEncoder().encode(stableIdentity(mrz)), new Uint8Array(passport.dg1), new Uint8Array(passport.sod)]) {
     await assert.rejects(openAnchorPart(anchorPartKey(guess), inner, alice.id));
   }
-  // With the stolen card the operator has one part, never two.
+  // From what's stored alone, a stolen card gives one part, not two.
   const cardRow = (() => { const db = new DatabaseSync(join(dir(), "recovery.db")); try { return db.prepare("SELECT blob FROM cards WHERE account = ?").get(alice.id); } finally { db.close(); } })();
   const cardPart = await openCardPart(card.secret, new Uint8Array(cardRow.blob), alice.id);
   assert.throws(() => combineQuorum([cardPart, cardPart]), /two different kinds/);
-  // Only the real chip's DG15 opens it (what a recovering holder's phone reads from the chip).
+  // The chip's DG15 opens it: what a recovering holder's phone reads from the chip, and also
+  // what the server sees in transit (next test).
   const real = await openAnchorPart(anchorPartKey(passport.dg15), inner, alice.id);
   assert.equal(identityId(S.deriveKeys(combineQuorum([real, cardPart])).dsaPk), alice.id, "the holder, with the chip, still recovers");
 });
 
-test("CREDS-03: the part never reaches the server openable: a plain part is refused", async () => {
+test("CREDS-03: a plain anchor part is refused: it must be sealed to the chip on the phone", async () => {
   const h = makeHolder("plain-part");
   const api = await register(h, stack.baseUrl);
   const passport = testPassport({ csca, mrz: { ...PERSON, given: "PLAIN" } });
@@ -171,4 +175,42 @@ test("migration: an anchor linked the old way still recovers, and re-linking on 
   const row = anchorRow(h.id);
   assert.equal(row.version, 2);
   assert.equal((await api.anchor()).version, 2);
+});
+
+test("V74-03 (the limit, documented): an operator that records DG15 in transit opens the anchor part; the app and docs say so", async () => {
+  // DG15 is public chip data and the server must see it to check the chip, so a passport link
+  // gives a hostile operator the passport piece. This test pins that behaviour as it is, so a
+  // future change (the cosigner split wrap, docs/CONTINUITY.md) has to update it on purpose.
+  const alice = makeHolder("alice-dg15-limit");
+  const phone = await register(alice, stack.baseUrl);
+  const parts = quorumParts(alice.seed);
+  const card = newCard();
+  await phone.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, alice.id) }, alice.stepUp);
+  const passport = testPassport({ csca, mrz: { surname: "LIMIT", given: "ALICE", birth: "811111" } });
+  await linkChip(alice, phone, passport);
+  // What the operator sees on its own internal hop: the chip data in the link request.
+  const seenDg15 = new Uint8Array(passport.dg15);
+  const anchorSecret = readFileSync(join(dir(), "anchor-secret.bin"));
+  const b = Buffer.from(anchorRow(alice.id).blob);
+  const k2 = Buffer.from(hkdfSync("sha3-256", anchorSecret, Buffer.from(alice.id), "HUMID-ANCHOR-WRAP-v1|chip v2", 32));
+  const d = createDecipheriv("aes-256-gcm", k2, b.subarray(0, 12)).setAAD(Buffer.from(alice.id)); d.setAuthTag(b.subarray(b.length - 16));
+  const inner = new Uint8Array(Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]));
+  const anchorPart = await openAnchorPart(anchorPartKey(seenDg15), inner, alice.id);
+  const cardRow = (() => { const db = new DatabaseSync(join(dir(), "recovery.db")); try { return db.prepare("SELECT blob FROM cards WHERE account = ?").get(alice.id); } finally { db.close(); } })();
+  const cardPart = await openCardPart(card.secret, new Uint8Array(cardRow.blob), alice.id);
+  assert.equal(identityId(S.deriveKeys(combineQuorum([anchorPart, cardPart])).dsaPk), alice.id, "passport piece (via DG15 in transit) + ONE stolen card = the account key");
+
+  // So the holder must be told, plainly, before linking, and the docs must not claim otherwise.
+  const root = new URL("../../", import.meta.url);
+  const screen = readFileSync(new URL("apps/mobile/src/screens/you/recovery.jsx", root), "utf8");
+  assert.match(screen, /Your vault server can open this piece/);
+  assert.match(screen, /any ONE other of your proofs/);
+  assert.match(screen, /use witnesses or a security key instead, or choose Only my own devices/);
+  const recovery = readFileSync(new URL("docs/RECOVERY.md", root), "utf8");
+  assert.match(recovery, /With a passport link: yes\./);
+  assert.doesNotMatch(recovery, /\*\*still no\.\*\* It holds no part it can open/);
+  const continuity = readFileSync(new URL("docs/CONTINUITY.md", root), "utf8");
+  assert.match(continuity, /### The anchor and the operator/);
+  assert.match(continuity, /2-of-2 split wrap with an\s+independent cosigner/);
+  assert.doesNotMatch(continuity, /never reaches the\s+server in a form it can open/);
 });
