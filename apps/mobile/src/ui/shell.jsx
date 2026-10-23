@@ -1,12 +1,12 @@
 // The shell around the screens: the connection strip, the restored-draft offer, and the
 // simulation strip with its checks sheet (development builds only). Nothing here holds a
 // key; it renders what core/ tells it to.
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../brand/icons.jsx";
 import { Sheet, useNow } from "./kit.jsx";
 import { fmtTime } from "./format.js";
 import * as S from "../core/state.js";
-import { retryConnection, keptDraft, takeDraft } from "../core/index.js";
+import { retryConnection, keptDraft, takeDraft, resumeNewCard, CARD_DRAFT } from "../core/index.js";
 
 /**
  * The vault can't be reached. In the flow of the page (3.0): it pushes the screen down
@@ -37,7 +37,10 @@ export function ConnectionBar() {
  */
 export function DraftOffer() {
   const d = keptDraft.value;
-  if (!d || S.view.value !== "app" || S.decoy.value) return null;
+  const here = !!d && S.view.value === "app" && !S.decoy.value;
+  // A new recovery card isn't offered: it comes straight back, since it's the only copy.
+  useEffect(() => { if (here && d.kind === CARD_DRAFT) resumeNewCard(takeDraft()); }, [here, d]);
+  if (!here || d.kind === CARD_DRAFT) return null;
   const what = { add: "adding to your vault", witnesses: "adding witnesses", card: "a card", id: "an ID" }[d.kind] || "what you were doing";
   const resume = () => {
     const draft = takeDraft();
