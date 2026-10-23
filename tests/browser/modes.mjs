@@ -74,11 +74,17 @@ try {
   await p.getByRole("button", { name: "Add to your vault" }).first().waitFor({ timeout: 15_000 });
   await youScreen(p, "Recovery");
   await p.getByText("Only my own devices").first().waitFor();
+  // The mode card is filled by loadRecovery(): read the screen once it has said where it stands
+  // (V74B-05: reading straight away raced the load on a busy machine).
+  await p.locator(".pushed").getByText(/Your vault opens only on devices you've already set up/).waitFor({ timeout: 20_000 });
   const rtext = await p.locator(".pushed").innerText();
   assert.doesNotMatch(rtext, /Recovery card|Witnesses|Security key|ID chip/, "no recovery proofs to set up");
   assert.doesNotMatch(rtext, /doesn't check out/, "the server's record verifies");
   await p.locator(".pushed [data-back]").first().click();
   await youScreen(p, "Protection");
+  // The checklist appears once recovery and devices have loaded (V74B-05).
+  await p.locator(".pushed").getByText("A second device").first().waitFor({ timeout: 20_000 });
+  await p.locator(".pushed").getByText("This is your only device").waitFor({ timeout: 20_000 });
   const ptext = await p.locator(".pushed").innerText();
   assert.match(ptext, /This is your only device/);
   assert.match(ptext, /A second device/);
