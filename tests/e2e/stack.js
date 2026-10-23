@@ -19,11 +19,18 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
+/**
+ * Every service here listens on 127.0.0.1 (PC-25): this stack backs `npm run dev` too, which
+ * runs demo mode and mints access codes for anyone who can reach it. HUMID_BIND_HOST set by
+ * the caller wins.
+ */
 export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], allowAnyStation = false, cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {}, demoStamps = false, recoveryStartsPerHour = 10_000 } = {}) {
   // recoveryStartsPerHour: every test shares one address, so the per-network recovery cap is lifted unless a test sets it.
   // checkin: HUMID_CHECKIN. keyshareClock: { now, mono, tickMs } for Check-in tests that move time.
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
   const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
+  const bind = process.env.HUMID_BIND_HOST;
+  if (!bind) process.env.HUMID_BIND_HOST = "127.0.0.1";
   const ik = newInternalKeys();
   // SRV-30: what the gateway never holds. core: identity's device vouches and the ledger's
   // receipts; keys: keyshare's erase tokens.
@@ -42,7 +49,7 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
   const vault = createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, corePk: coreKeys.pk, keysPk: keysKeys.pk, quotaBytes: 5 * 1024 * 1024, maxObjectBytes: 2 * 1024 * 1024 });
   // checkpointEveryMs 0: a new checkpoint whenever the log has grown, so tests see their entries at once.
   const ledger = createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, statementSk: coreKeys.sk, cosigners, checkpointEveryMs: 0 });
-  const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations, allowAnyStation });
+  const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations, allowAnyStation, corePk: coreKeys.pk });
   const access = createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: passKeyBits, stampKeyBits: passKeyBits });
   // 4.0 messaging: the relay (no accounts) beside the other services; messaging=false runs a server without one.
   const relay = messaging ? createRelay({ port: 0, dataDir: join(root, "relay"), internalPk: ik.pk, ...relayOpts }) : null;
@@ -55,6 +62,7 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
     allowedOrigins: ["http://localhost:5173"], trustProxy: false, devicePolicy, registration, passBuyUrl, admin, checkin, checkinSweepMs, demoStamps, recoveryStartsPerHour,
   });
   await gateway.start();
+  if (!bind) delete process.env.HUMID_BIND_HOST; // read when each service starts listening: done
   const stack = {
     revoked,
     baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, keyshare, relay, root, upstreams, internalSk: ik.sk, internalPk: ik.pk, coreKeys, keysKeys,
@@ -63,7 +71,8 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
       const port = keyshare.server.address().port;
       await keyshare.stop(); keyshare.close();
       keyshare = createKeyshare({ port, dataDir: join(root, "keyshare"), internalPk: ik.pk, corePk: coreKeys.pk, statementSk: keysKeys.sk, releasesPerHour: shareReleasesPerHour, ...keyshareClock });
-      await keyshare.start();
+      if (!bind) process.env.HUMID_BIND_HOST = "127.0.0.1";
+      try { await keyshare.start(); } finally { if (!bind) delete process.env.HUMID_BIND_HOST; }
       stack.keyshare = keyshare;
     },
     async stop() {

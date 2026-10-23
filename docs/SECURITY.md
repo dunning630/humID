@@ -276,17 +276,32 @@ core together with keys can still release both halves. What holds:
 
 | Who is compromised | Gets |
 |---|---|
-| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
+| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open, no change to recovery material. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
 | Keys role alone | Encrypted document keys; nothing opens without envelopes and the account keys. |
 | Core role alone | Envelopes and identity's statement key; no document keys. |
 | Core and keys together | Both server-held halves, still useless without the account keys, which never leave the phone. |
 | Any of these | Never the account keys, so never a document's contents. |
 
-**Not covered yet:** recovery-service changes (cards, contacts, anchors,
-security keys) still take the gateway's word for the step-up; a compromised
-front host can change them, though every change is recorded and no recovery
-releases without its wait and the holder's veto. Moving recovery onto the same
-checks is the follow-up.
+- **The recovery service** checks the same way before anything that changes
+  or releases recovery material:
+  - setting or removing a seal card, contacts, an ID anchor, a security key or
+    recovery settings;
+  - approving a device link;
+  - a witness releasing their piece;
+  - cancelling a recovery;
+  - a station's in-person verification;
+  - closing the account.
+
+  It checks the proof against the body it received, so the gateway can't turn
+  one approval into a different change. The recovery card made with a new
+  account has no step-up yet. The account key signs that card inside the
+  registration's live check, and identity's signed statement says the
+  account was created in that session. The recovery mode itself was already
+  a statement signed by the account key (docs/RECOVERY.md).
+
+**What a front host can still do with recovery:** see that recoveries happen
+and refuse service. It can also start a recovery request, which anyone
+can, and which still needs two real proofs, the wait and no veto.
 
 ## Offline
 
@@ -506,7 +521,20 @@ for one operation at a time:
 
 The liveness key then signs the device-enrolment statement in the same check.
 The server stores the key and the proof (`android-tee`, `android-strongbox`
-or `apple-secure-enclave`) with the device.
+or `apple-secure-enclave`) with the device, and for Android the serials of
+every certificate in its attestation chain. Google's revocation list is
+checked against those serials at every sign-in, not only when the phone
+joins: a revoked certificate (a leaked or extracted device key) removes the
+device at its next sign-in, and with `HUMID_ATTESTATION_STATUS_REQUIRED=1`
+(the default with the attested policy) a list that is missing or over 48 hours
+old refuses Android sign-ins (503 `status_stale`) until it is fresh again.
+Android phones enrolled before the serials were kept can't be checked, so
+under a required list they are refused with `reattest_required` and set up
+again with *I already have HumID*; refusing them is the only way the promise
+holds, and accepting them unchecked would leave exactly the extracted-key case
+open. With Check-in armed, an outage of the list for over 48 hours keeps
+Android holders from checking in, so its fetch must be monitored (the
+sidecar's health check) on any server where Check-in is on.
 
 **Every later check** is signed by that key:
 

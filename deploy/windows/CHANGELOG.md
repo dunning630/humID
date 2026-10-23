@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **One visitor can't lock everyone out behind Tailscale Funnel** (V76-03). With `HUMID_TRUST_FORWARDED=off` every visitor shares the tunnel's address, so the 30-a-minute handshake limit was one bucket for all. Now an unknown address shares a server-wide ceiling (`HUMID_SHARED_HELLO_PER_MIN`, 600), failed sign-ins count per HumID and server-wide, and a holder who signed in before carries a one-use hello pass past every handshake limit, so unlocking and checking in always get through (README, *Rate limits behind a tunnel*).
 - **Revocation fails closed** (PC-14 / LIVE-02). New installs get `HUMID_ATTESTATION_STATUS_REQUIRED=1`: with the attested policy an Android phone is refused while Google's revoked-key list hasn't been fetched or is over 48 hours old, instead of being let in unchecked. The server needs outbound HTTPS to `android.googleapis.com` (a PC with internet has it; on split roles, the core machine: docs/DEPLOY-VMS.md). An existing install keeps the `0` it was given: `humid set HUMID_ATTESTATION_STATUS_REQUIRED=1` to switch.
 - **The live-human posture at every start** (LIVE-04). Identity logs one line with the device policy, locked-boot rule, app signer rule, App Attest environment and revocation state, as a warning naming each setting that weakens it. `HUMID_ANDROID_ALLOW_ANY_SIGNER=1` (test servers only) is now listed in `humid.env` and refused with the attested policy unless `HUMID_INSECURE_TEST=1` is set too.
 

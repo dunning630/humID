@@ -3,7 +3,7 @@
 // (and in the app's control) and this module never holds a private key.
 
 import { HtpClient, HtpError } from "@humid/htp/client";
-import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
+import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, setupCardMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
 import { verifyLedger, verifyBridge, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
@@ -77,8 +77,17 @@ const codeOf = (input) => {
 const BRIDGE_MAX = 20_000;
 
 export class HumidApi {
-  constructor({ baseUrl = "", pinnedKid = null, fetch } = {}) {
+  /**
+   * helloPassStore: where the one-use hello pass is kept between app launches (V76-03), so a
+   * holder whose app was closed still skips limits shared with strangers. Default: this
+   * device's localStorage when there is one, else memory only. The pass opens nothing: it
+   * only lets one handshake past the rate limits.
+   */
+  constructor({ baseUrl = "", pinnedKid = null, fetch, helloPassStore = defaultPassStore(baseUrl) } = {}) {
     this.htp = new HtpClient({ baseUrl, pinnedKid, ...(fetch ? { fetch } : {}) });
+    this.passStore = helloPassStore;
+    try { this.htp.helloPass = helloPassStore?.get() || null; } catch {}
+    this.htp.onHelloPassUsed = () => { try { helloPassStore?.set(null); } catch {} };
     this.session = null;
     this.onSignedOut = null;
     this.htp.onSessionLost = () => { this.session = null; this.onSignedOut?.("expired"); };
@@ -119,6 +128,14 @@ export class HumidApi {
     return res;
   }
   #json(method, path, opts) { return this.#call(method, path, opts).then((r) => r.json()); }
+  /** A signed-in session's answer: keep its one-use hello pass for the next handshake (V76-03). */
+  #signedIn(view) {
+    if (typeof view?.helloPass === "string") {
+      this.htp.helloPass = view.helloPass;
+      try { this.passStore?.set(view.helloPass); } catch {}
+    }
+    return view;
+  }
 
   /* ---------------- accounts & devices ---------------- */
 
@@ -134,20 +151,23 @@ export class HumidApi {
   async register({ pub, commit, device, sign, card, soleBiometric, pass, recoveryMode }) {
     await this.htp.connect();
     const th = this.htp.transcript;
-    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
+    // card: the setup recovery card, which the account key also signs in this check (the recovery
+    // service stores it only with that signature: there is no step-up yet to approve it)
+    const cardMsg = card ? setupCardMessage(th, identityId(pub.dsaPk), card.tag, card.blob) : undefined;
+    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th, ...(cardMsg ? { card: cardMsg } : {}) });
     this.session = await this.#json("POST", "/auth/register", {
       body: {
         kemPk: b64u(pub.kemPk), dsaPk: b64u(pub.dsaPk), xPk: b64u(pub.xPk), commit, sig: b64u(sigs.registerSig),
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
-        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob), ...(sigs.cardSig ? { sig: b64u(sigs.cardSig) } : {}) } } : {}),
         // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
         ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, prev: recoveryMode.prev, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
       },
-    });
+    }).then((v) => this.#signedIn(v));
     return this.session;
   }
 
@@ -201,7 +221,7 @@ export class HumidApi {
   async enrollDevice({ account, device, via, recoveryId, linkCode, sign, soleBiometric }) {
     await this.htp.connect();
     const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
-    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } }));
     return this.session;
   }
 
@@ -218,7 +238,7 @@ export class HumidApi {
     const presence = (d) => loginPresenceMessage(th, who, nonce, d);
     const { sig, interrupt, live, d } = await sign(loginMessage(th, who, nonce), { presence });
     const body = { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}), ...(d === 0 || d === 1 ? { d } : {}) };
-    this.session = await this.#json("POST", "/auth/login", { body });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/login", { body }));
     return this.session;
   }
 
@@ -652,6 +672,18 @@ export class RelayClient {
   /** Unsend: true if the object was still there and is now gone. */
   async retract(box, token) { return !!(await this.#call("POST", "/msg/relay/retract", { body: { box, token: b64u(token) } })).removed; }
   close() { this.htp.close?.(); }
+}
+
+/** The hello pass in localStorage, per server; null where there's none (Node, a locked-down WebView). */
+function defaultPassStore(baseUrl) {
+  let ls;
+  try { ls = globalThis.localStorage; ls?.getItem("x"); } catch { ls = null; }
+  if (!ls) return null;
+  const key = `humid.helloPass:${baseUrl}`;
+  return {
+    get: () => { try { return ls.getItem(key); } catch { return null; } },
+    set: (v) => { try { if (v) ls.setItem(key, v); else ls.removeItem(key); } catch {} },
+  };
 }
 
 function deviceBody(device, sigs) {
