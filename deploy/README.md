@@ -86,6 +86,14 @@ Pulling private images needs a one-time `docker login ghcr.io` with a GitHub
 token that can read packages. Without it, `docker compose up -d --build`
 builds from the checked-out source instead.
 
+**Once, when updating to the non-root edge** (PC-21): Caddy's certificates
+were written by root before, and the edge now runs as user 65532. Hand its two
+volumes over before `up -d`, or it can't renew certificates:
+
+```bash
+docker compose run --rm --no-deps --user 0 --entrypoint chown edge -R 65532:65532 /data /config
+```
+
 ## Keep these safe
 
 | Volume | Holds | If lost |
