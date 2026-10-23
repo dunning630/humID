@@ -1,6 +1,7 @@
 {
   "name": "@humid/crypto",
   "version": "1.5.0",
+  "private": true,
   "description": "HumID sealing suites behind a registry. Ships HUMID-PQ1.",
   "type": "module",
   "exports": "./src/index.js",

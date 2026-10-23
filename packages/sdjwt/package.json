@@ -1,6 +1,7 @@
 {
   "name": "@humid/sdjwt",
   "version": "0.1.0",
+  "private": true,
   "description": "HumID 4.0 (provisional): SD-JWT (RFC 9901) and SD-JWT VC verification with key binding, the JOSE a verifier needs (JWS verify, x5c chains, JWK thumbprints, ECDH-ES JWE decrypt), and IETF Token Status List revocation checks (JWT and CWT). EU digital identity PID and other SD-JWT credentials. No platform code, no network.",
   "type": "module",
   "exports": {

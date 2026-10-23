@@ -9,6 +9,7 @@ export const DEFAULTS = [
   ["HUMID_PORT", "8480", "Local port the tunnel (Tailscale Funnel or Cloudflare Tunnel) forwards to."],
   ["HUMID_BIND_HOST", "127.0.0.1", "Keep 127.0.0.1: nothing on your network can reach the server directly; only the tunnel can."],
   ["HUMID_PUBLIC_URL", "", "The https address phones use. Set by `humid.ps1 expose`."],
+  ["HUMID_TRUST_FORWARDED", "off", "Which tunnel header names a visitor's address, for rate limits. Set by `humid expose`. off = none (everyone through the tunnel shares one address: limits apply to all together) · cloudflare = CF-Connecting-IP (Cloudflare Tunnel only) · xff = the last X-Forwarded-For entry (only if your tunnel appends it). A wrong setting lets anyone pick their own address and dodge every limit."],
   ["HUMID_DEVICE_POLICY", "attested", "attested = phones whose secure chip proves every live face or fingerprint check · biometric = also biometric-only desktops · demo = testing only."],
   ["HUMID_REGISTRATION", "pass", "pass = a new HumID needs an access pass, bought with an access code and signed blind so the payment can't be linked to the account (mint codes with `mint`) · open = anyone can create one."],
   ["HUMID_PASS_BUY_URL", "", "https address where people buy access codes; the app links to it. Empty = no link."],
@@ -18,7 +19,8 @@ export const DEFAULTS = [
   ["HUMID_ANDROID_CERT_DIGESTS", "", "The official HumID Android app is always accepted. Add the SHA-256 of your own signing certificate here only if you build and sign the app yourself."],
   ["HUMID_REQUIRE_LOCKED_BOOT", "1", "1 refuses rooted / unlocked-bootloader Android phones."],
   ["HUMID_ANDROID_MIN_PATCH", "", "Optional minimum Android security patch, YYYYMM (e.g. 202501). Empty = any."],
-  ["HUMID_ATTESTATION_STATUS_REQUIRED", "0", "1 refuses Android phones until Google's revoked-key list has been fetched (it's fetched every 6 hours either way)."],
+  ["HUMID_ATTESTATION_STATUS_REQUIRED", "1", "1 refuses Android phones while Google's revoked-key list hasn't been fetched or is over 48 hours old (it's fetched every 6 hours; this computer needs outbound HTTPS to android.googleapis.com) · 0 accepts them unchecked (not recommended)."],
+  ["HUMID_ANDROID_ALLOW_ANY_SIGNER", "0", "Test servers only: 1 accepts an Android app signed by anyone as the genuine HumID app. Refused with HUMID_DEVICE_POLICY=attested unless HUMID_INSECURE_TEST=1. Never on a server holding real data."],
   ["RECOVERY_DELAY_MS", "259200000", "Base recovery wait (72 hours). Two-proof recoveries wait a third of it with a station, the whole of it with witnesses, 7/3 of it with a card and an ID chip alone; twice that after a duress signal."],
   ["HUMID_CSCA_DIR", "", "Folder of country signing certificates (CSCA, PEM or DER) for ID chips. Empty = the csca folder next to data."],
   ["HUMID_STATION_ACCOUNTS", "", "HumID account ids (hid_…, comma-separated) allowed to act as in-person verification stations."],
@@ -98,6 +100,9 @@ export function validate(cfg) {
   if (!Number.isInteger(ib) || ib < 1024 || ib > 65000) problems.push("HUMID_INTERNAL_PORT_BASE must be a port number from 1024 to 65000.");
   if (cfg.HUMID_DEVICE_POLICY && !VALID_POLICIES.includes(cfg.HUMID_DEVICE_POLICY)) problems.push(`HUMID_DEVICE_POLICY must be one of ${VALID_POLICIES.join(", ")}.`);
   if (cfg.HUMID_REGISTRATION && !["pass", "open"].includes(cfg.HUMID_REGISTRATION)) problems.push("HUMID_REGISTRATION must be pass or open.");
+  if (cfg.HUMID_TRUST_FORWARDED && !["off", "cloudflare", "xff"].includes(cfg.HUMID_TRUST_FORWARDED)) problems.push("HUMID_TRUST_FORWARDED must be off, cloudflare or xff.");
+  if (cfg.HUMID_ATTESTATION_STATUS_REQUIRED && !["0", "1"].includes(cfg.HUMID_ATTESTATION_STATUS_REQUIRED)) problems.push("HUMID_ATTESTATION_STATUS_REQUIRED must be 0 or 1.");
+  if (cfg.HUMID_ANDROID_ALLOW_ANY_SIGNER === "1" && (cfg.HUMID_DEVICE_POLICY || "attested") === "attested" && cfg.HUMID_INSECURE_TEST !== "1") problems.push("HUMID_ANDROID_ALLOW_ANY_SIGNER=1 accepts any self-signed copy of the HumID app, so it is refused with HUMID_DEVICE_POLICY=attested. For a test server only, also set HUMID_INSECURE_TEST=1.");
   if (cfg.HUMID_CHECKIN && !["on", "off"].includes(cfg.HUMID_CHECKIN)) problems.push("HUMID_CHECKIN must be on or off.");
   if (cfg.HUMID_MESSAGING && !["on", "off"].includes(cfg.HUMID_MESSAGING)) problems.push("HUMID_MESSAGING must be on or off.");
   if (cfg.HUMID_UPDATE_PRERELEASES && !["on", "off"].includes(cfg.HUMID_UPDATE_PRERELEASES)) problems.push("HUMID_UPDATE_PRERELEASES must be on or off.");

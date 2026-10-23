@@ -26,23 +26,40 @@ const TYPES = {
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization"]);
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
+/** Which tunnel headers name the visitor (HUMID_TRUST_FORWARDED). */
+export const TRUST_FORWARDED = ["off", "cloudflare", "xff"];
+
 /**
- * The visitor's address. Only the tunnel (a local program) can reach this
- * port, so its headers are trusted: Cloudflare's CF-Connecting-IP, else the
- * last X-Forwarded-For entry (the one the tunnel added; earlier ones come
- * from the visitor and could be made up).
+ * The visitor's address, for the gateway's per-address limits (SRV-31).
+ * A header only counts when it comes from the local tunnel AND the operator
+ * said which tunnel sets it; otherwise a visitor could name any address and
+ * reset every limit with each request.
+ *   off         (default) no header is believed: every visitor through the
+ *               tunnel shares the tunnel's address, so per-address limits
+ *               apply to all of them together
+ *   cloudflare  Cloudflare Tunnel: CF-Connecting-IP, which Cloudflare's edge
+ *               always overwrites. X-Forwarded-For is ignored
+ *   xff         a tunnel or proxy that appends the visitor's address to
+ *               X-Forwarded-For: its last entry (earlier ones are the visitor's
+ *               own and could be made up)
  */
-export function clientIp(req) {
+export function clientIp(req, trust = "off") {
   const peer = req.socket.remoteAddress || "";
-  if (!LOOPBACK.has(peer)) return peer;
-  const cf = req.headers["cf-connecting-ip"];
-  if (typeof cf === "string" && cf.trim()) return cf.trim();
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.trim()) return xff.split(",").map((s) => s.trim()).filter(Boolean).pop();
+  if (!LOOPBACK.has(peer) || trust === "off") return peer;
+  if (trust === "cloudflare") {
+    const cf = req.headers["cf-connecting-ip"];
+    return typeof cf === "string" && cf.trim() ? cf.trim() : peer;
+  }
+  if (trust === "xff") {
+    const xff = req.headers["x-forwarded-for"];
+    const last = typeof xff === "string" ? xff.split(",").map((s) => s.trim()).filter(Boolean).pop() : "";
+    return last || peer;
+  }
   return peer;
 }
 
-export function createEdge({ port, host = "127.0.0.1", appDir, gatewayUrl, maxBodyBytes = 64 * 1024 * 1024, log = console }) {
+export function createEdge({ port, host = "127.0.0.1", appDir, gatewayUrl, maxBodyBytes = 64 * 1024 * 1024, trustForwarded = "off", log = console }) {
+  if (!TRUST_FORWARDED.includes(trustForwarded)) throw new Error(`HUMID_TRUST_FORWARDED must be one of ${TRUST_FORWARDED.join(", ")}`);
   const gw = new URL(gatewayUrl);
   const root = normalize(appDir + sep);
 
@@ -55,7 +72,7 @@ export function createEdge({ port, host = "127.0.0.1", appDir, gatewayUrl, maxBo
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && !k.startsWith("x-forwarded-") && k !== "cf-connecting-ip") headers[k] = v;
     headers.host = gw.host;
-    headers["x-forwarded-for"] = clientIp(req); // the gateway rate-limits per address
+    headers["x-forwarded-for"] = clientIp(req, trustForwarded); // the gateway rate-limits per address
     headers["x-forwarded-proto"] = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
 
     const declared = Number(req.headers["content-length"] || 0);

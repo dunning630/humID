@@ -64,7 +64,8 @@ const tx = (db, store, mode, fn) => new Promise((resolve, reject) => {
 
 function liveOk(spki, message, sig) {
   if (!spki || !sig) return false;
-  try { return p256.verify(sig, message, spki.subarray(spki.length - 65), { format: "der", lowS: false }); }
+  // low-S only, like the real servers (ATT-01, packages/attest/src/ecdsa.js)
+  try { return p256.verify(sig, message, spki.subarray(spki.length - 65), { format: "der", lowS: true }); }
   catch { return false; }
 }
 

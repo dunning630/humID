@@ -107,6 +107,7 @@ impl<R: Runtime> HumidGate<R> {
             assurance: os::ASSURANCE.into(),
             detail: s.detail,
             live: None,
+            handle: None,
         })
     }
 
