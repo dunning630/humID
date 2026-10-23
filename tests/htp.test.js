@@ -190,3 +190,22 @@ test("every request carries a timeout: a server that never answers ends the call
   await c2.request("http://x/", { signal: own.signal });
   assert.equal(seen.at(-1), own.signal);
 });
+
+test("CRYPTO-06: a step-up ticket sends exactly one frame, so its seq (the GCM nonce) is never reused", async () => {
+  const server = new HtpServer(createStatics());
+  const { fetch, log } = wire(server);
+  const client = new HtpClient({ fetch });
+  const ticket = await client.ticket("PUT", "/recovery/card");
+  const stepUp = { ticket, sign: async () => ({ sig: new Uint8Array(4627), interrupt: {} }) };
+  await client.call("PUT", "/recovery/card", { body: { blob: "first" }, stepUp });
+  const sent = log.length;
+  // a retry wrapper or a refactor passing the same ticket again
+  await assert.rejects(client.call("PUT", "/recovery/card", { body: { blob: "second" }, stepUp }), (e) => e.code === "ticket_used");
+  assert.equal(log.length, sent, "nothing went on the wire under the used seq");
+  // a ticket from an earlier session is refused too, and a fresh one still works
+  const old = await client.ticket("PUT", "/recovery/card");
+  await client.connect();
+  await assert.rejects(client.call("PUT", "/recovery/card", { body: {}, stepUp: { ticket: old, sign: stepUp.sign } }), (e) => e.code === "session_changed");
+  const fresh = await client.ticket("PUT", "/recovery/card");
+  assert.equal((await client.call("PUT", "/recovery/card", { body: {}, stepUp: { ticket: fresh, sign: stepUp.sign } })).status, 200);
+});
