@@ -221,6 +221,13 @@ export class HumidApi {
   }
 
   me() { return this.#json("GET", "/identity/me"); }
+  /**
+   * This device's biometric keys are gone (Android or iOS destroyed them: fingerprints or
+   * face changed, app reinstalled). Tells the server, so the holder's Activity shows it and
+   * the device is marked as needing setup again (LIVE-06). Needs no sign-in: there is
+   * nothing left to sign with. Always answers ok.
+   */
+  reportKeysGone({ id, device }) { return this.#json("POST", "/auth/key-invalidated", { body: { id, device } }); }
 
   /* ---------------- duress ---------------- */
 

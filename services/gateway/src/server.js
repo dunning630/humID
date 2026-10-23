@@ -56,6 +56,8 @@ const ROUTES = [
   { m: "POST", p: re("/auth/challenge"), h: "challenge" },
   { m: "POST", p: re("/auth/login"), h: "login" },
   { m: "POST", p: re("/auth/logout"), h: "logout" },
+  // a device whose biometric keys Android or iOS destroyed says so (LIVE-06); no sign-in possible
+  { m: "POST", p: re("/auth/key-invalidated"), h: "keyInvalidated" },
   // duress: every unlock reports presence the same way; only the flag inside differs
   { m: "POST", p: re("/auth/presence"), h: "presence", auth: true },
   // a step-up approval for one action: the device signs it during the live check
@@ -254,6 +256,7 @@ export function createGateway({
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
+  const keysGoneNote = new Buckets(1, 24 * 3_600_000); // one "keys gone" report per device a day
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
   const inflight = new Map();
@@ -594,6 +597,24 @@ export function createGateway({
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
       await presence(s, reported && r.d === 1);
       return { status: 200, json: sessionView(s) };
+    },
+
+    /**
+     * LIVE-06. The phone's keys are gone, so it holds nothing it can sign with: the report is
+     * unauthenticated, and so it does as little as possible. The device is marked as needing
+     * setup again (its next sign-in clears that) and its owner's Activity says so, at most
+     * once a day per device. The answer is the same whether or not the account or device
+     * exists, so it tells a stranger nothing.
+     */
+    async keyInvalidated(s, body) {
+      const { id, device } = parseJson(body) || {};
+      if (!re(ID_RE).test(String(id)) || !re(DEV_RE).test(String(device))) throw new HttpError(400, "bad_identity", "Unknown identity format");
+      const mine = !s.subject || s.subject === id; // a signed-in session speaks only for its own account
+      if (mine && keysGoneNote.take(device)) {
+        const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
+        if (r?.status === 200 && r.data?.marked) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
+      }
+      return { status: 202, json: { ok: true } };
     },
 
     async logout(s) {

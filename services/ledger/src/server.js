@@ -42,6 +42,8 @@ const EVENT_TYPES = new Set([
   "checkin.armed", "checkin.disarmed", "checkin.erased",
   // security keys as a recovery proof (ledger 1.4, docs/SECURITY-KEY.md)
   "recovery.key_added", "recovery.key_removed", "recovery.key_refused",
+  // a device reported that Android or iOS destroyed its biometric keys (ledger 1.5, LIVE-06)
+  "device.keys_invalidated",
 ]);
 
 /**

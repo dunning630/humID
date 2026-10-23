@@ -62,6 +62,16 @@ export function clearKeys() {
   R.hooks.stopMessaging?.(); // whatever messaging decrypted goes with the keys
 }
 
+/**
+ * LIVE-06: Android or iOS destroyed this device's biometric keys. Tell the server (best
+ * effort; no sign-in needed, there's nothing left to sign with), so the holder's Activity
+ * shows it and the device is marked as needing setup again. Never from a duress session.
+ */
+function reportKeysGone(id) {
+  if (!id?.server?.id || !id?.device?.id || S.decoy.value) return;
+  R.api?.reportKeysGone?.({ id: id.server.id, device: id.device.id }).catch(() => {});
+}
+
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
 export function needVault() {
   if (S.offline.value) throw Object.assign(new Error("offline"), { code: "offline" });
@@ -101,7 +111,7 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     return out;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1600);
-    if (e?.code === "key_invalidated") R.hooks.keyGone?.();
+    if (e?.code === "key_invalidated") { reportKeysGone(id); R.hooks.keyGone?.(); }
     throw e;
   } finally {
     wipe(secret, both);
