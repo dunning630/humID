@@ -60,10 +60,15 @@ pinned to, and SHA-256 checksums (`tools/bundle-release.mjs`).
 - **One or a few platforms:** Actions → *Release apps* → platforms: `android`
   (or `ios,android`, or `all`).
 - **Desktop apps are paused** (2026-10-17, see [docs/SECURITY.md](docs/SECURITY.md)):
-  a publishing run leaves macOS, Windows and Linux out with a warning (they can
-  still be built, unpublished, to test). Set the repository variable
-  `HUMID_DESKTOP_RELEASES=on` to publish them again. HumID Server for Windows
-  is a server, not a desktop app, and isn't affected.
+  since 2026-10-23 no run builds the Mac, Windows or Linux desktop apps: `all`
+  means `ios,android,linux`, and naming `macos`, `windows` or `linux-desktop` is
+  skipped with a warning. Set the repository variable `HUMID_DESKTOP_RELEASES=on`
+  to build and publish them again. HumID Server for Windows is a server, not a
+  desktop app, and isn't affected.
+- **`linux` is HumID Server for Linux** (deploy/linux, `server-linux.yml`): the
+  same server as the Windows package, as a systemd service. Each run installs it
+  on a fresh Ubuntu runner and smoke-tests, backs up, restores and uninstalls it.
+  With *publish_server* ticked it becomes a draft release, `server-linux-v<version>`.
 - **Everything:** bump `apps/mobile/package.json`, tag `app-vX.Y.Z`; a draft
   GitHub release collects every platform's installers.
 - Each app embeds `modules.json` listing the package versions inside it, so a

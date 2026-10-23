@@ -4,7 +4,11 @@ name: Release apps
 # secrets exist) and uploads on its own runner.
 #
 #   Actions > Release apps > Run workflow > platforms: "android"  (or "all", "ios,android", …)
-#   Tag app-vX.Y.Z  → all five, attached to a draft GitHub release.
+#   Tag app-vX.Y.Z  → iPhone and Android, plus HumID Server for Linux, attached to a draft GitHub release.
+#   Desktop apps are paused (2026-10-23): no run builds the Mac, Windows or Linux desktop apps
+#   unless the repository variable HUMID_DESKTOP_RELEASES is on. "linux" now means HumID
+#   Server for Linux (server-linux.yml); the Linux desktop app is "linux-desktop".
+#   "all" means ios,android,linux.
 #   Or tick "Publish apps" when you run it: a pre-release tagged app-v<apps/mobile version>
 #   on the run's commit, with each installer and the whole bundle as one zip.
 #   Every run also leaves one artifact, HumID-<version>-<server>: a "HumID <version>" folder
@@ -42,11 +46,11 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Comma-separated: ios,android,macos,windows,linux — or all — and/or server-windows"
+        description: "Comma-separated: ios,android,linux (the Linux server) — or all — and/or server-windows. (Desktop apps macos, windows, linux-desktop are paused: built only with HUMID_DESKTOP_RELEASES=on)"
         default: android
         required: true
       publish_server:
-        description: "With server-windows: publish it as a release (tag server-win-v<version>)"
+        description: "With server-windows or linux: publish each server as a draft release (tags server-win-v<version>, server-linux-v<version>)"
         type: boolean
         default: false
       publish_apps:
@@ -76,6 +80,7 @@ jobs:
       matrix: ${{ steps.m.outputs.matrix }}
       anyApps: ${{ steps.m.outputs.anyApps }}
       server: ${{ steps.m.outputs.server }}
+      linuxServer: ${{ steps.m.outputs.linuxServer }}
       server_url: ${{ steps.pin.outputs.url }}
       server_kid: ${{ steps.pin.outputs.kid }}
     steps:
@@ -87,9 +92,9 @@ jobs:
           echo "::error::A simulation build (the server inside the app) can't be published as a release. Untick one of the two."
           exit 1
       # Desktop apps are paused (2026-10-17): a desktop gate has no hardware proof a
-      # server can check, so macOS, Windows and Linux apps are not published. They can
-      # still be built to test (unpublished). Set the repository variable
-      # HUMID_DESKTOP_RELEASES=on to publish them again.
+      # server can check. Since 2026-10-23 none is built either: "all" leaves them out, and
+      # naming macos, windows or linux-desktop is skipped with a warning. "linux" is HumID
+      # Server for Linux. HUMID_DESKTOP_RELEASES=on builds and publishes the desktop apps again.
       - id: m
         env:
           PUBLISHING: ${{ (startsWith(github.ref, 'refs/tags/app-v') || inputs.publish_apps == true) && '1' || '' }}
@@ -97,22 +102,28 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           WANT="${PLATFORMS:-all}"
-          WANT="${WANT/all/ios,android,macos,windows,linux}"
+          if [ "$DESKTOP_RELEASES" = "on" ]; then WANT="${WANT/all/ios,android,macos,windows,linux-desktop,linux}"; else WANT="${WANT/all/ios,android,linux}"; fi
           python3 - "$WANT" <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os, sys
-          runners = {"ios": "macos-26", "macos": "macos-26", "windows": "windows-latest", "linux": "ubuntu-22.04", "android": "ubuntu-22.04"}
+          runners = {"ios": "macos-26", "macos": "macos-26", "windows": "windows-latest", "linux-desktop": "ubuntu-22.04", "android": "ubuntu-22.04"}
           want = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
           server = "server-windows" in want
-          apps = [p for p in want if p != "server-windows"]
+          linux_server = "linux" in want
+          apps = [p for p in want if p not in ("server-windows", "linux")]
           bad = [p for p in apps if p not in runners]
           if bad: sys.exit(f"Unknown platform(s): {bad}")
-          desktop = [p for p in apps if p in ("macos", "windows", "linux")]
+          paused = [p for p in apps if p in ("macos", "windows", "linux-desktop")]
+          if paused and os.environ.get("DESKTOP_RELEASES") != "on":
+              print(f"::warning::Desktop apps are paused and aren't built: left out {', '.join(paused)} (HUMID_DESKTOP_RELEASES=on builds them)", file=sys.stderr)
+              apps = [p for p in apps if p not in paused]
+          desktop = [p for p in apps if p in ("macos", "windows", "linux-desktop")]
           if desktop and os.environ.get("PUBLISHING") and os.environ.get("DESKTOP_RELEASES") != "on":
               print(f"::warning::Desktop apps are paused and won't be published: left out {', '.join(desktop)}", file=sys.stderr)
               apps = [p for p in apps if p not in desktop]
           print("matrix=" + json.dumps({"include": [{"platform": p, "runner": runners[p]} for p in apps]}))
           print("anyApps=" + json.dumps(bool(apps)))
           print("server=" + json.dumps(server))
+          print("linuxServer=" + json.dumps(linux_server))
           EOF
       # The server the apps are pinned to. A published app must pin its server's key, and
       # only a repository variable may set it then: never the free-form server_kid box.
@@ -176,6 +187,15 @@ jobs:
     needs: [plan, guard]
     if: needs.plan.outputs.server == 'true'
     uses: ./.github/workflows/server-windows.yml
+    with:
+      publish: ${{ inputs.publish_server == true }}
+    permissions:
+      contents: write
+
+  server-linux:
+    needs: [plan, guard]
+    if: needs.plan.outputs.linuxServer == 'true'
+    uses: ./.github/workflows/server-linux.yml
     with:
       publish: ${{ inputs.publish_server == true }}
     permissions:
@@ -256,10 +276,10 @@ jobs:
 
       # ---------------- Linux ----------------
       - name: Linux · system libraries
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux-desktop'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev rpm
       - name: Linux · build .deb .rpm .AppImage
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux-desktop'
         run: npm run tauri -- build
 
       # ---------------- Windows ----------------
@@ -541,7 +561,7 @@ jobs:
   # the server the apps are pinned to, and checksums. Download it from the run's
   # Artifacts: HumID-<version>-<server>.
   bundle:
-    needs: [plan, guard, build, server-windows]
+    needs: [plan, guard, build, server-windows, server-linux]
     # bundle whatever built, even if one platform failed (but never past the guard)
     if: always() && needs.plan.result == 'success' && needs.guard.result == 'success'
     runs-on: ubuntu-22.04
@@ -619,7 +639,7 @@ jobs:
 
           **Download:** \`$BUNDLE_NAME.zip\` has every app in its own folder, or take one installer below.
           **Android:** open the \`.apk\` on the phone and allow installing from that app. **Windows:** run the \`-setup.exe\`.
-          **Linux:** \`.AppImage\`, \`.deb\` or \`.rpm\`. **Mac:** the unsigned \`.zip\` needs right-click > Open (Touch ID needs a signed build).
+          **Linux Server:** \`HumID-Server-Linux-*.tar.gz\`, the vault server as a systemd service (README.txt inside).
           **iPhone:** not included until Apple signing is set up.
 
           $notes

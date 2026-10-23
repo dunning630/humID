@@ -1,0 +1,110 @@
+name: Release HumID Server for Linux
+
+# Builds HumID-Server-Linux-<version>.tar.gz (deploy/linux), installs it on a fresh Ubuntu
+# runner exactly as a person would (systemd service, sealed key), smoke-tests it with and
+# without an access pass, backs up, restores and uninstalls. With "publish" it creates a
+# DRAFT release tagged server-linux-v<version>. The version is the server's
+# (deploy/windows/package.json): one server, a Windows and a Linux package.
+#
+#   Actions > Release apps > platforms "linux" (or "all"); or this workflow on its own.
+
+on:
+  workflow_call: # from release.yml (platforms: linux)
+    inputs:
+      publish:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a draft release (tag server-linux-v<version> on this commit). Unticked: build and test only."
+        type: boolean
+        default: false
+  pull_request:
+    paths: ["deploy/linux/**", ".github/workflows/server-linux.yml"]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      NODE_NO_WARNINGS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --ignore-scripts
+      - id: version
+        run: echo "version=$(node -p "require('./deploy/windows/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: node deploy/linux/build.mjs --tar
+      - name: Install from the tarball and smoke-test (as a person would)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pkg" && tar -xzf deploy/linux/out/HumID-Server-Linux-*.tar.gz -C "$RUNNER_TEMP/pkg"
+          sudo "$RUNNER_TEMP/pkg/humid-server/bin/humid" install --policy biometric
+          sudo humid status
+          sudo humid show | grep -q '^HUMID_SEAL=file'
+          test "$(sudo stat -c '%U %a' /var/lib/humid)" = "humid 700"
+          sudo humid selftest
+          code=$(sudo humid mint 1 ci | grep -o 'HA-[0-9A-Z-]*' | tail -1)
+          [ -n "$code" ] || { echo "::error::humid mint printed no access code"; exit 1; }
+          out=$(sudo humid selftest "$code"); echo "$out"
+          echo "$out" | grep -q 'blind-signed pass' || { echo "::error::the full flow didn't run with an access pass"; exit 1; }
+      - name: Backup, restore, update in place, uninstall
+        run: |
+          set -euo pipefail
+          kid=$(sudo /opt/humid/node/bin/node -p "require('/var/lib/humid/server.json').kid")
+          mkdir -p "$RUNNER_TEMP/usb" "$RUNNER_TEMP/bak"
+          sudo humid backup-key new "$RUNNER_TEMP/usb/humid-backup.key"
+          sudo humid backup "$RUNNER_TEMP/bak"
+          sudo humid restore "$RUNNER_TEMP"/bak/HumID-backup-*.humidbak "$RUNNER_TEMP"/bak/HumID-keyshare-*.humidbak "$RUNNER_TEMP/usb/humid-backup.key"
+          test "$(sudo /opt/humid/node/bin/node -p "require('/var/lib/humid/server.json').kid")" = "$kid" || { echo "::error::the restored server has another identity"; exit 1; }
+          sudo "$RUNNER_TEMP/pkg/humid-server/bin/humid" install
+          test "$(sudo /opt/humid/node/bin/node -p "require('/var/lib/humid/server.json').kid")" = "$kid" || { echo "::error::reinstalling changed the server's identity"; exit 1; }
+          sudo humid selftest
+          sudo humid uninstall --remove-data
+          ! systemctl is-active --quiet humid
+      - name: Log on failure
+        if: failure()
+        run: sudo journalctl -u humid -n 200 --no-pager || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 · Release apps bundles it
+        with:
+          name: HumID-Server-Linux
+          path: deploy/linux/out/HumID-Server-Linux-*.tar.gz
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # the only job that may create the (draft) release; it installs and runs no dependencies
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: HumID-Server-Linux, path: out }
+      - name: Release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected version"; exit 1; }
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          HumID Server for Linux $VERSION: the HumID vault server as one systemd service, the same server as HumID Server for Windows $VERSION.
+
+          **Install:** \`tar -xzf HumID-Server-Linux-$VERSION.tar.gz && cd humid-server && sudo ./bin/humid install\`, then \`sudo humid expose tailscale\`. Steps are in \`README.txt\` inside.
+
+          Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).
+          EOF
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: server-linux-v${{ needs.build.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: HumID Server for Linux ${{ needs.build.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
+          draft: true
+          files: out/HumID-Server-Linux-*.tar.gz

@@ -3,6 +3,9 @@
 Two ways:
 
 - **On one Windows PC, no Docker:** [windows/README.md](windows/README.md).
+- **On one Linux machine, no Docker:** HumID Server for Linux (`node deploy/linux/build.mjs --tar`, or the
+  Linux Server folder of a release): `sudo ./bin/humid install`, a systemd service with its key sealed to
+  the TPM. Instructions in [linux/scripts/README.txt](linux/scripts/README.txt).
 - **On VMs and shared storage (server 3.0):** [../docs/DEPLOY-VMS.md](../docs/DEPLOY-VMS.md): front, core and keys on separate VMs over mutual TLS, secrets sealed under a TPM-bound key, encrypted backups.
   Unzip, double-click the installer, then give it an https address with
   Tailscale Funnel. Good for a pilot on a laptop.
