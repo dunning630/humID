@@ -166,8 +166,13 @@ response meta       { s: status, h?: headers }
 - Each client network (an IPv4 address or an IPv6 /64) may hold 20 sessions
   that haven't signed in; a 21st replaces its own oldest. When the whole table
   (50,000) is full, the least recently used session that hasn't signed in makes
-  room, so a flood can't lock out people signing in. Only a table of signed-in
-  sessions answers `busy`.
+  room, so a flood can't lock out people signing in. One account holds at
+  most 16 signed-in sessions (`HUMID_SESSIONS_PER_ACCOUNT`); signing in again
+  past that drops that account's own least recently used session, never the
+  new one and never another account's. Only a table of signed-in sessions
+  answers `busy`, and filling it takes about 3,000 accounts, each registered
+  (with a paid pass where registration needs one) and signed in with a live
+  check, inside a 15-minute idle window.
 - A step-up ticket's `seq` is sent in exactly one frame; the client refuses to
   use a ticket twice (`ticket_used`), because a second frame would reuse its
   AES-GCM nonce.
