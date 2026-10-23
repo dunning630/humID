@@ -1,14 +1,106 @@
 # Devices and recovery
 
-> **Two-proof recovery (v2)** is now the default for new accounts: the seed is
-> split into witness, ID-anchor and seal-card parts (and, in 4.0, a security-key
-> part: [SECURITY-KEY.md](SECURITY-KEY.md)), and any recovery needs two different
-> kinds of proof, with waits set by the evidence. See [CONTINUITY.md](CONTINUITY.md). The v1 card and contacts below still work
+> **Two recovery modes.** Each holder picks one at setup: **only my own
+> devices** (holder-only) or **a safe way back in** (hardened, two proofs + a
+> wait + a veto, the recommended default). See
+> [Two recovery modes](#two-recovery-modes) below.
+>
+> **Two-proof recovery (v2)** is what hardened mode uses: the seed is split
+> into witness, ID-anchor and seal-card parts (and, in 4.0, a security-key
+> part: [SECURITY-KEY.md](SECURITY-KEY.md)), and any recovery needs two
+> different kinds of proof, with waits set by the evidence. See
+> [CONTINUITY.md](CONTINUITY.md). The v1 card and contacts below still work
 > for accounts that set them up earlier, and the app offers to upgrade them.
 
 Status: POC. Code: `packages/recovery`, `services/recovery`, `services/identity`,
-`apps/mobile/src/core/controller.js`. Tests: `tests/recovery.test.js`,
-`tests/e2e/recovery.test.js`.
+`apps/mobile/src/core/` (`enroll.js`, `join.js`, `recovery.js`, `recmode.js`).
+Tests: `tests/recovery.test.js`, `tests/e2e/recovery.test.js`,
+`tests/e2e/recovery-modes.test.js`, `tests/recovery-modes-app.test.js`,
+`tests/e2e/recovery-epochs.test.js`.
+
+## Two recovery modes
+
+At setup, before the first face or fingerprint check, the app asks **"If you
+lose every device, how do you want to be able to get back in?"**
+
+| | Only my own devices (holder-only) | A safe way back in (hardened, recommended) |
+|---|---|---|
+| Who can open the vault | a live check on a device you already set up | the same, plus a new device after two proofs and a wait |
+| What HumID's servers keep for recovery | **nothing** | a recovery card blob, witness pieces, an ID-chip part and security-key parts, each locked so the server can't open it on its own |
+| Lose one device | add a new one from another of your devices | the same, or recover |
+| Lose every device | **the vault is gone for good. No one can bring it back, not HumID** | any two proofs, then a wait any surviving device can cancel |
+| What setup asks for next | a second device, at once (it's your only safety net) | your recovery card, then a second proof and a second device |
+
+Hardened is selected when the screen opens. Choosing holder-only needs an
+explicit "I understand". Either way the choice can be changed later under
+You → Recovery.
+
+### What makes holder-only true, not a setting
+
+- **No recovery part is made.** A holder-only setup makes no recovery card,
+  and the app never calls the card, witness, ID-chip or security-key APIs.
+- **The choice is signed by the account key.** The app signs the statement
+  `HUMID-RECMODE-v1 ‖ lp(account id, mode, version, epoch)` with the
+  account's ML-DSA-87 key. That key is derived from the account seed, which
+  only the holder's devices have. Identity keeps the statement and shows it
+  in `/identity/me`; the recovery service keeps it with the account's public
+  key. Setup and every change are recorded as `recovery.mode_set` in the
+  ledger, so they're in the public log.
+- **The recovery service refuses, itself.** For a holder-only account it
+  refuses `409 holder_only` to: storing a card, witnesses, an ID chip or a
+  security key; starting or adding to any recovery that names the account (a
+  card, witnesses, a chip, a key, a witness releasing a piece); releasing a
+  recovery; and letting a device join through one. Adding a device from
+  another of your own devices (section 1) still works.
+- **A server can't flip it quietly.** The recovery service checks the
+  stored signature again on every one of those routes. A row someone changed
+  on disk no longer verifies, and then the account is treated as holder-only:
+  nothing more is stored or released. The holder's own phone checks the
+  statement against its account key too, and says so if it doesn't verify.
+
+### Switching
+
+- **Holder-only → hardened** adds ways back in. It needs a fresh live check,
+  signs a new statement, and is recorded. Then you set up your proofs.
+- **Hardened → holder-only** removes them, so it's destructive and runs in
+  order. First every recovery piece the server holds is deleted (card,
+  witnesses, ID chip, security keys), each with its own live check. Only then
+  is the new statement signed and sent. The recovery service refuses the
+  switch (`escrow_remains`) while anything is left, and cancels any recovery
+  under way when it happens. Pieces already in other people's hands (a printed
+  card, a witness's phone) can't be deleted from here. The switch also starts
+  a new set of pieces (a new epoch, below), so those pieces can never be
+  combined with anything again.
+
+### Recovery epochs: making old pieces useless
+
+All recovery parts of a set lie on one line through the account seed, and any
+two of them rebuild it. Removing a witness or replacing a card only stops that
+piece counting **on this server**: the piece itself still fits with the
+others. So hardened mode has **Make new recovery pieces** (You → Recovery).
+One live check signs a new epoch into the mode statement. Then:
+
+- every new part comes from a different line (`quorumParts(seed, epoch)`), and
+  the epoch is bound into the card and key encryption and the witness piece;
+- the recovery service deletes every piece it held from older epochs, cancels
+  any recovery under way, and refuses pieces made for an older epoch;
+- `combineQuorum` refuses to mix parts from two epochs.
+
+A removed witness's piece, an old card, or its blob in an old server backup
+then opens nothing, anywhere. You set up your proofs again. Every mode switch
+also starts a new epoch.
+
+### What the operator can and can't do
+
+| | Holder-only | Hardened |
+|---|---|---|
+| Open a document | no | no |
+| Rebuild the account seed from what it stores | no: it stores no recovery parts | no: every part it stores is locked by something it doesn't have (the card code, a witness's key, the chip, a security key) |
+| …with one more thing stolen from the holder | no | **still no.** It holds no part it can open, so it needs two of the holder's proofs, like anyone else. Before the ID-chip change ([CONTINUITY.md](CONTINUITY.md#the-identity-anchor-icao-9303)) the server could open the anchor part, so one stolen card was enough |
+| Skip the wait or the veto | no recovery to skip | the waits and the veto are server rules: a dishonest server that also had two of the holder's proofs could release early. The cryptography guarantees confidentiality, not the clock |
+| Turn recovery on behind the holder's back | no: the mode is signed by the holder's account key, and each of the holder's devices checks it | n/a |
+| Turn recovery off, or deny one | yes: it can refuse service. That's availability, not access | yes, same |
+| Learn who you are | nothing beyond the account | if you link an ID chip: document type and country, and your name and birth date while they pass through (not kept) |
 
 ## The problem
 
@@ -82,6 +174,15 @@ the same as typing it. The code is a hash of N's public keys, so a server that s
 keys would also have to find a 60-bit second preimage within the 10-minute
 window. Approval needs a fresh biometric check on E.
 
+Before N joins, both screens show a **match code** and the person compares
+them: `accountCheck = SHA3("HUMID-ACCOUNT-CHECK-v2" ‖ lp(accountId, L.kemPk,
+L.xPk))`, 8 characters. It commits to the account **and this link's keys**,
+so a server that sealed some other account's seed to N would show a different
+code, and it couldn't prepare a look-alike account in advance (the link keys
+don't exist until the link starts).
+
+This route works in both recovery modes: it needs a device you already have.
+
 ## 2. Recovery card, v1 (72-hour wait)
 
 At setup the app shows a card code: 120 random bits as 24 Crockford base32
@@ -119,8 +220,8 @@ Security → Be a recovery contact. Like the link code, it is a hash of their
 public keys, so the server cannot substitute keys.
 
 To recover, the new device binds its biometric, makes a recovery key pair `R`,
-and shows a code (a hash of `R`'s public keys) to send to the contacts. Each
-contact:
+and shows a code (a hash of `R`'s public keys, 16 characters, because a request
+can stay open for a week) to send to the contacts. Each contact:
 
 1. enters the code (verified against the keys the server returns);
 2. confirms with a biometric check to see who is asking (opens the shares they hold);
@@ -136,11 +237,12 @@ The contacts never see `A`, and neither does the server.
 
 | Where | What |
 |---|---|
-| Setup | The first device makes a recovery card under the same biometric check and asks you to store it before opening the vault. |
-| Welcome → I already have HumID | Choose another device, your card or your contacts. This device binds its biometric first, so a 72-hour wait survives closing the app. |
-| Security → Devices | Add a device (type its code), remove a lost one. |
-| Security → Recovery | Make or replace your card, choose 2–5 contacts, be someone's contact, help someone recover. |
-| Vault and Security | An alert while any recovery of your HumID is in progress, with a cancel button. |
+| Setup | Choose the recovery mode. Hardened: the first device makes a recovery card under the same biometric check and asks you to store it before opening the vault. Holder-only: no card; setup asks you to add a second device straight away. |
+| Welcome → I already have HumID | Choose another device, or two proofs (or an older card or contacts). For a holder-only HumID only "from another device" is offered. This device binds its biometric first, so a long wait survives closing the app. |
+| You → Devices | Add a device (type its code, then compare the match code), remove a lost one. |
+| You → Recovery | The recovery mode and the switch. Hardened: make or replace your card, choose 2–5 witnesses, link your ID chip, add security keys, make new recovery pieces. |
+| You → Protection | What's left to do. Holder-only: a second and a third device, and a warning while you have only one. |
+| Vault and You | An alert while any recovery of your HumID is in progress, with a cancel button. |
 
 `npm run dev` shortens the wait to 2 minutes (`RECOVERY_DELAY_MS`) so you can
 try every path on one machine.
@@ -161,6 +263,13 @@ also can't save an armed vault from a lost phone: it waits 24 hours or more,
 longer than any check-in window.
 
 ## Limits in this POC
+
+- Holder-only means what it says. Lose every device and every holder-held
+  backup, and the vault is gone. HumID can't help, and setup says so plainly.
+- Making new recovery pieces makes old pieces useless for **recovery**. It
+  doesn't change the account seed. Someone who already rebuilt the seed (from
+  two old pieces, before the change) keeps it. Rotating the seed itself is the
+  follow-up below.
 
 - Alerts appear when the owner (or a witness) opens HumID. There are no push or email alerts yet.
 - Removing a device does not rotate `A`. A thief who defeated a lost phone's
