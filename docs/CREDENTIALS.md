@@ -118,7 +118,16 @@ that answer the question:
 
 - `age_over_18/21/25/65` from the issuer's own flag when shared, otherwise
   derived from the birth date (and marked `derived`).
-- `valid_document` from the expiry date and the revocation check.
+- `valid_document`: `true` only when the document hasn't expired, the
+  issuer's revocation list was checked (`checkStatus`) and says valid, and the
+  presenting device proved it holds the credential. Without a status check,
+  for a credential whose issuer publishes no list (passports), or for one
+  whose holder wasn't proven (a chip without Active Authentication), it's
+  refused (`unchecked`) unless the caller passes `allowUnchecked: true`; the
+  claim then states what it rests on in `basis.valid_document`
+  (`{ expiry, revocation: "valid" | "no-list" | "unchecked", holder:
+  "proven" | "not-proven" }`), inside the commitment. `false` (expired,
+  revoked, suspended) needs neither.
 - `issuing_country`, `issuing_jurisdiction`.
 - Names, birth date, document number and address only with
   `identifying: true`; a photo never goes into a claim.

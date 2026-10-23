@@ -50,14 +50,24 @@ export function canonical(v) {
  *   share:       fact names (keys of FACTS)
  *   identifying: must be true to include names, birth date, number, address or photo
  *   persona:     optional persona ID (HC-…) to bind the commitment to
+ *   allowUnchecked: let `valid_document` be true on a weaker basis (revocation
+ *                not checked, or the holder not proven); the claim's `basis`
+ *                says which
+ *
+ * `valid_document: true` means: not expired, the issuer's revocation list was
+ * checked (checkStatus) and says valid, and the presenting device proved it
+ * holds the credential. Anything less is refused unless allowUnchecked, and
+ * the claim then carries the basis it rests on (review finding CREDS-05).
+ * `false` (expired, revoked, suspended) never needs more.
  */
-export function minimise(result, { share, identifying = false, persona, now = new Date() } = {}) {
+export function minimise(result, { share, identifying = false, persona, allowUnchecked = false, now = new Date() } = {}) {
   if (!result || !result.assurance) fail("bad_request", "Minimise a verified result.");
   if (!Array.isArray(share) || !share.length) fail("bad_request", "Say which facts to keep.");
   if (["printed", "signature-only"].includes(result.assurance)) fail("not_verified", "Only a verified credential can back a claim.");
   const c = result.claims;
   const facts = {};
   const derived = [];
+  let basis = null;
   for (const f of share) {
     if (!FACTS[f]) fail("bad_request", `"${f}" isn't a fact HumID shares.`);
     if (FACTS[f].identifying && !identifying) fail("identifying", `"${f}" identifies the person; pass identifying: true to share it.`);
@@ -75,7 +85,20 @@ export function minimise(result, { share, identifying = false, persona, now = ne
     }
     if (f === "valid_document") {
       const exp = c.expiry_date ? new Date(`${c.expiry_date}T23:59:59Z`) : result.validUntil ? new Date(result.validUntil) : null;
-      facts.valid_document = !!exp && exp >= now && result.status?.status !== "revoked" && result.status?.status !== "suspended";
+      const st = result.status?.status ?? null;
+      const revocation = st == null ? "unchecked" : st === "none" ? "no-list" : st;
+      const holder = result.holderBound === true ? "proven" : "not-proven";
+      basis = { expiry: exp ? exp.toISOString().slice(0, 10) : null, revocation, holder };
+      if (!exp || exp < now || st === "revoked" || st === "suspended") { facts.valid_document = false; continue; }
+      if (!["valid", "none", null].includes(st)) fail("not_available", "The issuer's status for this credential isn't one HumID can read.");
+      if (st !== "valid" || holder !== "proven") {
+        if (!allowUnchecked) {
+          fail("unchecked", st == null ? "Check the credential's revocation status (checkStatus) before claiming it's a valid document."
+            : st === "none" ? "The issuer publishes no revocation list for this credential, so it can't be shown valid; pass allowUnchecked to claim it on its expiry date alone."
+              : "The device didn't prove it holds this credential, so it could be a copy; pass allowUnchecked to claim a valid document anyway.");
+        }
+      }
+      facts.valid_document = true;
       continue;
     }
     if (f === "portrait") fail("bad_request", "A photo can't go into a claim; keep it in the vault record.");
@@ -88,6 +111,8 @@ export function minimise(result, { share, identifying = false, persona, now = ne
     schema: CLAIM_SCHEMA, type: result.type, assurance: result.assurance,
     issuer: { country: result.issuer?.country || null, jurisdiction: result.issuer?.jurisdiction || null },
     facts, derived, status: result.status?.status || "unchecked", checkedAt: now.toISOString(),
+    // What `valid_document` rests on, stated whenever it's shared.
+    ...(basis ? { basis: { valid_document: basis } } : {}),
   };
   if (persona !== undefined) {
     if (typeof persona !== "string" || !/^HC-[0-9A-Z]{4}(-[0-9A-Z]{4}){4}$/.test(persona)) fail("bad_request", "That isn't a persona ID.");
