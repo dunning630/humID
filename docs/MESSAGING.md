@@ -59,6 +59,13 @@ in, plus one freshness window, not for as long as they like. The issuer publishe
 key and the next one (so phones switch on time), and the public halves of retired keys for as
 long as their stamps can still arrive; a retired key's private half is erased when its hour ends.
 
+**Key changes don't drop messages (MSG-07).** The next hour's key is published an hour before
+it's used, and phones fetch keys before their list runs out, at least daily, and whenever the
+server answers `key_changed`. A message stamped under a key the phone hasn't fetched yet isn't
+opened (and its ratchet key isn't used up): the phone fetches the keys and opens it then. Only a
+key that's still unknown after a fresh fetch, one the server never published, gets the message
+discarded as not live.
+
 **Here, away, and both here.** A conversation is validated human to human ("Both here")
 only while, within one freshness window (5 minutes):
 

@@ -202,13 +202,27 @@ async function flush() {
  * The stamp keys: this epoch's and the next (an hour each), and the retired ones whose stamps
  * can still arrive. Fetched at start and again before the published ones run out (MSG-01).
  */
+let archive = [];     // retired stamp keys (public), merged across fetches
+let keysAt = 0;       // when the keys were last fetched
 async function loadKeys() {
-  const k = await R.api.msgKeys();
-  keyset = M.importStampKeys(k.stamp.keys, { passKeys: (k.passKeyIds || []).map((id) => ({ id })), archive: k.stamp.archive || [] });
+  // after the first fetch, only the keys retired since (the server leaves out what this phone has)
+  const since = keyset ? Math.max(0, ...archive.map((k) => k.notAfter)) : 0;
+  const k = await R.api.msgKeys({ since });
+  const pub = k.stamp.keys || [];
+  const ids = new Set(pub.map((x) => x.id));
+  const today = new Date(now()).toISOString().slice(0, 10);
+  const merged = new Map([...archive, ...(keyset?.published || []).map((x) => ({ id: x.id, n: x.n64, e: x.e64, notBefore: x.notBefore, notAfter: x.notAfter, acceptUntil: x.acceptUntil })), ...(k.stamp.archive || [])]
+    .filter((x) => !ids.has(x.id) && x.notAfter <= now() && !(x.acceptUntil && x.acceptUntil < today)).map((x) => [x.id, x]));
+  archive = [...merged.values()].sort((a, b) => b.notAfter - a.notAfter).slice(0, M.MAX_ARCHIVED_STAMP_KEYS);
+  keyset = M.importStampKeys(pub, { passKeys: (k.passKeyIds || []).map((id) => ({ id })), archive });
+  keysAt = now();
 }
-/** Keys good for at least the next few minutes, so a stamp asked for now uses the right epoch's key. */
+/**
+ * Keys good for at least the next few minutes, so a stamp asked for now uses the right epoch's
+ * key, and never more than a day old (MSG-07: a key announced since is known before it's used).
+ */
 async function freshKeys() {
-  if (!keyset || keyset.until - now() < 10 * 60_000) await loadKeys();
+  if (!keyset || keyset.until - now() < 10 * 60_000 || now() - keysAt > 24 * 3600_000) await loadKeys();
 }
 
 /** A stamper for the step-up `proof` of ONE live check (used once, up to the server's limit). */
@@ -220,7 +234,14 @@ function stampWith(proof) {
     if (commits.length > (S.server.value?.policy?.messaging?.stampsPerCheck || 1)) throw Object.assign(new Error("That's more than one live check can approve. Try a smaller step."), { code: "too_many_stamps" });
     used = true;
     const drafts = commits.map((c) => M.blindStamp(keyset, c, { at }));
-    const sigs = await R.api.stamp({ kid: drafts[0].draft.kid, blinded: drafts.map((d) => d.blinded) }, proof);
+    let sigs;
+    try { sigs = await R.api.stamp({ kid: drafts[0].draft.kid, blinded: drafts.map((d) => d.blinded) }, proof); }
+    catch (e) {
+      // The key changed under us (an epoch ended mid-check, or this phone's list was stale). The
+      // check's approval is used up, so fetch the keys now; the next check will use the right one.
+      if (e?.code === "key_changed") { await loadKeys().catch(() => {}); throw Object.assign(new Error("The server just changed its stamp key. Nothing was sent. Try again."), { code: "key_changed" }); }
+      throw e;
+    }
     return drafts.map((d, i) => M.finalizeStamp(keyset, d.draft, sigs[i]));
   };
   return Object.assign(async (c, opts) => (await many([c], opts))[0], { many });
@@ -361,7 +382,7 @@ export function stop() {
   // Ratchet keys and message bodies are overwritten in memory, not left for the garbage collector (L4).
   for (const c of convs.values()) c.unload().catch(() => {});
   reviews.clear(); convs.clear(); pendingCount.clear(); requests.clear();
-  list = null; keyset = null; openThread = null;
+  list = null; keyset = null; archive = []; keysAt = 0; openThread = null;
   batch(() => { S.msg.value = null; S.thread.value = null; });
 }
 
@@ -379,6 +400,7 @@ export function poll() {
   polling ||= (async () => {
     try {
       if (!document.hidden && !S.offline.value) {
+        await freshKeys().catch(() => {}); // a day old at most, and the next epoch's before it starts
         await flush();
         await fetchAll();
         await expireInvites();
@@ -455,15 +477,24 @@ async function fetchAll() {
 async function readWaiting() {
   if (!fresh()) return;
   const waiting = (await listWaiting()).filter((w) => w.conv);
-  let changed = false;
+  let changed = false, refetched = false;
   for (const r of waiting) {
     const c = convs.get(r.conv);
     const ct = contactOf(r.conv);
     if (c && ct && c.status !== "erased") {
       try {
         // receivedAt: when it came off the relay, so reading late doesn't make an old check look fresh (H1)
-        const m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at });
-        if (m.refused) note(ct, "A message arrived without a live check. It was discarded unread.");
+        let m;
+        try { m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at, holdUnknownKey: true }); }
+        catch (e) {
+          // Stamped under a key this phone hasn't fetched (MSG-07): nothing moved. Fetch the keys
+          // once and open it again; a key still unknown then was never published, and the message
+          // is discarded as not live.
+          if (e?.code !== "unknown_stamp_key") throw e;
+          if (!refetched) { refetched = true; await loadKeys(); }
+          m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at });
+        }
+        if (m.refused) note(ct, "A message couldn't be confirmed as sent with a live check, so it was discarded unread.");
         else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent from a duress unlock."); }
         if (m.kind === "close" && !m.refused) note(ct, "They ended this conversation.");
         if (m.kind === "delete" && !m.refused && m.deleted) note(ct, `They deleted ${m.deleted === 1 ? "a message" : `${m.deleted} messages`} for both of you.`);
@@ -471,7 +502,8 @@ async function readWaiting() {
         if (!m.refused) ct.lastAt = Math.max(ct.lastAt || 0, m.at || 0);
         changed = true;
       } catch (e) {
-        if (e?.code === "persist_failed") break; // try again later; nothing was applied
+        // try again later; nothing was applied (a save failed, or the keys couldn't be fetched)
+        if (e?.code === "persist_failed" || e?.code === "unknown_stamp_key" || e?.status || e instanceof TypeError) break;
         // not_for_us, replay_or_old, malformed, closed: nothing to show; drop it
       }
     }
