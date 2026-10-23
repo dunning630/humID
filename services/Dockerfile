@@ -8,7 +8,7 @@
 # gcr.io/distroless/nodejs22-debian12:nonroot@sha256:…). The registries weren't
 # reachable when this was written; Dependabot's docker updates keep a pinned digest
 # current. Until then a tag can move under a rebuild.
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY packages ./packages
