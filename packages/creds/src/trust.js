@@ -23,7 +23,8 @@
 //
 // Lists only move forward: a VICAL older than the one applied (by issue ID,
 // then date) is refused, so an attacker who can replay an old list can't
-// bring back a root that was removed.
+// bring back a root that was removed; a master list signed before the one
+// applied is refused, so a replay can't drop CSCAs added since.
 
 import { readVical, parseCertificate, countryCode, stateCode } from "@humid/mdoc";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -171,15 +172,37 @@ export function createTrustStore(state) {
     },
 
     /**
-     * CSCAs from a master list, already checked by csca.js on the server
+     * CSCAs from a master list, already checked by @humid/anchor on the server
      * ([{ der, country }]); replaces that source's previous set.
+     *   info.signedAt: when the list was signed (its CMS signing time, ISO).
+     *   info.sha256:   the list's digest.
+     * Lists only move forward, as for VICALs (review finding CREDS-06): master
+     * lists carry no issue number, so the signing time orders them. One signed
+     * before the list already applied, or at the same time with different
+     * contents, or with no signing time once one was seen, is refused
+     * (`rollback`), so replaying an older list can't drop CSCAs added since. A
+     * signing time more than a day ahead is refused too, so one bad clock can't
+     * block every list after it. The same list again changes nothing.
+     * Returns { unchanged }.
      */
-    setCscas(source, entries, info = {}) {
+    setCscas(source, entries, info = {}, { now = new Date() } = {}) {
       if (!/^[a-z0-9:_-]{1,40}$/.test(source)) fail("bad_request", "Name the master list source with letters, digits, - or _.");
+      const signedAt = info.signedAt == null ? null : parseDate(info.signedAt);
+      if (info.signedAt != null && !signedAt) fail("bad_master_list", "The master list's signing time can't be read.");
+      if (signedAt && signedAt > new Date(now.getTime() + DAY)) fail("bad_master_list", "The master list is dated in the future.");
+      const prev = s.sources[source];
+      const prevSigned = parseDate(prev?.signedAt);
+      if (prev && info.sha256 && prev.sha256 === info.sha256) return { unchanged: true };
+      if (prevSigned) {
+        if (!signedAt) fail("rollback", "This master list has no signing time, so it can't be shown to be newer than the one applied.");
+        if (signedAt < prevSigned) fail("rollback", "This master list is older than the one already applied.");
+        if (+signedAt === +prevSigned) fail("rollback", "This master list was signed at the same time as the one applied, but has different contents.");
+      }
       const rows = entries.map((e) => ({ der: b64(asBytes(e.der)), fingerprint: fpOf(asBytes(e.der)), country: countryCode(e.country), notAfter: e.notAfter || null, source }));
       s.csca = [...s.csca.filter((e) => e.source !== source), ...rows.filter((r) => r.country)];
-      s.sources[source] = { kind: "master-list", ...info, count: rows.length };
+      s.sources[source] = { kind: "master-list", ...info, signedAt: signedAt ? signedAt.toISOString() : null, count: rows.length };
       bump();
+      return { unchanged: false };
     },
 
     /**

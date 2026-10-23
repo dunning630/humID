@@ -70,7 +70,9 @@ export { safeFetch, statusListFetcher, publicAddress, checkUrl, strictBlockList 
  *   publisherCscas: the publisher's CSCA certificate(s) (PEM, DER or X509Certificate):
  *                   the UN CSCA for ICAO's list, Germany's CSCA for the BSI list
  *   publisherPins:  their SHA-256 fingerprints, confirmed out of band (required)
- * Returns { added, countries }.
+ * Lists only move forward: one signed earlier than the list already applied
+ * for `source` is refused (`rollback`), as applyVical refuses an older VICAL.
+ * Returns { added, countries, signedAt } ({ unchanged: true } for the same list again).
  */
 export function applyMasterList(store, bytes, { source, publisherCscas = [], publisherPins = [], now = new Date() } = {}) {
   if (!publisherPins.length) fail("no_trust", "Pin the master list publisher's certificate fingerprint first.");
@@ -78,13 +80,15 @@ export function applyMasterList(store, bytes, { source, publisherCscas = [], pub
   const pins = publisherPins.map((p) => String(p).toLowerCase().replace(/[^0-9a-f]/g, ""));
   const pinned = certs.filter((c) => pins.includes(createHash("sha256").update(c.raw).digest("hex")));
   if (!pinned.length) fail("no_trust", "None of the publisher certificates given matches a pinned fingerprint.");
-  const cscas = cscasFromMasterList(bytes, { publisherCscas: pinned, now });
+  const { cscas, signingTime } = wrap(() => readMasterList(bytes, { publisherCscas: pinned, now }));
   const entries = cscas
     .filter((c) => now <= new Date(c.validTo))
     .map((c) => ({ der: new Uint8Array(c.raw), country: /(?:^|\n)C=([A-Z]{2})(?:\n|$)/.exec(c.subject)?.[1] || null, notAfter: new Date(c.validTo).toISOString() }))
     .filter((e) => e.country);
-  store.setCscas(source, entries, { appliedAt: now.toISOString(), sha256: createHash("sha256").update(bytes).digest("hex") });
-  return { added: entries.length, countries: [...new Set(entries.map((e) => e.country))].sort() };
+  const signedAt = signingTime ? signingTime.toISOString() : null;
+  const r = store.setCscas(source, entries, { appliedAt: now.toISOString(), signedAt, sha256: createHash("sha256").update(bytes).digest("hex") }, { now });
+  if (r?.unchanged) return { added: 0, countries: [], signedAt, unchanged: true };
+  return { added: entries.length, countries: [...new Set(entries.map((e) => e.country))].sort(), signedAt };
 }
 
 /** The store's CSCAs as X509Certificates, for verifyPassportChip({ cscas }). */

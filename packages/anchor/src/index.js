@@ -59,6 +59,7 @@ const OID = {
   ldsSecurityObject: "2.23.136.1.1.1",
   contentType: "1.2.840.113549.1.9.3",
   messageDigest: "1.2.840.113549.1.9.4",
+  signingTime: "1.2.840.113549.1.9.5",
   countryName: "2.5.4.6",
   subjectKeyId: "2.5.29.14",
   keyUsage: "2.5.29.15",
@@ -384,6 +385,18 @@ export const anchorSummary = (mrz) => ({ document: mrz.documentCode?.startsWith(
 
 /* ---------------- ICAO master lists ---------------- */
 
+/** UTCTime or GeneralizedTime (whole seconds, Z) → Date. */
+function timeOf(t) {
+  const s = Buffer.from(t.value).toString("latin1");
+  const m = t.tag === 23 ? /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s) : t.tag === 24 ? /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s) : null;
+  if (!m) fail("bad_master_list", "The master list's signing time can't be read.");
+  let y = Number(m[1]);
+  if (t.tag === 23) y += y < 50 ? 2000 : 1900;
+  const d = new Date(Date.UTC(y, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])));
+  if (Number.isNaN(d.getTime())) fail("bad_master_list", "The master list's signing time can't be read.");
+  return d;
+}
+
 const ML = { content: "2.23.136.1.1.2", signerEku: "2.23.136.1.1.3", extKeyUsage: "2.5.29.37" };
 
 /**
@@ -393,8 +406,11 @@ const ML = { content: "2.23.136.1.1.2", signerEku: "2.23.136.1.1.3", extKeyUsage
  * the publisher's vetting, so its signer must chain to a CSCA you already
  * trust for that publisher (`publisherCscas`).
  *
- * Returns { publisher, signer, cscas: [X509Certificate] } (expired CSCAs kept:
- * a passport signed under one stays checkable until its own expiry rules say not).
+ * Returns { publisher, signer, signingTime, cscas: [X509Certificate] } (expired
+ * CSCAs kept: a passport signed under one stays checkable until its own expiry
+ * rules say not). signingTime is the signed CMS signing-time attribute (a Date,
+ * or null when the list has none): master lists carry no issue number, so it is
+ * what a store uses to refuse an older list replayed over a newer one.
  */
 export function readMasterList(bytes, { publisherCscas = [], now = new Date() } = {}) {
   return tryRead(() => readMasterListInner(bytes, publisherCscas, now), "bad_master_list", "The master list can't be read.");
@@ -452,5 +468,7 @@ function readMasterListInner(bytes, publisherCscas, now) {
     if (!certFields(x.raw).ca) continue; // only CA certificates belong in a CSCA list
     cscas.push(x);
   }
-  return { publisher: certFields(publisher.raw).country, signer: signer.subject, cscas };
+  const st = attrs.get(OID.signingTime);
+  const signingTime = st ? timeOf(st) : null;
+  return { publisher: certFields(publisher.raw).country, signer: signer.subject, signingTime, cscas };
 }
