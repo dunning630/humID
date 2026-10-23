@@ -18,23 +18,36 @@ import { setDraft, clearDraft, current as draftNow, CARD_DRAFT } from "./drafts.
 
 /* global __HUMID_ALLOW_DEMO__ */
 
+/**
+ * What a decoy session shows: an ordinary account with no recovery set up. No witness names,
+ * no ID chip, no card date (PC-16: names here would tell a coercer whom to press next). Only
+ * what the server offers every account (an ID chip anchor, security keys) is real.
+ */
+const calmRecovery = ({ anchorAvailable = false, keysAvailable = false, keysMax = 4 } = {}) => ({
+  card: { exists: false }, anchor: { available: !!anchorAvailable, exists: false }, settings: {},
+  contacts: { n: 0, threshold: 0, createdAt: null, names: [], scheme: "quorum" },
+  keys: { available: !!keysAvailable, max: keysMax, list: [] },
+  proofs: { witness: false, anchor: false, card: false, key: false }, ready: false, legacy: false,
+});
+
 export async function loadRecovery() {
-  if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; return; }
+  if (S.offline.value) {
+    // The offline copy was written by a real session: a decoy session takes nothing from it
+    // but what the server offers everyone.
+    const copy = R.offline?.recovery || null;
+    S.recovery.value = S.decoy.value
+      ? (copy ? calmRecovery({ anchorAvailable: copy.anchor?.available, keysAvailable: copy.keys?.available, keysMax: copy.keys?.max }) : null)
+      : copy;
+    return;
+  }
   const [card, contacts, anchor, settings, keyList] = await Promise.all([
     quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings()),
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
   ]);
   if (!card || !contacts) return;
   if (S.decoy.value) {
-    // A decoy session shows an ordinary account with no recovery set up: no witness names,
-    // no ID chip, no card date (PC-16: names here would tell a coercer whom to press next).
     // The same requests were made above, so the traffic looks the same.
-    S.recovery.value = {
-      card: { exists: false }, anchor: { available: !!anchor?.available, exists: false }, settings: {},
-      contacts: { n: 0, threshold: 0, createdAt: null, names: [], scheme: "quorum" },
-      keys: { available: !!keyList, max: keyList?.max || 4, list: [] },
-      proofs: { witness: false, anchor: false, card: false, key: false }, ready: false, legacy: false,
-    };
+    S.recovery.value = calmRecovery({ anchorAvailable: anchor?.available, keysAvailable: !!keyList, keysMax: keyList?.max || 4 });
     return;
   }
   const names = [];
