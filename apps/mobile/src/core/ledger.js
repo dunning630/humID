@@ -56,7 +56,8 @@ export async function loadLedger() {
     if (!S.offline.value && l.ok) await rememberLedgerKey(l.keyFp);
     keepOffline({ ledger: l });
     for (const it of S.items.value) R.knownNames.set(it.id, it.name);
-    S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l, S.items.value) : l), names: new Map(R.knownNames), checkedAt: Date.now() };
+    // account: whose page this is, so nothing reads one account's history as another's (core/recmode.js).
+    S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l, S.items.value) : l), names: new Map(R.knownNames), checkedAt: Date.now(), account: S.identity.value?.server?.id };
     checkContinuity();
   } catch (e) { toast(friendly(e), "error"); }
   finally { S.ledgerLoading.value = false; }

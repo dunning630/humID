@@ -647,9 +647,11 @@ export function createGateway({
       // it first: if it can't, nothing is created, so a holder-only account is never one it would
       // store recovery material for.
       const mode = r.recoveryMode && typeof r.recoveryMode === "object" ? { mode: r.recoveryMode.mode, version: r.recoveryMode.version, epoch: r.recoveryMode.epoch, prev: r.recoveryMode.prev, sig: r.recoveryMode.sig } : null;
+      let modeHash;
       if (mode) {
         const m = await internalJson("recovery", "POST", "/internal/recovery-mode", { json: { account: identityOf(r.dsaPk), dsaPk: r.dsaPk, ...mode } }).catch(() => ({ status: 503, data: { error: "recovery_unavailable", message: "recovery service is unavailable" } }));
         if (m.status !== 200) { await refund(); fail(m); }
+        modeHash = m.data?.hash;
       }
       let reg;
       try {
@@ -663,7 +665,8 @@ export function createGateway({
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
-      if (reg.status === 201 && mode) await recordQuietly(s.subject, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: s.deviceId });
+      // hash: the statement's own (recoveryModeHash), so a device compares the ledger's entry with the served statement exactly.
+      if (reg.status === 201 && mode) await recordQuietly(s.subject, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, ...(modeHash ? { hash: modeHash } : {}), at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: s.deviceId });
       // A recovery card made with the account: the registration itself was the live check.
       let cardSet = false;
       if (reg.status === 201 && r.card) {
@@ -877,7 +880,8 @@ export function createGateway({
       const probe = await steps[0]();
       if (probe.status !== 200) fail(probe);
       const from = cur.data.recoveryMode || { mode: "hardened", epoch: 1 };
-      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), ...proved(s, stepUp) });
+      // hash: the statement's, from whichever service checked it first (both return it).
+      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, ...(probe.data?.hash ? { hash: probe.data.hash } : {}), from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), ...proved(s, stepUp) });
       const done = await steps[1]();
       if (done.status !== 200) fail(done);
       return { status: 200, json: { mode: r.mode, version: r.version, epoch: r.epoch } };
