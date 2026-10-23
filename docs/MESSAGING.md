@@ -104,8 +104,18 @@ sender's face or fingerprint", never "verified human".
 - Two people together never leave the screen they're on: the invite turns into the request,
   the asker's screen opens the conversation when approved (both poll every few seconds while
   one waits on the other).
-- The safety code is on both phones while they connect, compared out loud. "Different" blocks
-  approval. What's recorded is what one person can know: "you marked this the same (in person)".
+- The safety code is on both phones while they connect, compared out loud. "Different", on
+  either phone or later in Details, raises a warning that someone may be in between, is recorded
+  on the contact and shown at the top of the conversation, and offers the safe way out
+  (withdraw the request, or delete the conversation without telling anyone). On the approver's
+  phone it also blocks approval. What's recorded is what one person can know: "you marked this
+  the same (in person)", or "different".
+- A failed approval (the check cancelled, the server busy, the stamp key just changed) leaves
+  the invite and the request as they were, so approving again works.
+- Anyone who saw an invite code can post junk to it. One "See who's asking" check opens every
+  request waiting for that invite; anything not made with a live check, or not for this invite,
+  is dropped without being shown, and if several real people asked, the app says so. At most 20
+  requests are kept per invite.
 - Remote invites: the code sits behind "Not together?", with a share option and a warning that
   anyone who sees it can use it once.
 - Storage: the contact list is sealed under a key derived from the account seed inside the

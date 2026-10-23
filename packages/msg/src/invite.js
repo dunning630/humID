@@ -283,6 +283,31 @@ export function acceptRequest(state, persona, request, { now = Date.now() } = {}
   return session;
 }
 
+/**
+ * Approve and send the acceptance as one step that either happens or doesn't (security review
+ * MSG-08). `send(session)` makes and saves the "accept" (it asks for the live stamp); only when it
+ * succeeds is the invite marked used and its one-time keys erased. If the check is cancelled, the
+ * server is busy or the stamp key just changed, the invite and the request are as they were, and
+ * approving again works.
+ * @returns whatever `send` returns, and the session: { session, sent }
+ */
+export async function approveRequest(state, persona, request, send, { now = Date.now() } = {}) {
+  const a = request._accept;
+  if (!a) throw new MsgError("malformed", "Not a request read by readRequest");
+  // work on copies: acceptRequest marks the invite used and wipes what it consumed
+  const trial = structuredClone(state);
+  const req = { ...request, _accept: { ...a, rk0: a.rk0.slice() } };
+  const session = acceptRequest(trial, persona, req, { now });
+  let sent;
+  try { sent = await send(session); }
+  catch (e) { wipe(trial.otkSk, trial.otxSk, trial.secret); throw e; }
+  // done: the real invite is spent the same way, and the original handshake key wiped
+  Object.assign(state, { seen: trial.seen, used: trial.used });
+  closeInvite(state);
+  wipe(a.rk0);
+  return { session, sent };
+}
+
 /** Decline: remembered so the same request can't be shown again. Nothing is sent. */
 export function declineRequest(state, request) {
   if (request._accept) { state.seen.push(toHex(request._accept.th)); wipe(request._accept.rk0); }
