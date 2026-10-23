@@ -25,9 +25,9 @@ export const R = {
   duressSetting: null, // { enabled, gesture } once a live check opened it; cleared on lock
   duressUnreadable: false,
   offline: null,       // the offline copy, as last saved (in memory while unlocked)
-  busy: false,         // a check is running: leaving the screen doesn't lock
+  busy: false,         // a check is running: the idle lock waits for it (leaving the screen still locks: core/leave.js)
   knownNames: new Map(), // object id → name, so Activity can name deleted items
-  hooks: {},           // late-bound callbacks between modules (keyGone, loadCheckin)
+  hooks: {},           // late-bound callbacks between modules (keyGone, loadCheckin, promptStart/End)
   epoch: 0,            // counts locks: a result that began in an earlier epoch is dropped, not shown
 };
 /** The epoch now, to compare after an await: `if (stale(e)) return`. */
