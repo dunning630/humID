@@ -4,7 +4,7 @@
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Row, Banner, protection } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
-import { protectionItems } from "../../core/index.js";
+import { protectionItems } from "../../core/setup.js";
 import { go, back } from "./common.jsx";
 import { RECOVERY_IF_LOST } from "../../ui/labels.js";
 

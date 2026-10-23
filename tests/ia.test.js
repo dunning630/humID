@@ -129,8 +129,47 @@ test("a past proof is described by the device that made it, not by this one (APP
   }
 });
 
+test("the first paint's kernel never imports setting up, joining or recovery (R12: they load with their screens)", () => {
+  const LAZY = ["enroll.js", "join.js", "recovery.js", "recmode.js", "seckey.js", "operators.js"];
+  // what core/index.js reaches statically, module by module
+  const seen = new Set(), stack = ["core/index.js"];
+  while (stack.length) {
+    const f = stack.pop();
+    if (seen.has(f)) continue;
+    seen.add(f);
+    for (const m of noComments(read(f)).matchAll(/(?:^|\n)\s*(?:import|export)\b[^;]*?from "(\.{1,2}\/[^"]+)"/g)) {
+      const p = new URL(m[1], `file:///${f}`).pathname.slice(1);
+      if (all.includes(p)) stack.push(p);
+    }
+  }
+  assert.deepEqual(LAZY.filter((x) => seen.has(`core/${x}`)), [], "reached from core/index.js");
+  assert.ok(seen.has("core/session.js") && seen.has("core/alerts.js"), "the walk found the kernel");
+  // and the first-paint screens use only core/index.js
+  for (const f of ["main.jsx", "screens/welcome.jsx", "screens/lock.jsx", "screens/vault.jsx", "ui/kit.jsx", "ui/shell.jsx"]) assert.doesNotMatch(read(f), /core\/setup\.js/, `${f} pulls core/setup.js into the first paint`);
+});
+
+test("small things the first paint and every second don't pay for (R12)", () => {
+  // the web icon is a vector of the mark, not a 55 KB trace
+  const fav = readFileSync(`${src}favicon/favicon.svg`, "utf8");
+  assert.ok(fav.length < 3072, `favicon.svg is ${fav.length} bytes`);
+  assert.doesNotMatch(fav, /<image|base64/, "no embedded raster");
+  for (const c of ["#0B1410", "#F5A623", "#6FE3B4"]) assert.match(fav, new RegExp(c), `the mark's ${c}`);
+  // the viewer's "Open for N s" ticks in its own leaf, not the whole document every second
+  const v = noComments(read("screens/vault.jsx"));
+  const shell = v.slice(v.indexOf("function ViewerShell("), v.indexOf("\n}\n", v.indexOf("function ViewerShell(")));
+  assert.doesNotMatch(shell, /useNow\(/, "ViewerShell re-renders every second");
+  assert.match(v, /function OpenFor\(/);
+  // Activity describes its entries once per ledger page
+  const a = noComments(read("screens/activity.jsx"));
+  assert.match(a, /useMemo\(\(\) => \{[\s\S]*describe\(e, l\.names\)[\s\S]*\}, \[l\]\)/);
+  // boot: the independent reads run together once the store is open
+  const sess = noComments(read("core/session.js"));
+  const boot = sess.slice(sess.indexOf("export async function boot()"), sess.indexOf("\n}\n", sess.indexOf("export async function boot()")));
+  assert.match(boot, /Promise\.all\(\[\s*bestHardwareGate\(\)/);
+});
+
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
-  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
+  const LEAVES = new Set(["index.js", "setup.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
     // 4.0: the Messages screens load the messaging kernel with their own chunk, so the
     // protocol code never reaches the first paint (core/index.js says so)
     "messaging.js"]);

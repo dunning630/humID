@@ -14,8 +14,10 @@ import { R, KEY_TYPE, wipe, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
-import { setDraft, clearDraft, current as draftNow, CARD_DRAFT } from "./drafts.js";
+import { setDraft, CARD_DRAFT } from "./drafts.js";
 import { loadRecoveryMode, isHolderOnly, currentEpoch, mayMakePieces } from "./recmode.js";
+// First-paint parts, here too for the kernel's own modules and tests that import them from here.
+export { loadAlerts, cancelRecovery, forgetNewCard, resumeNewCard } from "./alerts.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -129,22 +131,6 @@ export async function makeNewCard() {
   finally { wipe(card?.secret); }
 }
 
-/** The new card was checked (or the holder chose to close it unsaved): forget it everywhere. */
-export function forgetNewCard() {
-  S.cardCode.value = null;
-  clearDraft(CARD_DRAFT);
-}
-
-/** After a real unlock: show the new card kept across the lock (takeDraft has checked its age). */
-export function resumeNewCard(d) {
-  if (d?.kind !== CARD_DRAFT || !d.state?.code || S.decoy.value) return false;
-  draftNow.value = d; // its original time: the ten minutes run from when the card was made
-  S.cardCode.value = d.state.code;
-  S.push.value = null;
-  S.tab.value = "you";
-  return true;
-}
-
 export async function removeCard() {
   try {
     await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => R.api.removeCard(proof));
@@ -252,27 +238,6 @@ export async function releasePiece(req, person) {
       return R.api.help(req.code, { owner: person.owner, envelope }, proof);
     });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
-}
-
-/* ---------------- alerts: recoveries of this account ---------------- */
-
-export async function loadAlerts() {
-  if (S.decoy.value) { S.alerts.value = []; return; } // a decoy session sees a calm account
-  if (S.offline.value) return; // recoveries in progress are a live question: shown once back online
-  const ep = epoch();
-  const a = await R.api.alerts().catch(() => null);
-  if (stale(ep)) return;
-  if (a) S.alerts.value = a;
-  R.api.protectingAlerts().then((p) => { if (!stale(ep)) S.protecting.value = p; }).catch(() => {});
-}
-
-export async function cancelRecovery(alert) {
-  try {
-    await withStepUp("cancelAlert", [alert.ref], "cancel", "Cancel this recovery", async ({ proof }) => R.api.cancelAlert(alert.ref, proof));
-    toast("Cancelled. That device gets nothing.");
-    loadAlerts();
-    return true;
-  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
 }
 
 /* ---------------- identity anchor: your passport or ID chip ---------------- */

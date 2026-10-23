@@ -1,6 +1,7 @@
 // For operators: a verification station (vouching for a person in front of you) and
-// managing a HumID server (docs/ADMIN.md). Ordinary holders never see these.
-import { adminCheck } from "@humid/recovery";
+// managing a HumID server (docs/ADMIN.md). Ordinary holders never see these. Also the match
+// code for approving a new device, so @humid/recovery stays out of the first paint.
+import { adminCheck, accountCheck } from "@humid/recovery";
 import * as S from "./state.js";
 import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
@@ -8,6 +9,9 @@ import { withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { KEY_TYPE } from "./runtime.js";
 import { demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
+
+/** This account's match code for adding the device behind `req` (a looked-up link): it commits to that link's keys too. */
+export const myAccountCheck = (req) => { const a = S.identity.value?.server?.id; return a && req?.kemPk ? accountCheck(a, req.kemPk, req.xPk) : null; };
 
 /* global __HUMID_SIM__ */
 

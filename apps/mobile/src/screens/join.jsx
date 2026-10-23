@@ -10,7 +10,8 @@ import { fmtLeft } from "../ui/format.js";
 import { CodeBox, QrCode, ProofMeter, tierText, WAITS, ChipAccess, PROOFS } from "../ui/codes.jsx";
 import { TopBar, ConnectStep, SoleBiometric, BindButtons } from "./create.jsx";
 import * as S from "../core/state.js";
-import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/index.js";
+import { serverPinned } from "../core/index.js";
+import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/setup.js";
 import { parseCard } from "@humid/recovery";
 import { serverHost, DEMO_BUILD } from "../core/config.js";
 

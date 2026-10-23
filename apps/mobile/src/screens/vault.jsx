@@ -292,9 +292,14 @@ export function Item() {
 
 /* ---------------- the viewer ---------------- */
 
-function ViewerShell({ v, children, trailing }) {
+/** "Open for N s": its own component, so only this line re-renders each second, not the document. */
+function OpenFor({ since }) {
   const now = useNow(1000);
-  const open = Math.round((now - (v.openedAt || now)) / 1000);
+  const open = Math.round((now - (since || now)) / 1000);
+  return <div class="timer">Open for {open < 60 ? `${open} s` : fmtLeft(open * 1000)}. Close it when you're done.</div>;
+}
+
+function ViewerShell({ v, children, trailing }) {
   const root = useRef(null);
   useModal(root);
   return (
@@ -305,7 +310,7 @@ function ViewerShell({ v, children, trailing }) {
         {trailing}
       </header>
       <div class="body">{children}</div>
-      <div class="timer">Open for {open < 60 ? `${open} s` : fmtLeft(open * 1000)}. Close it when you're done.</div>
+      <OpenFor since={v.openedAt} />
     </section>
   );
 }

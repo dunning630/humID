@@ -12,12 +12,8 @@ import { CodeInput, ChipAccess, ProofMeter, PROOFS, WAITS } from "../../ui/codes
 import { fmtDate } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
-import {
-  loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor,
-  readChip, chipReader, setDraft, clearDraft, draft, toast,
-  keyReader, addSecurityKey, removeSecurityKey,
-  switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY,
-} from "../../core/index.js";
+import { readChip, chipReader, setDraft, clearDraft, draft, toast } from "../../core/index.js";
+import { loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor, keyReader, addSecurityKey, removeSecurityKey, switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY } from "../../core/setup.js";
 import { back, twelve, Countdown } from "./common.jsx";
 import { RECOVERY_IF_LOST } from "../../ui/labels.js";
 
