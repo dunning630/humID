@@ -589,8 +589,12 @@ export function createGateway({
         await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
-      if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
+      if (v.status === 403 && ["device_removed", "device_not_proven", "attestation_revoked", "reattest_required"].includes(v.data?.error)) {
         await recordQuietly(r.id, "access.denied", { reason: v.data.error, device: r.device });
+        if (v.data.error === "attestation_revoked") {
+          await recordQuietly(r.id, "device.removed", { device: r.device, reason: "attestation_revoked" });
+          dropWhere((x) => x.subject === r.id && x.deviceId === r.device); // and its open sessions end now
+        }
       }
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);

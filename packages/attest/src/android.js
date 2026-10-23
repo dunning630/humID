@@ -118,7 +118,7 @@ export function readAndroidAttestation({ chain, roots = GOOGLE_ATTESTATION_ROOTS
   const withRecord = certs.map((c) => certExtension(c.raw, KEY_DESCRIPTION_OID));
   if (!withRecord[0] || withRecord.slice(1).some(Boolean)) fail("bad_attestation", "The attested key must be the only certificate with a key description.");
   const r = parseKeyDescription(withRecord[0]);
-  return { ...r, leaf: certs[0], pub: spki(certs[0]), app: applicationId(r), root: rootOfTrust(r.hw) };
+  return { ...r, leaf: certs[0], pub: spki(certs[0]), app: applicationId(r), root: rootOfTrust(r.hw), serials: certs.map((c) => serialKey(c.serialNumber)) };
 }
 
 /**
@@ -177,5 +177,5 @@ export function checkAndroidPolicy(r, { challenge, packageNames, signatureDigest
 
 export function verifyAndroidKey({ chain, roots, now, revokedSerials, ...policy }) {
   const r = readAndroidAttestation({ chain, roots, now, revokedSerials });
-  return { pub: r.pub, ...checkAndroidPolicy(r, policy) };
+  return { pub: r.pub, serials: r.serials, ...checkAndroidPolicy(r, policy) };
 }

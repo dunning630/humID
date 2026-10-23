@@ -19,6 +19,7 @@ import { createAccess } from "../../services/access/src/server.js";
 import { createKeyshare } from "../../services/keyshare/src/server.js";
 import { createGateway } from "../../services/gateway/src/server.js";
 import { makeHolder, ROOTS, IOS_APP_ID } from "./holder.js";
+import { openDb } from "@humid/svc";
 
 const ATTEST = {
   roots: { android: [ROOTS.android.pem], apple: [ROOTS.apple.pem] },
@@ -132,4 +133,60 @@ test("the startup posture of a default attested server names nothing weakened", 
   assert.deepEqual(p.weakened, []);
   assert.equal(p.revocationRequired, true);
   assert.equal(p.revocation, "file");
+});
+
+/* ---------------- V76-02: the same rules at every sign-in, not only at enrolment ---------------- */
+
+/** Enrol an Android holder on the current identity; returns the holder and its chain's intermediate serials. */
+async function enrolKeepingChain(label) {
+  writeStatus({}, Date.now()); await identity.revocation.refresh();
+  const h = makeHolder(label);
+  let chain;
+  const sign = async (m) => { const r = await h.registerSign(m); chain = r.live.attestation.chain; return r; };
+  await new HumidApi({ baseUrl: url(gateway) }).register({ pub: h.pub, commit: h.commit, device: h.device, sign });
+  const listed = {};
+  for (const c of chain.slice(1, -1)) listed[serialKey(new X509Certificate(Buffer.from(c)).serialNumber)] = { status: "REVOKED", reason: "KEY_COMPROMISE" };
+  return { h, listed };
+}
+const signIn = (h) => new HumidApi({ baseUrl: url(gateway) }).login({ id: h.id, device: h.deviceId, sign: h.sign });
+
+test("V76-02: a phone Google revokes after it enrolled is refused at its next sign-in, and removed", async () => {
+  writeStatus({}, Date.now());
+  await startIdentity();
+  const { h, listed } = await enrolKeepingChain("revoked-later");
+  assert.ok(await signIn(h), "signs in while its chain is clean");
+  writeStatus(listed, Date.now()); await identity.revocation.refresh();
+  await assert.rejects(signIn(h), code("attestation_revoked"));
+  // removed for good: a clean list later doesn't bring it back
+  writeStatus({}, Date.now()); await identity.revocation.refresh();
+  await assert.rejects(signIn(h), code("device_removed"));
+});
+
+test("V76-02: a stale or missing list stops sign-ins of Android phones under the attested policy", async () => {
+  writeStatus({}, Date.now());
+  await startIdentity();
+  const { h } = await enrolKeepingChain("stale-at-signin");
+  writeStatus({}, Date.now() - 72 * HOUR); await identity.revocation.refresh();
+  await assert.rejects(signIn(h), code("status_stale"));
+  rmSync(statusFile); await startIdentity();
+  await assert.rejects(signIn(h), code("status_unavailable"));
+  writeStatus({}, Date.now()); await identity.revocation.refresh();
+  assert.ok(await signIn(h), "a fresh copy lets it in again");
+  // with the explicit opt-out a stale list is let through, as at enrolment
+  writeStatus({}, Date.now() - 72 * HOUR);
+  await startIdentity({ statusRequired: false });
+  assert.ok(await signIn(h));
+});
+
+test("V76-02: an Android phone enrolled before its chain was kept must be set up again (required list)", async () => {
+  writeStatus({}, Date.now());
+  await startIdentity();
+  const { h } = await enrolKeepingChain("enrolled-before");
+  // as if it had joined before this release: no serials on file
+  const db = openDb(join(root, "identity"), "identity.db", []);
+  db.prepare("UPDATE device_keys SET att_serials = NULL WHERE id = ?").run(h.deviceId);
+  db.close();
+  await assert.rejects(signIn(h), code("reattest_required"));
+  await startIdentity({ statusRequired: false });
+  assert.ok(await signIn(h), "without a required list it is let in (and the posture says so)");
 });
