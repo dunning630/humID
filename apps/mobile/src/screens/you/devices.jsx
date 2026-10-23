@@ -27,7 +27,7 @@ export function Devices() {
         {devices?.map((d) => (
           <div key={d.id}>
             <Row icon="key" tone={d.current ? "mint" : ""} chevron={false}
-              title={<>{d.platform || "Device"}{d.current && <span class="pill mint" style={{ marginLeft: 8 }}>This device</span>}</>}
+              title={<>{d.platform || "Device"}{d.current && <span class="pill mint" style={{ marginLeft: 8 }}>This device</span>}{d.needsSetup && <span class="pill danger" style={{ marginLeft: 8 }}>Needs setting up again</span>}</>}
               sub={<>{VIA[d.via] || d.via} · {fmtDate(d.enrolledAt)}{d.lastSeenAt && !d.current ? ` · seen ${fmtAgo(d.lastSeenAt)}` : ""}<br />{proofLabel(d.proof, d.assurance)}</>}
               trail={!d.current && !off && removing !== d.id ? <button class="link" onClick={() => setRemoving(d.id)}>Remove</button> : null} />
             {removing === d.id && (

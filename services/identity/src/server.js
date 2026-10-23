@@ -107,6 +107,9 @@ export function createIdentity({
      ALTER TABLE identities ADD COLUMN last_duress_at TEXT`,
     // Each attestation challenge (a session's transcript hash) enrols at most one device.
     `CREATE TABLE attest_challenges (th TEXT PRIMARY KEY, device_id TEXT NOT NULL, used_at TEXT NOT NULL)`,
+    // LIVE-06: the device reported its biometric keys gone (fingerprints or face changed, app
+    // reinstalled); it needs setting up again. Cleared by its next successful sign-in.
+    `ALTER TABLE device_keys ADD COLUMN keys_gone_at TEXT`,
   ]);
   const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, file: statusFile, maxAgeMs: statusMaxAgeMs, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
   /** Whether a phone may be checked against a missing or stale list, under the gateway's policy. */
@@ -124,6 +127,7 @@ export function createIdentity({
   const deviceView = (d, current) => ({
     id: d.id, platform: d.platform, gateMethod: d.gate_method, assurance: d.assurance, via: d.via, proof: d.proof,
     enrolledAt: d.enrolled_at, lastSeenAt: d.last_seen_at, current: d.id === current,
+    ...(d.keys_gone_at ? { needsSetup: true, keysGoneAt: d.keys_gone_at } : {}),
   });
 
   /** Which devices the server's policy accepts. Server-derived proof, never the device's claim. */
@@ -262,6 +266,17 @@ export function createIdentity({
       if (!d) throw new HttpError(404, "unknown_device", "No such device.");
       return json(200, { account: d.account_id, revoked: !!d.revoked_at });
     }],
+    // Gateway only (LIVE-06): a device says Android or iOS destroyed its keys. It can't sign
+    // anything any more, so this is unauthenticated by necessity; it only marks the device as
+    // needing setup again, and that device's next sign-in clears it. True when newly marked.
+    ["POST", "/internal/devices/:id/keys-gone", ({ params, claims, body }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      const d = getDevice.get(params.id);
+      if (!d || d.account_id !== String(r.account) || d.revoked_at || d.keys_gone_at || getAccount.get(d.account_id)?.status !== "active") return json(200, { marked: false });
+      db.prepare("UPDATE device_keys SET keys_gone_at = ? WHERE id = ? AND keys_gone_at IS NULL").run(new Date().toISOString(), d.id);
+      return json(200, { marked: true, platform: d.platform });
+    }],
     // Gateway only: undo an enrolment whose evidence turned out to be spent meanwhile.
     ["POST", "/internal/devices/:id/revoke", ({ params, claims, body }) => {
       gatewayOnly(claims);
@@ -288,7 +303,8 @@ export function createIdentity({
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
       }
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
-      db.prepare("UPDATE device_keys SET last_seen_at = ? WHERE id = ?").run(new Date().toISOString(), device.id);
+      // A live sign-in proves this device's keys are there: any "keys gone" report about it is void.
+      db.prepare("UPDATE device_keys SET last_seen_at = ?, keys_gone_at = NULL WHERE id = ?").run(new Date().toISOString(), device.id);
       return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });
     }],
 

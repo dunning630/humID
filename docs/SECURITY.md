@@ -40,7 +40,12 @@ it until that review and the items under *Before real data* are done.
   live biometric match on that phone unlocked the key. It can't tell whose
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
   Keys are destroyed if enrolment changes, and the owner confirms at setup
-  that only their own biometrics are enrolled (recorded in the ledger).
+  that only their own biometrics are enrolled (recorded in the ledger). When
+  that happens the phone tells the server, without signing in (it can't any
+  more): the holder's Activity shows *HumID key gone* and the device is marked
+  *Needs setting up again* until a live sign-in from it clears the mark. The
+  report is unauthenticated, so it is best effort, once a day per device, and
+  answers the same for accounts that don't exist.
 - **A live check is not consent.** It proves an enrolled face or finger was
   matched live, not that its owner meant it: a finger pressed while asleep, or
   under force (the duress gesture covers force), passes.
