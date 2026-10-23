@@ -277,8 +277,9 @@ export async function demoPassport(name = "Demo Person") {
  * Link your passport or ID to your HumID. The chip must be read live: `read(nonce)` reads it
  * and has it answer the server's fresh challenge, so copied chip files can't link someone's
  * identity (CREDS-02). The anchor part is sealed here, under a key from that chip's own
- * authentication key (DG15), before it leaves the phone: the server never sees it openable
- * and never keeps DG15 (VAULT-01, CREDS-03). A chip with no authentication key can't hold it.
+ * authentication key (DG15), before it leaves the phone. That ties it to this one chip
+ * (CREDS-01). It does NOT keep it from the vault server, which sees DG15 when the chip is
+ * checked: the anchor screen says so (V74-03). A chip with no authentication key can't hold it.
  */
 export async function setAnchor(read) {
   try {

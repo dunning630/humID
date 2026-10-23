@@ -382,11 +382,16 @@ export async function openKeyPart(secret, blob, accountId, epoch = 1) {
 }
 
 /* ID chip anchor (v2): the anchor part, sealed on the holder's phone under a key from the chip's
- * Active Authentication public key (DG15), before it is sent. The server adds a layer of its
- * own and keeps only a keyed fingerprint of the chip to find it by: it never stores DG15, so
- * what it keeps (its database, its secret, the holder's name and birth date) can't open the
- * part. Only a reader of that exact chip can make the key; the chip proves it's there by
- * answering a fresh challenge when it's linked and when it's used. */
+ * Active Authentication public key (DG15), before it is sent. This BINDS the part to one chip
+ * (another passport, an old one or a namesake's has a different DG15), and the chip proves it's
+ * there by answering a fresh challenge when it's linked and when it's used.
+ *
+ * It is NOT a secret against the server (V74-03): DG15 is public chip data, readable by anyone
+ * who taps the passport with its MRZ, and the server receives it in every link and recovery
+ * (it needs it to check the chip). The server doesn't store it, but a server that records one
+ * request can open the part. No passport exposes a static secret (Chip Authentication is an
+ * ephemeral exchange), so the real fix is a split wrap with an independent cosigner
+ * (docs/CONTINUITY.md, "The anchor and the operator"), for the owner to decide. */
 export const ANCHOR_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
 const aadAnchor = (accountId, epoch) => utf8(`HUMID-ANCHOR-PART-v2|${accountId}|epoch ${epoch}`);
 

@@ -24,13 +24,16 @@
 // witnesses, anchor or security key here, ever. Its mode is a statement signed by its account
 // key; every escrow route checks that signature and refuses (409 holder_only).
 //
-// Everything stored here is ciphertext or public keys. The anchor part is sealed on the
-// holder's phone under a key made from the chip's DG15, which this service never stores, and
-// wrapped again under this service's own secret: so neither this database, nor its secret,
-// nor the holder's name and birth date (which pass through here) open it. Anchors linked
-// before that (v1, sealed under the server's secret and identity fields) are still found
-// and used, and are re-linked by the app on the holder's next live chip read. See
-// docs/RECOVERY.md and docs/CONTINUITY.md.
+// Everything stored here is ciphertext or public keys. The card, witness and key parts open
+// only with something this service never sees. The ANCHOR part does not (V74-03): it is sealed
+// on the holder's phone under a key made from the chip's DG15 and wrapped again under this
+// service's own secret, and DG15 is public chip data that passes through here at every link
+// and recovery. This service doesn't store DG15, so a copy of its database and secret alone
+// doesn't open the part; but an operator that records one request does. Against a hostile
+// operator the passport is therefore not a separate proof: the passport plus any ONE other
+// stolen proof is enough. The fix (a split wrap with an independent cosigner) is an open
+// decision: docs/CONTINUITY.md, "The anchor and the operator". Anchors linked before chip
+// binding (v1) are still found and used, and are re-linked on the holder's next chip read.
 
 import { randomBytes, hkdfSync, createCipheriv, createDecipheriv, createHash, createPublicKey, verify as verifySig } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
@@ -570,9 +573,10 @@ export function createRecovery({
       return json(200, { nonce: b64u(nonce), expiresAt: now() + challengeTtlMs });
     }],
     // The owner links one passport or ID chip. The chip must be live (it answers the challenge
-    // above), and the part arrives already sealed by the phone under a key from that chip's DG15
-    // (sealAnchorPart): this service never sees it openable, and stores only a fingerprint of
-    // DG15. One chip anchors one HumID; a renewed passport is linked again.
+    // above), and the part arrives sealed by the phone under a key from that chip's DG15
+    // (sealAnchorPart). That binds it to this chip; it doesn't hide it from this service, which
+    // sees DG15 right here (V74-03). Only a fingerprint of DG15 is stored. One chip anchors one
+    // HumID; a renewed passport is linked again.
     ["PUT", "/anchor", ({ claims, body }) => {
       needStepUp(claims);
       requireHardened(claims.sub);
