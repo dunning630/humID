@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { X509Certificate, randomBytes, generateKeyPairSync } from "node:crypto";
 import {
   readAndroidAttestation, checkAndroidPolicy, verifyAndroidKey, verifyAppAttest, verifyLiveKey, verifyLiveSig,
-  appAttestClientData, decodeCbor, GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, parseStatusList, revocationList, serialKey,
+  appAttestClientData, decodeCbor, GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, parseStatusList, revocationList, serialKey, readStatusFile, fetchStatusToFile, STATUS_MAX_AGE_MS,
   REVOKED_ANDROID_CERTS, HUMID_ANDROID_RELEASE_CERT,
 } from "@humid/attest";
 import { testRoot, androidChain, appAttestation, liveKey } from "./support/pki.js";
@@ -172,6 +172,41 @@ test("Google's status list: revoked and suspended count, leading zeros don't mat
   const opt = revocationList({ url: "https://example.test/status", fetch: async () => Promise.reject(new Error("x")), refreshMs: 1e9 });
   assert.equal(opt.serials().size, 0, "not required: an empty list until one arrives");
   opt.stop();
+});
+
+test("Google's status list: `required` also means fresh, and a file copy works like a fetched one", async () => {
+  const { mkdtempSync, writeFileSync, rmSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "humid-status-"));
+  const file = join(dir, "s", "status.json");
+  let t = Date.parse("2026-10-23T00:00:00Z");
+  const now = () => t;
+  try {
+    // the sidecar writes it; anything that isn't a status list leaves the old copy alone
+    await fetchStatusToFile({ file, now, fetch: async () => ({ ok: true, json: async () => ({ entries: { "0A": { status: "REVOKED" } } }) }) });
+    await assert.rejects(fetchStatusToFile({ file, now, fetch: async () => ({ ok: true, json: async () => ({ nope: 1 }) }) }));
+    await assert.rejects(fetchStatusToFile({ file, now, fetch: async () => ({ ok: false, status: 503 }) }));
+    assert.ok(readStatusFile(readFileSync(file, "utf8"), now()).set.has("a"));
+    const list = revocationList({ file, required: true, now, refreshMs: 1e9 });
+    assert.ok(await list.refresh());
+    assert.equal(list.source, "file");
+    assert.ok(list.serials().has("a"));
+    t += STATUS_MAX_AGE_MS - 1000;
+    assert.ok(list.serials().has("a"), "just inside the maximum age");
+    t += 2000;
+    assert.throws(() => list.serials(), (e) => e.code === "status_stale", "required + stale: refused");
+    assert.ok(list.serials({ required: false }).has("a"), "not required: the stale copy is still used");
+    // a file dated in the future isn't believed
+    writeFileSync(file, JSON.stringify({ fetchedAt: new Date(t + 3600_000).toISOString(), status: { entries: {} } }));
+    assert.equal(await list.refresh(), false);
+    assert.throws(() => list.serials(), (e) => e.code === "status_stale", "the bad file didn't refresh the age");
+    list.stop();
+    const missing = revocationList({ file: join(dir, "none.json"), required: true, now, refreshMs: 1e9 });
+    await missing.refresh();
+    assert.throws(() => missing.serials(), (e) => e.code === "status_unavailable");
+    missing.stop();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("android: malformed attestation data is a refusal, never a crash", () => {
