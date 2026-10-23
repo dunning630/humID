@@ -334,6 +334,27 @@ test("transparency: Alice's latest entry is in the public log, and the log only 
   assert.ok(second.size > firstCheck.size);
 });
 
+test("transparency: the page the phone verified and the public log are the same history (CRYPTO-01)", async () => {
+  const l = await phone.ledger();
+  assert.equal(l.ok, true, l.reason);
+  const c = await phone.continuity({ previous: firstCheck, head: l.head });
+  assert.equal(c.ok, true, c.reason);
+  assert.deepEqual([c.seq, c.hash], [l.head.seq, l.head.hash]);
+  // A short page that starts after the head seen earlier links back to it through the range route.
+  const seen = { seq: l.head.seq, hash: l.head.hash };
+  for (const n of ["a", "b"]) await sealFor(alice, n, n).then(({ envelope, index }) => phone.upload(envelope, index)); // two more entries
+  const later = await phone.ledger({ limit: 1, previousHead: seen });
+  assert.equal(later.ok, true, later.reason);
+  assert.equal(later.previousHeadOnPage, false);
+  // The server rewrites the entry this phone saw: refused.
+  const db = new DatabaseSync(`${stack.root}/ledger/ledger.db`);
+  const owner = db.prepare("SELECT owner FROM entries WHERE seq = ? AND hash = ?").get(seen.seq, seen.hash).owner;
+  db.prepare("UPDATE entries SET body = replace(body, '\"type\"', '\"type\" ') WHERE owner = ? AND seq = ?").run(owner, seen.seq);
+  db.close();
+  const bad = await phone.ledger({ limit: 1, previousHead: seen });
+  assert.equal(bad.ok, false);
+});
+
 test("transparency: anyone can fetch checkpoints; a configured cosigner vouches; a rewritten past is caught", async () => {
   const cp = await (await fetch(`${stack.baseUrl}/tlog/v1/checkpoint`)).json();
   assert.ok(cp.checkpoint.size > 0);

@@ -75,6 +75,9 @@ export function createLedger({
   const key = { pk: unb64u(j.pk), sk: unb64u(j.sk) };
   const keyFp = toHex(sha3_256(key.pk)).slice(0, 32);
   const ledgerKey = { dsa: b64u(key.pk), fp: keyFp };
+  // Release builds of the app carry this fingerprint (HUMID_LEDGER_KEY_FP), so a new install
+  // never has to trust the first ledger key it's shown (PC-04, CRYPTO-01).
+  log.info("ledger key", { fp: keyFp });
 
   const db = openDb(dataDir, "ledger.db", [
     `CREATE TABLE entries (
@@ -189,6 +192,14 @@ export function createLedger({
     ["GET", "/events", ({ claims, query }) => {
       const owner = claims.sub;
       if (!owner) throw new HttpError(401, "unauthenticated", "Sign in first");
+      // A range of older entries (?from=&to=), for a phone linking a page back to the head
+      // it saw last time (CRYPTO-01). No head signature: the page's signed head covers them.
+      if (query.get("from") != null) {
+        const from = Number(query.get("from")), to = Number(query.get("to") ?? from + 999);
+        if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < from) throw new HttpError(400, "bad_range", "Bad range");
+        const rows = db.prepare("SELECT seq, body, prev, hash FROM entries WHERE owner = ? AND seq >= ? AND seq <= ? ORDER BY seq LIMIT 1000").all(owner, from, to);
+        return json(200, { owner, entries: rows.map((r) => ({ seq: r.seq, body: r.body, prev: r.prev, hash: r.hash })), ledgerKey });
+      }
       const limit = Math.min(Math.max(Number(query.get("limit")) || 200, 1), 1000);
       const rows = db.prepare("SELECT seq, body, prev, hash FROM entries WHERE owner = ? ORDER BY seq DESC LIMIT ?").all(owner, limit).reverse();
       const headRow = rows[rows.length - 1];
