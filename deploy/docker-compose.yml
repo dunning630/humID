@@ -24,15 +24,23 @@ x-service: &service
     retries: 5
 
 services:
+  # Hardened like the others (PC-21): read-only, non-root, no capabilities. The container's
+  # own network namespace lets an unprivileged user bind 80 and 443 (Docker's default since
+  # 20.10, stated here), so Caddy needs no CAP_NET_BIND_SERVICE. Its certificates and
+  # state live on its two volumes.
   edge:
+    <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-edge:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/edge/Dockerfile }
-    restart: unless-stopped
+    user: "65532:65532"
+    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
     ports: ["80:80", "443:443", "443:443/udp"]
     environment:
       HUMID_DOMAIN: ${HUMID_DOMAIN:?set HUMID_DOMAIN in deploy/.env}
     volumes: [caddy-data:/data, caddy-config:/config]
+    tmpfs: ["/tmp"]
     networks: [public, internal]
+    healthcheck: { disable: true } # as before: the gateway's health is what the edge waits on
     depends_on:
       gateway: { condition: service_healthy }
 
