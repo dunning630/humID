@@ -3,6 +3,10 @@ Description=HumID Server __HUMID_SERVER_VERSION__ (the vault the HumID apps talk
 Documentation=file:///opt/humid/README.txt
 After=network-online.target
 Wants=network-online.target
+# Restarts an administrator asks for (install, set, backup, restore) come in quick succession;
+# systemd's default (5 starts in 10 s) would refuse the next one. Crash loops still stop at 20 a minute.
+StartLimitIntervalSec=60
+StartLimitBurst=20
 
 [Service]
 User=humid
