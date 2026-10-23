@@ -406,6 +406,19 @@ jobs:
       - name: Android · generate Gradle project
         if: matrix.platform == 'android'
         run: npm run tauri -- android init --ci
+      # `android init` writes Tauri's own launcher icons (the blue-and-orange logo). Put HumID's
+      # in their place: every density, the adaptive icon's layers and its background colour.
+      - name: Android · HumID launcher icons
+        if: matrix.platform == 'android'
+        run: |
+          set -euo pipefail
+          SRC=apps/mobile/src-tauri/icons/android
+          RES=apps/mobile/src-tauri/gen/android/app/src/main/res
+          test -d "$RES" || { echo "::error::no Android res folder after android init ($RES)"; exit 1; }
+          find "$RES" -path '*/mipmap-*' -name 'ic_launcher*' -delete
+          cp -R "$SRC"/. "$RES"/
+          for f in "$SRC"/mipmap-*/ic_launcher*.png; do cmp -s "$f" "$RES/${f#"$SRC"/}" || { echo "::error::$f didn't land in the Android project"; exit 1; }; done
+          echo "HumID launcher icons in place: $(find "$RES" -path '*/mipmap-*' -name 'ic_launcher*' | wc -l) files"
       - name: Android · release signing config
         if: matrix.platform == 'android' && env.HAS_ANDROID_KEY == 'true'
         env:
