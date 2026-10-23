@@ -11,6 +11,10 @@
 // With no record in the store it writes nothing: a late write can't bring back an identity
 // that erase, reset or a cancelled join has just removed. A new identity is made with
 // createIdentity, and removed with clearIdentity, on the same chain.
+//
+// The recovery-mode pin (modePin, core/recmode.js) only goes forward (V74B-03): whatever a
+// mutator returns, a record never leaves here with a pin at a lower version or epoch than the
+// one already stored, or with none. A writer working from an older copy can't undo it.
 import * as S from "./state.js";
 import { R } from "./runtime.js";
 
@@ -26,6 +30,7 @@ export function updateIdentity(mutator) {
     const out = await mutator(draft);
     if (out === null) return latest;
     const record = out && typeof out === "object" ? out : draft;
+    keepPin(latest, record);
     const schema = record.schema ?? latest.schema ?? 4;
     delete record.schema; // the store stamps its own schema version
     await R.store.putIdentity(record);
@@ -33,6 +38,20 @@ export function updateIdentity(mutator) {
     S.identity.value = shown;
     return shown;
   });
+}
+
+/**
+ * A record's pin may only stay or move forward: same or higher version AND same or higher epoch
+ * (the chain never lowers either, @humid/recovery followsMode). Anything else, a lower one or
+ * none, is replaced by the stored pin.
+ */
+function keepPin(latest, record) {
+  const had = latest.modePin;
+  if (!had?.version) return;
+  const now = record.modePin;
+  if (now?.version >= had.version && (now.epoch ?? 1) >= (had.epoch ?? 1)) return;
+  record.modePin = { ...had };
+  record.recoveryMode = had.mode;
 }
 
 /** Write a brand-new identity record (setting up, or starting to join). Resolves to it as shown. */
