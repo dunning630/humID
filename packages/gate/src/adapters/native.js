@@ -75,6 +75,8 @@ export const nativeAdapter = {
         secret: fromB64(r.secret),
         interrupt: interruptRecord(r.method, purpose, r.assurance, r.detail || {}),
         live: live(r.live),
+        // the platform moved the secret to a new key (Android 2.0 → per-use, LIVE-01): keep this instead
+        ...(r.handle ? { handle: r.handle } : {}),
       };
     } catch (e) { throw mapError(e); }
   },

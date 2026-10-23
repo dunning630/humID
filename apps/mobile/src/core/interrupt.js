@@ -72,6 +72,21 @@ function reportKeysGone(id) {
   R.api?.reportKeysGone?.({ id: id.server.id, device: id.device.id }).catch(() => {});
 }
 
+/**
+ * The gate moved this device's secret to a new key during a release (Android: a 2.0
+ * time-bound key to a per-use one, LIVE-01) and handed back the handle for it. Stored
+ * before anything else happens; the old key is deleted only once the new handle is used,
+ * so a failed write here loses nothing.
+ */
+async function keepGateHandle(id, handle) {
+  try {
+    const record = { ...id, gate: { ...id.gate, handle } };
+    delete record.schema;
+    await R.store.putIdentity(record);
+    S.identity.value = { ...record, schema: id.schema ?? 4 };
+  } catch { /* the old handle still works; the move is tried again next time */ }
+}
+
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
 export function needVault() {
   if (S.offline.value) throw Object.assign(new Error("offline"), { code: "offline" });
@@ -96,6 +111,7 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     await waitForHold(gate);
     const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
     secret = rel.secret;
+    if (rel.handle) await keepGateHandle(id, rel.handle);
     // The human-to-human rule (@humid/msg live.js): when this phone's holder was last proven live.
     S.liveAt.value = Date.now();
     showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the check. Unlocking your keys…" : "Unlocking your keys on this device…" });
