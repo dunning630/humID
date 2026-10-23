@@ -16,6 +16,7 @@ import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline, markPicking } from "./session.js";
 import { openChip } from "./nfc.js";
 import { mark } from "./perf.js";
+import { updateIdentity } from "./identity.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -27,8 +28,7 @@ import { mark } from "./perf.js";
 async function splitKeysRatchet(id) {
   const hint = !!S.server.value?.policy?.splitKeys;
   if (hint && !id.splitKeysSeen) {
-    const next = { ...id, splitKeysSeen: true };
-    try { await R.store.putIdentity(next); S.identity.value = next; } catch { /* remembered next time */ }
+    try { await updateIdentity((cur) => { if (cur.splitKeysSeen) return null; cur.splitKeysSeen = true; }); } catch { /* remembered next time */ }
     return true;
   }
   if (!hint && id.splitKeysSeen) throw Object.assign(new Error("Your vault didn't offer split keys this time, so nothing was sealed. Try again on a connection you trust."), { code: "split_keys_missing" });
@@ -384,10 +384,18 @@ export async function setDecoy(item, on) { return setDecoys([{ item, on }]); }
  */
 export async function setDecoys(changes) {
   const todo = changes.filter(({ item, on }) => !!item.decoy !== !!on);
-  if (S.decoy.value || !todo.length) { if (S.decoy.value) toast("Updated."); return true; }
+  if (!todo.length) return true;
   try {
     needVault();
     const label = todo.length === 1 ? (todo[0].on ? `Show ${todo[0].item.name} in the decoy view` : `Hide ${todo[0].item.name} from the decoy view`) : `Change ${todo.length} decoy documents`;
+    if (S.decoy.value) {
+      // A decoy session looks the same (the same live check, the same words) and changes nothing.
+      await withKeys("decoy", label, async () => null, { challenge: localChallenge("decoy") });
+      const on = new Map(todo.map(({ item, on: v }) => [item.id, v]));
+      S.items.value = S.items.value.map((i) => (on.has(i.id) ? { ...i, decoy: on.get(i.id) || undefined } : i));
+      toast(decoyWords(todo));
+      return true;
+    }
     const blobs = await withKeys("decoy", label, async () => {
       const out = [];
       for (const { item, on } of todo) { const entry = indexEntry(item); if (on) entry.decoy = true; else delete entry.decoy; out.push([item.id, await suite().sealIndex(R.indexKey, entry)]); }
@@ -395,10 +403,11 @@ export async function setDecoys(changes) {
     }, { challenge: localChallenge("decoy") });
     for (const [id, blob] of blobs) await R.api.rename(id, blob);
     await refresh();
-    toast(todo.length === 1 ? (todo[0].on ? `${todo[0].item.name} will show in the decoy view.` : `${todo[0].item.name} is hidden from the decoy view.`) : "Decoy documents updated.");
+    toast(decoyWords(todo));
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
 }
+const decoyWords = (todo) => (todo.length === 1 ? (todo[0].on ? `${todo[0].item.name} will show in the decoy view.` : `${todo[0].item.name} is hidden from the decoy view.`) : "Decoy documents updated.");
 
 /** Rename an item and set its tags (an array of tag ids; an empty one clears them). */
 export async function renameItem(item, name, tags = item.tags || []) {

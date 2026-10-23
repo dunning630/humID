@@ -2,13 +2,15 @@
 // small phone (375×667) and a common one (390×844):
 //   - each step's main button is on screen without scrolling
 //   - the main button is never a dead grey one: tapping it points at what's missing
-//   - the recovery card is confirmed by typing back one group of it
+//   - the recovery card is confirmed by typing back one group of it; a new one asks before it's
+//     closed unchecked, and survives a lock into the next real unlock (APP-02, APP-03)
 //   - the You hub shows what's left to protect, and each row opens the right screen
 //   - a new document's tag is suggested from its name, not always "Identity"
 //   - toasts drop in at the top, never over a back button, the stepper or the primary action
 //   - every button, link and checkbox is at least 44 px in both directions
 //   - preferences: theme, four text sizes, animations, lock time, sort; pins ride with the item
 //   - the back gesture closes what's on top, one level at a time, and never leaves HumID
+//   - leaving HumID while a check is running locks it; the document never opens (PC-17)
 //   - a deleted biometric key is explained, and setting up again starts from Welcome
 //   - an app built with a pinned server skips the "trust this server" step
 //
@@ -179,10 +181,36 @@ try {
   assert.equal(newGroups.length, 5);
   const keep = page.locator(".sheet .actions button.btn.primary");
   assert.equal((await keep.innerText()).trim(), "Check your copy to continue", "the sheet's button is live and says what's missing");
+  // APP-03: until it's checked, Back, Escape or the close button asks before throwing it away
+  const ask = page.getByText("Close without saving your new card?");
+  for (const close of [
+    () => page.evaluate(() => globalThis.__humidBack()),
+    () => page.keyboard.press("Escape"),
+    () => page.locator(".sheet button[aria-label=Close]").first().click(),
+  ]) {
+    await close();
+    await ask.waitFor();
+    await page.locator(".sheet").last().getByRole("button", { name: "Cancel" }).click();
+    await ask.waitFor({ state: "detached" });
+    assert.deepEqual(await cardGroups(page), newGroups, "Cancel keeps the card on screen");
+  }
+  // APP-02: a lock with the card on screen (the phone rang) keeps it in memory only, and the
+  // next real unlock shows the same card again
+  await page.waitForTimeout(700); // the check's busy flag clears 600 ms after it ends
+  await page.evaluate(() => {
+    const set = (h) => { Object.defineProperty(document, "hidden", { configurable: true, get: () => h }); document.dispatchEvent(new Event("visibilitychange")); };
+    set(true); set(false);
+  });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.getByText("Shown once · write it down now").waitFor({ timeout: 15_000 });
+  assert.deepEqual(await cardGroups(page), newGroups, "the same new card, after a real unlock");
+  assert.equal(await page.getByText("Pick up where you left off?").count(), 0, "the card comes straight back, not as an offer");
+  step("a new recovery card: Back, Escape and Close ask first; a lock keeps it, and the next unlock shows it again");
   await confirmCard(page);
   await keep.click();
   await page.locator(".sheet").waitFor({ state: "detached" });
-  await backOut(page);
+  if (await page.locator(".pushed").count()) await backOut(page);
   // the diagnostics are under About; close & erase under its Advanced disclosure, behind a typed word
   await hub.locator(".row", { hasText: "About" }).click();
   await page.locator(".pushed").getByText("Pinned server key").waitFor();
@@ -321,6 +349,80 @@ try {
   assert.equal((await rows.first().locator(".name").innerText()).trim(), lastName, "a pinned item goes to the top");
   await shot(page, "small-vault-pinned-day");
   step("a pinned item moves to the top of the vault");
+
+  // APP-08: Back with the viewer's "Save an unsealed copy?" open closes that question, not the
+  // viewer; and the question never carries over to the next document opened
+  const openDoc = async (i) => {
+    await rows.nth(i).click();
+    await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+    await hold(page);
+    await page.locator(".viewer").waitFor();
+  };
+  const saveAsk = page.getByText("Save an unsealed copy?");
+  await openDoc(1);
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet", "back closes the question first");
+  await saveAsk.waitFor({ state: "detached" });
+  assert.equal(await page.locator(".viewer").count(), 1, "the viewer is still open");
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet");
+  assert.equal(await back(), ".viewer", "then back closes the viewer");
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  await openDoc(0);
+  await page.waitForTimeout(300);
+  assert.equal(await saveAsk.count(), 0, "the next document opens without a stale question");
+  await page.locator(".viewer [data-back]").first().click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("viewer: back closes its Save question first; the question never carries to the next document");
+
+  // PC-17: HumID hidden while a check is running (here the demo hold, before the prompt)
+  // locks at once; the document never opens behind the scenes, and isn't showing on return
+  const setHidden = (h) => page.evaluate((hid) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hid });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hid ? "hidden" : "visible") });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, h);
+  await rows.first().click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  await page.locator(".interrupt button.hold").waitFor();
+  await setHidden(true);
+  await page.waitForTimeout(300);
+  if (await page.locator(".interrupt button.hold").count()) { // finish the check while hidden, if it's still asking
+    await page.locator(".interrupt button.hold").focus(); await page.keyboard.down(" "); await page.waitForTimeout(1500); await page.keyboard.up(" ");
+  }
+  await page.waitForTimeout(2500);
+  await setHidden(false);
+  await page.waitForTimeout(800);
+  assert.equal(await page.locator(".viewer").count(), 0, "no document showing after HumID came back");
+  assert.equal(await page.locator(".tabbar").count(), 0, "the vault is locked");
+  await page.getByRole("button", { name: "Unlock", exact: true }).waitFor();
+  step("PC-17: hidden mid-check locks at once; the document never opens");
+
+  // APP-06: the duress unlock for keyboards and screen readers is named for what it does,
+  // drawn when focused, and behind a disclosure, off the straight Tab path
+  await page.evaluate(() => document.activeElement?.blur());
+  const focused = () => page.evaluate(() => { const a = document.activeElement, r = a.getBoundingClientRect(); return { name: (a.innerText || a.getAttribute("aria-label") || "").trim(), w: r.width, h: r.height }; });
+  const order = [];
+  for (let i = 0; i < 4; i++) { await page.keyboard.press("Tab"); order.push(await focused()); }
+  assert.ok(!order.some((f) => /duress|safe mode/i.test(f.name)), `no duress unlock on the straight Tab path: ${order.map((f) => f.name).join(" › ")}`);
+  const more = order.find((f) => f.name === "More ways to unlock");
+  assert.ok(more, "the disclosure is reachable");
+  assert.ok(more.w > 40 && more.h >= 40, `and drawn while focused (${Math.round(more.w)}×${Math.round(more.h)})`);
+  while ((await focused()).name !== "More ways to unlock") await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Enter");
+  assert.equal((await focused()).name, "More ways to unlock", "opening it doesn't move focus onto the duress unlock");
+  await page.keyboard.press("Tab");
+  const d = await focused();
+  assert.match(d.name, /^Unlock with your duress gesture \(shows only decoys, locks your vault\)$/);
+  assert.ok(d.w > 40 && d.h >= 40, "drawn while focused");
+  assert.equal(await page.getByText(/safe mode/i).count(), 0);
+  step("Lock: the duress unlock is named, drawn when focused, behind More ways to unlock");
 
   await page.reload();
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });

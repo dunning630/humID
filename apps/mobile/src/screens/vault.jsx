@@ -311,12 +311,19 @@ function ViewerShell({ v, children, trailing }) {
 export function Viewer() {
   const v = S.viewer.value;
   if (!v) return null;
-  const isImg = v.type.startsWith("image/");
-  const isPdf = v.type === "application/pdf";
   const fallback = <p class="muted small center">Opening…</p>;
   if (v.pass || v.passError) return <ViewerShell v={v}><Suspense fallback={fallback}><PassView v={v} /></Suspense></ViewerShell>;
   if (v.cardRecord) return <ViewerShell v={v}><Suspense fallback={fallback}><CardView record={v.cardRecord} /></Suspense></ViewerShell>;
   if (v.idRecord) return <ViewerShell v={v}><Suspense fallback={fallback}><IdView record={v.idRecord} item={v.item} /></Suspense></ViewerShell>;
+  // Its own component, keyed by the document and when it opened: its state (the "Save a copy?"
+  // question) belongs to this one opening and never carries to the next (APP-08).
+  return <FileViewer key={`${v.item?.id}:${v.openedAt}`} v={v} />;
+}
+
+/** A plain file in the viewer: text, an image, a PDF, or "can't be shown here". */
+function FileViewer({ v }) {
+  const isImg = v.type.startsWith("image/");
+  const isPdf = v.type === "application/pdf";
   const [confirm, setConfirm] = useState(false);
   return (
     <ViewerShell v={v} trailing={<button class="icon-btn" aria-label="Save a copy" onClick={() => setConfirm(true)}><Icon name="download" /></button>}>

@@ -16,7 +16,7 @@ import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { SERVER_URL, PINNED_KID } from "./config.js";
 import { R, wipe } from "./runtime.js";
 import { toast, friendly, cancelled, unreachable } from "./notify.js";
-import { showInterrupt, endInterrupt, withKeys, sessionKeys, clearKeys } from "./interrupt.js";
+import { showInterrupt, endInterrupt, withKeys, sessionKeys, clearKeys, holdCancel } from "./interrupt.js";
 import { refresh, closeViewer } from "./vault.js";
 import { loadLedger } from "./ledger.js";
 import { loadDevices } from "./devices.js";
@@ -25,20 +25,13 @@ import { loadDuressSetting, loadDuress, loadCheckin, checkinArmed } from "./safe
 import { pollJoin } from "./join.js";
 import { resumePass } from "./enroll.js";
 import { keepDraft, dropDrafts } from "./drafts.js";
+import { leave, initialLeave } from "./leave.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 let link = null;                // the connection monitor (core/link.js)
 let idleTimer = null;
-let picking = false;            // a system file picker is open: HumID leaves the screen without locking
-let pickingTimer = null;
-let hiddenAt = 0;               // when HumID last left the screen, while picking
-let pickHiddenMs = 0;           // how long this picker may keep HumID off the screen
-const PICK_MS = 60_000;         // a picker that hasn't come back by then no longer excuses leaving the screen
-const PICK_HIDDEN_MS = 20_000;  // behind the picker for longer than this (another app, the home screen) locks anyway
-const PICK_MAX_MS = 90_000;
-const PICK_HIDDEN_MAX_MS = 60_000;
 let offlineWrite = Promise.resolve();
 
 export const wallet = () => sealedWallet(R.store);
@@ -186,6 +179,19 @@ export const gateClaim = (gate) => (gate.needsHold
 
 /* ---------------- leaving the screen, idling ---------------- */
 
+// The leaving-the-screen rules are core/leave.js, a pure reducer; this feeds it the page's
+// events and does what it says. PC-17: only the biometric prompt itself excuses leaving.
+let leaveState = initialLeave;
+function feed(ev) {
+  const r = leave(leaveState, { ...ev, now: Date.now(), app: S.view.value === "app" });
+  leaveState = r.state;
+  for (const t of r.timers) setTimeout(() => feed(t.event), t.ms);
+  if (r.action === "lock") lock(ev.type === "pagehide" ? undefined : "Locked when HumID left the screen.");
+}
+// The system's face or fingerprint prompt (core/interrupt.js): on some phones it hides the app.
+R.hooks.promptStart = () => feed({ type: "promptStart" });
+R.hooks.promptEnd = () => feed({ type: "promptEnd" });
+
 let resetIdle = () => {};
 function wireGlobalEvents() {
   const reset = () => {
@@ -199,29 +205,17 @@ function wireGlobalEvents() {
   // open on the table still ends in a locked app.
   const idleLock = () => { if (R.busy) { idleTimer = setTimeout(idleLock, 5000); return; } lock(`Locked after ${idleLabel(idleMs())} without activity.`); };
   // Opening the app (unlock, a finished setup or join) always starts at the vault.
-  let wasApp = false;
+  let wasApp = false, was = S.view.value;
   S.view.subscribe((v) => {
     if (v === "app") { if (!wasApp) S.tab.value = "vault"; reset(); }
-    wasApp = v === "app";
+    if (v === "app" && was === "locked") feed({ type: "opened" }); // an unlock that finished off the screen locks again
+    wasApp = v === "app"; was = v;
   });
   resetIdle = reset;
   for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reset, { passive: true });
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      // back from the picker (or another app) while picking: if it was away long, lock anyway
-      if (picking && hiddenAt && Date.now() - hiddenAt > (pickHiddenMs || PICK_HIDDEN_MS) && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
-      hiddenAt = 0;
-      return;
-    }
-    if (S.view.value !== "app" || R.busy) return;
-    if (!picking) return lock("Locked when HumID left the screen.");
-    // the file picker is up (it normally comes back within seconds): lock if that's not what this is
-    hiddenAt = Date.now();
-    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, pickHiddenMs || PICK_HIDDEN_MS);
-  });
-  // leaving the page entirely (closed, navigated, suspended) is never a file picker
-  addEventListener("pagehide", () => { stopPicking(); if (S.view.value === "app" && !R.busy) lock(); });
-  addEventListener("focus", () => setTimeout(stopPicking, 1200));
+  document.addEventListener("visibilitychange", () => feed({ type: document.hidden ? "hide" : "show" }));
+  addEventListener("pagehide", () => feed({ type: "pagehide" }));
+  addEventListener("focus", () => setTimeout(() => feed({ type: "stopPick" }), 1200));
   addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
   addEventListener("offline", () => { S.online.value = false; link?.online(false); });
   // retries pause while HumID is off the screen, and resume when it's back
@@ -234,13 +228,7 @@ function wireGlobalEvents() {
  * scanner): leaving the screen for it isn't leaving HumID. Bounded: it clears itself after
  * forMs (a minute), and HumID locks if it stays off the screen longer than hiddenMs (20 s).
  */
-export const markPicking = ({ forMs = PICK_MS, hiddenMs = PICK_HIDDEN_MS } = {}) => {
-  picking = true;
-  pickHiddenMs = Math.min(hiddenMs, PICK_HIDDEN_MAX_MS);
-  clearTimeout(pickingTimer);
-  pickingTimer = setTimeout(stopPicking, Math.min(forMs, PICK_MAX_MS));
-};
-function stopPicking() { picking = false; hiddenAt = 0; pickHiddenMs = 0; clearTimeout(pickingTimer); pickingTimer = null; }
+export const markPicking = ({ forMs, hiddenMs } = {}) => feed({ type: "pick", forMs, hiddenMs });
 
 /** Change preferences: saved on this device, applied now. */
 export function setPref(patch) {
@@ -284,6 +272,7 @@ export async function unlock(used = false) {
       }, { keepOpen: true, challenge: message }),
     });
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
+    if (duress) dropDrafts(); // nothing from the real session waits in memory behind a decoy one
     if (!S.server.value) await connectServer(); // its policy says whether it offers Heartbeat
     await loadCheckin(); // before anything is saved on this device: while Heartbeat is armed, nothing is
     R.offline = duress || checkinArmed() ? null : await readOffline();
@@ -374,6 +363,7 @@ async function unlockOffline(used) {
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
     R.offline = copy;
+    if (duress) dropDrafts();
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
       S.offline.value = { savedAt: copy.savedAt };
@@ -399,7 +389,8 @@ export function reloadTab() {
 }
 
 /**
- * Lock: keys wiped, session ended, everything the vault showed forgotten. What survives
+ * Lock: keys wiped, session ended, everything the vault showed forgotten (every session
+ * signal, state.js resetSession: the search, the filters and the open sheet too). What survives
  * is a draft of what the person was in the middle of (core/drafts.js): typed text for
  * ten minutes, a captured page for two, so an incoming call doesn't cost them the form.
  */
@@ -412,25 +403,13 @@ export function lock(reason) {
   clearTimeout(idleTimer);
   R.hooks.stopCheckinWatch?.();
   R.hooks.stopMessaging?.();
-  keepDraft();
+  holdCancel(); // a demo hold still waiting: the check it belongs to ends here
+  leaveState = leave(leaveState, { type: "locked" }).state;
+  keepDraft(); // before the reset: it reads whether this was a decoy session
+  closeViewer(); // wipes the open document's bytes, not only the signal
   batch(() => {
+    S.resetSession();
     S.view.value = "locked";
-    S.checkin.value = null;
-    S.session.value = null;
-    S.items.value = [];
-    S.ledger.value = null;
-    S.devices.value = null;
-    S.recovery.value = null;
-    S.alerts.value = [];
-    S.protecting.value = [];
-    S.station.value = null;
-    S.duressInfo.value = null;
-    S.continuity.value = null;
-    S.decoy.value = false;
-    S.offline.value = null;
-    S.sheet.value = null;
-    S.push.value = null;
-    closeViewer();
   });
   if (reason) toast(reason, "warn");
 }

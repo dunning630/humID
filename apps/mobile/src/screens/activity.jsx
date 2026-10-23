@@ -124,7 +124,8 @@ export function Activity() {
       )}
       {l?.ok && details && (
         <div class="rows" style={{ marginBottom: 12 }}>
-          <Row chevron={false} icon="chain" tone="mint" title={`${l.entries.length} events, nothing altered or missing`} sub="Each entry is chained to the one before it; this phone re-checked every link." />
+          {/* A decoy session's list is filtered (core/ledger.js decoyView): "nothing missing" would be false there. */}
+          <Row chevron={false} icon="chain" tone="mint" title={l.decoy ? `${l.entries.length} events` : `${l.entries.length} events, nothing altered or missing`} sub="Each entry is chained to the one before it; this phone re-checked every link." />
           <Row chevron={false} icon="server" tone="mint" title="Signed by your vault server" sub={<>Its signing key: <span class="mono">{l.keyFp?.slice(0, 8)}</span></>} />
           {!c && <Row chevron={false} icon="globe" title="Checking the public log…" />}
           {c?.ok && <Row chevron={false} icon="globe" tone="mint" title="Published in the public log" sub={`Your latest entry is in checkpoint #${c.size}${c.cosigned?.length ? `, cosigned by ${c.cosigned.join(", ")}` : ""}. The log only grew since this phone last checked${c.at ? ` (${fmtAgo(c.at)})` : ""}.`} />}

@@ -12,12 +12,17 @@
 //   - in memory only, never on disk; gone when the app is closed, erased or reset;
 //   - never kept from a decoy session, and never restored into one;
 //   - a draft is restored only after a live check (it rides inside the unlocked session).
+//
+// A new recovery card is a draft too (APP-02), until its holder has typed part of it back: it
+// is the only copy, and the server already stopped accepting the old card.
 import { signal } from "@preact/signals";
 import * as S from "./state.js";
 import { wipe } from "./runtime.js";
 
 const TEXT_MS = 10 * 60_000;
 const IMAGE_MS = 2 * 60_000;
+/** A new recovery card not yet checked (core/recovery.js): shown again after a real unlock. */
+export const CARD_DRAFT = "recoveryCard";
 
 /** The flow in progress: { kind, state, at } while unlocked; null otherwise. Screens write it as they go. */
 export const current = signal(null);
@@ -25,11 +30,25 @@ export const current = signal(null);
 export const kept = signal(null);
 let imageTimer = null;
 
-/** Screens call this as their state changes. `images` lists the keys in `state` that hold captured pages. */
+/**
+ * Screens call this as their state changes. `images` lists the keys in `state` that hold
+ * captured pages. An empty state clears only a draft of the same kind, so a sheet that opens
+ * empty never throws away another flow's draft; and nothing replaces a new recovery card's
+ * draft until that card is checked or given up.
+ */
 export function setDraft(kind, state, { images = [] } = {}) {
-  current.value = state ? { kind, state, at: Date.now(), images } : null;
+  if (state && current.value?.kind === CARD_DRAFT && kind !== CARD_DRAFT) return; // the card until it's checked
+  if (state) current.value = { kind, state, at: Date.now(), images };
+  else if (current.value?.kind === kind) current.value = null;
 }
-export function clearDraft() { current.value = null; }
+/**
+ * A flow finished or was abandoned: forget its draft. A new recovery card's draft goes only
+ * when asked for by kind, so finishing some other flow can't throw away the only copy.
+ */
+export function clearDraft(kind) {
+  const k = current.value?.kind;
+  if (kind ? k === kind : k !== CARD_DRAFT) current.value = null;
+}
 
 /** On lock: move the live draft to `kept`, start the image clock. */
 export function keepDraft() {

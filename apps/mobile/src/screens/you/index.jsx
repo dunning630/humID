@@ -4,15 +4,15 @@
 //
 // Pushed screens this file routes (S.push.value.type): protect · devices · recovery ·
 // duress · heartbeat · help · settings · about. Sheets this file owns: the recovery card
-// shown once after it's made (S.cardCode).
-import { useEffect, useState } from "preact/hooks";
+// shown once after it's made (S.cardCode), kept as a draft across a lock until it's checked.
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
-import { Row, Banner, Sheet } from "../../ui/kit.jsx";
+import { Row, Banner, Sheet, Confirm } from "../../ui/kit.jsx";
 import { TabBanners } from "../vault.jsx";
 import { CardBox, CardConfirm, PrintableCard, CAN_PRINT, PROOFS } from "../../ui/codes.jsx";
 import { fmtAgo, fmtTime } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { loadDevices, loadRecovery, loadAlerts, loadDuress, loadAdminSummary, loadCheckin, checkinOffered, cancelRecovery, clearLockdown, lockNow, saveCard } from "../../core/index.js";
+import { loadDevices, loadRecovery, loadAlerts, loadDuress, loadAdminSummary, loadCheckin, checkinOffered, cancelRecovery, clearLockdown, lockNow, saveCard, forgetNewCard } from "../../core/index.js";
 import { Countdown, go } from "./common.jsx";
 import { Protect, protectionItems } from "./protect.jsx";
 import { Devices } from "./devices.jsx";
@@ -106,11 +106,19 @@ function Hub() {
   );
 }
 
-/** The recovery card, shown once after it's made (S.cardCode); forgotten when closed. */
+/**
+ * The recovery card, shown once after it's made (S.cardCode); forgotten when closed. Until the
+ * typed-back check passes, every way of closing it (the X, a tap outside, Escape, Back) asks
+ * first: the server has already replaced the old card, so this is the only copy (APP-03).
+ */
 function CardSheet({ code }) {
   const [ok, setOk] = useState(false);
-  const close = () => { S.cardCode.value = null; };
+  const [asking, setAsking] = useState(false);
+  const checked = useRef(false); // Sheet's Escape handler keeps its first onClose: read the latest here
+  checked.current = ok;
+  const close = () => { if (checked.current) forgetNewCard(); else setAsking(true); };
   return (
+    <>
     <Sheet onClose={close} eyebrow="Shown once · write it down now" title="Your new recovery card">
       <p class="t2 small">Your old card, if you had one, no longer works. On its own this card opens nothing: recovery also needs your witnesses, your ID chip or a security key.</p>
       <CardBox code={code} />
@@ -131,5 +139,11 @@ function CardSheet({ code }) {
         }}>{ok ? "I've stored it safely" : "Check your copy to continue"}</button>
       </div>
     </Sheet>
+    {asking && (
+      <Confirm title="Close without saving your new card?" action="Close without saving"
+        text="Your old card already stopped working, and this one won't be shown again. You'll need to make another."
+        onClose={() => setAsking(false)} onConfirm={forgetNewCard} />
+    )}
+    </>
   );
 }

@@ -9,6 +9,7 @@ import { toast, friendly, cancelled } from "./notify.js";
 import { withStepUp, clearKeys } from "./interrupt.js";
 import { connectServer } from "./session.js";
 import { dropDrafts } from "./drafts.js";
+import { closeViewer } from "./vault.js";
 
 export async function eraseEverything() {
   const id = S.identity.value;
@@ -25,10 +26,8 @@ export async function eraseEverything() {
   clearKeys(); R.offline = null; S.offlineReady.value = false;
   R.knownNames.clear();
   dropDrafts();
-  batch(() => {
-    S.identity.value = null; S.session.value = null; S.items.value = []; S.ledger.value = null; S.sheet.value = null; S.push.value = null;
-    S.devices.value = null; S.recovery.value = null; S.alerts.value = []; S.protecting.value = []; S.decoy.value = false; S.view.value = "welcome";
-  });
+  closeViewer();
+  batch(() => { S.resetSession(); S.identity.value = null; S.view.value = "welcome"; });
   R.api.htp.pinnedKid = PINNED_KID;
   toast("Your HumID was closed and your vault erased.");
   return true;
@@ -42,9 +41,11 @@ export async function resetLocal() {
   await R.store.clearVault();
   S.offlineReady.value = false;
   dropDrafts();
+  clearKeys(); R.offline = null; R.knownNames.clear();
+  closeViewer();
   R.api.htp.close();
   R.api.htp.pinnedKid = PINNED_KID;
   R.api.htp.server = null;
-  batch(() => { S.identity.value = null; S.lockIssue.value = null; S.view.value = "welcome"; });
+  batch(() => { S.resetSession(); S.identity.value = null; S.lockIssue.value = null; S.view.value = "welcome"; });
   connectServer();
 }

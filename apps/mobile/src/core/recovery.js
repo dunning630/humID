@@ -14,6 +14,7 @@ import { R, KEY_TYPE, wipe } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
+import { setDraft, clearDraft, current as draftNow, CARD_DRAFT } from "./drafts.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -24,6 +25,18 @@ export async function loadRecovery() {
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
   ]);
   if (!card || !contacts) return;
+  if (S.decoy.value) {
+    // A decoy session shows an ordinary account with no recovery set up: no witness names,
+    // no ID chip, no card date (PC-16: names here would tell a coercer whom to press next).
+    // The same requests were made above, so the traffic looks the same.
+    S.recovery.value = {
+      card: { exists: false }, anchor: { available: !!anchor?.available, exists: false }, settings: {},
+      contacts: { n: 0, threshold: 0, createdAt: null, names: [], scheme: "quorum" },
+      keys: { available: !!keyList, max: keyList?.max || 4, list: [] },
+      proofs: { witness: false, anchor: false, card: false, key: false }, ready: false, legacy: false,
+    };
+    return;
+  }
   const names = [];
   for (const g of contacts.guardians || []) {
     let name = "A witness";
@@ -67,7 +80,12 @@ export const partOf = (seed, kind) => {
 
 /* ---------------- the recovery card ---------------- */
 
-/** Make (or replace) the recovery card. Returns the code to show ONCE; the caller forgets it. */
+/**
+ * Make (or replace) the recovery card. Returns the code to show ONCE; the caller forgets it.
+ * Until the holder has typed part of it back, the code is a draft (core/drafts.js): kept in
+ * memory across a lock for ten minutes and shown again after a real unlock, never in a
+ * decoy session, never on disk (APP-02). The server has already replaced the old card.
+ */
 export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
@@ -79,10 +97,27 @@ export async function makeNewCard() {
       finally { wipe(part.y); }
     });
     S.cardCode.value = card.code;
+    setDraft(CARD_DRAFT, { code: card.code });
     loadRecovery();
     return card.code;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
   finally { wipe(card?.secret); }
+}
+
+/** The new card was checked (or the holder chose to close it unsaved): forget it everywhere. */
+export function forgetNewCard() {
+  S.cardCode.value = null;
+  clearDraft(CARD_DRAFT);
+}
+
+/** After a real unlock: show the new card kept across the lock (takeDraft has checked its age). */
+export function resumeNewCard(d) {
+  if (d?.kind !== CARD_DRAFT || !d.state?.code || S.decoy.value) return false;
+  draftNow.value = d; // its original time: the ten minutes run from when the card was made
+  S.cardCode.value = d.state.code;
+  S.push.value = null;
+  S.tab.value = "you";
+  return true;
 }
 
 export async function removeCard() {
