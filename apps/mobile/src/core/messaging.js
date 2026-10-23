@@ -275,7 +275,7 @@ function publish() {
     const unreadIn = msgs.filter((m) => m.dir === "in" && m.at > (ct.lastRead || 0)).length;
     return {
       id: ct.id, label: ct.label, peerId: c?.session.peerId || ct.peerId || "", status,
-      created: ct.createdAt, safetyVerified: ct.safetyVerified || false, duressAlert: !!ct.duressAlert, duressAt: ct.duressAt || 0, showHere: ct.showHere !== false,
+      created: ct.createdAt, safetyVerified: ct.safetyVerified || false, safetyMismatch: ct.safetyMismatch || 0, duressAlert: !!ct.duressAlert, duressAt: ct.duressAt || 0, showHere: ct.showHere !== false,
       peerAt: c?.peerLiveAt ?? null, timer: c?.timer ?? 0,
       waiting: pendingBy.get(ct.id) || 0, unread: unreadIn,
       last: last ? { at: last.at, dir: last.dir, text: last.kind === "text" ? td.decode(last.body) : "Voice note or photo" } : null,
@@ -285,8 +285,10 @@ function publish() {
   const invites = list.invites.filter((i) => !i.closed).map((i) => ({ id: i.id, code: i.code, expires: i.expires, label: i.label, created: i.createdAt, waiting: requestsFor(i.id) }));
   S.msg.value = {
     ready: true, error: null, contacts, invites, canStamp: canStamp(),
-    requests: [...requests.values()].map((r) => ({ id: r.id, invite: r.invite, label: list.invites.find((i) => i.id === r.invite)?.label || "", at: r.at })),
-    newCount: contacts.reduce((n, c) => n + c.waiting + c.unread, 0) + requests.size,
+    // one row per invite until its requests are opened (MSG-09: junk is never listed), then one
+    // per real request
+    requests: requestRows(),
+    newCount: contacts.reduce((n, c) => n + c.waiting + c.unread, 0) + requestRows().length,
   };
   if (openThread) showThread(openThread);
 }
@@ -313,6 +315,16 @@ async function listWaiting() {
   return out.sort((a, b) => a.at - b.at);
 }
 const requests = new Map();     // request id → { id, invite, at }
+function requestRows() {
+  const rows = [], unopened = new Map();
+  for (const r of requests.values()) {
+    const label = list?.invites.find((i) => i.id === r.invite)?.label || "";
+    if (reviews.has(r.id)) rows.push({ id: r.id, invite: r.invite, label, at: r.at, opened: true });
+    else if (!unopened.has(r.invite)) unopened.set(r.invite, { id: r.id, invite: r.invite, label, at: r.at, count: 1 });
+    else unopened.get(r.invite).count++;
+  }
+  return [...rows, ...unopened.values()];
+}
 const requestsFor = (inviteId) => [...requests.values()].filter((r) => r.invite === inviteId).length;
 
 /** The open conversation's messages, only while its holder's check is fresh. */
@@ -448,7 +460,8 @@ async function fetchAll() {
     if (!c || c.status === "erased" || c.status === "closed") continue;
     targets.push({ id: ct.id, ct, boxes: c.session.inboxesSince(ct.lastPolled ?? null, t) });
   }
-  for (const inv of list.invites) if (!inv.closed && inv.expires > t) targets.push({ id: inv.id, invite: inv.id, boxes: [inv.state.replyBox] });
+  // an invite's reply box stops being polled once it holds MAX_REQUESTS_PER_INVITE (MSG-09: a flood)
+  for (const inv of list.invites) if (!inv.closed && inv.expires > t && requestsFor(inv.id) < MAX_REQUESTS_PER_INVITE) targets.push({ id: inv.id, invite: inv.id, boxes: [inv.state.replyBox] });
   let polled = false;
   for (const [i, x] of shuffle(targets).entries()) {
     if (i) await pause(...POLL_GAP_MS);
@@ -463,7 +476,7 @@ async function fetchAll() {
           for (const wire of wires) {
             // Stored before anything else, as ciphertext: the relay no longer has it.
             if (x.ct) { await putWaiting({ conv: x.id, at: now() }, wire); pendingCount.set(x.id, (pendingCount.get(x.id) || 0) + 1); }
-            else { const at = now(); const id = await putWaiting({ invite: x.invite, at }, wire); requests.set(id, { id, invite: x.invite, at }); }
+            else if (requestsFor(x.invite) < MAX_REQUESTS_PER_INVITE) { const at = now(); const id = await putWaiting({ invite: x.invite, at }, wire); requests.set(id, { id, invite: x.invite, at }); }
           }
         }
       }
@@ -650,31 +663,60 @@ export async function withdrawRequest(id) {
 }
 
 /** See who's asking: one live check (the request opens only with this invite's persona keys). */
+/*
+ * Request floods (security review MSG-09). Anyone who saw an invite code can post junk to its
+ * reply box. So one "See who's asking" check opens EVERY request waiting for that invite: what
+ * isn't live, isn't for this invite, or was already handled is dropped without being shown, and
+ * only real requests are listed. At most MAX_REQUESTS_PER_INVITE are kept, and the reply box is
+ * no longer polled once that many have arrived.
+ */
+const MAX_REQUESTS_PER_INVITE = 20;
+const UNREADABLE = ["not_live", "bad_signature", "malformed", "not_for_us", "replay_or_old", "invite_used", "invite_expired", "unsupported_version"];
+
 export async function reviewRequest(reqId) {
   const r = requests.get(reqId);
-  const rec = await openWaiting(await R.store.getMsg(reqId));
   const inv = list.invites.find((i) => i.id === r?.invite);
-  if (!r || !rec || !inv) return null;
+  if (!r || !inv) return null;
+  // this one first, then every other one waiting for the same invite
+  const ids = [reqId, ...[...requests.values()].filter((x) => x.invite === inv.id && x.id !== reqId && !reviews.has(x.id)).map((x) => x.id)];
+  const recs = [];
+  for (const id of ids) { const rec = await openWaiting(await R.store.getMsg(id)); if (rec) recs.push(rec); }
+  if (!recs.length) return null;
   try {
-    let shown = null, persona = null;
+    const opened = [], dropped = [];
+    let persona = null;
     await withKeys("review", "See who's asking", async ({ seed }) => {
       const p = M.personaFromSalt(seed, inv.state.personaSalt);
-      try { shown = await M.readRequest(inv.state, p, rec.wire, { stampKeys: keyset, requireLive: true, now: now() }); }
-      finally { persona = { pub: p.pub, id: p.id }; M.wipePersona(p); }
+      try {
+        for (const rec of recs) {
+          try { opened.push({ rec, shown: await M.readRequest(inv.state, p, rec.wire, { stampKeys: keyset, requireLive: true, now: now() }) }); }
+          catch (e) { if (UNREADABLE.includes(e?.code)) dropped.push(rec.id); else throw e; }
+        }
+      } finally { persona = { pub: p.pub, id: p.id }; M.wipePersona(p); }
     });
-    // The request's own live stamp proves them live: when it was made, never later than it arrived.
-    const peerAt = M.peerLiveAt({ live: shown.live, sentAt: shown.at, receivedAt: rec.at });
-    reviews.set(reqId, { shown, invite: inv, persona, at: now(), peerAt });
-    return { id: reqId, from: shown.from, intro: shown.intro, live: shown.live === true, safetyCode: shown.safetyCode, at: shown.at, label: inv.label };
-  } catch (e) {
-    if (["not_live", "bad_signature", "malformed", "not_for_us", "replay_or_old", "invite_used", "invite_expired"].includes(e?.code)) {
-      // Never shown: a request that isn't live, isn't for this invite, or was already handled.
-      requests.delete(reqId); await R.store.delMsg(reqId); publish();
-      toast(e.code === "not_live" ? "That request wasn't made with a live check, so it was discarded unread." : "That request couldn't be opened. It was discarded.", "warn");
+    // Never shown: what isn't live, isn't for this invite, or was already handled.
+    for (const id of dropped) { requests.delete(id); await R.store.delMsg(id); }
+    for (const { rec, shown } of opened) {
+      // The request's own live stamp proves them live: when it was made, never later than it arrived.
+      reviews.set(rec.id, { shown, invite: inv, persona, at: now(), peerAt: M.peerLiveAt({ live: shown.live, sentAt: shown.at, receivedAt: rec.at }) });
+    }
+    publish();
+    const mine = opened.find((o) => o.rec.id === reqId) || opened[0];
+    if (!mine) {
+      toast(dropped.length === 1 ? "That request wasn't made with a live check, or wasn't for this invite, so it was discarded unread." : `${dropped.length} requests couldn't be confirmed as made with a live check, so they were discarded unread.`, "warn");
       return null;
     }
-    return report(e);
-  }
+    const { rec, shown } = mine;
+    return { id: rec.id, from: shown.from, intro: shown.intro, live: shown.live === true, safetyCode: shown.safetyCode, at: shown.at, label: inv.label, others: opened.length - 1, discarded: dropped.length };
+  } catch (e) { return report(e); }
+}
+
+/** A request already opened by the same check (MSG-09): shown without another one. */
+export function reviewedRequest(reqId) {
+  const rv = reviews.get(reqId);
+  if (!rv) return null;
+  const { shown, invite } = rv;
+  return { id: reqId, from: shown.from, intro: shown.intro, live: shown.live === true, safetyCode: shown.safetyCode, at: shown.at, label: invite.label, others: 0, discarded: 0 };
 }
 
 /** Approve: one live check; the acceptance carries its stamp. */
@@ -683,10 +725,10 @@ export async function approveRequest(reqId, { label, safetyVerified = false }) {
   if (!rv) return null;
   try {
     let sent = null, session = null;
+    // the invite is spent only once the acceptance is stamped (MSG-08): a failed check, a busy
+    // server or a changed stamp key leaves it as it was, and Approve works again
     await live("approve", `Approve ${cleanLabel(label) || "this person"}`, async ({ stamper }) => {
-      session = M.acceptRequest(rv.invite.state, rv.persona, rv.shown, { now: now() });
-      const c = new M.Conversation(session, null, { requireLive: true });
-      sent = await c.accept({ stamper, now: now() });
+      ({ session, sent } = await M.approveRequest(rv.invite.state, rv.persona, rv.shown, (s) => new M.Conversation(s, null, { requireLive: true }).accept({ stamper, now: now() }), { now: now() }));
     });
     reviews.delete(reqId);
     requests.delete(reqId); await R.store.delMsg(reqId);
@@ -824,7 +866,12 @@ export async function updateContact(id, patch) {
   if (!ct) return;
   if ("label" in patch) ct.label = cleanLabel(patch.label) || ct.label;
   // what the holder said about the comparison: false, or how they compared ("in person", "on a video call")
-  if ("safetyVerified" in patch) ct.safetyVerified = typeof patch.safetyVerified === "string" ? `${patch.safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!patch.safetyVerified;
+  if ("safetyVerified" in patch) {
+    ct.safetyVerified = typeof patch.safetyVerified === "string" ? `${patch.safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!patch.safetyVerified;
+    if (ct.safetyVerified) ct.safetyMismatch = 0;
+  }
+  // the holder compared the safety code and it was DIFFERENT: someone may be in between (MSG-06)
+  if (patch.safetyMismatch) { ct.safetyMismatch = now(); ct.safetyVerified = false; }
   if ("duressAlert" in patch) ct.duressAlert = !!patch.duressAlert;
   if ("showHere" in patch) ct.showHere = !!patch.showHere;
   if (patch.clearNotices) ct.notices = [];

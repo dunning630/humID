@@ -347,6 +347,28 @@ test("H1: a future-dated message isn't live; freshness counts from when it came 
   assert.equal(M.liveState({ ownAt: T0 + 3 * DAY, peerAt: b.peerLiveAt, now: T0 + 3 * DAY }).live, false);
 });
 
+test("MSG-08: an approval whose stamp fails doesn't spend the invite; approving again works", async () => {
+  const seedA = rnd(64), seedB = rnd(64);
+  const inv = await M.createInvite(seedA, { now: T0 });
+  const opened = await M.openInvite(inv.code, inv.wire, { now: T0 });
+  const req = await M.requestContact(seedB, opened, { stamper, now: T0, requireLive: true });
+  const personaA = M.personaFromSalt(seedA, inv.state.personaSalt);
+  const shown = await M.readRequest(inv.state, personaA, req.wire, { now: T0, stampKeys, requireLive: true });
+  const failing = async () => { throw new M.MsgError("busy", "busy"); };
+  const accept = (st) => (s) => new M.Conversation(s, null, { requireLive: true }).accept({ now: T0, stamper: st });
+  await code(M.approveRequest(inv.state, personaA, shown, accept(failing), { now: T0 }), "busy");
+  assert.equal(inv.state.closed, undefined, "the invite is still open");
+  assert.equal(inv.state.used, 0);
+  // the user taps Approve again: it works, and the requester connects
+  const { session, sent } = await M.approveRequest(inv.state, personaA, shown, accept(stamper), { now: T0 });
+  assert.equal(inv.state.closed, true, "now it's spent");
+  const b = new M.Conversation(req.session, null, { requireLive: true });
+  const r = await b.receive(sent.wire, { now: T0, stampKeys });
+  assert.equal(r.kind, "accept");
+  assert.equal(b.status, "connected");
+  assert.equal(session.status, "connected");
+});
+
 /* ---------- delete for both and the outbox are atomic (precert PC-28) ---------- */
 
 /** Like the app's stamper and the gateway: one check, at most 2 blinded values; can be made to fail. */

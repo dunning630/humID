@@ -46,10 +46,20 @@ async function meet(now = T0) {
 /** Son asks; dad's phone reads the question. */
 async function ask(son, dad, opts = {}) {
   const now = opts.now ?? T0;
-  const sent = await M.sendChallenge(son, { purpose: "call", note: "the call about the wire transfer", now, ...opts });
+  const sent = await M.sendChallenge(son, { purpose: "call", note: "the call about the wire transfer", now, stamper, ...opts });
   const got = await dad.decrypt(sent.wire, { now, stampKeys });
   return { sent, pending: sent.pending, question: M.readChallenge(got, { now }) };
 }
+
+test("MSG-11: asking 'Is this really you?' takes a live check, and a strict phone shows the question", async () => {
+  const { son, dad } = await meet();
+  await code(M.sendChallenge(son, { now: T0 + MIN }), "stamp_required");
+  const sent = await M.sendChallenge(son, { now: T0 + MIN, stamper });
+  const strict = await dad.decrypt(sent.wire, { now: T0 + MIN, stampKeys, requireLive: true });
+  assert.equal(strict.refused, undefined, "not discarded");
+  assert.equal(strict.live, true);
+  assert.equal(M.readChallenge(strict, { now: T0 + MIN }).purpose, "call");
+});
 
 /* ---------------- "Is this really you?" ---------------- */
 

@@ -12,7 +12,7 @@ export {
   encodePub, decodePub, dualSign, dualVerify, PERSONA_ID_CHARS, SAFETY_CHARS,
 } from "./persona.js";
 export {
-  createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite, cancelInvite,
+  createInvite, openInvite, requestContact, readRequest, acceptRequest, approveRequest, declineRequest, closeInvite, cancelInvite,
   formatInviteCode, parseInviteCode, inviteBoxOf, inviteQrPayload, parseInviteQr, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
 export {

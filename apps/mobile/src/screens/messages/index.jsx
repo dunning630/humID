@@ -63,7 +63,7 @@ function List() {
               <div class="rows">
                 {m.requests.map((r) => (
                   <Row key={r.id} icon="users" tone="amber" title={r.label ? `${r.label} is asking to connect` : "Someone is asking to connect"}
-                    sub={<>Used your invite · {fmtAgo(r.at)}</>}
+                    sub={<>{r.count > 1 ? `${r.count} requests used your invite; one check opens them all` : "Used your invite"} · {fmtAgo(r.at)}</>}
                     onClick={() => go("request", { id: r.id })} />
                 ))}
               </div>
@@ -215,6 +215,7 @@ function Chat() {
           action="Withdraw" onAction={async () => { if (await Msg.withdrawRequest(id)) back(); }} />
       )}
       {c.status === "closed" && <Banner icon="info" title="This conversation has ended" text="You can still read and delete what's here." />}
+      {c.safetyMismatch > 0 && <SafetyAlert id={id} name={c.label} />}
       {c.duressAt > 0 && <Banner tone="danger" icon="siren" role="alert" title={`${c.label} may be under duress`} text={`Their message ${fmtAgo(c.duressAt)} came from a duress unlock. Check on them in a safe way.`} />}
       {sealed ? (
         <div class="thread sealed-thread">
@@ -340,12 +341,13 @@ function EnterCode() {
   const [intro, setIntro] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(null);
+  const [different, setDifferent] = useState(false);
   const find = async (c = code) => { setBusy(true); setFound(await Msg.openCode(c)); setBusy(false); };
   const ask = async () => { setBusy(true); const r = await Msg.askToConnect(found, { label, intro }); if (r) setSent(r); setBusy(false); };
   // Waiting on the other phone: check often, and open the conversation the moment they approve.
   const conv = sent && S.msg.value?.contacts.find((x) => x.id === sent.id);
   useEffect(() => { if (sent) { Msg.waitingOnOther(true); return () => Msg.waitingOnOther(false); } }, [sent?.id]);
-  useEffect(() => { if (conv?.status === "connected") go("chat", { id: sent.id }); }, [conv?.status]);
+  useEffect(() => { if (conv?.status === "connected" && !different) go("chat", { id: sent.id }); }, [conv?.status]);
   const enough = code.replace(/[^0-9a-z]/gi, "").length >= 44;
   if (scan) {
     return (
@@ -359,7 +361,14 @@ function EnterCode() {
       {sent ? (
         <>
           <p class="waiting-line" role="status" style={{ marginTop: 4 }}><span class="dot" />Asked {label || "them"} to connect. This opens by itself when they approve.</p>
-          <SafetyCompare code={sent.safetyCode} when={`${label || "They"} will see this code once they open your request.`} onMatch={(how) => Msg.updateContact(sent.id, { safetyVerified: how })} />
+          <SafetyCompare code={sent.safetyCode} when={`${label || "They"} will see this code once they open your request.`} onMatch={(how) => Msg.updateContact(sent.id, { safetyVerified: how })}
+            onDifferent={() => { setDifferent(true); Msg.updateContact(sent.id, { safetyMismatch: true }); }} />
+          {different && (
+            <>
+              <Banner tone="danger" icon="alert" role="alert" title="Stop: the codes are different" text={`Someone may be in between you and ${label || "them"}. Withdraw your request, and ask for a new invite when you're together.`} />
+              <div class="actions"><button class="btn danger block" onClick={async () => { if (await Msg.withdrawRequest(sent.id) || await Msg.deleteConversation(sent.id)) back(); }}>Withdraw my request</button></div>
+            </>
+          )}
           <div class="actions"><button class="btn ghost block" onClick={back}>Back to Messages</button></div>
         </>
       ) : !found ? (
@@ -423,15 +432,41 @@ function SafetyCompare({ code, onMatch, onDifferent, matched: initial = false, w
   );
 }
 
+/**
+ * The safety codes were different (MSG-06): someone may be in between. Shown wherever the
+ * comparison was made and at the top of the conversation, with the one safe way out.
+ */
+function SafetyAlert({ id, name, onDeleted }) {
+  const [sure, setSure] = useState(false);
+  return (
+    <>
+      <Banner tone="danger" icon="alert" role="alert" title="The safety codes were different"
+        text={`Someone may be in between you and ${name || "them"}, reading or changing what you send. Don't send anything private. Delete this conversation and connect again when you're together.`}
+        action="Delete conversation" onAction={() => setSure(true)} />
+      {sure && <Confirm title="Delete this conversation?" text="Every message and key for it is erased from this phone. Nothing is sent: if someone is in between, telling them would only help them." action="Delete"
+        onClose={() => setSure(false)} onConfirm={async () => { setSure(false); if (await Msg.deleteConversation(id)) (onDeleted || back)(); }} />}
+    </>
+  );
+}
+
 /* ---------------- someone is asking to connect ---------------- */
 
 function Request() {
   return <Pushed title="Asking to connect" onBack={back}><Review reqId={S.push.value.id} /></Pushed>;
 }
 
+/** Several people used one invite, or junk was dropped (MSG-09): say so before anyone is approved. */
+function crowdNote({ others, discarded }) {
+  const parts = [];
+  if (others > 0) parts.push("Only one of them can be the person you gave it to. Check each note and compare safety codes before you approve anyone.");
+  if (discarded > 0) parts.push(`${discarded} that couldn't be confirmed as made with a live check ${discarded === 1 ? "was" : "were"} discarded unread.`);
+  return parts.join(" ");
+}
+
 function Review({ reqId, defaultLabel = "" }) {
-  const [shown, setShown] = useState(null);
-  const [label, setLabel] = useState(defaultLabel);
+  // a request the same check already opened (MSG-09) shows straight away
+  const [shown, setShown] = useState(() => Msg.reviewedRequest(reqId));
+  const [label, setLabel] = useState(defaultLabel || shown?.label || "");
   const [busy, setBusy] = useState(false);
   const [matched, setMatched] = useState(false);
   const [different, setDifferent] = useState(false);
@@ -442,8 +477,10 @@ function Review({ reqId, defaultLabel = "" }) {
     if (r) { setShown(r); setLabel(defaultLabel || r.label || ""); }
     else if (!S.msg.value?.requests.some((x) => x.id === reqId)) back();
   };
-  const approve = async () => { setBusy(true); const conv = await Msg.approveRequest(reqId, { label, safetyVerified: matched }); setBusy(false); if (conv) go("chat", { id: conv }); };
-  const decline = async () => { await Msg.declineRequest(reqId); back(); };
+  // the check may have opened a different request than the row tapped (that one was junk)
+  const id = shown?.id || reqId;
+  const approve = async () => { setBusy(true); const conv = await Msg.approveRequest(id, { label, safetyVerified: matched }); setBusy(false); if (conv) go("chat", { id: conv }); };
+  const decline = async () => { await Msg.declineRequest(id); back(); };
   if (!shown) {
     return (
       <>
@@ -457,6 +494,7 @@ function Review({ reqId, defaultLabel = "" }) {
     <>
       <Banner tone="mint" icon="fingerprint" title="Asked with a live check"
         text="It was confirmed by a face or fingerprint on a proven phone. Anyone who saw your code could have made it, so check their note, and compare safety codes if you can." />
+      {(shown.others > 0 || shown.discarded > 0) && <Banner tone="amber" icon="info" title={shown.others > 0 ? `${shown.others + 1} people asked with this invite` : "Some requests were discarded"} text={crowdNote(shown)} />}
       {shown.intro ? <div class="card" style={{ marginTop: 10 }}><div class="eyebrow">Their note</div><p>{shown.intro}</p></div>
         : <p class="small muted" style={{ marginTop: 10 }}>They didn't add a note.</p>}
       <div class="field" style={{ marginTop: 14 }}>
@@ -487,7 +525,7 @@ function Contact() {
     <Pushed title={c.label} onBack={() => go("chat", { id })}>
       <div class="rows">
         <Row icon="pencil" title="Name" sub={`${c.label} · only you see this`} onClick={() => setRename(c.label)} />
-        <Row icon="shield" tone={c.safetyVerified ? "mint" : ""} title="Safety code" sub={c.safetyVerified ? `You marked this compared${typeof c.safetyVerified === "string" ? ` (${c.safetyVerified})` : ""}` : "Not compared yet"} onClick={() => setSafety(true)} />
+        <Row icon="shield" tone={c.safetyMismatch ? "danger" : c.safetyVerified ? "mint" : ""} title="Safety code" sub={c.safetyMismatch ? "You marked this DIFFERENT: someone may be in between" : c.safetyVerified ? `You marked this compared${typeof c.safetyVerified === "string" ? ` (${c.safetyVerified})` : ""}` : "Not compared yet"} onClick={() => setSafety(true)} />
       </div>
       {c.status === "connected" && (
         <div class="rows" style={{ marginTop: 14 }}>
@@ -517,7 +555,9 @@ function Contact() {
       )}
       {safety && s && (
         <Sheet onClose={() => setSafety(false)} title="Safety code">
-          <SafetyCompare code={s.safetyCode} matched={c.safetyVerified} onMatch={(how) => Msg.updateContact(id, { safetyVerified: how })} />
+          <SafetyCompare code={s.safetyCode} matched={c.safetyVerified} onMatch={(how) => Msg.updateContact(id, { safetyVerified: how })}
+            onDifferent={() => Msg.updateContact(id, { safetyMismatch: true })} />
+          {c.safetyMismatch > 0 && <SafetyAlert id={id} name={c.label} onDeleted={() => { setSafety(false); S.push.value = null; }} />}
           <div class="actions"><button class="btn ghost block" onClick={() => setSafety(false)}>Close</button></div>
         </Sheet>
       )}
