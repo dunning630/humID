@@ -21,7 +21,7 @@ import { refresh } from "./vault.js";
 import { loadAlerts, demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
 import { readKeyForRecovery } from "./seckey.js";
-import { routesFor, HOLDER_ONLY } from "./recmode.js";
+import { routesFor, HOLDER_ONLY, recoveredEpoch } from "./recmode.js";
 
 /*
  * What a two-proof recovery keeps under this device's lock while it waits (layout 3):
@@ -227,7 +227,7 @@ async function finishJoin(st) {
   const account = st.account;
   R.busy = true;
   showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Connecting to your vault…" });
-  let secret, both, seed, keys, dkeys, xkeys, released, linkedPin = null;
+  let secret, both, seed, keys, dkeys, xkeys, released, linkedPin = null, floorEpoch = null;
   const pieces = [];
   try {
     const sess = await R.api.enrollDevice({
@@ -279,6 +279,8 @@ async function finishJoin(st) {
             if (chipKey) parts.push(await openAnchorPart(chipKey, st.anchorSealed, account, st.epoch ?? st.anchorEpoch ?? 1));
           }
           seed = combineQuorum(parts);
+          // The set of pieces this came back with: what this device may vouch for until it has a pin (V74B-01).
+          floorEpoch = recoveredEpoch(parts);
           for (const pt of parts) wipe(pt.y);
           keys = Suite.deriveKeys(seed);
         } else {
@@ -306,8 +308,11 @@ async function finishJoin(st) {
     const pub = Suite.publicOf(keys);
     const done = {
       wrapped, pending: null,
-      // The approving device's pin came inside the envelope its account key signed.
+      // The approving device's pin came inside the envelope its account key signed. A device that
+      // came back through two-proof recovery has none: it starts from the set of pieces it
+      // combined (their epoch is sealed into each one), and vouches for nothing older (V74B-01).
       ...(linkedPin?.version ? { modePin: { mode: linkedPin.mode, version: linkedPin.version, epoch: linkedPin.epoch ?? 1, prev: linkedPin.prev }, recoveryMode: linkedPin.mode } : {}),
+      ...(!linkedPin?.version && floorEpoch ? { modeFloor: { epoch: floorEpoch } } : {}),
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
       assurance: sess.assurance, proof: sess.proof,
       mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",

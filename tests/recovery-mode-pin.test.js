@@ -21,7 +21,7 @@ import { ROOTS, makeHolder, sealBytes } from "./e2e/holder.js";
 import * as S from "../apps/mobile/src/core/state.js";
 import { R } from "../apps/mobile/src/core/runtime.js";
 import { enroll } from "../apps/mobile/src/core/enroll.js";
-import { loadRecoveryMode, judgeMode, signMode, mayMakePieces } from "../apps/mobile/src/core/recmode.js";
+import { loadRecoveryMode, judgeMode, signMode, mayMakePieces, pinMode, protectionItems, recoveredEpoch, confirmModeHere } from "../apps/mobile/src/core/recmode.js";
 import { partOf } from "../apps/mobile/src/core/recovery.js";
 
 const Suite = suite();
@@ -165,3 +165,160 @@ async function phoneKeys() {
   const stepUp = async ({ message, live }) => ({ sig: ml_dsa87.sign(message, dk.dsaSk), interrupt: { method: "android-keystore-biometric", assurance: "hardware" }, live: gate.lk.sign(live) });
   return { keys, stepUp };
 }
+
+/* ---------------- V74B-01: no piece on the servers' say-so alone ---------------- */
+
+/** This phone's record as if it had no pin: one that came back through recovery, or was written before pins. */
+async function forgetPin({ floor } = {}) {
+  const rec = await R.store.getIdentity();
+  delete rec.modePin;
+  delete rec.schema;
+  if (floor) rec.modeFloor = { epoch: floor }; else delete rec.modeFloor;
+  await R.store.putIdentity(rec);
+  S.identity.value = { ...rec, schema: 4 };
+}
+/** The operator shows `st` (a genuine statement) from identity, the recovery service and the ledger at once. */
+function serveEverywhere(acct, st) {
+  const hash = recoveryModeHash(acct, st);
+  idDb((d) => d.prepare("UPDATE identities SET recovery_mode = ?, recovery_mode_version = ?, recovery_mode_epoch = ?, recovery_mode_prev = ?, recovery_mode_sig = ? WHERE id = ?").run(st.mode, st.version, st.epoch, st.prev, st.sig, acct));
+  recDb((d) => {
+    d.prepare("UPDATE modes SET mode = ?, version = ?, epoch = ?, prev = ?, sig = ? WHERE account = ?").run(st.mode, st.version, st.epoch, st.prev, st.sig, acct);
+    d.prepare("UPDATE mode_marks SET version = ?, epoch = ?, hash = ? WHERE account = ?").run(st.version, st.epoch, hash, acct);
+  });
+  // and a ledger page that ends before the switch: this session has verified nothing newer
+  S.ledger.value = { ok: true, entries: [{ type: "recovery.mode_set", detail: { mode: st.mode, version: st.version, epoch: st.epoch, hash } }], checkedAt: Date.now() };
+}
+const row = (acct) => recDb((d) => d.prepare("SELECT mode, version, epoch, prev, sig FROM modes WHERE account = ?").get(acct));
+
+test("V74B-01: a phone with no pin makes no recovery piece on a genuine statement the servers show it", async () => {
+  const acct = await newPhone("hardened");
+  const { keys, stepUp } = await phoneKeys();
+  const v1 = row(acct);
+  // The holder's other phone turns recovery off (v2, epoch 2).
+  const v2 = signMode(acct, keys.dsaSk, "holder-only", 2, 2, { mode: "hardened", version: 1, epoch: 1, prev: RECMODE_GENESIS });
+  await R.api.removeCard(stepUp);
+  await R.api.setRecoveryMode(v2, stepUp);
+  // This phone has no pin (it came back through a recovery that carried none, or was set up
+  // before pins), and the operator shows it the older, genuinely signed hardened v1 everywhere.
+  await forgetPin();
+  serveEverywhere(acct, { mode: v1.mode, version: v1.version, epoch: v1.epoch, prev: v1.prev, sig: v1.sig });
+  const m = await loadRecoveryMode();
+  assert.deepEqual([m.mode, m.trusted, m.vouched], ["hardened", true, false], "shown as signed, but not vouched for");
+  assert.equal(S.identity.value.modePin, undefined, "and never pinned on the servers' word");
+  assert.equal(mayMakePieces(), false);
+  assert.throws(() => partOf(random(64), "card"), (e) => e.code === "holder_only" && /can't confirm your recovery choice/.test(e.message), "no piece, and it says why");
+  // Protection asks to confirm the choice, not for a card or a second proof.
+  const items = protectionItems({ proofs: {} }, [{ id: "a" }, { id: "b" }]);
+  assert.deepEqual(items.map((i) => i.label), ["Confirm how you get back in", "A second device"]);
+  // An older server with no modes at all: the same.
+  const realMode = R.api.recoveryMode;
+  R.api.recoveryMode = async () => { throw Object.assign(new Error("not found"), { status: 404 }); };
+  try {
+    const legacy = await loadRecoveryMode();
+    assert.deepEqual([legacy.mode, legacy.legacy, legacy.vouched], ["hardened", true, false]);
+    assert.throws(() => partOf(random(64), "card"), (e) => /too old to keep your signed recovery choice/.test(e.message));
+  } finally { R.api.recoveryMode = realMode; }
+  S.ledger.value = null;
+});
+
+test("V74B-01: a recovered phone vouches only for the statement its pieces were made under", async () => {
+  const acct = await newPhone("hardened");
+  const { keys, stepUp } = await phoneKeys();
+  const s1 = { mode: "hardened", version: 1, epoch: 1, prev: RECMODE_GENESIS };
+  const s2 = signMode(acct, keys.dsaSk, "hardened", 2, 2, s1); // "make new recovery pieces": epoch 2
+  await R.api.setRecoveryMode(s2, stepUp);
+  const v1 = row(acct);
+  // The pieces it combined were epoch 2 (their epoch is sealed into each one).
+  assert.equal(recoveredEpoch([{ x: 1, epoch: 2 }, { x: 3, epoch: 2 }]), 2);
+  assert.equal(recoveredEpoch([{ x: 1, epoch: 2 }, { x: 3, epoch: 1 }]), null, "pieces of two sets don't count");
+  await forgetPin({ floor: 2 });
+  const ok = await loadRecoveryMode();
+  assert.deepEqual([ok.mode, ok.trusted, ok.vouched, ok.epoch], ["hardened", true, true, 2], "hardened at its own epoch: vouched");
+  assert.equal(S.identity.value.modePin.version, 2, "and pinned from now on");
+  assert.equal(mayMakePieces(), true);
+
+  // The same phone, recovered at epoch 2, shown the older epoch-1 statement: refused.
+  await forgetPin({ floor: 2 });
+  recDb((d) => { d.prepare("UPDATE modes SET version = 1, epoch = 1, mode = ?, prev = ?, sig = ? WHERE account = ?").run(v1.mode, RECMODE_GENESIS, row(acct).sig, acct); });
+  const st1 = signMode(acct, keys.dsaSk, "hardened", 1, 1);
+  serveEverywhere(acct, st1);
+  const old = await loadRecoveryMode();
+  assert.deepEqual([old.trusted, old.reason], [false, "rolled back"]);
+  assert.equal(mayMakePieces(), false);
+  // A holder-only statement at the pieces' own epoch can't be right: no piece is made in holder-only.
+  assert.equal(judgeMode(acct, keys.dsaPk, signMode(acct, keys.dsaSk, "holder-only", 2, 2, s1), null, { epoch: 2 }).reason, "forked");
+  // A newer epoch than its pieces': signed, but nothing this phone can vouch for.
+  const s3 = signMode(acct, keys.dsaSk, "hardened", 3, 3, s2);
+  assert.deepEqual([judgeMode(acct, keys.dsaPk, s3, null, { epoch: 2 }).trusted, judgeMode(acct, keys.dsaPk, s3, null, { epoch: 2 }).vouched], [true, false]);
+  S.ledger.value = null;
+});
+
+test("V74B-01: a phone pinned before the switch is held at its pin: the documented per-device limit", async () => {
+  // Phone B pinned v1 (hardened). Phone A switches to holder-only (v2). A fully colluding operator
+  // shows B v1 everywhere. B can't tell: v1 IS its pin, and nothing independent says a v2 exists
+  // (the public log proves an entry is in it, not that none came after). B accepts v1. This is
+  // the limit docs/RECOVERY.md states; it needs B to have missed A's switch AND every server lying.
+  const acct = await newPhone("hardened");
+  const { keys, stepUp } = await phoneKeys();
+  const v1 = row(acct);
+  const v2 = signMode(acct, keys.dsaSk, "holder-only", 2, 2, { mode: "hardened", version: 1, epoch: 1, prev: RECMODE_GENESIS });
+  await R.api.removeCard(stepUp);
+  await R.api.setRecoveryMode(v2, stepUp);
+  serveEverywhere(acct, { mode: v1.mode, version: v1.version, epoch: v1.epoch, prev: v1.prev, sig: v1.sig });
+  const held = await loadRecoveryMode();
+  assert.deepEqual([held.mode, held.trusted, held.vouched], ["hardened", true, true], "equal to its pin");
+  // Once B has seen v2 even once, it never goes back.
+  await pinMode(v2);
+  const after = await loadRecoveryMode();
+  assert.deepEqual([after.trusted, after.reason, mayMakePieces()], [false, "rolled back", false]);
+  S.ledger.value = null;
+});
+
+test("V74B-01: confirming on the phone signs a new statement; the phone the servers hid it from sees the fork", async () => {
+  const acct = await newPhone("hardened");
+  const { keys, stepUp } = await phoneKeys();
+  const v1 = row(acct);
+  const s1 = { mode: "hardened", version: 1, epoch: 1, prev: RECMODE_GENESIS };
+  // Phone A turns recovery off and pins v2.
+  const v2 = signMode(acct, keys.dsaSk, "holder-only", 2, 2, s1);
+  await R.api.removeCard(stepUp);
+  await R.api.setRecoveryMode(v2, stepUp);
+  const pinA = { mode: v2.mode, version: 2, epoch: 2, prev: v2.prev };
+  // Phone B (no pin) is shown v1; the holder, not knowing, confirms recovery there: one live check
+  // signs v2' (hardened, epoch 2, chained to v1). The operator has to roll identity back to accept it.
+  await forgetPin();
+  serveEverywhere(acct, { mode: v1.mode, version: v1.version, epoch: v1.epoch, prev: v1.prev, sig: v1.sig });
+  assert.equal((await loadRecoveryMode()).vouched, false);
+  // The live check, as the native gate answers it (the test gate's secret and liveness key).
+  const gate = S.hwGate.value.adapter;
+  globalThis.__TAURI_INTERNALS__ = { invoke: async (_cmd, { challenge }) => ({ secret: Buffer.from(gate.secret).toString("base64"), method: "android-keystore-biometric", assurance: "hardware", live: { sig: Buffer.from(gate.lk.sign(Buffer.from(challenge, "base64"))).toString("base64") } }) };
+  try { assert.equal(await confirmModeHere(), true, JSON.stringify(S.toasts.value)); }
+  finally { delete globalThis.__TAURI_INTERNALS__; }
+  assert.deepEqual([S.identity.value.modePin.version, S.identity.value.modePin.mode], [2, "hardened"], "B pins its own signature");
+  assert.equal(mayMakePieces(), true, "and may now make pieces: the holder chose it here, under a live check");
+  // The ledger records the hash of exactly that statement.
+  const entry = (await R.api.ledger()).entries.filter((e) => e.type === "recovery.mode_set").pop();
+  assert.equal(entry.detail.hash, recoveryModeHash(acct, S.identity.value.modePin));
+  // Phone A, pinned at its own v2, is shown v2': same version, different statement.
+  const served = await R.api.recoveryMode();
+  assert.equal(judgeMode(acct, keys.dsaPk, served, pinA).reason, "rolled back", "A reports it");
+  S.ledger.value = null;
+});
+
+test("V74B-01: a ledger mode_set at the served version that names another statement means it isn't that one", async () => {
+  const acct = await newPhone("hardened");
+  const { keys } = await phoneKeys();
+  const v1 = row(acct);
+  // The hash in the ledger's own entry (the gateway records it at setup) matches the served one.
+  const ledger = await R.api.ledger();
+  const setup = ledger.entries.find((e) => e.type === "recovery.mode_set");
+  assert.equal(setup.detail.hash, recoveryModeHash(acct, { mode: v1.mode, version: 1, epoch: 1, prev: v1.prev }));
+  S.ledger.value = ledger;
+  assert.equal((await loadRecoveryMode()).trusted, true);
+  // An entry for version 1 that says something else: the served v1 isn't the one recorded.
+  S.ledger.value = { ok: true, entries: [{ type: "recovery.mode_set", detail: { mode: "hardened", version: 1, epoch: 1, hash: "ab".repeat(32) } }], checkedAt: Date.now() };
+  const m = await loadRecoveryMode();
+  assert.deepEqual([m.trusted, m.reason], [false, "forked"]);
+  void keys;
+  S.ledger.value = null;
+});

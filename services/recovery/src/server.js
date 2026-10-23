@@ -1211,7 +1211,8 @@ export function createRecovery({
       const account = String(r.account || "");
       if (!/^hid_[0-9a-f]{40}$/.test(account)) throw new HttpError(400, "bad_subject", "Unknown subject");
       const m = learnMode(account, r, { sync: r.sync === true });
-      return json(200, { mode: m.mode, version: m.version, epoch: m.epoch });
+      // hash: the statement's, for the ledger's recovery.mode_set (devices compare it exactly).
+      return json(200, { mode: m.mode, version: m.version, epoch: m.epoch, hash: m.hash });
     }],
     // Gateway only: where this service stands, to compare with identity's statement.
     ["GET", "/internal/recovery-mode/:id", ({ params, claims }) => {

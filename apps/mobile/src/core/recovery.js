@@ -15,7 +15,7 @@ import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
 import { setDraft, CARD_DRAFT } from "./drafts.js";
-import { loadRecoveryMode, isHolderOnly, currentEpoch, mayMakePieces } from "./recmode.js";
+import { loadRecoveryMode, isHolderOnly, currentEpoch, mayMakePieces, whyNoPieces } from "./recmode.js";
 import { screenReadersOk } from "./readers.js";
 // First-paint parts, here too for the kernel's own modules and tests that import them from here.
 export { loadAlerts, cancelRecovery, forgetNewCard, resumeNewCard } from "./alerts.js";
@@ -97,9 +97,10 @@ export async function loadRecovery() {
  * the account's current set of pieces (its epoch, from the signed recovery-mode statement).
  */
 export const partOf = (seed, kind) => {
-  // Never on the server's say-so (V74-01): only in a hardened mode this device has checked
-  // against its account key and its own pin. Every flow that makes a piece comes through here.
-  if (!mayMakePieces()) throw Object.assign(new Error("This HumID is set to open only on your own devices, or your vault server's record of that doesn't check out. No recovery piece was made."), { code: "holder_only" });
+  // Never on the servers' say-so (V74-01, V74B-01): only in a hardened mode this device has
+  // checked against its account key and can vouch for itself (its own pin, or the pieces it was
+  // recovered from). Every flow that makes a piece comes through here.
+  if (!mayMakePieces()) throw Object.assign(new Error(whyNoPieces()), { code: "holder_only" });
   const parts = quorumParts(seed, currentEpoch());
   const p = parts[kind];
   for (const k of Object.keys(parts)) if (k !== kind) wipe(parts[k].y);

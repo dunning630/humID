@@ -20,7 +20,7 @@
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, signStatement, unb64u, b64u, HttpError, isMain, logger, sealerFromEnv } from "@humid/svc";
 import { holderProofs } from "@humid/svc/holder";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS, ml_dsa87 } from "@humid/htp";
-import { recoveryModeMessage, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
+import { recoveryModeMessage, recoveryModeHash, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
@@ -427,8 +427,10 @@ export function createIdentity({
       gatewayOnly(claims);
       const r = parseObject(body);
       const a = active(String(r.account));
-      saveMode(a.id, checkedMode(a, r));
-      return json(200, { recoveryMode: modeView(getAccount.get(a.id)) });
+      const m = checkedMode(a, r);
+      saveMode(a.id, m);
+      // hash: the statement's, for the ledger's recovery.mode_set (devices compare it exactly).
+      return json(200, { recoveryMode: modeView(getAccount.get(a.id)), hash: recoveryModeHash(a.id, m) });
     }],
     // SRV-30: this device key (and liveness key) belongs to this account, now. Vault and keyshare
     // check the holder's proofs against it; the gateway can ask, but can't make it vouch for a
