@@ -56,6 +56,9 @@ run_node() {
 }
 
 healthy() { curl -fsS --max-time 3 "http://127.0.0.1:$(port)/healthz" >/dev/null 2>&1; }
+# (Re)start the service, first clearing systemd's start counter: a backup, restore and reinstall in a
+# row are deliberate, and must never be refused as "start request repeated too quickly".
+start_service() { systemctl reset-failed humid 2>/dev/null || true; systemctl restart humid; }
 wait_healthy() {
   for _ in $(seq 1 60); do healthy && return 0; sleep 1; done
   warn "The server didn't answer on 127.0.0.1:$(port). Recent log:"; journalctl -u humid -n 40 --no-pager >&2 || true; return 1
@@ -154,8 +157,8 @@ do_install() {
   run_node humid-server.mjs init "${sets[@]}"
 
   systemctl daemon-reload
-  systemctl enable --now humid >/dev/null
-  systemctl restart humid
+  systemctl enable humid >/dev/null 2>&1
+  start_service
   step "Waiting for the server"
   wait_healthy || die "HumID Server didn't start (journalctl -u humid)."
   good "HumID Server $VERSION is running on 127.0.0.1:$(port)"
@@ -194,13 +197,13 @@ do_expose() {
       step "Turning on Funnel: https://$name -> 127.0.0.1:$(port)"
       tailscale funnel --bg --yes "$(port)" || die "Funnel didn't turn on. If Tailscale printed a link to allow Funnel for your tailnet, open it, approve, and run this again."
       run_node humid-server.mjs set "HUMID_PUBLIC_URL=https://$name" HUMID_TRUST_FORWARDED=off
-      systemctl restart humid; wait_healthy
+      start_service; wait_healthy
       good "Public address https://$name"
       ;;
     none)
       command -v tailscale >/dev/null && tailscale funnel reset >/dev/null 2>&1 || true
       run_node humid-server.mjs set HUMID_PUBLIC_URL= HUMID_TRUST_FORWARDED=off
-      systemctl restart humid; wait_healthy
+      start_service; wait_healthy
       good "Not public any more (127.0.0.1 only)"
       ;;
     *) die "Usage: humid expose tailscale | none" ;;
@@ -233,7 +236,7 @@ do_backup() {
   local rc=0
   run_node --as-root humid-backup.mjs backup --out "$out" --keyshare-out "$ks" || rc=$?
   chown -R humid:humid "$ROOT"
-  systemctl start humid; wait_healthy || true
+  start_service; wait_healthy || true
   [ $rc = 0 ] || die "The backup failed; the server is running again."
   warn "Put $ks on a different disk from $out: together they hold both halves of every split key."
 }
@@ -265,7 +268,7 @@ do_restore() {
   # A backup from Windows names DPAPI; on Linux the seal key always comes through humid-node.
   sed -i 's/^HUMID_SEAL=.*/HUMID_SEAL=file/' "$ROOT/humid.env" 2>/dev/null || true
   chown -R humid:humid "$ROOT"; chmod 0700 "$ROOT"
-  systemctl start humid; wait_healthy || die "Restored, but the server didn't start (journalctl -u humid). The previous data is in $ROOT.before-restore-$stamp."
+  start_service; wait_healthy || die "Restored, but the server didn't start (journalctl -u humid). The previous data is in $ROOT.before-restore-$stamp."
   good "Restored. The previous data is in $ROOT.before-restore-$stamp (delete it once you're happy)."
   do_status
 }
@@ -289,11 +292,11 @@ cmd=${1:-help}; [ $# -gt 0 ] && shift
 case "$cmd" in
   install)    do_install "$@" ;;
   status)     do_status ;;
-  start)      need_root start; need_installed; systemctl start humid; wait_healthy && good "Started." ;;
+  start)      need_root start; need_installed; start_service; wait_healthy && good "Started." ;;
   stop)       need_root stop; systemctl stop humid; good "Stopped." ;;
-  restart)    need_root restart; need_installed; systemctl restart humid; wait_healthy && good "Restarted." ;;
+  restart)    need_root restart; need_installed; start_service; wait_healthy && good "Restarted." ;;
   logs)       need_root logs; if [ "${1:-}" = "-f" ]; then journalctl -u humid -f -o cat; else journalctl -u humid -n 200 --no-pager -o cat; fi ;;
-  set)        need_root set; need_installed; [ $# -gt 0 ] || die "Usage: humid set KEY=VALUE ..."; run_node humid-server.mjs set "$@"; systemctl restart humid; wait_healthy && good "Restarted with the new settings." ;;
+  set)        need_root set; need_installed; [ $# -gt 0 ] || die "Usage: humid set KEY=VALUE ..."; run_node humid-server.mjs set "$@"; start_service; wait_healthy && good "Restarted with the new settings." ;;
   show)       need_root show; need_installed; run_node humid-server.mjs show ;;
   mint)       need_root mint; need_installed; run_node humid-server.mjs mint "$@" ;;
   pki)        need_root pki; need_installed; run_node humid-server.mjs pki "$@" ;;
