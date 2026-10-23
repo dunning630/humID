@@ -59,13 +59,17 @@ test("the vault upload keeps the large cap", async () => {
 });
 
 test("an oversized frame meta is refused when the frame is opened", async () => {
-  const { sealFrame, DIR, MEDIA_TYPE } = await import("@humid/htp");
+  const { header, DIR, MEDIA_TYPE } = await import("@humid/htp");
+  const { aeadSeal, concat, u32, u64, utf8 } = await import("../../packages/htp/src/primitives.js");
   const s = api.htp.session;
   const seq = ++api.htp.seq;
   const meta = { m: "GET", p: "/identity/me", h: { "x-pad": "y".repeat(200 * 1024) } };
-  const frame = await sealFrame(s.c2s, DIR.request, s.sid, seq, meta, new Uint8Array(0));
+  // sealed by hand: the client's own sealFrame refuses meta this large before it is sent
+  const m = utf8(JSON.stringify(meta));
+  const h = header(DIR.request, s.sid, seq, Date.now());
+  const frame = concat(h, await aeadSeal(s.c2s, concat(new Uint8Array(4), u64(seq)), concat(u32(m.length), m), h));
   const res = await fetch(`http://127.0.0.1:${gw.server.address().port}/htp/v1/call`, { method: "POST", headers: { "content-type": MEDIA_TYPE }, body: frame });
   const j = await res.json();
-  assert.equal(res.status, 400);
-  assert.equal(j.error, "bad_frame");
+  assert.equal(res.status, 413);
+  assert.equal(j.error, "too_large");
 });

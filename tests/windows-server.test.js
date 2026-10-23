@@ -63,7 +63,7 @@ test("client address: no tunnel header is believed unless HUMID_TRUST_FORWARDED 
   for (const t of ["off", "cloudflare", "xff"]) assert.equal(clientIp(req("192.168.1.20", { "x-forwarded-for": "6.6.6.6", "cf-connecting-ip": "6.6.6.7" }), t), "192.168.1.20");
   assert.equal(clientIp(req("127.0.0.1")), "127.0.0.1");
   assert.throws(() => createEdge({ port: 0, appDir: tmp(), gatewayUrl: "http://127.0.0.1:1", trustForwarded: "yes" }), /off, cloudflare, xff/);
-  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b" };
+  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b", HUMID_CORE_STATEMENT_SK: "c", HUMID_CORE_STATEMENT_PK: "d", HUMID_KEYS_STATEMENT_SK: "e", HUMID_KEYS_STATEMENT_PK: "f" };
   validate({ ...ok, HUMID_TRUST_FORWARDED: "cloudflare" });
   assert.throws(() => validate({ ...ok, HUMID_TRUST_FORWARDED: "1" }), /HUMID_TRUST_FORWARDED/);
 });

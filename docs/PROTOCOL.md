@@ -146,7 +146,7 @@ response meta       { s: status, h?: headers }
 - The server keeps a 256-entry sliding replay window per session. A `seq` is
   processed at most once, and anything older than the window is refused.
 - Frames with `ts` more than 2 minutes from server time are refused.
-- The meta JSON is at most 64 KiB (`bad_frame` otherwise). A frame from a
+- The meta JSON is at most 64 KiB (`413 too_large` otherwise, refused before it is parsed). A frame from a
   session that hasn't signed in is at most 512 KiB; a signed-in session's frame
   may be as large as a vault upload, but once it is open the gateway holds the
   body to the route's own cap before anything parses it (`413 too_large`):
