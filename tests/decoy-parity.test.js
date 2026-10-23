@@ -153,7 +153,7 @@ test("every read of the offline copy in core/ is decoy-safe", () => {
   for (const f of ["recovery.js", "safety.js", "vault.js", "devices.js", "ledger.js", "session.js"]) {
     readFileSync(new URL(f, core), "utf8").split("\n").forEach((line, i) => { if (/R\.offline\??\.\w/.test(line)) reads.push(`${f}:${line.trim().slice(0, 60)}`); });
   }
-  const safe = [/^recovery\.js:const copy = R\.offline\?\.recovery/, /^safety\.js:if \(S\.offline\.value\) \{ S\.duressInfo/, /^vault\.js:/, /^devices\.js:/, /^ledger\.js:/];
+  const safe = [/^recovery\.js:const copy = R\.offline\?\.recovery/, /^recovery\.js:S\.recoveryMode\.value = \(S\.decoy\.value \? null : R\.offline/, /^safety\.js:if \(S\.offline\.value\) \{ S\.duressInfo/, /^vault\.js:/, /^devices\.js:/, /^ledger\.js:/];
   assert.deepEqual(reads.filter((r) => !safe.some((re) => re.test(r))), [], "a new read of the offline copy needs a decoy decision");
   // loadDuress checks decoy before the copy; loadLedger filters after it
   const safety = readFileSync(new URL("safety.js", core), "utf8");
