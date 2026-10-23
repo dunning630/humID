@@ -28,6 +28,8 @@ const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport", key: "
 const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
+  attestation_revoked: "Google revoked this phone's chip certificate",
+  reattest_required: "Phone needs setting up again",
   device_not_proven: "Device can't prove its checks",
   no_live_biometric: "No face or fingerprint check",
   step_up_required: "No check",
@@ -59,7 +61,7 @@ function describe(e, names) {
     case "vault.erased": return { icon: "trash", tone: "danger", title: "Vault erased", meta: [] };
     case "identity.closed": return { icon: "x", tone: "danger", title: "HumID closed", meta: [] };
     case "device.added": return { icon: "key", tone: "mint", title: `Device added · ${d.platform || "device"}`, meta: [d.evidence ? `Proofs: ${d.evidence}` : VIA[d.via], method(d.method), d.waitedMs ? `waited ${hours(d.waitedMs)}` : null, d.soleBiometric ? "only the owner's face or fingerprints" : null] };
-    case "device.removed": return { icon: "x", tone: "amber", title: `Device removed · ${d.platform || "device"}`, meta: [], proof: d.proof };
+    case "device.removed": return { icon: "x", tone: d.reason === "attestation_revoked" ? "danger" : "amber", title: `Device removed · ${d.platform || "device"}`, meta: d.reason === "attestation_revoked" ? ["Google revoked its secure-chip certificate"] : [], proof: d.proof };
     case "device.keys_invalidated": return { icon: "alert", tone: "danger", title: `HumID key gone · ${d.platform || "device"}`, meta: ["reported by the device: its face or fingerprints changed, or HumID was reinstalled", "set it up again, or remove it if that wasn't you"] };
     case "device.link_approved": return { icon: "key", tone: "amber", title: `Approved ${d.platform || "a new device"}`, meta: [], proof: d.proof };
     case "recovery.card_set": return { icon: "idcard", tone: "mint", title: d.scheme === "full" ? "Recovery card made (older kind)" : "Recovery card made", meta: [], proof: d.proof };
