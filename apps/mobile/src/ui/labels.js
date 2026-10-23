@@ -68,7 +68,7 @@ export const gateDetail = (m) => GATE[m]?.[2] || m || "";
 
 /* ---------- how a device joined; recovery proofs ---------- */
 /** How a device joined (`via`). Older single-proof routes keep their older names. */
-export const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with an older recovery card", contacts: "Recovered with older witnesses", quorum: "Recovered with two proofs" };
+export const VIA = { register: "First device", link: "Added from another device", card: "Recovered with an older recovery card", contacts: "Recovered with older witnesses", quorum: "Recovered with two proofs" };
 /** A recovery's route (`method`), as a banner or Activity names it. */
 export const RECOVERY_METHOD = { card: "older recovery card", contacts: "older witnesses", quorum: "two proofs" };
 /** One kind of recovery proof. */

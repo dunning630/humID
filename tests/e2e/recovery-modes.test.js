@@ -199,8 +199,11 @@ test("holder-only → hardened: needs a fresh live check, is in the ledger, and 
   assert.equal((await api.recoveryMode()).mode, "holder-only");
   const r = await api.setRecoveryMode(statement(h, "hardened", 2), h.stepUp);
   assert.equal(r.mode, "hardened");
-  const entry = (await api.ledger()).entries.filter((e) => e.type === "recovery.mode_set").pop();
+  const sets = (await api.ledger()).entries.filter((e) => e.type === "recovery.mode_set");
+  const entry = sets.pop();
   assert.deepEqual([entry.detail.mode, entry.detail.from, !!entry.detail.proof], ["hardened", "holder-only", true]);
+  // APP-09: both the choice at setup and the switch say which device proved them, and how
+  for (const e of [sets[0], entry]) assert.deepEqual([e.detail.assurance, e.detail.by], ["hardware", api.session.device], `${e.detail.at || "switch"}: assurance and device`);
   assert.equal((await api.me()).recoveryMode.mode, "hardened");
   // The holder's own older statement can't be played back over the newer one.
   await assert.rejects(api.setRecoveryMode(statement(h, "holder-only", 1), h.stepUp), (e) => e.code === "stale_recovery_mode");
