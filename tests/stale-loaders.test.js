@@ -72,7 +72,7 @@ test("in the same session they still land", async () => {
 });
 
 test("an unlock starts its session from nothing: online and offline", () => {
-  const s = readFileSync(new URL("../apps/mobile/src/core/session.js", import.meta.url), "utf8");
+  const s = readFileSync(new URL("../apps/mobile/src/core/session.js", import.meta.url), "utf8").replace(/\r\n/g, "\n"); // CRLF on a Windows checkout
   const fn = (name) => { const i = s.indexOf(`function ${name}(`); return s.slice(i, s.indexOf("\n}\n", i)); };
   assert.match(fn("unlock"), /freshSession\(\);\s*\n\s*batch\(\(\) => \{ S\.session\.value = sess;/);
   assert.match(fn("unlockOffline"), /freshSession\(\);\s*\n\s*R\.offline = duress/);
