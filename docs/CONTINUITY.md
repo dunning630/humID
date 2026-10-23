@@ -165,12 +165,20 @@ ledger events, never whose they are.
 
 ## Duress
 
-If someone forces you to unlock, a gesture you chose (hold Unlock about two
-seconds, or tap the mark three times) unlocks exactly as usual. Then:
+If someone forces you to unlock, a gesture you chose (hold Unlock for three
+seconds, or tap the mark three times, each tap within 0.65 s of the last)
+unlocks exactly as usual. The Lock screen and Duress Practice recognise the
+gestures with the same code, and the Lock screen starts the check only once
+the tap window has closed, so what Practice accepts is what the Lock screen
+does. Then:
 
 - **Decoy view.** The app shows only documents you marked "Show in decoy
   view" (a flag inside the encrypted index), a calm Security screen (duress
-  off, no alerts) and an Activity list limited to those documents.
+  off, no alerts), a Recovery screen with nothing set up (no witness names,
+  no ID chip, no card) and an Activity list limited to those documents,
+  numbered from 1 with no gaps and not described as complete. Changing the
+  duress setting or the decoys there takes the same steps and says the same
+  words as in a normal session, and saves nothing.
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

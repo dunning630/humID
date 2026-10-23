@@ -41,6 +41,8 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
   assert.deepEqual(hits, []);
   const lock = read("screens/lock.jsx") + read("screens/welcome.jsx");
   assert.match(lock, /password/i, "Welcome and Lock say that no password exists");
+  // the duress unlock says what it is: "safe mode" sounded like the safer choice (APP-06)
+  for (const f of faces) assert.doesNotMatch(noComments(read(f)), /safe mode/i, `${f} calls the duress unlock "safe mode"`);
 });
 
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
@@ -59,6 +61,14 @@ test("screens reach the kernel only through core/index.js (and a few leaf module
   assert.deepEqual(bad, []);
   // and the kernel's internals never import a screen
   for (const f of all.filter((x) => x.startsWith("core/"))) assert.doesNotMatch(noComments(read(f)), /from "\.\.\/screens\//, `${f} imports a screen`);
+});
+
+test("the viewer calls no hook after an early return (APP-08: a hooks-order bug kept a stale question)", () => {
+  const v = noComments(read("screens/vault.jsx"));
+  const body = v.slice(v.indexOf("export function Viewer()"), v.indexOf("\n}\n", v.indexOf("export function Viewer()")));
+  assert.ok(body.length > 50);
+  assert.doesNotMatch(body, /\buse[A-Z]\w*\(/, "Viewer() returns early by kind, so it must not call hooks; FileViewer holds the state");
+  assert.match(v, /<FileViewer key=\{/);
 });
 
 test("every pushed-screen type and every sheet type is rendered in exactly one place", () => {

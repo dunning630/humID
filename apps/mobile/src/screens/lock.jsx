@@ -3,13 +3,16 @@
 // holding Unlock for three seconds — because which one (if any) is the duress gesture
 // is sealed and only known after the check. Nothing on screen changes either way.
 // 3.0: a tap on the mark responds at once; a plain click (screen readers, switch control)
-// unlocks; "Unlock in safe mode" is reachable without any gesture.
-import { useRef, useState } from "preact/hooks";
+// unlocks. The taps are recognised by core/gesture.js, the same code Duress Practice uses,
+// and the unlock waits for its window. For people who can't make the gestures, the duress
+// unlock is a control too: named for what it does, drawn when focused, and behind "More ways
+// to unlock", so the straight Tab path never reaches it (APP-06).
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark, Wordmark } from "../brand/mark.jsx";
 import { Icon } from "../brand/icons.jsx";
 import { Banner } from "../ui/kit.jsx";
 import * as S from "../core/state.js";
-import { unlock, resetLocal, DURESS_HOLD_MS } from "../core/index.js";
+import { unlock, resetLocal, createTapCounter, createHoldTimer, isDuressHold } from "../core/index.js";
 import { serverHost } from "../core/config.js";
 
 const ISSUES = {
@@ -30,26 +33,39 @@ const ISSUES = {
 const TERMINAL = new Set(["key_invalidated", "device_removed"]);
 
 function useUnlockGestures() {
-  const taps = useRef({ n: 0, t: null });
-  const press = useRef({ at: 0, fired: false });
   const [pressed, setPressed] = useState(false);
-  const onMark = () => {
-    const st = taps.current;
-    st.n += 1;
-    setPressed(true);
-    clearTimeout(st.t);
-    // one tap unlocks after a short window for a second; three within it mean the taps gesture
-    st.t = setTimeout(() => { const n = st.n; st.n = 0; setPressed(false); unlock(n >= 3 ? "taps" : false); }, st.n === 1 ? 420 : 650);
-  };
+  // One recognizer with Duress Practice (core/gesture.js). The unlock starts only once the
+  // tap window has closed, so the check overlay never opens over a second or third tap.
+  const taps = useRef(null);
+  if (!taps.current) taps.current = createTapCounter({ onDone: ({ duress }) => { setPressed(false); unlock(duress ? "taps" : false); } });
+  useEffect(() => () => taps.current.cancel(), []);
+  const hold = useRef(null);
+  if (!hold.current) hold.current = createHoldTimer();
+  const fired = useRef(false);
+  const onMark = () => { setPressed(true); taps.current.tap(); };
   const button = {
-    onPointerDown: () => { press.current = { at: Date.now(), fired: false }; },
-    onPointerUp: () => { const p = press.current; if (!p.at) return; const held = Date.now() - p.at; press.current = { at: 0, fired: true }; unlock(held >= DURESS_HOLD_MS ? "hold" : false); },
-    onPointerLeave: () => { press.current = { at: 0, fired: false }; },
+    onPointerDown: () => { hold.current.down(); fired.current = false; },
+    onPointerUp: () => { const held = hold.current.up(); if (held == null) return; fired.current = true; unlock(isDuressHold(held) ? "hold" : false); },
+    onPointerLeave: () => { hold.current.cancel(); fired.current = false; },
     // a synthesised click (screen reader, switch control, keyboard) with no pointer sequence
-    onClick: () => { const p = press.current; if (p.fired) { press.current = { at: 0, fired: false }; return; } unlock(false); },
+    onClick: () => { if (fired.current) { fired.current = false; return; } unlock(false); },
     onContextMenu: (e) => e.preventDefault(),
   };
   return { onMark, button, pressed };
+}
+
+/** The duress unlock for screen readers, switch control and keyboards. Not drawn until focused. */
+function MoreWays() {
+  const [open, setOpen] = useState(false);
+  // Focus stays on the disclosure: Enter twice must not be a duress unlock.
+  return (
+    <>
+      <button class="sr" aria-expanded={open} aria-controls="lock-more" onClick={() => setOpen(!open)}>More ways to unlock</button>
+      <div id="lock-more" hidden={!open}>
+        <button class="sr" onClick={() => unlock(true)}>Unlock with your duress gesture (shows only decoys, locks your vault)</button>
+      </div>
+    </>
+  );
 }
 
 export function Lock() {
@@ -89,9 +105,9 @@ export function Lock() {
       </div>
       <div class="foot stack">
         <button class="btn primary lg block" {...g.button}><Icon name="fingerprint" />Unlock</button>
-        {/* For screen readers and switch control, which can't make the gestures: the same
-            choice, spoken, never drawn. "Safe mode" means the duress gesture, whichever it is. */}
-        <button class="sr" onClick={() => unlock(true)}>Unlock in safe mode</button>
+        {/* For screen readers, switch control and keyboards, which can't make the gestures:
+            the same choice, spoken, drawn only when focused, never on the straight Tab path. */}
+        <MoreWays />
         {down && S.offlineReady.value && <p class="fine center" role="status">No connection. You can still unlock to see your vault, read only.</p>}
         <p class="fine center">No password exists. Only your live face or fingerprint opens it.{id?.mode === "demo" ? " (Demo identity · no hardware sensor.)" : ""}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>

@@ -14,8 +14,10 @@ export { saveDuress, loadDuress, setWitnessAlert, clearLockdown, checkinArmed, c
 export { readChip, dismissChipRead, chipReader, readChipInto } from "./chips.js";
 export { stationLookup, stationReadChip, stationVerify, loadAdminSummary, findAdminRequest, approveAdminRequest } from "./operators.js";
 export { eraseEverything, resetLocal } from "./account.js";
-export { setDraft, clearDraft, takeDraft, current as draft, kept as keptDraft } from "./drafts.js";
+export { setDraft, clearDraft, takeDraft, current as draft, kept as keptDraft, CARD_DRAFT } from "./drafts.js";
+export { forgetNewCard, resumeNewCard } from "./recovery.js";
 export { comms, MESSAGE_KINDS } from "./comms/contract.js";
 // 4.0 person to person: the Messages screens import core/messaging.js directly (a leaf, loaded
 // with their chunk), so the protocol code is never in the first paint.
-export const DURESS_HOLD_MS = 3000; // 3.0: a long hold, not a long-ish press (UX-13)
+// The duress gestures: one recognizer for the Lock screen and Practice (APP-01).
+export { createTapCounter, createHoldTimer, isDuressHold, describeTaps, TAP_WINDOW_MS, DURESS_HOLD_MS } from "./gesture.js";

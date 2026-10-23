@@ -5,6 +5,7 @@ import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, SESSION_LOST } from "./notify.js";
 import { isNetworkFailure } from "./link.js";
 import { keepOffline } from "./session.js";
+import { updateIdentity } from "./identity.js";
 import { parseCosigners } from "@humid/api";
 import { TLOG_COSIGNERS } from "./config.js";
 
@@ -17,20 +18,22 @@ const COSIGNERS = parseCosigners(TLOG_COSIGNERS);
  * with it, a changed key fails verification and Activity reports it.
  */
 async function rememberLedgerKey(fp) {
-  const id = S.identity.value;
-  if (!fp || !id || id.ledgerKeyFp) return;
-  const record = { ...id, ledgerKeyFp: fp };
-  delete record.schema;
-  await R.store.putIdentity(record);
-  S.identity.value = { ...record, schema: id.schema ?? 4 };
+  if (!fp || !S.identity.value || S.identity.value.ledgerKeyFp) return;
+  await updateIdentity((id) => { if (id.ledgerKeyFp) return null; id.ledgerKeyFp = fp; });
 }
 
-/** In a decoy session, Activity shows only what a calm account with these documents would show. */
+/**
+ * In a decoy session, Activity shows only what a calm account with these documents would
+ * show, numbered 1..n so no gap in the entry numbers says something was left out (PC-16).
+ * `decoy: true` tells Activity not to claim the list is complete.
+ */
 const DECOY_TYPES = new Set(["identity.created", "session.opened", "session.closed", "device.added", "device.removed", "object.sealed", "object.opened", "object.updated", "object.deleted"]);
-function decoyView(l) {
-  const ids = new Set(S.items.value.map((i) => i.id));
-  const entries = l.entries.filter((e) => DECOY_TYPES.has(e.type) && (!e.type.startsWith("object.") || ids.has(e.detail?.id)));
-  return { ...l, entries };
+export function decoyView(l, items) {
+  const ids = new Set(items.map((i) => i.id));
+  const entries = l.entries
+    .filter((e) => DECOY_TYPES.has(e.type) && (!e.type.startsWith("object.") || ids.has(e.detail?.id)))
+    .map((e, i) => ({ ...e, seq: i + 1 }));
+  return { ...l, entries, decoy: true };
 }
 
 export async function loadLedger() {
@@ -42,7 +45,7 @@ export async function loadLedger() {
     if (!S.offline.value && l.ok) await rememberLedgerKey(l.keyFp);
     keepOffline({ ledger: l });
     for (const it of S.items.value) R.knownNames.set(it.id, it.name);
-    S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l) : l), names: new Map(R.knownNames), checkedAt: Date.now() };
+    S.ledger.value = { ...(S.decoy.value && l.ok ? decoyView(l, S.items.value) : l), names: new Map(R.knownNames), checkedAt: Date.now() };
     checkContinuity();
   } catch (e) { toast(friendly(e), "error"); }
   finally { S.ledgerLoading.value = false; }
@@ -58,11 +61,14 @@ export async function checkContinuity() {
   try {
     const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: id?.ledgerKeyFp || undefined, cosigners: COSIGNERS });
     S.continuity.value = r;
-    if (r.ok && (!id.tlog || r.size >= id.tlog.size)) {
-      const record = { ...id, ledgerKeyFp: id.ledgerKeyFp || r.keyFp, tlog: { size: r.size, root: r.root, at: r.at } };
-      delete record.schema;
-      await R.store.putIdentity(record);
-      S.identity.value = { ...record, schema: id.schema ?? 4 };
+    // The record as it is now, not as it was before the round trip (APP-11): only the
+    // checkpoint changes, so a duress setting saved meanwhile stays saved.
+    if (r.ok) {
+      await updateIdentity((cur) => {
+        if (cur.tlog && r.size < cur.tlog.size) return null;
+        cur.ledgerKeyFp = cur.ledgerKeyFp || r.keyFp;
+        cur.tlog = { size: r.size, root: r.root, at: r.at };
+      });
     }
   } catch (e) {
     // Not reaching the server is not evidence of tampering: check again once it's back.

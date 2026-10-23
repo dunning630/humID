@@ -261,7 +261,9 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
   opened setting (`apps/mobile/src/core/duress.js`).
 - **Leaving the screen locks**, even with a file picker open: the exemption is bounded
   (60 s, `pagehide`, a 20 s hidden span; the Android document scanner, below, 90 s and a
-  60 s hidden span).
+  60 s hidden span). A check in progress is no exemption: only the phone's own face or
+  fingerprint prompt is, with 1.5 s after it closes to come back (PC-17;
+  `apps/mobile/src/core/leave.js`, `tests/leave.test.js`).
 - **Names are forgotten on lock**; a decoy session never decrypts the other names.
 - **Release builds carry no demo or simulation code** (`tests/bundle.test.js`); the
   simulation app has its own bundle identifier.

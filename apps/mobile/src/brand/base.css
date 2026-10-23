@@ -32,6 +32,8 @@ img, svg, canvas, video { display: block; max-width: 100%; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* a visually hidden control shows itself while it has keyboard focus (APP-06) */
+.sr:focus-visible { position: static; width: auto; height: auto; min-height: var(--tap); overflow: visible; clip: auto; white-space: normal; padding: var(--s-2) var(--s-3); color: var(--text); background: var(--surface-2); border-radius: var(--r-sm); }
 .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
 .muted { color: var(--muted); }
 .t2 { color: var(--text-2); }
