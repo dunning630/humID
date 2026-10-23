@@ -138,7 +138,8 @@ try {
 
   // the vault: one way to add, and nothing to protect here (that's under You)
   await page.getByRole("button", { name: "Add to your vault" }).waitFor({ timeout: 15_000 });
-  assert.equal(await page.locator(".tabbar [role=tab]").count(), 3, "three tabs");
+  // Vault, Messages (the dev server runs a messaging relay, 4.1), Activity, You
+  assert.deepEqual(await page.locator(".tabbar [role=tab]").allInnerTexts(), ["Vault", "Messages", "Activity", "You"], "four tabs, Messages second");
   assert.equal(await page.locator("nav.tabbar[role=tablist]").count(), 1, "the tab bar is the tablist");
   await targets(page, "Vault"); await shot(page, "small-vault-empty");
 

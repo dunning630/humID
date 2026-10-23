@@ -48,6 +48,11 @@ and "Use a demo access code" pays for a new HumID.
 
 ## What you can do in the app
 
+- **Message people you've approved** (4.0, provisional): each of you knows the other only by
+  an ID made for the two of you; post-quantum end-to-end encryption; and nobody interacts
+  without a live check: inviting, asking, approving, every message, and reading. A
+  conversation shows "Both here" only while both people's checks are fresh. See
+  [docs/MESSAGING.md](docs/MESSAGING.md).
 - **Pay anonymously:** an access code (bought for cash, or online) becomes a
   pass the server signs blind, so it can't link the payment to your account.
   No name, email or phone number anywhere.

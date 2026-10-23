@@ -156,8 +156,9 @@ export function requestContact(accountSeed, invite, opts = {}) {
   return guard(() => makeRequest(accountSeed, invite, opts));
 }
 
-async function makeRequest(accountSeed, invite, { intro = "", stamper = null, now = Date.now() } = {}) {
+async function makeRequest(accountSeed, invite, { intro = "", stamper = null, now = Date.now(), requireLive = false } = {}) {
   if (typeof intro !== "string" || intro.length > 280) throw new MsgError("bad_intro", "Keep the note to 280 characters");
+  if (requireLive && typeof stamper !== "function") throw new MsgError("stamp_required", "Asking to connect needs a live check");
   if (now > invite.expires) throw new MsgError("invite_expired", "This invite has expired. Ask for a new one.");
   const b = backend();
   const me = newPersona(accountSeed);
@@ -175,6 +176,10 @@ async function makeRequest(accountSeed, invite, { intro = "", stamper = null, no
   const rxSk = random(32), rxPk = b.x25519.publicKey(rxSk);
   const rek = b.kem.keygen(random(SIZES.kemSeed));
   const stamp = stamper ? await stamper(requestCommitment({ th0, senderFp: personaFingerprint(me.pub) })) : null;
+  if (requireLive && !stamp) {
+    wipe(xe, k1.sharedSecret, k2.sharedSecret, dh1, dh2, dh3, bind, wrapKey);
+    throw new MsgError("stamp_required", "The live check didn't complete, so no request was made");
+  }
   const innerJSON = encodeJSON({ v: 1, persona: encodePub(me.pub), rx: b64u(rxPk), rek: b64u(rek.publicKey), intro, st: stamp, at: now });
   const th = H(label("hello transcript"), lp(th0, H(innerJSON)));
   const sigs = dualSign("request", th, me.keys);
@@ -201,10 +206,13 @@ async function makeRequest(accountSeed, invite, { intro = "", stamper = null, no
 /**
  * Open a request that arrived in the invite's reply box.
  * @param persona  A's persona for this invite (personaFromSalt(accountSeed, state.personaSalt))
+ * @param opts.requireLive  refuse (not_live) a request without a valid live stamp: the human-to-human rule
  * @returns what to show before approving: { from, intro, live, safetyCode, … }
  */
-export async function readRequest(state, persona, wire, { now = Date.now(), stampKeys = null } = {}) {
+export async function readRequest(state, persona, wire, { now = Date.now(), stampKeys = null, requireLive = false } = {}) {
   return guard(async () => {
+    // The human-to-human rule (live.js): a request without a valid live stamp is never shown.
+    if (requireLive && !stampKeys) throw new MsgError("no_stamp_keys", "Can't check live stamps yet");
     if (state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
     if (now > state.expires) throw new MsgError("invite_expired", "This invite has expired");
     checkWire(wire);
@@ -236,6 +244,10 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
     const senderFp = personaFingerprint(peer);
     let live = null;
     if (r.st && stampKeys) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp }), { now });
+    if (requireLive && live !== true) {
+      wipe(rk0);
+      throw new MsgError("not_live", r.st ? "This request's live check didn't verify, so it isn't shown" : "This request wasn't approved with a live check, so it isn't shown");
+    }
     return {
       from: personaId(peer), intro: r.intro, at: r.at, live, stamped: !!r.st,
       safetyCode: safetyCode(persona.pub, peer),
@@ -288,4 +300,31 @@ export function closeInvite(state) {
   wipe(state.otkSk, state.otxSk, state.secret);
   state.used = state.uses;
   state.closed = true;
+}
+
+/* ---------- invite QR codes ----------
+ * The same code you could type, and when it expires, in a form the camera reads and nothing
+ * else accepts: HUMID-INVITE:1:<44 characters>:<expiry, seconds, base 36>. What's scanned is
+ * checked exactly like a typed code (check characters, then the persona pin when it opens).
+ */
+const QR_PREFIX = "HUMID-INVITE:1:";
+const QR_RE = /^HUMID-INVITE:1:([0-9A-HJKMNP-TV-Z]{44}):([0-9A-Z]{1,9})$/;
+
+export function inviteQrPayload(code, expiresAt) {
+  const { secret, pin } = parseInviteCode(code);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new MsgError("bad_invite_code", "Nothing to put in a QR code");
+  return `${QR_PREFIX}${formatInviteCode(secret, pin).slice(3).replace(/-/g, "")}:${Math.ceil(expiresAt / 1000).toString(36).toUpperCase()}`;
+}
+
+/** { code, expiresAt } from scanned text, or null for anything that isn't exactly a HumID invite QR. */
+export function parseInviteQr(text) {
+  if (typeof text !== "string" || text.length > 80) return null;
+  const m = QR_RE.exec(text);
+  if (!m) return null;
+  try {
+    const { secret, pin } = parseInviteCode(m[1]);
+    const expiresAt = parseInt(m[2], 36) * 1000;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return null;
+    return { code: formatInviteCode(secret, pin), expiresAt };
+  } catch { return null; }
 }

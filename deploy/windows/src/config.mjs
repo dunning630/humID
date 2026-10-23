@@ -27,6 +27,7 @@ export const DEFAULTS = [
   ["VAULT_QUOTA_BYTES", "262144000", "Storage per account (250 MB)."],
   ["HUMID_SHARE_RELEASES_PER_HOUR", "120", "Split keys: how many documents one account can open per hour, so a hijacked phone can't drain the vault."],
   ["HUMID_CHECKIN", "off", "on = holders can arm Check-in: their vault is erased for good unless they check in every hour or two (docs/CHECKIN.md). While anyone is armed, stopping the server (a restart, an update, a backup, restarting Windows) erases their vault too: its keys live in memory only. off until push reminders exist."],
+  ["HUMID_MESSAGING", "off", "on = person-to-person messaging (HumID 4.1 preview, docs/MESSAGING.md): the relay runs beside the other services and the app shows Messages. Every request, approval and message needs a live check. off on anything holding real data until the independent review."],
   ["HUMID_UPDATE_PRERELEASES", "off", "on = the admin console also offers HumID Server releases marked pre-release on GitHub (still only ones signed with a HumID release key). off for anything holding real data."],
   ["HUMID_ADMIN_PORT", "8490", "Local port of the admin console (HumID Admin). Only this computer can open it; the tunnel never forwards it. Open it with `humid console`."],
   ["HUMID_SEAL", process.platform === "win32" ? "dpapi" : "off", "dpapi = the server's secrets are sealed under a key only this Windows installation can open (with BitLocker's TPM protector, only this machine) · off = kept in plain files as before 3.0 (not recommended)."],
@@ -34,7 +35,7 @@ export const DEFAULTS = [
   ["HUMID_CORE_HOST", "", "When this machine runs front but not core: the address of the machine that runs core."],
   ["HUMID_KEYS_HOST", "", "When this machine runs front but not keys: the address of the machine that runs keys."],
   ["HUMID_INTERNAL_BIND", "127.0.0.1", "When this machine runs core or keys for a gateway elsewhere: the address it listens on for that gateway (mutual TLS only)."],
-  ["HUMID_INTERNAL_PORT_BASE", "8500", "Internal ports for a gateway on another machine: base+1 identity, +2 vault, +3 ledger, +4 recovery, +5 access, +6 keyshare."],
+  ["HUMID_INTERNAL_PORT_BASE", "8500", "Internal ports for a gateway on another machine: base+1 identity, +2 vault, +3 ledger, +4 recovery, +5 access, +6 keyshare, +7 relay."],
 ];
 
 const LINE = /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/;
@@ -98,6 +99,7 @@ export function validate(cfg) {
   if (cfg.HUMID_DEVICE_POLICY && !VALID_POLICIES.includes(cfg.HUMID_DEVICE_POLICY)) problems.push(`HUMID_DEVICE_POLICY must be one of ${VALID_POLICIES.join(", ")}.`);
   if (cfg.HUMID_REGISTRATION && !["pass", "open"].includes(cfg.HUMID_REGISTRATION)) problems.push("HUMID_REGISTRATION must be pass or open.");
   if (cfg.HUMID_CHECKIN && !["on", "off"].includes(cfg.HUMID_CHECKIN)) problems.push("HUMID_CHECKIN must be on or off.");
+  if (cfg.HUMID_MESSAGING && !["on", "off"].includes(cfg.HUMID_MESSAGING)) problems.push("HUMID_MESSAGING must be on or off.");
   if (cfg.HUMID_UPDATE_PRERELEASES && !["on", "off"].includes(cfg.HUMID_UPDATE_PRERELEASES)) problems.push("HUMID_UPDATE_PRERELEASES must be on or off.");
   if (cfg.HUMID_PASS_BUY_URL && !/^https:\/\//.test(cfg.HUMID_PASS_BUY_URL)) problems.push("HUMID_PASS_BUY_URL must start with https://.");
   const port = Number(cfg.HUMID_PORT || 8480);

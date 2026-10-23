@@ -2,7 +2,7 @@
 // tests). Nothing survives a restart; the UI says so.
 
 export function memoryBackend() {
-  const stores = { identity: new Map(), vault: new Map(), wallet: new Map() };
+  const stores = { identity: new Map(), vault: new Map(), wallet: new Map(), msg: new Map() };
   return {
     persistent: false,
     get: async (s, k) => stores[s].get(k),
