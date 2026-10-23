@@ -337,7 +337,8 @@ export async function switchToHolderOnly() {
       return R.api.setRecoveryMode(sent, proof);
     });
     await pinMode(sent);
-    toast("Done. Only your own devices can open your vault now.");
+    // Not "only your devices can open it": pieces made before still fit each other (V74-04).
+    toast("Done. Your vault server keeps no recovery for you now. Destroy your old recovery card: old pieces still fit each other.", "warn");
     await loadRecoveryMode();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }

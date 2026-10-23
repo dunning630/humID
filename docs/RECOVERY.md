@@ -40,8 +40,10 @@ You → Recovery.
 - **No recovery part is made.** A holder-only setup makes no recovery card,
   and the app never calls the card, witness, ID-chip or security-key APIs.
 - **The choice is signed by the account key.** The app signs the statement
-  `HUMID-RECMODE-v1 ‖ lp(account id, mode, version, epoch)` with the
-  account's ML-DSA-87 key. That key is derived from the account seed, which
+  `HUMID-RECMODE-v1 ‖ lp(account id, mode, u32 version, u32 epoch, prev)` with
+  the account's ML-DSA-87 key. `prev` is the hash of the statement it
+  replaces (32 zero bytes for version 1), so the statements form a chain that
+  only goes forward. That key is derived from the account seed, which
   only the holder's devices have. Identity keeps the statement and shows it
   in `/identity/me`; the recovery service keeps it with the account's public
   key. Setup and every change are recorded as `recovery.mode_set` in the
@@ -52,11 +54,19 @@ You → Recovery.
   card, witnesses, a chip, a key, a witness releasing a piece); releasing a
   recovery; and letting a device join through one. Adding a device from
   another of your own devices (section 1) still works.
-- **A server can't flip it quietly.** The recovery service checks the
-  stored signature again on every one of those routes. A row someone changed
-  on disk no longer verifies, and then the account is treated as holder-only:
-  nothing more is stored or released. The holder's own phone checks the
-  statement against its account key too, and says so if it doesn't verify.
+- **A server can't forge, delete or roll it back unnoticed, as far as each of
+  your phones has seen.** The recovery service checks the stored signature
+  again on every one of those routes. A row someone changed on disk no longer
+  verifies, and a deleted or older one falls below the service's high-water
+  mark; either way the account is treated as holder-only: nothing more is
+  stored or released. Identity keeps the same chain and the gateway brings
+  the recovery service back up to it. Each phone checks what it's shown
+  against its account key and against the newest statement it has itself
+  seen (its pin), and warns about anything forged, missing, older or forked.
+  The limit is per phone: an operator that controls every server can show a
+  phone that hasn't seen your latest choice an older one you made. That
+  phone then makes no recovery piece unless the older choice is one it can
+  vouch for, as below.
 
 ### When a phone makes recovery pieces
 
@@ -164,7 +174,7 @@ VAULT-03, is the follow-up).
 | Rebuild the account seed from what it stores | no: it stores no recovery parts | no: one part is never enough, and the card, witness and key parts are locked by something it doesn't have (the card code, a witness's key, a security key) |
 | …with one more thing stolen from the holder | no | **without a passport link: no**, it needs two of the holder's proofs like anyone else. **With a passport link: yes.** The passport piece is locked with a key made from the chip's public data, which the server sees whenever the passport is linked or used. So an operator who records that once holds the passport piece, and the passport plus any ONE other stolen proof (a photo of the card, say) rebuilds the account key, with no wait and no veto. Holders who don't want to trust the operator that far should use witnesses or a security key, not a passport, or choose holder-only. The real fix is an open decision ([CONTINUITY.md](CONTINUITY.md#the-anchor-and-the-operator)) |
 | Skip the wait or the veto | no recovery to skip | the waits and the veto are server rules: a dishonest server that also had two of the holder's proofs could release early. The cryptography guarantees confidentiality, not the clock |
-| Turn recovery on behind the holder's back | no: the mode is signed by the holder's account key, and each of the holder's devices checks it | n/a |
+| Turn recovery on behind the holder's back | not without the holder's own help: the mode is signed by the holder's account key, and each device checks it against the newest one it has seen. But an operator controlling every server can show a phone that hasn't seen your switch to holder-only the hardened choice you made before ([when a phone makes recovery pieces](#when-a-phone-makes-recovery-pieces)). Open HumID on each device after switching | n/a |
 | Turn recovery off, or deny one | yes: it can refuse service. That's availability, not access | yes, same |
 | Learn who you are | nothing beyond the account | if you link an ID chip: document type and country, and your name and birth date while they pass through (not kept) |
 
