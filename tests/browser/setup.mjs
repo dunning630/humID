@@ -101,6 +101,8 @@ try {
   assert.equal(await page.locator(".toast").count(), 0, "no toast on top of the Access pass ready banner");
   await targets(page, "Access pass");
   await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByText("If you lose every device").waitFor();
+  await page.getByRole("button", { name: "Next: lock it to you" }).click(); // the recommended mode is already selected
   await page.getByText("Your body becomes the key").waitFor();
   await onScreen(page, page.getByRole("button", { name: /Use demo mode/ }), "the bind button on a 375×667 phone");
   await targets(page, "Bind"); await shot(page, "small-bind");
