@@ -56,6 +56,19 @@ test("MSG-05: near full, only networks over a fair share are refused", async () 
   } finally { await relay.stop(); relay.close(); }
 });
 
+test("MSG-13: the relay writes no log line per deposit or fetch", async () => {
+  const relay = createRelay({ port: 0, dataDir: join(root, "d"), internalPk: ik.pk });
+  await relay.start();
+  const lines = [];
+  const write = process.stdout.write;
+  process.stdout.write = (chunk, ...rest) => { lines.push(String(chunk)); return write.call(process.stdout, chunk, ...rest); };
+  try {
+    assert.equal(await call(relay, "/internal/put", wire(4096), "v4:198.51.100.7", { "x-humid-box": box(7) }), 201);
+    assert.equal(await call(relay, "/internal/take", new TextEncoder().encode(JSON.stringify({ boxes: [box(7)] })), "v4:198.51.100.7", { "content-type": "application/json" }), 200);
+  } finally { process.stdout.write = write; await relay.stop(); relay.close(); }
+  assert.ok(!lines.some((l) => l.includes('"service":"relay"') && l.includes('"msg":"req"')), "no per-request timestamps to line up with the issuer's");
+});
+
 test("MSG-05: the per-minute limits never lock out a new network, however many keys are live", async () => {
   const relay = createRelay({ port: 0, dataDir: join(root, "c"), internalPk: ik.pk, maxRateKeys: 2000 });
   await relay.start();

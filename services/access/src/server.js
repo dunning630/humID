@@ -281,7 +281,8 @@ export function createAccess({
     }],
 
     // How many messages a live human approved, network-wide, per day: a measure of real human
-    // activity that a bot farm can't inflate, and that says nothing about anyone.
+    // activity that a bot farm can't inflate, and that says nothing about anyone. Exact here; the
+    // gateway publishes only days over a minimum, rounded (MSG-13).
     ["GET", "/internal/stamp/stats", ({ claims }) => {
       gatewayOnly(claims);
       const rows = db.prepare("SELECT day, stamps, checks FROM stamp_days ORDER BY day DESC LIMIT 60").all();
@@ -298,7 +299,9 @@ export function createAccess({
     }],
   ];
 
-  const svc = createService({ tls, name: "access", port, routes, bodyLimit: 16 * 1024, verify: (t) => verifyAssertion(internalPk, t, "access") });
+  // quiet: no per-request log lines; access keeps days only, and a millisecond line per stamp or
+  // pass would let its log be lined up with the relay's or the gateway's (MSG-13)
+  const svc = createService({ tls, name: "access", port, routes, bodyLimit: 16 * 1024, verify: (t) => verifyAssertion(internalPk, t, "access"), quiet: true });
   // The first key is made at start-up (4096-bit keys take a moment), not on someone's first request,
   // and never by `mint`, which may run next to a live service.
   let ticker = null;

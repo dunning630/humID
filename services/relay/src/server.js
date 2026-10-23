@@ -219,7 +219,9 @@ export function createRelay({
     }, { bodyLimit: 4 * 1024 }],
   ];
 
-  const svc = createService({ tls, name: "relay", port, routes, bodyLimit: 8 * 1024, verify: (t) => verifyAssertion(internalPk, t, "relay") });
+  // quiet: no per-request log lines; the relay keeps arrival to the minute, and a millisecond log
+  // line per deposit and fetch would undo that (MSG-13)
+  const svc = createService({ tls, name: "relay", port, routes, bodyLimit: 8 * 1024, verify: (t) => verifyAssertion(internalPk, t, "relay"), quiet: true });
   return { ...svc, close: () => db.close(), get totalBytes() { return total; } };
 }
 

@@ -213,7 +213,11 @@ export const parseObject = (buf) => {
  */
 export const logPath = (route, pathname) => route ? route.pattern : `/${String(pathname).split("/")[1] || ""}/…`.replace(/[^\w/…-]/g, "");
 
-export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders, tls = null }) {
+/**
+ * quiet: no per-request log lines (the relay and the stamp issuer, whose request times, side by
+ * side, would line up stamp requests with deposits; security review MSG-13). Errors still log.
+ */
+export function createService({ name, port, routes, bodyLimit = 1 << 20, verify, onError, extraHeaders, tls = null, quiet = false }) {
   const log = logger(name);
   const replay = replayGuard();
   const compiled = routes.map(([method, pattern, handler, opts = {}]) => {
@@ -273,7 +277,7 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
     res.end(out.body);
     // The route's pattern ("/links/:code"), never the path: paths carry recovery codes,
     // request and object ids. An unmatched path logs only its first segment.
-    if (pathname !== "/healthz") log.info("req", { m: req.method, p: logPath(route, pathname), s: out.status, ms: Date.now() - started });
+    if (pathname !== "/healthz" && !quiet) log.info("req", { m: req.method, p: logPath(route, pathname), s: out.status, ms: Date.now() - started });
   }
 
   const onRequest = (req, res) => {

@@ -47,7 +47,7 @@ function List() {
   return (
     <main class="screen tabs">
       <header class="top">
-        <div class="grow"><h1>Messages</h1><div class="small muted">Only people you've approved. Each message confirmed by its sender's face or fingerprint.</div></div>
+        <div class="grow"><h1>Messages</h1><div class="small muted">Only people you've approved. Each message confirmed by a live face or fingerprint check on a proven phone.</div></div>
         {!off && m?.ready && m.canStamp && <button class="icon-btn" aria-label="New" onClick={() => setChoosing(true)}><Icon name="plus" /></button>}
       </header>
       {off && <Banner tone="amber" icon="info" title="Messages need a connection" text="Your conversations are safe on this phone. They open again when you're back online." />}
@@ -91,7 +91,7 @@ function List() {
           )}
           {m.contacts.length === 0 && m.requests.length === 0 && m.invites.length === 0 && (
             <Empty icon="chat" title="Talk only with people you've approved"
-              text="You each know the other only by an ID made for the two of you. Messages are encrypted so only your two phones can open them, and each one is confirmed by its sender's face or fingerprint.">
+              text="You each know the other only by an ID made for the two of you. Messages are encrypted so only your two phones can open them, and each one is confirmed by a live face or fingerprint check on a proven phone.">
               {m.canStamp && <div class="actions" style={{ width: "100%" }}>
                 <button class="btn primary block" onClick={() => go("invite")}><Icon name="qr" />Invite someone</button>
                 <button class="btn quiet block" onClick={() => go("code")}><Icon name="scan" />I have their code</button>
@@ -99,7 +99,7 @@ function List() {
               </div>}
             </Empty>
           )}
-          {today > 0 && <p class="fine center" style={{ marginTop: 18 }}>Today, {today.toLocaleString()} messages on HumID were sent with a live check.</p>}
+          {today > 0 && <p class="fine center" style={{ marginTop: 18 }}>Today on this HumID server, about {today.toLocaleString()} messages, requests and approvals were made with a live check.</p>}
         </>
       )}
       {choosing && (

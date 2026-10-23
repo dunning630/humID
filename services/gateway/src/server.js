@@ -232,9 +232,12 @@ export function createGateway({
    * under any other policy, so no deployed server can turn it on.
    */
   demoStamps = false,
+  /** /msg/stats shows only days with at least this many live checks, rounded to 100 (MSG-13). */
+  msgStatsMin = Number(env("HUMID_MSG_STATS_MIN", "1000")),
 } = {}) {
   const log = logger("gateway");
   const DEMO_STAMPS = demoStamps === true && devicePolicy === "demo";
+  const STATS_MIN = Number.isFinite(msgStatsMin) && msgStatsMin >= 100 ? msgStatsMin : 1000;
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
   const CHECKIN = checkin === "on";
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
@@ -718,10 +721,16 @@ export function createGateway({
       return { status: 200, json: { stamp: st.data, passKeyIds: (pk.data.keys || []).map((k) => k.id) } };
     },
 
+    // Public, so on a small server exact daily counts would show one person's activity (and
+    // checks − stamps would count "delete for both"). Only days with at least STATS_MIN live
+    // checks are shown, both numbers rounded down to a hundred, and "checks" only as the rounded
+    // total (security review MSG-13).
     async msgStats() {
       const r = await internalJson("access", "GET", "/internal/stamp/stats");
       if (r.status !== 200) fail(r);
-      return { status: 200, json: r.data };
+      const round = (n) => Math.floor(n / 100) * 100;
+      const days = (r.data?.days || []).filter((d) => d.checks >= STATS_MIN).map((d) => ({ day: d.day, stamps: round(d.stamps), checks: round(d.checks) }));
+      return { status: 200, json: { days, min: STATS_MIN, rounded: 100 } };
     },
 
     // One live check → the stamps it approved. The step-up's signature covers this request's
