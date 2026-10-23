@@ -11,7 +11,7 @@ import { HumidApi } from "@humid/api";
 import { suite } from "@humid/crypto";
 import { ml_dsa87, random } from "@humid/htp";
 import {
-  newCard, cardTag, sealCardPart, split, encodeShare, quorumParts, encodeQuorumPart,
+  newCard, cardTag, sealCardPart, split, encodeShare, quorumParts, anchorPartKey, sealAnchorPart,
   recoveryModeMessage, RECOVERY_MODES,
 } from "@humid/recovery";
 import { addRecoveryKey } from "@humid/fido";
@@ -83,7 +83,9 @@ test("holder-only: setup stores no recovery card, and the server refuses every k
   const refused = (e) => e.status === 409 && e.code === "holder_only";
   await assert.rejects(api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, h.id) }, h.stepUp), refused);
   await assert.rejects(api.setContacts(await witnessesFor(h, api, parts), h.stepUp), refused);
-  await assert.rejects(api.setAnchor({ chip: testPassport({ csca, mrz: { surname: "HOLDER", given: "ONLY" } }), part: encodeQuorumPart(parts.anchor) }, h.stepUp), refused);
+  const chip = testPassport({ csca, mrz: { surname: "HOLDER", given: "ONLY" } });
+  await assert.rejects(api.anchorChallenge(), refused);
+  await assert.rejects(api.setAnchor({ chip, sealedPart: await sealAnchorPart(anchorPartKey(chip.dg15), parts.anchor, h.id), signature: new Uint8Array(8) }, h.stepUp), refused);
   await assert.rejects(api.keyChallenge(), refused);
   assert.deepEqual(escrowRows(h.id), NONE);
 
@@ -198,7 +200,9 @@ test("hardened → holder-only: refused while any escrow is left; each piece is 
   const card = newCard();
   await api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, h.id) }, h.stepUp);
   await api.setContacts(await witnessesFor(h, api, parts), h.stepUp);
-  await api.setAnchor({ chip: testPassport({ csca, mrz: { surname: "DOWN", given: "GRADE" } }), part: encodeQuorumPart(parts.anchor) }, h.stepUp);
+  const chip = testPassport({ csca, mrz: { surname: "DOWN", given: "GRADE" } });
+  const nonce = await api.anchorChallenge();
+  await api.setAnchor({ chip, sealedPart: await sealAnchorPart(anchorPartKey(chip.dg15), parts.anchor, h.id), signature: chip.answer(nonce) }, h.stepUp);
   const k = simulatedKey();
   const { challenge, exclude } = await api.keyChallenge();
   const got = await addRecoveryKey(k, { pin: "246810", newPin: true, challenge, exclude });

@@ -9,7 +9,7 @@ import { toB64, fromB64, toHex } from "@humid/codec";
 import { suite, random } from "@humid/crypto";
 import { adapter as gateAdapter, ASSURANCE } from "@humid/gate";
 import { ml_dsa87, identityId } from "@humid/htp";
-import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, openKeyPart, decodeQuorumPart, combineQuorum, QUORUM, KEY_SECRET_BYTES, accountCheck } from "@humid/recovery";
+import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCardPart, openKeyPart, decodeQuorumPart, combineQuorum, QUORUM, KEY_SECRET_BYTES, accountCheck, anchorPartKey, openAnchorPart } from "@humid/recovery";
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, CARD, wipe, concat, localChallenge } from "./runtime.js";
@@ -23,28 +23,34 @@ import { readKeyForRecovery } from "./seckey.js";
 import { routesFor, HOLDER_ONLY } from "./recmode.js";
 
 /*
- * What a two-proof recovery keeps under this device's lock while it waits (layout 2, 4.0):
- *   device seed (64) ‖ recovery key seed (64) ‖ card slot (15) ‖ security key slot (32)
- * A slot is zeros until that proof is added (pending.hasCard / pending.hasKey say which are
- * real). Layout 1 (3.x): device seed ‖ recovery key seed ‖ card (if any).
+ * What a two-proof recovery keeps under this device's lock while it waits (layout 3):
+ *   device seed (64) ‖ recovery key seed (64) ‖ card slot (15) ‖ security key slot (32) ‖ ID chip slot (32)
+ * A slot is zeros until that proof is added (pending.hasCard / hasKey / hasChip say which are
+ * real). The ID chip slot holds the key made from the chip's DG15 (anchorPartKey), which opens
+ * the anchor part the holder's phone sealed: the server never has it. Layout 2 (4.0) had no
+ * chip slot; layout 1 (3.x): device seed ‖ recovery key seed ‖ card (if any).
  */
-const QUORUM_LAYOUT = 2;
+const QUORUM_LAYOUT = 3;
+const ANCHOR_KEY_BYTES = 32;
 function quorumSlots(both, p) {
   const dseed = both.subarray(0, SEED), x = both.subarray(SEED, 2 * SEED);
-  if (p.layout === QUORUM_LAYOUT) {
+  if (p.layout === 2 || p.layout === QUORUM_LAYOUT) {
+    const k = 2 * SEED + CARD;
     return {
       dseed, x,
-      card: p.hasCard ? both.subarray(2 * SEED, 2 * SEED + CARD) : null,
-      key: p.hasKey ? both.subarray(2 * SEED + CARD, 2 * SEED + CARD + KEY_SECRET_BYTES) : null,
+      card: p.hasCard ? both.subarray(2 * SEED, k) : null,
+      key: p.hasKey ? both.subarray(k, k + KEY_SECRET_BYTES) : null,
+      chip: p.layout === QUORUM_LAYOUT && p.hasChip ? both.subarray(k + KEY_SECRET_BYTES, k + KEY_SECRET_BYTES + ANCHOR_KEY_BYTES) : null,
     };
   }
-  return { dseed, x, card: both.length >= 2 * SEED + CARD ? both.subarray(2 * SEED, 2 * SEED + CARD) : null, key: null };
+  return { dseed, x, card: both.length >= 2 * SEED + CARD ? both.subarray(2 * SEED, 2 * SEED + CARD) : null, key: null, chip: null };
 }
-function packQuorum({ dseed, x, card, key }) {
-  const out = new Uint8Array(2 * SEED + CARD + KEY_SECRET_BYTES);
+function packQuorum({ dseed, x, card, key, chip }) {
+  const out = new Uint8Array(2 * SEED + CARD + KEY_SECRET_BYTES + ANCHOR_KEY_BYTES);
   out.set(dseed, 0); out.set(x, SEED);
   if (card) out.set(card, 2 * SEED);
   if (key) out.set(key, 2 * SEED + CARD);
+  if (chip) out.set(chip, 2 * SEED + CARD + KEY_SECRET_BYTES);
   return out;
 }
 
@@ -248,7 +254,19 @@ async function finishJoin(st) {
           const slot = quorumSlots(both, p);
           if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account));
           if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account));
-          if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart));
+          if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart)); // linked before chip binding (v1)
+          if (st.anchorSealed) {
+            // The part the holder's phone sealed to their chip: opened with the chip key this
+            // device kept from its own live read, or the one a station sealed to this device.
+            let chipKey = slot.chip;
+            if (!chipKey && st.anchorKey) {
+              xkeys ||= Suite.deriveKeys(x);
+              const dg15 = (await Suite.open(st.anchorKey, xkeys)).bytes;
+              chipKey = anchorPartKey(dg15);
+              wipe(dg15);
+            }
+            if (chipKey) parts.push(await openAnchorPart(chipKey, st.anchorSealed, account, st.anchorEpoch ?? 1));
+          }
           seed = combineQuorum(parts);
           for (const pt of parts) wipe(pt.y);
           keys = Suite.deriveKeys(seed);
@@ -415,11 +433,42 @@ export async function addChipToJoin(source) {
     const { chip, signature } = got;
     if (!signature) throw new Error("This ID's chip can't answer challenges. Verify at a HumID station instead.");
     const r = await R.api.recoveryAddAnchor(p.requestId, { chip, signature });
+    // The holder's part is sealed to this chip: keep the key from its DG15 under this device's
+    // lock until the wait is over (one live check). A part linked the old way needs nothing kept.
+    if (r.anchorSealed && chip.dg15) await keepChipKey(anchorPartKey(chip.dg15), r);
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
     toast("Your ID chip is verified.");
     pollJoin();
     return true;
   } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); holderOnlyRefusal(e); return false; }
+}
+
+async function keepChipKey(chipKey, r) {
+  const id = S.identity.value, p = id.pending;
+  const gate = gateAdapter(id.gate.adapter);
+  const Suite = suite(id.suite);
+  R.busy = true;
+  showInterrupt({ purpose: "anchor", label: "Keep your ID chip's key", state: "scanning", progress: 0.1, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
+  let secret, both, next;
+  try {
+    await waitForHold(gate);
+    const rel = await gate.release(id.gate.handle, { purpose: "anchor", prompt: "Keep your ID chip's key", challenge: localChallenge("anchor") });
+    secret = rel.secret;
+    both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
+    next = packQuorum({ ...quorumSlots(both, p), chip: chipKey });
+    const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
+    const record = { ...id, wrapped, pending: { ...p, hasChip: true, layout: QUORUM_LAYOUT, account: r.account } };
+    delete record.schema;
+    await R.store.putIdentity(record);
+    S.identity.value = { ...record, schema: 4 };
+    await endInterrupt(true, "Your ID chip's key is locked to this device.", 500);
+  } catch (e) {
+    await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    throw e;
+  } finally {
+    wipe(secret, both, next, chipKey);
+    R.busy = false;
+  }
 }
 
 /** Development builds: a demo passport as a live chip source for addChipToJoin. */

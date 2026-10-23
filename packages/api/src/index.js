@@ -391,8 +391,16 @@ export class HumidApi {
 
   /** { available, exists, document?, country?, createdAt? } */
   anchor() { return this.#json("GET", "/recovery/anchor"); }
-  /** Bind a passport or ID chip ({ dg1, sod, dg15? }) and store the anchor part under it. */
-  setAnchor({ chip, part }, stepUp) { return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), part: b64u(part) }, stepUp }); }
+  /** A fresh challenge (bytes) for the chip being linked to answer: copied chip files can't. */
+  async anchorChallenge() { return unb64u((await this.#json("POST", "/recovery/anchor/challenge")).nonce); }
+  /**
+   * Link a passport or ID chip ({ dg1, sod, dg15 }). sealedPart: the anchor part already sealed on
+   * this phone under anchorPartKey(dg15) (sealAnchorPart), so the server never sees it openable.
+   * signature: the chip's answer to anchorChallenge(). epoch: which set of recovery pieces it belongs to.
+   */
+  setAnchor({ chip, sealedPart, signature, hash, epoch = 1 }, stepUp) {
+    return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), sealedPart: b64u(sealedPart), signature: b64u(signature || new Uint8Array(0)), ...(hash ? { hash } : {}), epoch }, stepUp });
+  }
   removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
   settings() { return this.#json("GET", "/recovery/settings"); }
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
@@ -447,12 +455,21 @@ export class HumidApi {
   /* ---------------- verification stations ---------------- */
 
   station() { return this.#json("GET", "/recovery/station"); }
-  stationRequest(code) { return this.#json("GET", `/recovery/station/requests/${codeOf(code)}`); }
+  /** What's waiting under a recovery code, with the recovering device's keys, checked against the code. */
+  async stationRequest(input) {
+    const code = codeOf(input);
+    const r = await this.#json("GET", `/recovery/station/requests/${code}`);
+    if (!r.kemPk) return r;
+    const out = { ...r, kemPk: unb64u(r.kemPk), xPk: unb64u(r.xPk) };
+    checkCode(code, REQUEST_LABEL, out.kemPk, out.xPk);
+    return out;
+  }
   /** checks: { document, face, present } — what the operator confirmed in person. */
   /** A fresh challenge for the chip in front of the station (bytes). */
   async stationChallenge(code) { return unb64u((await this.#json("POST", `/recovery/station/requests/${codeOf(code)}/challenge`)).nonce); }
-  stationVerify(code, { chip, checks, signature, hash }, stepUp) {
-    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}) };
+  /** chipKey: the chip's DG15, sealed to the recovering device's keys and signed by the station's account (an envelope). */
+  stationVerify(code, { chip, checks, signature, hash, chipKey }, stepUp) {
+    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}), ...(chipKey ? { chipKey: b64u(chipKey) } : {}) };
     return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body, stepUp });
   }
 
@@ -494,6 +511,9 @@ export class HumidApi {
     return {
       ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined,
       anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined, keyBlob: r.keyBlob ? unb64u(r.keyBlob) : undefined,
+      // v2 anchor: the part as the holder's phone sealed it (open with anchorPartKey(dg15)), and,
+      // after a station, the chip's DG15 sealed to this device's recovery keys
+      anchorSealed: r.anchorSealed ? unb64u(r.anchorSealed) : undefined, anchorKey: r.anchorKey ? unb64u(r.anchorKey) : undefined,
     };
   }
   /** A contact looks up the recovery code someone sent them. */
