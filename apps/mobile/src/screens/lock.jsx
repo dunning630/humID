@@ -100,7 +100,7 @@ export function Lock() {
     <main class="screen">
       <div class="hero" style={{ flex: "1 0 auto", justifyContent: "center" }}>
         <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999, transform: g.pressed ? "scale(0.97)" : undefined, transition: "transform var(--d-fast)" }} aria-label="Unlock HumID" onClick={g.onMark}><Mark size={220} /></button>
-        <Wordmark height={30} />
+        <h1 class="brand"><Wordmark height={30} /></h1>
         <p class="lede">Safe. Secure. Simple.</p>
       </div>
       <div class="foot stack">

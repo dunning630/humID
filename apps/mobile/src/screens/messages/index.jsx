@@ -222,7 +222,7 @@ function Chat() {
           {Array.from({ length: t?.count || 0 }, (_, i) => <span class={`ghost ${i % 3 === 1 ? "out" : "in"}`}><Icon name="lock" />Message · locked</span>)}
           <div class="sealed">
             <Icon name="lock" />
-            <h3>{c.waiting ? `${c.waiting} new · locked` : "Locked"}</h3>
+            <h2 class="h3">{c.waiting ? `${c.waiting} new · locked` : "Locked"}</h2>
             <p class="small muted">You've been away for a few minutes, so this conversation locked itself on your phone. Nothing in it opens until your next live check.</p>
             <button class="btn primary" onClick={() => Msg.verifyToRead()}><Icon name="fingerprint" />Open with a live check</button>
           </div>

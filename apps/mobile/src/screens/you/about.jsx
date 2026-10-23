@@ -61,7 +61,7 @@ export function About() {
 
         {sum && (
           <section class="card">
-            <div class="row-x" style={{ justifyContent: "space-between" }}><h3>This server</h3><span class={`pill ${(HEALTH[sum.health] || HEALTH.warn)[0]}`}>{(HEALTH[sum.health] || HEALTH.warn)[1]}</span></div>
+            <div class="row-x" style={{ justifyContent: "space-between" }}><h2 class="h3">This server</h2><span class={`pill ${(HEALTH[sum.health] || HEALTH.warn)[0]}`}>{(HEALTH[sum.health] || HEALTH.warn)[1]}</span></div>
             <p class="small muted" style={{ marginTop: 4 }}>You're an administrator of {serverHost(srv?.url)}{sum.version ? ` (version ${sum.version})` : ""}. Changes from its admin console wait for your approval here.</p>
             {sum.alerts?.length > 0 && <ul class="small" style={{ margin: "8px 0 0", paddingLeft: 18 }}>{sum.alerts.map((a) => <li>{a}</li>)}</ul>}
             {(sum.updates?.humid || sum.updates?.security || sum.updates?.os) && <p class="small" style={{ marginTop: 8 }}>Waiting to install: {[sum.updates.humid && `HumID Server ${sum.updates.humid}`, sum.updates.security ? `${sum.updates.security} security update${sum.updates.security === 1 ? "" : "s"}` : sum.updates.os ? `${sum.updates.os} Windows update${sum.updates.os === 1 ? "" : "s"}` : null].filter(Boolean).join(" and ")}. Start it from the console on the server.</p>}
@@ -77,7 +77,7 @@ export function About() {
 
         {SIM && (
           <section class="card">
-            <div class="row-x" style={{ justifyContent: "space-between" }}><h3>Simulation</h3><span class="pill amber">No real server</span></div>
+            <div class="row-x" style={{ justifyContent: "space-between" }}><h2 class="h3">Simulation</h2><span class="pill amber">No real server</span></div>
             <p class="small muted" style={{ marginTop: 4 }}>The vault server runs inside this app. The connection is the real post-quantum one and the checks are real; adding devices, witnesses, ID chips and stations need other people or servers, so they're off here. Nothing leaves this phone.</p>
             <div class="actions row" style={{ paddingTop: 10 }}>
               <button class="btn quiet sm" onClick={() => (S.simShow.value = S.simLog.value[0] || { title: "Simulation", checks: [], empty: true })}><Icon name="shield" />Server verifications</button>
@@ -92,7 +92,7 @@ export function About() {
             {Object.entries(MODULES).filter(([k]) => k !== "@humid/mobile").map(([k, v]) => <Fact k={k.replace("@humid/", "")} v={v} />)}
           </div>
           <div class="card danger" style={{ marginTop: 14 }}>
-            <h3>Close HumID and erase your vault</h3>
+            <h2 class="h3">Close HumID and erase your vault</h2>
             <p class="small t2" style={{ marginTop: 4 }}>Every document is erased from the vault server ({n} {n === 1 ? "item" : "items"} right now), your identity and recovery options are closed, and the keys on this device are destroyed. Your activity history stays on file, closed. Nobody can undo this.</p>
             <div class="actions" style={{ paddingTop: 10 }}><button class="btn danger block" disabled={off} onClick={() => setClosing(true)}><Icon name="trash" />Close HumID…</button></div>
           </div>

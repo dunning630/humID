@@ -199,6 +199,54 @@ test("the check overlay names itself plainly and takes focus; steppers say the t
   for (const f of screens) assert.doesNotMatch(read(f), /steps=\{\[/, `${f} has its own stepper labels`);
 });
 
+test("every layer that takes the screen is modal: focus in, the rest inert, focus back (APP-12)", () => {
+  const kit = noComments(read("ui/kit.jsx"));
+  assert.match(kit, /export function useModal\(/);
+  assert.match(kit, /\.inert = true/);
+  for (const fn of ["Interrupt", "ChipReadOverlay", "Sheet", "Pushed"]) {
+    const body = kit.slice(kit.indexOf(`export function ${fn}(`), kit.indexOf("\n}\n", kit.indexOf(`export function ${fn}(`)));
+    assert.match(body, /useModal\(root/, `${fn} uses useModal`);
+  }
+  const v = noComments(read("screens/vault.jsx"));
+  const shell = v.slice(v.indexOf("function ViewerShell("), v.indexOf("\n}\n", v.indexOf("function ViewerShell(")));
+  assert.match(shell, /useModal\(root\)/, "the viewer uses useModal");
+  assert.match(shell, /<section class="viewer"/, "the viewer is a section, so its header isn't a second page banner");
+  // Welcome and Lock name the page
+  for (const f of ["screens/welcome.jsx", "screens/lock.jsx"]) assert.match(read(f), /<h1 class="brand"><Wordmark/, `${f} has an h1`);
+});
+
+test("controls are the product's own 44 px: segmented controls, the search field, no inline min-height under it", () => {
+  const css = noComments(read("brand/base.css"));
+  assert.match(css, /\.seg button \{ min-height: var\(--tap\)/, ".seg buttons are 44 px");
+  assert.doesNotMatch(css, /\.search input \{[^}]*min-height: 40px/);
+  // (a link inside a sentence, like the location stamp's "Map", is exempt, as in WCAG 2.5.8)
+  for (const f of faces) assert.doesNotMatch(noComments(read(f)).replace(/<button class="link" style=\{\{ minHeight: 0 \}\} type="button"/g, ""), /<button[^>]*minHeight: (?:[0-3]?\d|4[0-3])\b/, `${f} shrinks a button below 44 px`);
+});
+
+/** WCAG relative luminance contrast of two #rrggbb colours. */
+function contrast(a, b) {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+/** `fg` at `alpha` over `bg`, as #rrggbb. */
+const over = (fg, alpha, bg) => "#" + [1, 3, 5].map((i) => Math.round(parseInt(fg.slice(i, i + 2), 16) * alpha + parseInt(bg.slice(i, i + 2), 16) * (1 - alpha)).toString(16).padStart(2, "0")).join("");
+
+test("light theme: mint text meets 4.5:1 on paper and on its own wash over every surface (axe, app review)", () => {
+  const t = read("brand/tokens.css");
+  const light = t.slice(t.indexOf(':root[data-theme="light"]'), t.indexOf("}", t.indexOf(':root[data-theme="light"]')));
+  const v = (k) => new RegExp(`--${k}:\\s*(#[0-9A-Fa-f]{6})`).exec(light)[1];
+  const mint = v("mint");
+  const [, r, g, b, a] = /--mint-wash:\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(light);
+  const washRgb = "#" + [r, g, b].map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+  assert.equal(washRgb.toLowerCase(), mint.toLowerCase(), "the wash is the mint itself, thinned");
+  for (const s of ["ground", "surface", "surface-2", "surface-3"]) {
+    assert.ok(contrast(mint, v(s)) >= 4.5, `mint on --${s}: ${contrast(mint, v(s)).toFixed(2)}`);
+    const wash = over(mint, Number(a), v(s));
+    assert.ok(contrast(mint, wash) >= 4.5, `mint on its wash over --${s}: ${contrast(mint, wash).toFixed(2)}`);
+  }
+});
+
 test("the brand is one token file; no font files; nothing filters or blurs what scrolls", () => {
   const css = all.filter((f) => f.endsWith(".css")).map((f) => [f, read(f)]);
   for (const [f, raw] of css) {

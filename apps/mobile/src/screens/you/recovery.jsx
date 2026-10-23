@@ -81,7 +81,7 @@ function NewPieces() {
   if (!open) return <button class="link muted" style={{ marginTop: 12 }} onClick={() => setOpen(true)}>Lost a card, or dropped a witness you don't trust? Make new recovery pieces</button>;
   return (
     <div class="card" style={{ marginTop: 12 }}>
-      <h3>Make new recovery pieces</h3>
+      <h2 class="h3">Make new recovery pieces</h2>
       <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces never fit with old ones, so a lost card or a removed witness's piece can't be combined with anything you make from now on.</p>
       <p class="small t2" style={{ marginTop: 6 }}><b>Old pieces still fit each other.</b> Two of them together (your old card and a former witness's piece, say) could still rebuild your HumID's key, because the key itself stays the same. Destroy old recovery cards. (Witnesses' pieces are deleted from your vault server, but a witness, or an old server backup, could have kept a copy.)</p>
       <p class="small t2" style={{ marginTop: 6 }}>Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
