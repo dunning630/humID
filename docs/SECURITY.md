@@ -381,6 +381,14 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
 - **Every request times out** (45 s), so a silent server can't hold a live check open.
 - **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
   a chip that fails its own hash list.
+- **An app that can read the screen is named first (Android, APP-09).** An enabled
+  accessibility service can read everything in HumID's WebView and tap its buttons;
+  `FLAG_SECURE`, hidden overlays and filtered touches don't stop it, and HumID can't. Before
+  a document, a card, a recovery card or messages are shown, the app asks the phone which
+  services are on (`enabledAccessibilityServices` in the gate plugin) and, if one can read
+  the screen, names it and lets the holder decide (`apps/mobile/src/core/readers.js`). A
+  warning, not a guard: a holder who says yes, or malware that hides as a trusted service,
+  still reads. iOS gives apps no such list. Needs a device to confirm.
 - **iOS backups exclude the WebView's data store.**
 
 ## The Android document scanner (apps 2.1.1, narrowed in 2.1.2)

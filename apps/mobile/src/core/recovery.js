@@ -16,6 +16,7 @@ import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
 import { setDraft, CARD_DRAFT } from "./drafts.js";
 import { loadRecoveryMode, isHolderOnly, currentEpoch, mayMakePieces } from "./recmode.js";
+import { screenReadersOk } from "./readers.js";
 // First-paint parts, here too for the kernel's own modules and tests that import them from here.
 export { loadAlerts, cancelRecovery, forgetNewCard, resumeNewCard } from "./alerts.js";
 
@@ -116,6 +117,7 @@ export const partOf = (seed, kind) => {
 export async function makeNewCard() {
   const accountId = S.identity.value.server.id;
   let card;
+  if (!(await screenReadersOk("your new recovery card"))) return null;
   try {
     await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();

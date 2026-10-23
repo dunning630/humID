@@ -18,6 +18,7 @@ import { connectServer, serverPinned, chooseGate, gateClaim, serverRecord, walle
 import { refresh } from "./vault.js";
 import { loadAlerts } from "./recovery.js";
 import { signMode, HOLDER_ONLY, HARDENED } from "./recmode.js";
+import { screenReadersOk } from "./readers.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 
@@ -107,6 +108,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
   if (S.passNeeded.value && S.pass.value?.state !== "ready") { S.enrollStep.value = "access"; toast("Add an access pass first.", "warn"); return false; }
   const gate = chooseGate(useDemo);
   if (!gate) return false;
+  if (!holderOnly && !(await screenReadersOk("your recovery card"))) return false;
   const Suite = suite();
   R.busy = true;
   showInterrupt({ purpose: "enroll", label: "Create your HumID", state: "scanning", progress: 0.06, needsHold: false, message: "Generating your post-quantum keys…" });

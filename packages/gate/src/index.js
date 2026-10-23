@@ -3,7 +3,7 @@
 // compiled in only when the app is built with HUMID_ALLOW_DEMO=1.
 
 import { assertAdapter } from "./contract.js";
-import { nativeAdapter, inTauri } from "./adapters/native.js";
+import { nativeAdapter, inTauri, enabledAccessibilityServices as nativeServices } from "./adapters/native.js";
 import { demoAdapter } from "./adapters/demo.js";
 
 export * from "./contract.js";
@@ -28,3 +28,13 @@ export async function bestHardwareGate() {
 }
 
 export const demoGate = () => (DEMO_BUILD ? demoAdapter : null);
+
+/**
+ * The accessibility services that could read the screen (Android; [] elsewhere). Development
+ * builds can pretend one is on with globalThis.__humidDemoA11y = [{ label }], for the browser test.
+ */
+export async function enabledAccessibilityServices() {
+  // inline test, so a release build folds it away (a const imported from here isn't folded)
+  if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true && Array.isArray(globalThis.__humidDemoA11y)) return globalThis.__humidDemoA11y.map((s) => ({ id: s.id || s.label, label: s.label, canRead: s.canRead !== false, canAct: !!s.canAct }));
+  return nativeServices();
+}

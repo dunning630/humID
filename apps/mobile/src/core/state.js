@@ -92,6 +92,10 @@ export const sheet = perSession(null);           // { type, ... } one bottom she
 export const push = perSession(null);            // { type, ... } one pushed (full-screen) step over the tabs
 export const sealing = perSession(null);         // "seal" | "upload" | "done" while a document is being sealed
 export const viewer = perSession(null);          // decrypted preview
+// Another app that can read the screen (core/readers.js): the question on screen
+// ({ what, services }), and the set of services this session already said yes to.
+export const readerWarning = perSession(null);
+export const readersAccepted = perSession(null);
 export const toasts = signal([]);
 export const idleDeadline = perSession(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);

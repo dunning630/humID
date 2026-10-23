@@ -1,5 +1,13 @@
 # tauri-plugin-humid-gate
 
+## 2.2.0
+
+- New command `enabled_accessibility_services` (`enabledAccessibilityServices` on Android):
+  the accessibility services switched on, `{ services: [{ id, label, canRead, canAct }] }`,
+  so the app can name one that could read the screen before it shows a document (APP-09).
+  iOS and desktops return none. Allowed by the default permission set. Not built or run in
+  CI here: needs a device to confirm.
+
 ## 2.1.0
 
 - Android: the secret's AES key is per use and bound to its own prompt (LIVE-01). In 2.0 it was

@@ -14,6 +14,7 @@ export { saveDuress, loadDuress, setWitnessAlert, clearLockdown, checkinArmed, c
 export { readChip, dismissChipRead, chipReader, readChipInto } from "./chips.js";
 export { eraseEverything, resetLocal } from "./account.js";
 export { loadAlerts, cancelRecovery, forgetNewCard, resumeNewCard } from "./alerts.js";
+export { answerReaders } from "./readers.js";
 export { startEnroll, startJoin } from "./starts.js";
 export { setDraft, clearDraft, takeDraft, current as draft, kept as keptDraft, CARD_DRAFT } from "./drafts.js";
 export { comms, MESSAGE_KINDS } from "./comms/contract.js";

@@ -35,6 +35,7 @@ import * as S from "./state.js";
 import { R, wipe } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { withKeys, withStepUp, needVault } from "./interrupt.js";
+import { screenReadersOk } from "./readers.js";
 
 const POLL_MS = 12_000;
 const FAST_POLL_MS = 2_500;   // while a screen is waiting on the other phone (an invite on show, a request out)
@@ -586,6 +587,7 @@ export function waitingOnOther(on) {
 export async function verifyToRead() {
   try {
     decoyBusy();
+    if (!(await screenReadersOk("your messages"))) return false;
     const id = openThread, c = id && convs.get(id), ct = id && contactOf(id);
     let sent = null;
     if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value && canStamp()) {

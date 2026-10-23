@@ -115,4 +115,9 @@ impl<R: Runtime> HumidGate<R> {
         let id = handle_id(&req.handle)?;
         blocking(move || os::forget(&id)).await
     }
+
+    /// Desktops: not listed (the warning is an Android one).
+    pub async fn enabled_accessibility_services(&self) -> Result<AccessibilityServices> {
+        Ok(AccessibilityServices::default())
+    }
 }

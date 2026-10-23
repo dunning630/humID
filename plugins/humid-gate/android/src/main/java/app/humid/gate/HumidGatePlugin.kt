@@ -30,8 +30,11 @@
 
 package app.humid.gate
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
+import android.view.accessibility.AccessibilityManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -149,6 +152,38 @@ class HumidGatePlugin(private val activity: Activity) : Plugin(activity) {
             if (Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(false)
             webView.filterTouchesWhenObscured = true
         }
+    }
+
+    /**
+     * The accessibility services switched on right now (APP-09, R15). An enabled service can read
+     * every word in HumID's WebView and tap its buttons; FLAG_SECURE and the overlay rules don't
+     * stop it. The app asks before it shows a document, a card or messages, and warns by name.
+     * Returns `{ services: [{ id, label, canRead, canAct }] }`; `id` is the component name,
+     * `label` what Settings > Accessibility calls it. `canRead`: it asked to retrieve window
+     * content; `canAct`: it can perform gestures. Nothing is stored or sent anywhere.
+     */
+    @Command
+    fun enabledAccessibilityServices(invoke: Invoke) {
+        val list = JSArray()
+        try {
+            val am = activity.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            val pm = activity.packageManager
+            for (info in am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)) {
+                val si = info.resolveInfo?.serviceInfo ?: continue
+                val o = JSObject()
+                o.put("id", "${si.packageName}/${si.name}".take(200))
+                o.put("label", (si.loadLabel(pm)?.toString() ?: si.packageName).take(80))
+                o.put("canRead", info.capabilities and AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT != 0)
+                o.put("canAct", info.capabilities and AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES != 0)
+                list.put(o)
+            }
+        } catch (e: Exception) {
+            invoke.reject("Couldn't list accessibility services: ${e.message}")
+            return
+        }
+        val out = JSObject()
+        out.put("services", list)
+        invoke.resolve(out)
     }
 
     @Command
