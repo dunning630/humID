@@ -182,6 +182,7 @@ try {
   await hold(page);
   await page.locator(".rows .item").first().waitFor({ timeout: 20_000 });
   assert.deepEqual(await names(page), ["Library card"], "only the decoy");
+  assert.equal(await page.locator(".codebox").count(), 0, "no recovery card from the real session");
   await hbBar(page).waitFor();
   assert.match(await deadlineText(page), /^Heartbeat due by /, "the duress session still shows Heartbeat on, calmly");
   await hbBar(page).getByRole("button", { name: "Heartbeat" }).click();

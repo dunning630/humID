@@ -284,6 +284,7 @@ export async function unlock(used = false) {
       }, { keepOpen: true, challenge: message }),
     });
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
+    if (duress) dropDrafts(); // nothing from the real session waits in memory behind a decoy one
     if (!S.server.value) await connectServer(); // its policy says whether it offers Heartbeat
     await loadCheckin(); // before anything is saved on this device: while Heartbeat is armed, nothing is
     R.offline = duress || checkinArmed() ? null : await readOffline();
@@ -374,6 +375,7 @@ async function unlockOffline(used) {
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
     R.offline = copy;
+    if (duress) dropDrafts();
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
       S.offline.value = { savedAt: copy.savedAt };

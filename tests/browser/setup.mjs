@@ -2,7 +2,8 @@
 // small phone (375×667) and a common one (390×844):
 //   - each step's main button is on screen without scrolling
 //   - the main button is never a dead grey one: tapping it points at what's missing
-//   - the recovery card is confirmed by typing back one group of it
+//   - the recovery card is confirmed by typing back one group of it; a new one asks before it's
+//     closed unchecked, and survives a lock into the next real unlock (APP-02, APP-03)
 //   - the You hub shows what's left to protect, and each row opens the right screen
 //   - a new document's tag is suggested from its name, not always "Identity"
 //   - toasts drop in at the top, never over a back button, the stepper or the primary action
@@ -179,10 +180,36 @@ try {
   assert.equal(newGroups.length, 5);
   const keep = page.locator(".sheet .actions button.btn.primary");
   assert.equal((await keep.innerText()).trim(), "Check your copy to continue", "the sheet's button is live and says what's missing");
+  // APP-03: until it's checked, Back, Escape or the close button asks before throwing it away
+  const ask = page.getByText("Close without saving your new card?");
+  for (const close of [
+    () => page.evaluate(() => globalThis.__humidBack()),
+    () => page.keyboard.press("Escape"),
+    () => page.locator(".sheet button[aria-label=Close]").first().click(),
+  ]) {
+    await close();
+    await ask.waitFor();
+    await page.locator(".sheet").last().getByRole("button", { name: "Cancel" }).click();
+    await ask.waitFor({ state: "detached" });
+    assert.deepEqual(await cardGroups(page), newGroups, "Cancel keeps the card on screen");
+  }
+  // APP-02: a lock with the card on screen (the phone rang) keeps it in memory only, and the
+  // next real unlock shows the same card again
+  await page.waitForTimeout(700); // the check's busy flag clears 600 ms after it ends
+  await page.evaluate(() => {
+    const set = (h) => { Object.defineProperty(document, "hidden", { configurable: true, get: () => h }); document.dispatchEvent(new Event("visibilitychange")); };
+    set(true); set(false);
+  });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.getByText("Shown once · write it down now").waitFor({ timeout: 15_000 });
+  assert.deepEqual(await cardGroups(page), newGroups, "the same new card, after a real unlock");
+  assert.equal(await page.getByText("Pick up where you left off?").count(), 0, "the card comes straight back, not as an offer");
+  step("a new recovery card: Back, Escape and Close ask first; a lock keeps it, and the next unlock shows it again");
   await confirmCard(page);
   await keep.click();
   await page.locator(".sheet").waitFor({ state: "detached" });
-  await backOut(page);
+  if (await page.locator(".pushed").count()) await backOut(page);
   // the diagnostics are under About; close & erase under its Advanced disclosure, behind a typed word
   await hub.locator(".row", { hasText: "About" }).click();
   await page.locator(".pushed").getByText("Pinned server key").waitFor();
