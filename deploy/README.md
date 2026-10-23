@@ -117,6 +117,8 @@ payment off.
 | `HUMID_DURESS_COOLOFF_MS` | How long it must be calm after a duress signal before the owner can lift the lockdown (default 24 h). |
 | `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. Build the apps with the same value (`HUMID_TLOG_COSIGNERS` when running `build.mjs`): phones count only cosigners built into them, never a list the server sends. |
 | `RECOVERY_DELAY_MS` | The base wait (72 h). Station = ⅓, witnesses = 1×, card + chip = 7⁄3; doubled after a duress signal. |
+| `HUMID_RECOVERY_STARTS_PER_HOUR` | New recovery requests one network (IPv4 address or IPv6 /64) may start per hour, at the gateway (default 20). |
+| `HUMID_RECOVERY_UNBOUND_TTL_MS`, `HUMID_RECOVERY_MAX_UNBOUND` | A recovery request with no proof yet is anonymous: it ends this long after it was made unless a first proof arrives (default 24 h; then the week applies), and at most this many exist at once (default 20,000; past it new ones are refused as busy). |
 
 The edge serves the public log at `/tlog/v1/checkpoint`, `/tlog/v1/consistency`
 and `/tlog/v1/cosign`. See [../docs/CONTINUITY.md](../docs/CONTINUITY.md).

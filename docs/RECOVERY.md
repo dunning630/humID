@@ -170,5 +170,11 @@ longer than any check-in window.
 - The 72-hour delay is a server setting (`RECOVERY_DELAY_MS`). The server
   enforces it, so it only holds while the server is honest about time and
   state. The cryptography alone guarantees confidentiality, not the delay.
+- A recovery request with no proof yet is tied to nobody, so anyone can make one. The gateway
+  lets one network start 20 an hour; the recovery service keeps at most 20,000 unproven requests
+  and ends one a day after it was made if no first proof (the card, a witness, an ID chip, a
+  security key) has arrived. Witnesses therefore have a day for the first answer, then the week.
+  Someone with very many networks can still fill the ceiling, which delays new recoveries
+  (refused as busy) but exposes nothing.
 - Contacts could collude, or be coerced together, to recover an account.
   That is why the wait and the cancel apply to contacts too.
