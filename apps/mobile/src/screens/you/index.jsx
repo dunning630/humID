@@ -44,7 +44,7 @@ function Hub() {
   const devices = S.devices.value;
   const rec = S.recovery.value;
   const dinfo = S.duressInfo.value;
-  const duressOn = !decoy && !!dinfo?.setting?.enabled;
+  const duressOn = !!dinfo?.setting?.enabled; // "off" in a decoy session unless it turned it on itself
   const protecting = decoy ? [] : S.protecting.value;
   const ck = S.checkin.value;
   const items = protectionItems(rec, devices);

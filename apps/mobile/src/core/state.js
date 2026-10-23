@@ -57,6 +57,9 @@ export const cardCode = perSession(null);        // a recovery card to show once
 // only decoy documents and a calm account, while the server has locked sensitive changes.
 export const decoy = perSession(false);
 export const duressInfo = perSession(null);      // { lockdown, clearableAt, lastDuressAt, alert } (real sessions only)
+// What a decoy session "saved" on its Duress screen ({ enabled, gesture, decoys: [ids] }), shown
+// back to it until the lock and stored nowhere: an ordinary account echoes its own saves.
+export const decoyEcho = perSession(null);
 // Check-in (docs/CHECKIN.md): { state: off | armed | locked | erased, deadline, erasesAt, windowMs,
 // maxWindowMs, graceMs, armedAt, erasedAt } while unlocked, null otherwise or when the server doesn't offer it.
 export const checkin = perSession(null);

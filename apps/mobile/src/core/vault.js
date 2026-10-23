@@ -383,16 +383,21 @@ export async function setDecoy(item, on) { return setDecoys([{ item, on }]); }
  * on the session alone.
  */
 export async function setDecoys(changes) {
-  const todo = changes.filter(({ item, on }) => !!item.decoy !== !!on);
+  // in a decoy session, what it shows as picked is its own echo, not the real flags
+  const was = S.decoy.value ? new Set(S.decoyEcho.value?.decoys || []) : null;
+  const todo = changes.filter(({ item, on }) => (was ? was.has(item.id) : !!item.decoy) !== !!on);
   if (!todo.length) return true;
   try {
     needVault();
     const label = todo.length === 1 ? (todo[0].on ? `Show ${todo[0].item.name} in the decoy view` : `Hide ${todo[0].item.name} from the decoy view`) : `Change ${todo.length} decoy documents`;
     if (S.decoy.value) {
-      // A decoy session looks the same (the same live check, the same words) and changes nothing.
+      // A decoy session looks the same (the same live check, the same words) and changes nothing:
+      // the picks are echoed on its Duress screen until the lock. The items keep their real flag,
+      // so a rename in this session can't drop a document from the real decoy set.
       await withKeys("decoy", label, async () => null, { challenge: localChallenge("decoy") });
-      const on = new Map(todo.map(({ item, on: v }) => [item.id, v]));
-      S.items.value = S.items.value.map((i) => (on.has(i.id) ? { ...i, decoy: on.get(i.id) || undefined } : i));
+      const picked = new Set(S.decoyEcho.value?.decoys || []);
+      for (const { item, on } of todo) on ? picked.add(item.id) : picked.delete(item.id);
+      S.decoyEcho.value = { ...(S.decoyEcho.value || {}), decoys: [...picked] };
       toast(decoyWords(todo));
       return true;
     }
