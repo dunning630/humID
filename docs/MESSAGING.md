@@ -116,8 +116,12 @@ sender's face or fingerprint", never "verified human".
   (Messages from an older app that carry the encrypted duress flag still raise the quiet
   warning for a contact who turned on "Tell me if they may be under duress".)
 - What the server can still put together: the address that asks for a stamp and the address
-  that posts to a mailbox. Posts go out a few seconds later, on their own, and the relay
-  session is replaced every few minutes, but only a VPN or Tor hides the address.
+  that posts to a mailbox. Posts go out a few seconds later, each from a relay session of its
+  own; each conversation is polled from its own session, in a random order, but only a VPN or
+  Tor hides the address. See "Who can know what" for the rest.
+- A phone that was closed for days fetches every day it missed (up to the relay's 14), so
+  nothing sent meanwhile is lost; a message that still never arrives (a later one did) is
+  shown in the thread as missing.
 - The Messages tab appears only when the server runs a relay. Servers keep messaging off
   until the operator turns it on: `HUMID_RELAY_URL=http://relay:8087` in `deploy/.env` with
   Docker, `humid set HUMID_MESSAGING=on` on HumID Server for Windows (3.2.0 and later).
@@ -139,7 +143,7 @@ browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=d
 | What people want | What HumID 4.0 does | The honest limit |
 |---|---|---|
 | "They only know my ID" | Each contact sees a different **persona ID** (`HC-XXXX-XXXX-XXXX-XXXX-XXXX`), made just for them. Two contacts comparing notes can't tell they know the same person. No name, number or email exists anywhere. | Whatever you choose to tell them in a message. |
-| "Zero chance of interception" | Interception is always *possible*: anyone on the network, or the relay itself, can copy the bytes. What they get is padded ciphertext, in one of a few fixed sizes, posted to a random mailbox that changes every day. | The relay sees when a phone deposits or fetches and from which address (use a VPN or Tor to hide that). |
+| "Zero chance of interception" | Interception is always *possible*: anyone on the network, or the relay itself, can copy the bytes. What they get is padded ciphertext, in one of a few fixed sizes, posted to random-looking mailbox ids that change every day. | The relay sees when a phone deposits or fetches and from which address (use a VPN or Tor to hide that), and can tie a conversation's mailboxes together from one day to the next (see "Who can know what"). |
 | "Not crackable" | Every key needs **both** ML-KEM-1024 and X25519 broken, and handshakes need **both** ML-DSA-87 and SLH-DSA (hash-based) forged. Keys change every time the conversation changes direction, so copying ciphertext now and decrypting it with a quantum computer later gains nothing. | "Not crackable" means no known attack, classical or quantum, comes close. No one can promise more than that for any system; the weak point in practice is a compromised phone, not the maths. |
 | "I can delete it" | Delete one message or a whole conversation, for you or for both of you; turn on disappearing messages; unsend a message the contact hasn't fetched yet. Deletes destroy keys, so deleted data can't be read back from the phone's storage or from a copy of the ciphertext. | Nothing can reach into the contact's phone against their will: a screenshot, a modified app or a second camera keeps what it saw. "For both" deletes *your* messages from *their* phone; what they sent stays theirs. |
 | "Validated as a live human" | A **live stamp** in a message proves a live face or fingerprint check on a proven phone approved those exact bytes. The server signs it blind, so it can't connect the stamp to anyone. | It proves *a* human approved the message, not *which* one; the ratchet proves it came from your contact. A person could still approve messages written by someone else (see "Limits"). |
@@ -446,10 +450,32 @@ release    = dual-signed + stamped: hash, recipient, purpose, released, expires,
 | Party | Sees | Never sees |
 |---|---|---|
 | **Your contact** | your persona ID for them, your messages, the safety code, which messages were stamped live | your account, your other personas, your other contacts |
-| **The relay** | random box ids (rotating daily per direction), objects of fixed sizes, deposit and fetch times, the address that connected; from the size class, roughly what kind of object it is (an invite is 64 KiB, a request 128 KiB, a message usually 8 KiB) | who you are, who you talk to, any persona key or ID, any message content |
+| **The relay** | random-looking box ids (a new one each day per direction), objects of fixed sizes, deposit and fetch times, the address that connected; from the size class, roughly what kind of object it is (an invite is 64 KiB, a request 128 KiB, a message usually 8 KiB). What it can still put together, below. | who you are, any persona key or ID, any message content |
 | **The stamp issuer (vault server)** | that an account passed a live check and asked for a stamp, and how many per day | the message, the conversation, the recipient, the finished stamp |
 | **Someone on the network** | that a phone talked to the relay, when, how much | anything inside |
 | **A thief with your unlocked phone** | your conversations, as they are on screen | anything already erased by the ratchet |
+
+**What the relay can still put together** (security review MSG-02). Its mailbox ids are
+unlinkable *by themselves*, but how phones use them leaks some links, and this is what's left
+after the mitigations:
+
+- **A conversation, day to day.** Each poll asks for yesterday's and today's mailbox, so the
+  polls on two consecutive days share one id, and a relay that records polls can chain one
+  conversation's mailboxes across days. (Polls two days apart share nothing; tomorrow's box is
+  asked for only in the two minutes before midnight UTC.)
+- **Both ends of a conversation, by timing and address.** A deposit to a box and the later
+  fetch of that box are, by design, the same id; the relay can't tell who deposited (each
+  deposit comes from a relay session of its own that never signs in) but it sees the address
+  of both sides. Without a VPN or Tor on both phones, that address pairs the two.
+- **Your personas, by address and timing.** Each conversation is polled from its own relay
+  session, in a random order with pauses, so no request names two of your personas. They still
+  come from one address within a few seconds; only a VPN or Tor, with polls spread out, hides
+  that.
+- **After time away**, a phone fetches every day it missed, up to 14, in one go for that
+  conversation: the relay sees that this conversation went unpolled for that long.
+
+Not built yet, and what would close these: mailbox buckets (the relay stores by a short prefix
+and the phone filters, so many conversations share each id) or cover polls.
 
 ## Applying the security audit
 
