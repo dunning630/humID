@@ -36,7 +36,9 @@ stamp, so the flow can be tried in a browser; no deployed server can turn that o
 
 One action is one check: deleting a whole conversation for both sends a delete and an end,
 and both are stamped in the same check (`stamper.many`; the gateway signs 1 or 2 blinded
-values per step-up, and its signature covers exactly those values).
+values per step-up, and its signature covers exactly those values). A delete names at most 500
+messages, so with more than 500 of yours to recall it takes more stamps than one check gives:
+the app says so ("2 live checks, one after the other") and does it in steps, each its own check.
 
 **One stamp, one message, once.** A stamp commits to the conversation, the sender's persona,
 the message id, kind and body, and also to when it was sent, its disappearing time and (for a
@@ -101,8 +103,10 @@ sender's face or fingerprint", never "verified human".
   anyone who sees it can use it once.
 - Storage: the contact list is sealed under a key derived from the account seed inside the
   unlock check; each conversation under a new random key every save, kept wrapped under that
-  key; ciphertext from the relay waits unread for a fresh check; anything to post goes through
-  an outbox so a dropped connection loses nothing. Locking forgets everything decrypted.
+  key; ciphertext from the relay waits unread for a fresh check; anything a conversation posts
+  waits in that conversation's own sealed save until the relay has it (an invite bundle waits
+  in a record sealed under the account-derived key), so a dropped connection or a crash loses
+  nothing. Locking forgets everything decrypted.
 - The relay is reached from a separate session that never signs in. Stamps come from the
   signed-in session inside a live step-up, so the issuer learns that an account asked for a
   stamp, never for what.
@@ -286,8 +290,16 @@ Every kind of delete is in one object the app uses, `Conversation`
   save that still held them is sealed under a key that no longer exists. Tested:
   the old save doesn't open with the new key. One blob also means a crash can't
   save half a change.
-- **Saved before it's sent.** With `persist`, every change is saved before
-  anything is handed back to post; if the save fails, nothing goes out. Tested.
+- **Saved before it's sent, and kept until it's posted.** With `persist`, every
+  change is saved before anything is handed back to post; if the save fails,
+  nothing goes out. What's to be posted is kept inside that same save (the
+  conversation's outbox) until the relay has it, so a crash between saving and
+  posting loses nothing and leaves no gap in the ratchet. Tested.
+- **Nothing is erased until the delete is ready.** "Delete conversation for
+  both" stamps and encrypts every delete and the end first, and only then erases.
+  If the live check is cancelled, the server is busy or a save fails, the
+  conversation is still there, unchanged, and you can try again. The unsend
+  tokens always come back. Tested (precert PC-28).
 - **The ratchet already forgets.** Every message key is erased the moment it's
   used, so the conversation's own state never holds anything that could reopen
   past messages. Each step works on a copy of the state, and the copy it

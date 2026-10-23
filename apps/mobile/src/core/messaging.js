@@ -20,8 +20,10 @@
 //            that key is kept only wrapped under R.msgKey, in the same record, replaced each save
 //   "w:<id>" ciphertext from the relay waiting for a fresh check, or a contact request waiting
 //            for review; which conversation or invite, and when it came, sealed with it
-//   "o:<id>" something to post that hasn't reached the relay yet (sent a few seconds later,
-//            retried on every poll)
+//   "o:<id>" something to post that isn't part of a conversation (an invite bundle, or what a
+//            deleted conversation still had to send), sealed like "w:"; a conversation's own
+//            unposted messages live inside its sealed save instead (PC-28). Sent a few seconds
+//            later, retried on every poll.
 //
 // The relay is reached from its own session that never signs in (replaced every few minutes),
 // so no account is ever attached to a mailbox; the server still sees the network address that
@@ -117,9 +119,11 @@ async function openConv(id) {
 }
 const unhex = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
 
-async function addConv(session, contact, { peerAt = null } = {}) {
+/** first: what started it (the request, or the accept), kept in its sealed outbox until posted. */
+async function addConv(session, contact, { peerAt = null, first = null } = {}) {
   const id = hex(session.convId);
-  const c = new M.Conversation(session, null, { persist: persistFor(id), requireLive: true, live: { peerAt } });
+  const outbox = first ? [{ id: first.id || `first-${rid()}`, box: first.box, wire: first.wire, retractTag: first.retractTag || null, kind: "first", at: now() }] : [];
+  const c = new M.Conversation(session, null, { persist: persistFor(id), requireLive: true, live: { peerAt }, outbox });
   convs.set(id, c);
   list.contacts.push({ ...contact, id });
   await c.seal().then(persistFor(id));
@@ -139,21 +143,53 @@ function freshRelay() {
   if (!relay || now() - relayBorn > RELAY_SESSION_MS) { relay?.close(); relay = R.api.relay(); relayBorn = now(); }
   return relay;
 }
-async function post(items) {
-  const recs = items.map((x) => ({ id: `o:${rid()}`, at: now(), box: x.box, wire: x.wire, tag: x.retractTag || null }));
-  for (const r of recs) await R.store.putMsg(r);
+/*
+ * Two outboxes (PC-28). What a conversation sends is kept INSIDE its sealed save (Conversation
+ * pending/posted), written in the same step as the ratchet move that made it, so a crash can't
+ * lose a message or leave a gap. Everything else (an invite bundle) waits in an "o:" record,
+ * sealed under R.msgKey like "w:", so the box id, unsend tag and time aren't in the clear (MSG-13).
+ */
+function soon() {
   clearTimeout(flushTimer);
   const [lo, hi] = JITTER_MS;
   flushTimer = setTimeout(() => { if (started) flush().catch(() => {}); }, lo + Math.floor(Math.random() * (hi - lo)));
 }
+async function post(items) {
+  for (const x of items) {
+    const id = `o:${rid()}`;
+    const body = te.encode(JSON.stringify(M.toPlain({ at: now(), box: x.box, wire: x.wire, tag: x.retractTag || null })));
+    await R.store.putMsg({ id, blob: await seal(body, `HUMID-MSG-v1 outbox ${id}`) });
+  }
+  soon();
+}
+async function openOutbox(rec) {
+  try { return { id: rec.id, ...M.fromPlain(JSON.parse(td.decode(await unseal(rec.blob, `HUMID-MSG-v1 outbox ${rec.id}`)))) }; }
+  catch { return null; }
+}
+/** Refused for good (malformed, oversized): retrying won't help. Offline, busy or full: try again later. */
+const finalRefusal = (e) => e?.status >= 400 && e?.status < 500 && e?.status !== 429;
+const putOnce = (box, wire, tag) => freshRelay().put(box, wire, tag);
 async function flush() {
-  const out = (await R.store.listMsg()).filter((r) => r.id.startsWith("o:")).sort((a, b) => a.at - b.at);
-  for (const r of out) {
-    try { await freshRelay().put(r.box, r.wire, r.tag); await R.store.delMsg(r.id); }
+  // conversations, oldest first, from their sealed outboxes
+  for (const c of convs.values()) {
+    const done = [];
+    for (const p of c.pending()) {
+      try { await putOnce(p.box, p.wire, p.retractTag); done.push(p.id); }
+      catch (e) { if (finalRefusal(e)) done.push(p.id); else break; }
+    }
+    if (done.length) await c.posted(done).catch(() => {});
+  }
+  const out = [];
+  for (const r of (await R.store.listMsg()).filter((x) => x.id.startsWith("o:"))) {
+    // a record from before outbox records were sealed: posted as it is
+    const o = r.blob ? await openOutbox(r) : r;
+    if (o) out.push(o); else await R.store.delMsg(r.id);
+  }
+  for (const r of out.sort((a, b) => a.at - b.at)) {
+    try { await putOnce(r.box, r.wire, r.tag); await R.store.delMsg(r.id); }
     catch (e) {
-      // a refusal that won't change on retry (a malformed or oversized object): drop it
-      if (e?.status >= 400 && e?.status < 500 && e?.status !== 429) await R.store.delMsg(r.id);
-      else break; // offline or busy: try again on the next poll
+      if (finalRefusal(e)) await R.store.delMsg(r.id);
+      else break;
     }
   }
 }
@@ -449,7 +485,7 @@ export async function verifyToRead() {
     } else {
       await withKeys("read", "Open your messages", async () => {});
     }
-    if (sent) await post([sent]);
+    if (sent) soon(); // already in the conversation's sealed outbox
     await readWaiting();
     publish();
     scheduleLapse();
@@ -521,8 +557,8 @@ export async function askToConnect(found, { label, intro = "" }) {
     });
     const salt = made.persona.salt;
     M.wipePersona(made.persona);
-    await addConv(made.session, { label: cleanLabel(label) || "New contact", role: "b", personaSalt: salt, createdAt: now(), reqBox: made.box, retract: made.retract, peerId: found.id });
-    await post([{ box: made.box, wire: made.wire, retractTag: made.retractTag }]);
+    await addConv(made.session, { label: cleanLabel(label) || "New contact", role: "b", personaSalt: salt, createdAt: now(), reqBox: made.box, retract: made.retract, peerId: found.id }, { first: made });
+    soon();
     publish();
     return { id: hex(made.session.convId), safetyCode: made.session.safetyCode };
   } catch (e) { return report(e); }
@@ -532,7 +568,9 @@ export async function askToConnect(found, { label, intro = "" }) {
 export async function withdrawRequest(id) {
   const ct = contactOf(id);
   if (!ct?.retract) return false;
-  const removed = await freshRelay().retract(ct.reqBox, ct.retract).catch(() => false);
+  // still in the outbox (never posted): it never left this phone
+  const unposted = convs.get(id)?.pending().some((p) => p.kind === "first");
+  const removed = unposted || await freshRelay().retract(ct.reqBox, ct.retract).catch(() => false);
   if (removed) await forgetLocal(id);
   else toast("They've already seen your request. Delete the conversation instead.", "warn");
   publish();
@@ -581,8 +619,8 @@ export async function approveRequest(reqId, { label, safetyVerified = false }) {
     reviews.delete(reqId);
     requests.delete(reqId); await R.store.delMsg(reqId);
     if (rv.invite.state.closed) list.invites = list.invites.filter((i) => i !== rv.invite);
-    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from, safetyVerified: typeof safetyVerified === "string" ? `${safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!safetyVerified }, { peerAt: rv.peerAt });
-    await post([sent]);
+    await addConv(session, { label: cleanLabel(label) || "New contact", role: "a", personaSalt: rv.invite.state.personaSalt, createdAt: now(), lastAt: now(), peerId: rv.shown.from, safetyVerified: typeof safetyVerified === "string" ? `${safetyVerified.slice(0, 20)}, ${new Date().toLocaleDateString()}` : !!safetyVerified }, { peerAt: rv.peerAt, first: sent });
+    soon();
     publish();
     return hex(session.convId);
   } catch (e) { return report(e); }
@@ -620,7 +658,7 @@ export async function send(id, text) {
     });
     ct.lastAt = now(); ct.lastRead = now();
     await saveList();
-    await post([r]);
+    if (r) soon(); // saved in the conversation's sealed outbox with the ratchet step that made it
     publish();
     return true;
   } catch (e) { return report(e); }
@@ -634,8 +672,8 @@ export async function deleteMessage(id, msgId, { forBoth = false } = {}) {
     if (!forBoth) { await c.delete(msgId); publish(); return true; }
     let r = null;
     await live("delete", "Delete for both of you", async ({ stamper }) => { r = await c.delete(msgId, { forBoth: true, stamper, now: now() }); });
-    if (r.unsend) await freshRelay().retract(r.unsend.box, r.unsend.retract).catch(() => false);
-    await post([r.send]);
+    if (r.unsend) await retractOnce(r.unsend);
+    soon();
     publish();
     return true;
   } catch (e) { return report(e); }
@@ -648,25 +686,50 @@ export async function setTimer(id, ms) {
   try {
     let r = null;
     await live("timer", ms ? "Turn on disappearing messages" : "Turn off disappearing messages", async ({ stamper }) => { r = await c.setTimer(ms, { stamper, now: now() }); });
-    await post([r]);
+    if (r) soon();
     publish();
     return true;
   } catch (e) { return report(e); }
 }
 
+/** How many live checks deleting this conversation for both takes (1, or more past 500 of your messages). */
+export function deleteSteps(id) {
+  const c = convs.get(id);
+  return c ? c.forgetPlan({ forBoth: true, now: now(), perCheck: S.server.value?.policy?.messaging?.stampsPerCheck || 1 }).steps : 0;
+}
+
+const retractOnce = (u) => freshRelay().retract(u.box, u.retract).catch(() => false);
+
 /**
  * Delete a conversation. For me: nothing is sent, no check needed beyond the unlock.
- * For both: one live check stamps every delete and the end together.
+ * For both: one live check stamps the deletes and the end together; with more than one check
+ * can stamp (over 500 of your messages), it's "step 1 of 2", and so on, each its own check.
+ * Nothing is erased until the last step's stamps and messages are made and saved (PC-28): if a
+ * check fails or is cancelled, the conversation is still here, and what was done so far stays
+ * done (those messages are already deleted for both).
  */
 export async function deleteConversation(id, { forBoth = false } = {}) {
   const c = convs.get(id);
   if (!c) { await forgetLocal(id); publish(); return true; }
   try {
     let r = null;
-    if (forBoth && c.status === "connected") await live("delete", "Delete for both of you", async ({ stamper }) => { r = await c.forget({ forBoth: true, stamper, now: now() }); });
-    else r = await c.forget({ now: now() });
-    for (const u of r.unsend) await freshRelay().retract(u.box, u.retract).catch(() => false);
-    if (r.send.length) await post(r.send);
+    if (forBoth && c.status === "connected") {
+      const perCheck = S.server.value?.policy?.messaging?.stampsPerCheck || 1;
+      const steps = c.forgetPlan({ forBoth: true, now: now(), perCheck }).steps;
+      for (let step = 1; !r?.done; step++) {
+        const label = steps > 1 ? `Delete for both of you (step ${Math.min(step, steps)} of ${steps})` : "Delete for both of you";
+        await live("delete", label, async ({ stamper }) => { r = await c.forget({ forBoth: true, stamper, perCheck, now: now() }); });
+        for (const u of r.unsend) await retractOnce(u);
+        if (!r.done) { soon(); toast(`Step ${step} of ${steps} done. One more live check finishes deleting.`, "info"); }
+      }
+    } else {
+      r = await c.forget({ now: now() });
+      for (const u of r.unsend) await retractOnce(u);
+    }
+    // The conversation (and its sealed outbox) is about to go: what still has to reach the relay
+    // moves to the sealed "o:" outbox, which outlives it.
+    const out = [...(r.pending || []), ...r.send];
+    if (out.length) await post(out);
     await forgetLocal(id);
     publish();
     return true;

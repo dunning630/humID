@@ -525,7 +525,11 @@ function Contact() {
           <p class="small muted">Every message and every key for it is erased from this phone, for good.</p>
           <div class="rows" style={{ marginTop: 12 }}>
             <Row icon="trash" title="Delete for me" sub="They aren't told and keep their copy, and their messages to you will no longer arrive." onClick={async () => { setDel(false); if (await Msg.deleteConversation(id)) back(); }} />
-            {c.status === "connected" && <Row icon="trash" danger title="Delete for both of you" sub="Your messages are erased from their phone too, and the conversation ends. Takes a live check." onClick={async () => { setDel(false); if (await Msg.deleteConversation(id, { forBoth: true })) back(); }} />}
+            {c.status === "connected" && <Row icon="trash" danger title="Delete for both of you"
+              sub={Msg.deleteSteps(id) > 1
+                ? `Your messages are erased from their phone too, and the conversation ends. There are so many that it takes ${Msg.deleteSteps(id)} live checks, one after the other; nothing here is erased until the last one.`
+                : "Your messages are erased from their phone too, and the conversation ends. Takes a live check."}
+              onClick={async () => { setDel(false); if (await Msg.deleteConversation(id, { forBoth: true })) back(); }} />}
           </div>
         </Sheet>
       )}
