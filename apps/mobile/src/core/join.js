@@ -228,7 +228,7 @@ async function finishJoin(st) {
   const account = st.account;
   R.busy = true;
   showInterrupt({ purpose: "launch", label: "Open your HumID here", state: "scanning", progress: 0.08, needsHold: false, message: "Connecting to your vault…" });
-  let secret, both, seed, keys, dkeys, xkeys, released;
+  let secret, both, seed, keys, dkeys, xkeys, released, linkedPin = null;
   const pieces = [];
   try {
     const sess = await R.api.enrollDevice({
@@ -245,7 +245,12 @@ async function finishJoin(st) {
         if (p.method === "link") {
           xkeys = Suite.deriveKeys(x);
           const opened = await Suite.open(st.envelope, xkeys);
-          seed = opened.bytes;
+          // The seed (64 bytes), then the approving device's recovery-mode pin, if it sent one.
+          seed = opened.bytes.slice(0, SEED);
+          if (opened.bytes.length > SEED) {
+            try { linkedPin = JSON.parse(new TextDecoder().decode(opened.bytes.subarray(SEED))).modePin || null; } catch { linkedPin = null; }
+          }
+          wipe(opened.bytes);
           keys = Suite.deriveKeys(seed);
           if (opened.manifest.signer.mldsa87Pk !== toB64(keys.dsaPk)) throw new Error("The key that arrived was not sealed by its own account. Nothing was added.");
         } else if (p.method === "card") {
@@ -302,6 +307,8 @@ async function finishJoin(st) {
     const pub = Suite.publicOf(keys);
     const record = {
       ...id, wrapped, pending: null,
+      // The approving device's pin came inside the envelope its account key signed.
+      ...(linkedPin?.version ? { modePin: { mode: linkedPin.mode, version: linkedPin.version, epoch: linkedPin.epoch ?? 1, prev: linkedPin.prev }, recoveryMode: linkedPin.mode } : {}),
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
       assurance: sess.assurance, proof: sess.proof,
       mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",

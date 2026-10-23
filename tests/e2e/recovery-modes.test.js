@@ -12,9 +12,10 @@ import { suite } from "@humid/crypto";
 import { ml_dsa87, random } from "@humid/htp";
 import {
   newCard, cardTag, sealCardPart, split, encodeShare, quorumParts, anchorPartKey, sealAnchorPart,
-  recoveryModeMessage, RECOVERY_MODES,
+  recoveryModeMessage, recoveryModeHash, RECMODE_GENESIS, RECOVERY_MODES,
 } from "@humid/recovery";
 import { addRecoveryKey } from "@humid/fido";
+import { signRequest } from "@humid/svc";
 import { keyTag, sealKeyPart } from "@humid/recovery";
 import { simulatedKey } from "../support/fido-sim.js";
 import { makeHolder, anotherDevice, register, sealFor, sealBytes } from "./holder.js";
@@ -29,8 +30,15 @@ let stack;
 before(async () => { stack = await startStack({ recoveryDelayMs: DELAY, cscas: [csca.pem] }); });
 after(async () => { await stack?.stop(); });
 
-/** The account key's statement of a recovery mode, as the app signs it. */
-const statement = (h, mode, version = 1, epoch = 1) => ({ mode, version, epoch, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch), h.keys.dsaSk) });
+/** The account key's statement of a recovery mode, as the app signs it: chained to the one this holder signed at version - 1. */
+const signed = new Map();
+const statement = (h, mode, version = 1, epoch = 1) => {
+  const after = signed.get(`${h.id}/${version - 1}`);
+  const prev = version > 1 && after ? recoveryModeHash(h.id, after) : RECMODE_GENESIS;
+  const st = { mode, version, epoch, prev, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch, prev), h.keys.dsaSk) };
+  signed.set(`${h.id}/${version}`, st);
+  return st;
+};
 
 async function registerAs(h, mode, extra = {}) {
   const api = new HumidApi({ baseUrl: stack.baseUrl });
@@ -157,20 +165,28 @@ test("holder-only: a mode the server changes on its own doesn't verify, and fail
   db.close();
   const card = newCard();
   await assert.rejects(api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, quorumParts(h.seed).card, h.id) }, h.stepUp), (e) => e.code === "holder_only", "a statement that doesn't verify counts as holder-only");
+  // The gateway then brings the recovery service back to identity's genuine statement (V74-01).
   const m = await api.recoveryMode();
   assert.equal(m.mode, "holder-only");
-  assert.equal(m.broken, true, "and the holder's device is told the stored statement is broken");
+  assert.ok(ml_dsa87.verify(m.sig, recoveryModeMessage(h.id, m.mode, m.version, m.epoch, m.prev), h.pub.dsaPk), "healed from identity, and genuine");
+  // Flipped in the recovery service without the gateway noticing (read straight from the service), it reads as broken.
+  const db2 = recoveryDb();
+  db2.prepare("UPDATE modes SET mode = 'hardened' WHERE account = ?").run(h.id);
+  db2.close();
+  const direct = await fetch(`${stack.upstreams.recovery}/internal/recovery-mode/${h.id}`, { headers: { "x-humid-assertion": signRequest(stack.internalSk, { aud: "recovery", method: "GET", path: `/internal/recovery-mode/${h.id}` }) } }).then((r) => r.json());
+  assert.deepEqual([direct.mode, direct.broken], ["holder-only", true], "a statement that doesn't verify counts as holder-only");
   // The same flip in identity: the statement the devices fetch no longer verifies against the account key.
   const idb = new DatabaseSync(`${stack.root}/identity/identity.db`);
   idb.prepare("UPDATE identities SET recovery_mode = 'hardened' WHERE id = ?").run(h.id);
   idb.close();
   const shown = (await api.me()).recoveryMode;
   assert.equal(shown.mode, "hardened");
-  assert.equal(ml_dsa87.verify(new Uint8Array(Buffer.from(shown.sig, "base64url")), recoveryModeMessage(h.id, shown.mode, shown.version, shown.epoch), h.pub.dsaPk), false, "a device that checks sees the flip");
+  assert.equal(ml_dsa87.verify(new Uint8Array(Buffer.from(shown.sig, "base64url")), recoveryModeMessage(h.id, shown.mode, shown.version, shown.epoch, shown.prev), h.pub.dsaPk), false, "a device that checks sees the flip");
 
   // A statement signed by any other key is refused outright.
   const mallory = makeHolder("mallory-modes");
-  const forged = { mode: "hardened", version: 2, epoch: 1, sig: ml_dsa87.sign(recoveryModeMessage(h.id, "hardened", 2, 1), mallory.keys.dsaSk) };
+  const prev = recoveryModeHash(h.id, signed.get(`${h.id}/1`));
+  const forged = { mode: "hardened", version: 2, epoch: 1, prev, sig: ml_dsa87.sign(recoveryModeMessage(h.id, "hardened", 2, 1, prev), mallory.keys.dsaSk) };
   await assert.rejects(api.setRecoveryMode(forged, h.stepUp), (e) => e.status === 401 && e.code === "bad_proof");
 });
 
