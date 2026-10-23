@@ -19,10 +19,17 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * registration: "open" (default here, so flows that aren't about payment stay short) | "pass" (production default).
  * Attestations are checked against test roots shaped like Google's and Apple's.
  */
+/**
+ * Every service here listens on 127.0.0.1 (PC-25): this stack backs `npm run dev` too, which
+ * runs demo mode and mints access codes for anyone who can reach it. HUMID_BIND_HOST set by
+ * the caller wins.
+ */
 export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {} } = {}) {
   // checkin: HUMID_CHECKIN. keyshareClock: { now, mono, tickMs } for Check-in tests that move time.
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
   const root = dataDir ? (mkdirSync(dataDir, { recursive: true }), dataDir) : mkdtempSync(join(tmpdir(), "humid-e2e-"));
+  const bind = process.env.HUMID_BIND_HOST;
+  if (!bind) process.env.HUMID_BIND_HOST = "127.0.0.1";
   const ik = newInternalKeys();
   const revoked = new Set(); // Google's status list, as tests set it
   const url = (svc) => `http://127.0.0.1:${svc.server.address().port}`;
@@ -50,6 +57,7 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
     allowedOrigins: ["http://localhost:5173"], trustProxy: false, devicePolicy, registration, passBuyUrl, admin, checkin, checkinSweepMs,
   });
   await gateway.start();
+  if (!bind) delete process.env.HUMID_BIND_HOST; // read when each service starts listening: done
   const stack = {
     revoked,
     baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, keyshare, relay, root, upstreams, internalSk: ik.sk, internalPk: ik.pk,
@@ -58,7 +66,8 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
       const port = keyshare.server.address().port;
       await keyshare.stop(); keyshare.close();
       keyshare = createKeyshare({ port, dataDir: join(root, "keyshare"), internalPk: ik.pk, releasesPerHour: shareReleasesPerHour, ...keyshareClock });
-      await keyshare.start();
+      if (!bind) process.env.HUMID_BIND_HOST = "127.0.0.1";
+      try { await keyshare.start(); } finally { if (!bind) delete process.env.HUMID_BIND_HOST; }
       stack.keyshare = keyshare;
     },
     async stop() {
