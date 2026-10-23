@@ -13,6 +13,7 @@ import { sha3_256 } from "@noble/hashes/sha3.js";
 import * as S from "./state.js";
 import { R, SEED, wipe, sleep, localChallenge } from "./runtime.js";
 import { toast, friendly, cancelled, haptic } from "./notify.js";
+import { updateIdentity } from "./identity.js";
 
 // The gate methods' names live with the app's other labels (ui/labels.js: pure words, no kernel).
 // Imported as well as passed on: withKeys names the method in its prompt.
@@ -74,12 +75,10 @@ function reportKeysGone(id) {
  * so a failed write here loses nothing.
  */
 async function keepGateHandle(id, handle) {
-  try {
-    const record = { ...id, gate: { ...id.gate, handle } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: id.schema ?? 4 };
-  } catch { /* the old handle still works; the move is tried again next time */ }
+  // Through the one writer (V74B-03): a write from this snapshot would put back whatever an
+  // update made meanwhile changed, the recovery-mode pin included.
+  try { await updateIdentity((cur) => { cur.gate = { ...cur.gate, handle }; }); }
+  catch { /* the old handle still works; the move is tried again next time */ }
 }
 
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
