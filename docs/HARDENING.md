@@ -171,4 +171,4 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | SC-06 | Android Maven dependencies (incl. `play-services-mlkit-document-scanner`) pinned but not checksum-verified: no Gradle dependency verification | ⬜ |
 | SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
 | SEC-S-01 / PC-08 | Internal gateway→service assertions not bound to the request (replayable, a read became a delete) | ✅ each assertion signs method, target and body hash and is accepted once (`signRequestAssertion`, `createService`) |
-| Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ⬜ independent review |
+| Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ◑ NIST ACVP known-answer tests for ML-KEM-1024, ML-DSA-87 and SLH-DSA-SHA2-256f run in CI (`tests/kat.test.js`, `tools/acvp-vectors.mjs`); ⬜ independent review |
