@@ -276,6 +276,16 @@ test("minimise: only the facts asked for, ages derived when not stated, identify
   assert.equal(ageOn("2005-10-20", now), 21);
 });
 
+test("CREDS-08: a SHA-1 passport chip is refused through creds/server unless allowed, and then marked weaker", () => {
+  const csca = testCsca();
+  const p = testPassport({ csca, aaKind: null, hash: "sha1" });
+  assert.throws(() => verifyPassportChip(p, { cscas: [csca.pem] }), code("weak_hash"));
+  const r = verifyPassportChip(p, { cscas: [csca.pem], allowSha1: true });
+  assert.equal(r.weakHash, true);
+  assert.match(r.note, /SHA-1/);
+  assert.equal(verifyPassportChip(testPassport({ csca, aaKind: null }), { cscas: [csca.pem] }).weakHash, false);
+});
+
 test("CREDS-05: valid_document is never asserted when revocation wasn't checked or the holder wasn't proven, unless asked and stated", async () => {
   const csca = testCsca("Utopia");
   const now = new Date();
