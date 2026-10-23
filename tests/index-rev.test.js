@@ -61,3 +61,42 @@ test("the phone refuses an entry older than one it has seen: a removed decoy fla
   await refresh();
   assert.equal(S.items.value[0].rolledBack, true);
 });
+
+test("round 2: an entry from before v2 is re-sealed as v2 on the next refresh, so it can't be rolled back after that", async () => {
+  const id = "7a1c2b9a-1d2e-4f00-8a00-0123456789cd";
+  let served;
+  const patched = [];
+  R.api = { list: async () => ({ items: [{ id, size: 100, index: served }], usage: { count: 1, bytes: 100 } }), rename: async (i, blob) => { patched.push([i, blob]); served = b64(blob); } };
+  R.store = await openStore();
+  R.indexKey = key;
+  R.epoch++;
+  S.identity.value = { server: { id: "hid_y" }, schema: 4 };
+  S.offline.value = null; S.decoy.value = false;
+
+  // A v1 entry, as every release before 4.1 sealed it, with the decoy flag on.
+  const oldV1 = await Suite.sealIndex(key, { name: "deed.pdf", type: "application/pdf", decoy: true });
+  served = b64(oldV1);
+  await refresh();
+  assert.equal(patched.length, 1, "re-sealed once");
+  const [pid, blob] = patched[0];
+  assert.equal(pid, id);
+  const up = await Suite.openIndex(key, blob, { id });
+  assert.ok(up.rev > 0, "now v2, with a rev");
+  assert.equal(up.decoy, true, "otherwise unchanged");
+  assert.equal(up.name, "deed.pdf");
+  await assert.rejects(Suite.openIndex(key, blob, { id: "another-item" }), "and bound to its item");
+
+  // Serving the old v1 entry back is now caught like any older entry.
+  served = b64(oldV1);
+  await refresh();
+  assert.equal(S.items.value[0].rolledBack, true);
+  assert.equal(patched.length, 1, "a stale entry is never re-sealed");
+
+  // A decoy session writes nothing.
+  const other = "8b1c2b9a-1d2e-4f00-8a00-0123456789ef";
+  R.api.list = async () => ({ items: [{ id: other, size: 1, index: b64(await Suite.sealIndex(key, { name: "x", decoy: true })) }], usage: {} });
+  S.decoy.value = true;
+  await refresh();
+  assert.equal(patched.length, 1);
+  S.decoy.value = false;
+});

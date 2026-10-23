@@ -199,6 +199,11 @@ seconds, or tap the mark three times) unlocks exactly as usual. Then:
   remembers the highest rev it has seen for each item (sealed on the device),
   so the vault can't bring back a flag you turned off by serving an older
   entry. An older entry shows as "Changed on the server" and is not believed.
+  Entries sealed before this (index v1, apps before 4.1) carry no rev; the
+  app re-seals them as v2 the next time it lists the vault online (25 per
+  visit), recorded in Activity as "Updated details". Until an item has been
+  re-sealed once, the vault could still serve an older v1 entry for it; the
+  limits are in [SECURITY.md](SECURITY.md#what-it-does-not-protect-against-yet).
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

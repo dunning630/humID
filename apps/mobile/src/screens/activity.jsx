@@ -53,7 +53,8 @@ function describe(e, names) {
     case "session.closed": return { icon: "lock", tone: "", title: "Locked", meta: [] };
     case "object.sealed": return { icon: "lock", tone: "mint", title: `Sealed ${nm}`, meta: [verified] };
     case "object.opened": return { icon: "eye", tone: "amber", title: `Opened ${nm}`, meta: [method(d.method)], proof: d.proof };
-    case "object.updated": return { icon: "pencil", tone: "", title: `Renamed ${nm}`, meta: [] };
+    // a rename, tags, a pin, a decoy change, or the app re-sealing an older entry in the current format
+    case "object.updated": return { icon: "pencil", tone: "", title: `Updated details of ${nm}`, meta: [] };
     case "object.deleted": return { icon: "trash", tone: "amber", title: `Deleted ${nm}`, meta: [method(d.method)], proof: d.proof };
     case "access.denied": return { icon: "alert", tone: "danger", title: "Access blocked", meta: [reason(d.reason)] };
     case "vault.erased": return { icon: "trash", tone: "danger", title: "Vault erased", meta: [] };
