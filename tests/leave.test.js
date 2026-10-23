@@ -54,13 +54,19 @@ const CASES = [
   ["an unlock that finishes off the screen: locks as the vault opens", [[0, "app", { on: false }], [0, "promptStart"], [500, "promptEnd"], [5000, "hide"], [6000, "app", { on: true }]], true, { app: false }],
   ["an unlock that finishes on screen: no lock", [[0, "promptStart"], [500, "promptEnd"], [2000, "app", { on: true }]], false, { app: false }],
   ["pagehide locks, even mid-check", [[0, "pagehide"]], true],
-  ["pagehide while the prompt is up: the prompt", [[0, "promptStart"], [10, "pagehide"]], false],
+  ["pagehide while the prompt is up: the prompt (it returns and HumID comes back)", [[0, "promptStart"], [10, "pagehide"], [3000, "promptEnd"], [3200, "show"]], false],
   ["a file picker HumID opened: back within the time, no lock", [[0, "pick"], [100, "hide"], [8000, "show"]], false],
   ["a file picker, then away longer than it allows: locks", [[0, "pick"], [100, "hide"], [100 + PICK_HIDDEN_MS + 1, "show"]], true],
   ["a file picker, still hidden at its limit: locks then", [[0, "pick"], [100, "hide"]], true],
   ["a picker's own hidden limit is honoured (the document scanner asks for longer)", [[0, "pick", { hiddenMs: 45_000 }], [100, "hide"], [40_000, "show"]], false],
   ["a picker mark expires: leaving after that locks", [[0, "pick"], [PICK_MS + 1, "hide"]], true],
   ["the picker came back (focus): leaving again locks", [[0, "pick"], [100, "hide"], [2000, "show"], [3500, "stopPick"], [4000, "hide"]], true],
+  // verify-71 #7: the prompt's excuse is bounded (PROMPT_MAX_MS, 60 s)
+  ["a prompt that never returns while HumID is hidden: locks at the limit", [[0, "promptStart"], [500, "hide"]], true],
+  ["same, with the page's timers paused: locks the moment it comes back", [[0, "promptStart"], [500, "hide"], [30 * 60_000, "show"]], true, { paused: true }],
+  ["a slow prompt within the limit, covering HumID: no lock", [[0, "promptStart"], [500, "hide"], [45_000, "promptEnd"], [45_200, "show"]], false],
+  ["hidden after the prompt has been up past the limit: locks at once", [[0, "promptStart"], [61_000, "hide"]], true, { paused: true }],
+  ["pagehide behind a prompt that never returns: locks at the limit", [[0, "promptStart"], [500, "pagehide"]], true],
   ["a stale picker timer from an earlier pick doesn't lock a later one early", [[0, "pick"], [100, "hide"], [5000, "show"], [5200, "pick", { hiddenMs: 45_000 }], [6000, "hide"], [6000 + PICK_HIDDEN_MS + 1000, "show"]], false],
 ];
 
