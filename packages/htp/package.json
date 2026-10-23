@@ -1,6 +1,7 @@
 {
   "name": "@humid/htp",
   "version": "1.4.1",
+  "private": true,
   "description": "HTP/1 — HumID Transit Protocol. Hybrid post-quantum session layer carried inside TLS: handshake, encrypted framing, replay protection, biometric-bound proofs.",
   "type": "module",
   "exports": {

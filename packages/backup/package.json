@@ -1,6 +1,7 @@
 {
   "name": "@humid/backup",
   "version": "0.2.0",
+  "private": true,
   "description": "HumID 3.0 (provisional): whole-computer backups sealed under a backup key that HumID gates. Two of three parts open it: the HumID vault part (live check), a printed backup sheet, a trusted contact's part.",
   "type": "module",
   "exports": {
