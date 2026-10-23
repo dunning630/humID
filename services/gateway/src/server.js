@@ -576,14 +576,19 @@ export function createGateway({
           message: b64u(reported ? loginPresenceMessage(s.th, who, c.nonce, r.d) : liveMsg), liveMessage: b64u(liveMsg) },
       });
       const failed = v.status >= 400 && v.status < 500;
+      // SRV-24: identity gives an unknown account, an unknown device and a wrong key one answer
+      // after the same work; `known` (gateway only) says whether there is a ledger to note it in.
+      // The note is written after the reply, so it can't make a real account's refusal slower.
+      const known = v.status !== 401 || v.data?.error !== "bad_signature" || v.data?.known === true;
+      const noteLater = (detail) => { if (known) setImmediate(() => recordQuietly(r.id, "access.denied", { ...detail, device: r.device })); };
       const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(s.clientIp), loginFailAll.take("*")].every(Boolean);
       if (throttled) {
-        if (loginNote.take(r.id)) await recordQuietly(r.id, "access.denied", { reason: "sign_in_throttled", device: r.device });
+        if (loginNote.take(r.id)) noteLater({ reason: "sign_in_throttled" });
         throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
       }
       if (v.status === 401) {
         const live = v.data?.error === "bad_live_proof";
-        await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
+        noteLater({ reason: live ? "no_live_biometric" : "bad_login_proof" });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
       if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
