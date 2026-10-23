@@ -440,6 +440,8 @@ export function poll() {
  * while this phone was off is missed. What still goes missing shows in the thread (gaps()).
  */
 const POLL_GAP_MS = [150, 900];
+const MAX_PAGES = 8;            // pages per batch of up to 64 boxes, per poll
+const MAX_TAKEN_PER_POLL = 1000; // objects per conversation or invite, per poll (a relay keeps at most 500 per box)
 const pollSessions = new Map(); // conversation or invite id → { relay, born }
 function pollRelay(id) {
   let e = pollSessions.get(id);
@@ -450,6 +452,37 @@ const pause = (lo, hi) => new Promise((r) => setTimeout(r, lo + Math.floor(Math.
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) { const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
+}
+
+/**
+ * Empty a conversation's (or invite's) mailboxes through `take`, 64 boxes at a time. The relay
+ * decides `more` and how much comes back, so a hostile one could keep a phone fetching and
+ * storing for ever: at most MAX_PAGES pages per batch and MAX_TAKEN_PER_POLL objects per poll.
+ * A page is never cut short (the relay has already handed it over); the rest waits for the
+ * next poll, and `complete` is false so lastPolled doesn't move on. Anything that isn't one of
+ * the wire sizes is dropped unstored.
+ */
+export async function drainRelay(take, boxes, keep) {
+  let taken = 0, complete = true;
+  for (let j = 0; j < boxes.length; j += 64) {
+    const ask = boxes.slice(j, j + 64);
+    let more = true;
+    for (let page = 0; more; page++) {
+      if (page >= MAX_PAGES || taken >= MAX_TAKEN_PER_POLL) { complete = false; break; }
+      const r = await take(ask);
+      more = r?.more === true;
+      for (const wires of Object.values(r?.got || {})) {
+        if (!Array.isArray(wires)) continue;
+        for (const wire of wires) {
+          if (!(wire instanceof Uint8Array) || !M.isWireSize(wire.length)) continue;
+          taken++;
+          await keep(wire);
+        }
+      }
+    }
+    if (!complete) break;
+  }
+  return { taken, complete };
 }
 
 async function fetchAll() {
@@ -466,22 +499,12 @@ async function fetchAll() {
   for (const [i, x] of shuffle(targets).entries()) {
     if (i) await pause(...POLL_GAP_MS);
     if (!started) return;
-    for (let j = 0; j < x.boxes.length; j += 64) {
-      const ask = x.boxes.slice(j, j + 64);
-      let more = true;
-      while (more) {
-        const r = await pollRelay(x.id).take(ask);
-        more = r.more;
-        for (const wires of Object.values(r.got)) {
-          for (const wire of wires) {
-            // Stored before anything else, as ciphertext: the relay no longer has it.
-            if (x.ct) { await putWaiting({ conv: x.id, at: now() }, wire); pendingCount.set(x.id, (pendingCount.get(x.id) || 0) + 1); }
-            else if (requestsFor(x.invite) < MAX_REQUESTS_PER_INVITE) { const at = now(); const id = await putWaiting({ invite: x.invite, at }, wire); requests.set(id, { id, invite: x.invite, at }); }
-          }
-        }
-      }
-    }
-    if (x.ct) { x.ct.lastPolled = t; polled = true; }
+    const { complete } = await drainRelay((ask) => pollRelay(x.id).take(ask), x.boxes, async (wire) => {
+      // Stored before anything else, as ciphertext: the relay no longer has it.
+      if (x.ct) { await putWaiting({ conv: x.id, at: now() }, wire); pendingCount.set(x.id, (pendingCount.get(x.id) || 0) + 1); }
+      else if (requestsFor(x.invite) < MAX_REQUESTS_PER_INVITE) { const at = now(); const id = await putWaiting({ invite: x.invite, at }, wire); requests.set(id, { id, invite: x.invite, at }); }
+    });
+    if (x.ct && complete) { x.ct.lastPolled = t; polled = true; }
   }
   if (polled) await saveList();
 }
