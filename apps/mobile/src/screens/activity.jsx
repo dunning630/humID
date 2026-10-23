@@ -16,9 +16,9 @@ const KIND_ICON = { witness: "users", card: "idcard", anchor: "passport", key: "
 const hours = (ms) => (ms >= 3600_000 ? `${Math.round(ms / 3600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const reason = (r) => ({
   device_removed: "Removed device tried to sign in",
-  attestation_revoked: "Google revoked this phone's chip certificate",
+  attestation_revoked: "Google revoked that phone's chip certificate",
   reattest_required: "Phone needs setting up again",
-  device_not_proven: "Device can't prove its checks",
+  device_not_proven: "Device can't prove its live checks",
   no_live_biometric: "No live check",
   step_up_required: "No live check",
   bad_step_up: "Live check rejected",
