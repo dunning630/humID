@@ -10,6 +10,7 @@ import { withStepUp, clearKeys } from "./interrupt.js";
 import { connectServer } from "./session.js";
 import { dropDrafts } from "./drafts.js";
 import { closeViewer } from "./vault.js";
+import { clearIdentity } from "./identity.js";
 
 export async function eraseEverything() {
   const id = S.identity.value;
@@ -20,8 +21,9 @@ export async function eraseEverything() {
     toast(`${friendly(e) || "Your session ended."} Local data was kept.`, "error");
     return false;
   }
+  R.epoch++; // anything in flight (a public-log check, a loader) is dropped when it lands
   try { await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
-  await R.store.clearIdentity();
+  await clearIdentity();
   await R.store.clearVault();
   clearKeys(); R.offline = null; S.offlineReady.value = false;
   R.knownNames.clear();
@@ -36,8 +38,9 @@ export async function eraseEverything() {
 /** Forget this device's HumID locally and start over. */
 export async function resetLocal() {
   const id = S.identity.value;
+  R.epoch++;
   try { if (id) await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
-  await R.store.clearIdentity();
+  await clearIdentity();
   await R.store.clearVault();
   S.offlineReady.value = false;
   dropDrafts();
