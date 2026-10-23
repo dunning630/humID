@@ -28,7 +28,7 @@
     "@noble/hashes": "2.4.0",
     "@preact/signals": "2.11.3",
     "@tauri-apps/api": "2.12.4",
-    "@tauri-apps/plugin-opener": "2.7.1",
+    "@tauri-apps/plugin-opener": "2.7.2",
     "jpeg2000": "1.1.1",
     "preact": "10.29.8",
     "qrcode-generator": "2.0.4",
