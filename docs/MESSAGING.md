@@ -53,9 +53,11 @@ when the phone got round to opening it.
 stamp's message carries. Instead it uses a new stamp key every hour and signs only with the key
 of the hour it's in (give or take 2 minutes). Each key is published with its hour, and a phone
 counts a stamp only if its message, request or receipt is dated inside that hour. So someone who
-passes a burst of checks now can date their stamps no later than the end of this hour: a
-modified app can make a holder look "here" for at most the rest of the hour they last checked
-in, plus one freshness window, not for as long as they like. The issuer publishes this hour's
+passes a burst of checks now can date their stamps no later than the end of the hour whose
+key signed them. Because the issuer starts using the next hour's key 2 minutes early, a burst
+just before the hour turns can be dated to the end of the *next* hour: a modified app can make
+a holder look "here" for at most about 64 minutes after their last check, plus one freshness
+window (5 minutes), not for as long as they like. The issuer publishes this hour's
 key and the next one (so phones switch on time), and the public halves of retired keys for as
 long as their stamps can still arrive; a retired key's private half is erased when its hour ends.
 
