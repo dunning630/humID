@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { sealFrame, DIR } from "@humid/htp";
 import { startStack } from "../e2e/stack.js";
 import { rawSession, frame, send, registered, assertNoLeak } from "./_lib.js";
+import { createGateway } from "../../services/gateway/src/server.js";
+import { HumidApi } from "@humid/api";
 
 let stack, A, B;
 before(async () => { stack = await startStack(); A = await rawSession(stack.baseUrl); B = await rawSession(stack.baseUrl); });
@@ -64,4 +66,22 @@ test("a signed-in session's keys cannot be reused by a second handshake (each he
   assert.equal(r.json().error, "sign_in_required");
   const s = await api.login({ id: holder.id, device: holder.deviceId, sign: holder.sign });
   assert.equal(s.id, holder.id);
+});
+
+test("one account signing in again and again holds at most its cap of sessions; the newest always works (CRYPTO-04 round 2)", async () => {
+  // the same gateway on the same upstreams, with a cap of 3 so the test stays under the hello limit
+  const gw = createGateway({ port: 0, dataDir: `${stack.root}/gateway-cap`, internalSk: stack.internalSk, upstreams: stack.upstreams, allowedOrigins: [], trustProxy: false, devicePolicy: "attested", registration: "open", sessionsPerAccount: 3 });
+  await gw.start();
+  try {
+    const { api, holder } = await registered(stack, "sessions-cap");
+    const capped = new HumidApi({ baseUrl: `http://127.0.0.1:${gw.server.address().port}` });
+    const mine = () => [...gw.htp.sessions.values()].filter((x) => x.subject === holder.id).length;
+    for (let i = 0; i < 6; i++) {
+      await capped.htp.connect();
+      await capped.login({ id: holder.id, device: holder.deviceId, sign: holder.sign });
+    }
+    assert.equal(mine(), 3);
+    assert.equal((await capped.htp.call("GET", "/identity/me")).status, 200, "the latest session is the one kept");
+    assert.ok(api.signedIn, "a session on the other gateway is unaffected");
+  } finally { await gw.stop(); }
 });

@@ -11,16 +11,20 @@ import { parseAccessCode } from "@humid/pass";
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, wipe, concat, utf8 } from "./runtime.js";
+import { createIdentity } from "./identity.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { showInterrupt, endInterrupt, waitForHold, holdMessage, sessionKeys } from "./interrupt.js";
 import { connectServer, serverPinned, chooseGate, gateClaim, serverRecord, wallet, markPicking } from "./session.js";
 import { refresh } from "./vault.js";
 import { loadAlerts } from "./recovery.js";
+import { signMode, HOLDER_ONLY, HARDENED } from "./recmode.js";
+import { screenReadersOk } from "./readers.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 
 export function startEnroll() {
-  S.enrollStep.value = serverPinned() ? (S.passNeeded.value ? "access" : "bind") : "connect";
+  S.enrollStep.value = serverPinned() ? (S.passNeeded.value ? "access" : "mode") : "connect";
+  S.setupMode.value = "hardened"; // the recommended choice is selected; the holder can pick holder-only
   S.view.value = "enroll";
   if (!S.server.value) connectServer();
 }
@@ -92,11 +96,19 @@ export async function demoAccessCode() {
 
 /* ---------------- the first device ---------------- */
 
-export async function enroll(useDemo, { soleBiometric = false } = {}) {
+/**
+ * Create the account. recoveryMode: "hardened" (the default: a recovery card is made under
+ * this same check) or "holder-only" (no card, no recovery part leaves this phone, ever).
+ * Either way the choice is signed by the new account key and sent with the registration.
+ */
+export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.setupMode.value } = {}) {
+  const holderOnly = recoveryMode === HOLDER_ONLY;
+  if (!holderOnly && recoveryMode !== HARDENED) { toast("Choose how you want to be able to get back in.", "warn"); return false; }
   const pass = S.passNeeded.value ? S.pass.value?.pass : undefined;
   if (S.passNeeded.value && S.pass.value?.state !== "ready") { S.enrollStep.value = "access"; toast("Add an access pass first.", "warn"); return false; }
   const gate = chooseGate(useDemo);
   if (!gate) return false;
+  if (!holderOnly && !(await screenReadersOk("your recovery card"))) return false;
   const Suite = suite();
   R.busy = true;
   showInterrupt({ purpose: "enroll", label: "Create your HumID", state: "scanning", progress: 0.06, needsHold: false, message: "Generating your post-quantum keys…" });
@@ -109,26 +121,33 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
     const pub = Suite.publicOf(keys);
     const accountId = identityId(pub.dsaPk);
     const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk)));
-    // The recovery card holds one of the three recovery parts; recovery always needs a second proof.
-    card = newCard();
-    const parts = quorumParts(seed);
-    const cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
-    for (const p of Object.values(parts)) wipe(p.y);
+    // Hardened: the recovery card holds one of the recovery parts; recovery always needs a
+    // second proof. Holder-only: no part is made at all.
+    let cardBody;
+    if (!holderOnly) {
+      card = newCard();
+      const parts = quorumParts(seed);
+      cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
+      for (const p of Object.values(parts)) wipe(p.y);
+    }
+    const mode = signMode(accountId, keys.dsaSk, recoveryMode);
     showInterrupt({ progress: 0.2, message: "Connecting to your vault…" });
 
     const sess = await R.api.register({
-      pub, commit, card: cardBody, soleBiometric, pass,
+      pub, commit, card: cardBody, soleBiometric, pass, recoveryMode: mode,
       device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
-      sign: async ({ register, device, th }) => {
+      sign: async ({ register, device, th, card: cardMsg }) => {
         showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to lock HumID to you." });
         await waitForHold(gate);
         enrolled = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: device, attest: th });
         secret = enrolled.secret;
-        showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
+        showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the live check. Registering…" : "Registering your public keys with the vault…" });
         return {
           registerSig: ml_dsa87.sign(register, keys.dsaSk),
+          // the setup recovery card, approved by the account key in this same check
+          ...(cardMsg ? { cardSig: ml_dsa87.sign(cardMsg, keys.dsaSk) } : {}),
           sigAccount: ml_dsa87.sign(device, keys.dsaSk),
           sigDevice: ml_dsa87.sign(device, dkeys.dsaSk),
           live: enrolled.live, gateMethod: enrolled.interrupt.method, assurance: enrolled.interrupt.assurance,
@@ -145,16 +164,18 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       gate: { adapter: gate.id, handle: enrolled.handle }, bindingId: enrolled.bindingId, wrapped, commit,
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: toB64(dkeys.dsaPk) },
-      enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null,
+      enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null, recoveryMode,
+      // The statement this device signed, pinned: a server showing less later is caught (V74-01/02).
+      modePin: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev },
       server: serverRecord(srv, { id: sess.id, registeredAt: new Date().toISOString() }),
     };
-    await R.store.putIdentity(record);
+    await createIdentity(record);
     sessionKeys(Suite, seed);
     batch(() => {
-      S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.items.value = [];
-      S.cardCode.value = sess.cardSet ? card.code : null;
+      S.cardCode.value = sess.cardSet && card ? card.code : null;
+      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev, escrow: sess.cardSet ? ["card"] : [], trusted: true, statement: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev } };
       S.enrollStep.value = "done";
     });
     R.api.htp.pinnedKid = srv.kid;
@@ -185,8 +206,8 @@ export function finishEnroll() { S.cardCode.value = null; S.view.value = "app"; 
 const cardText = (code) => [
   "HumID recovery card", "",
   code, "",
-  "One of the two proofs that bring your HumID back on a new phone if you lose all your devices.",
-  "On its own it opens nothing: recovery also needs your witnesses or your ID, then waits and alerts your devices.",
+  "Your card is one proof. Recovery needs two, for example this card and your witnesses.",
+  "On its own it opens nothing. Recovery needs any two of your four kinds of proof (witnesses, your ID chip, a recovery card or a security key), then waits and alerts your devices.",
   "Keep it somewhere safe and offline, away from your ID.",
   "", `Created ${new Date().toLocaleDateString()}`,
 ].join("\n");

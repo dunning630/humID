@@ -30,6 +30,24 @@ pub struct Probe {
 /// `{ kind: "apple-app-attest", object }`. Desktops never return one.
 pub type Live = Value;
 
+/// The accessibility services enabled on the device (Android; empty elsewhere).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessibilityServices {
+    pub services: Vec<AccessibilityService>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessibilityService {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub can_read: bool,
+    #[serde(default)]
+    pub can_act: bool,
+}
+
 /// Opaque data the gate needs to find its key again. Always has an `id`;
 /// platforms add fields (Android stores its wrapped secret here). The JS side
 /// persists it with the identity and hands it back unchanged.
@@ -59,6 +77,11 @@ pub struct Released {
     pub detail: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
+    /// A replacement for the handle that was passed in, when the platform moved the
+    /// secret to a new key during this release (Android: a 2.0 time-bound key to a
+    /// per-use one). The caller stores it in place of the old handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Handle>,
 }
 
 /// `challenge`: base64 bytes the liveness key signs during the check (known

@@ -4,8 +4,10 @@
 //   - nothing is kept on the device while it's armed (no offline copy)
 //   - the duress setting is sealed on the device: no gesture readable in its storage (F1)
 //   - checking in moves the deadline; a longer window can be chosen for the night
+//   - Duress Practice and the Lock screen agree: three taps 500 ms apart are duress in both (APP-01)
 //   - a duress unlock erases the vault at once, while the duress session looks calm and
-//     still shows Check-in on, and the decoy document
+//     still shows Check-in on, and the decoy document; its Activity has no numbering gaps and
+//     doesn't claim to be complete, Duress lists the decoy, Recovery names nothing (PC-16)
 //   - the next ordinary unlock says the vault was erased; only the decoy is left; Activity agrees
 //
 //   npm i --no-save playwright@1.56.0 && npx playwright install chromium
@@ -77,6 +79,7 @@ try {
   await page.goto(BASE);
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByRole("button", { name: "Trust this server" }).click();
+  await page.getByRole("button", { name: "Next: lock it to you" }).click({ timeout: 30_000 }); // recommended mode
   await page.getByText("Your body becomes the key").waitFor({ timeout: 30_000 });
   await page.getByRole("checkbox").first().click();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
@@ -96,6 +99,12 @@ try {
   await youScreen(page, "Duress gesture");
   await page.getByRole("switch", { name: "Duress gesture" }).click();
   await page.getByRole("radio", { name: /Tap the mark three times/ }).click();
+  // APP-01: Practice and the Lock screen share one recognizer. Three taps 500 ms apart, an
+  // easy rhythm, must be called the decoy view here and must open the decoy on the Lock screen.
+  const practice = page.getByRole("button", { name: /The HumID mark \(tap it three times\)/ });
+  for (let i = 0; i < 3; i++) { if (i) await page.waitForTimeout(500); await practice.click(); }
+  await page.locator('[data-practice="decoy"]').waitFor({ timeout: 5000 });
+  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*Your taps were 0\.5\d? s, 0\.5\d? s apart/);
   await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
   await toast(page, /Duress protection is on/);
   await tab(page, "Vault");
@@ -166,10 +175,16 @@ try {
   /* ---------------- a forced unlock: duress ---------------- */
   await page.getByRole("button", { name: "Lock now" }).first().click();
   const mark = page.getByRole("button", { name: "Unlock HumID" });
-  for (let i = 0; i < 3; i++) await mark.click({ delay: 20 });
+  // the rhythm Practice accepted: 500 ms between taps (the check overlay waits for the window)
+  for (let i = 0; i < 3; i++) {
+    if (i) await page.waitForTimeout(500);
+    assert.equal(await page.locator(".interrupt").count(), 0, "no check opens while taps are still coming");
+    await mark.click({ delay: 20 });
+  }
   await hold(page);
   await page.locator(".rows .item").first().waitFor({ timeout: 20_000 });
   assert.deepEqual(await names(page), ["Library card"], "only the decoy");
+  assert.equal(await page.locator(".codebox").count(), 0, "no recovery card from the real session");
   await hbBar(page).waitFor();
   assert.match(await deadlineText(page), /^Heartbeat due by /, "the duress session still shows Heartbeat on, calmly");
   await hbBar(page).getByRole("button", { name: "Heartbeat" }).click();
@@ -177,6 +192,56 @@ try {
   await toast(page, /Heartbeat sent\. Next by/);
   await shot(page, "4-duress-session");
   step("duress unlock: only the decoy, Heartbeat still looks on, and a heartbeat looks normal");
+
+  // PC-16: the decoy session's other screens look like an ordinary account's
+  await tab(page, "Activity");
+  const verified = page.getByRole("button", { name: /Verified on this phone/ });
+  await verified.waitFor({ timeout: 15_000 });
+  await verified.click();
+  const summary = await page.locator(".rows .row", { hasText: /^\d+ events/ }).first().innerText();
+  assert.doesNotMatch(summary, /nothing altered or missing/, "a filtered list doesn't claim to be complete");
+  const count = Number(/(\d+) events/.exec(summary)[1]);
+  await page.locator("button.event").first().click(); // the newest entry
+  const entry = await page.locator(".sheet .row", { hasText: "Entry" }).innerText();
+  assert.equal(Number(/#(\d+)/.exec(entry)[1]), count, "entries are numbered 1..n: no gaps where hidden events were");
+  await page.locator(".sheet").getByRole("button", { name: "Close", exact: true }).last().click();
+  await youScreen(page, "Duress gesture");
+  await page.locator(".pushed .checklist label", { hasText: "Library card" }).waitFor();
+  assert.equal(await page.getByText("Nothing in your vault yet").count(), 0, "the decoy documents are listed like any account's");
+  // verify-71 #2: like an account that never set duress up: off, nothing picked (not "off,
+  // yet every document is a decoy")
+  const duressSwitch = page.getByRole("switch", { name: "Duress gesture" });
+  assert.equal(await duressSwitch.getAttribute("aria-checked"), "false");
+  assert.equal(await page.locator(".pushed .checklist input:checked").count(), 0, "no document shows as a chosen decoy");
+  assert.equal((await page.locator(".pushed .card .pill").first().innerText()).trim(), "None");
+  // and what the coercer saves there is echoed back until the lock, as on any account
+  await duressSwitch.click();
+  await page.locator(".pushed .checklist label", { hasText: "Library card" }).click();
+  await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
+  await hold(page); // the same check a real account's decoy change takes
+  await toast(page, /Duress protection is on/);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  assert.match(await page.locator("main .row", { hasText: "Duress gesture" }).innerText(), /On/);
+  await page.locator("main .row", { hasText: "Duress gesture" }).click();
+  assert.equal(await page.getByRole("switch", { name: "Duress gesture" }).getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator(".pushed .checklist input:checked").count(), 1);
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  // verify-71 #3: Protection has the same shape as a real account's: a count on the hub, a checklist inside
+  const protectRow = page.locator("main .row", { hasText: "Protection" }).first();
+  await protectRow.getByText(/\d of 3 done/).waitFor({ timeout: 10_000 });
+  await protectRow.click();
+  await page.locator(".pushed").getByRole("heading", { name: "Finish protecting your HumID" }).waitFor();
+  assert.equal(await page.locator(".pushed [role=progressbar][aria-label=Protection]").count(), 1);
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  await youScreen(page, "Recovery");
+  const recovery = await page.locator(".pushed .rows").first().innerText();
+  assert.doesNotMatch(recovery, /Made [A-Z][a-z]{2}/, "no recovery card date");
+  assert.match(recovery, /A code you keep offline/, "the card row reads as not set up");
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("duress session: Activity numbered without gaps and not called complete; Duress lists the decoy; Recovery generic");
 
   /* ---------------- the holder, safe again ---------------- */
   await page.getByRole("button", { name: "Lock now" }).first().click();

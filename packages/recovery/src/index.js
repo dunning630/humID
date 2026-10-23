@@ -60,7 +60,13 @@ export const normalize = (s) => String(s || "").toUpperCase().replace(/[\s\-_.]/
 
 /* ---------------- key codes: XXXX-XXXX-XXXX ---------------- */
 
-export const CODE_LENGTH = 12; // 60 bits
+export const CODE_LENGTH = 12; // 60 bits: codes that live minutes (links, witness offers, admin)
+/**
+ * Recovery-request codes live up to a week while witnesses respond, long enough that a 60-bit
+ * second preimage (a server finding its own keys for someone's code) is within reach of a
+ * well-funded attacker (CRYPTO-08). They have 16 characters: 80 bits.
+ */
+export const LONG_CODE_LENGTH = 16;
 
 /**
  * A short code that commits to public keys. The device that shows it made the
@@ -68,15 +74,16 @@ export const CODE_LENGTH = 12; // 60 bits
  * hands it, so a server that substituted keys is caught.
  */
 export function keyCode(label, ...publicKeys) {
-  return base32(sha3_256(concat(utf8(label), lp(...publicKeys)))).slice(0, CODE_LENGTH);
+  return base32(sha3_256(concat(utf8(label), lp(...publicKeys)))).slice(0, codeLengthFor(label));
 }
+const codeLengthFor = (label) => (label === REQUEST_LABEL ? LONG_CODE_LENGTH : CODE_LENGTH);
 
 export const formatCode = (code) => normalize(code).match(/.{1,4}/g)?.join("-") ?? "";
 
-/** Normalised 12-character code, or null if the input cannot be one. */
+/** A normalised 12- or 16-character code, or null if the input cannot be one. */
 export function parseCode(input) {
   const c = normalize(input);
-  return c.length === CODE_LENGTH && [...c].every((ch) => ch in DECODE) ? c : null;
+  return (c.length === CODE_LENGTH || c.length === LONG_CODE_LENGTH) && [...c].every((ch) => ch in DECODE) ? c : null;
 }
 
 export const LINK_LABEL = "HUMID-LINK-v1";       // a new device asking to join
@@ -224,14 +231,15 @@ export function combine(shares) {
 const b64 = (b) => btoa(String.fromCharCode(...b));
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-export function encodeShare({ owner, label, x, t, n, y }) {
-  return utf8(JSON.stringify({ v: 1, kind: "humid-recovery-share", owner, label: String(label || "").slice(0, 60), x, t, n, y: b64(y) }));
+/** `epoch`: which set of recovery pieces the share belongs to (omitted for the first, 1). */
+export function encodeShare({ owner, label, x, t, n, y, epoch }) {
+  return utf8(JSON.stringify({ v: 1, kind: "humid-recovery-share", owner, label: String(label || "").slice(0, 60), x, t, n, y: b64(y), ...(epoch > 1 ? { e: epoch } : {}) }));
 }
 
 export function decodeShare(bytes) {
   const j = JSON.parse(td.decode(bytes));
   if (j?.kind !== "humid-recovery-share" || j.v !== 1) throw new Error("Not a HumID recovery share");
-  return { owner: String(j.owner), label: String(j.label || ""), x: j.x, t: j.t, n: j.n, y: unb64(j.y) };
+  return { owner: String(j.owner), label: String(j.label || ""), x: j.x, t: j.t, n: j.n, y: unb64(j.y), epoch: Number.isSafeInteger(j.e) && j.e > 1 ? j.e : 1 };
 }
 
 /* ---------------- two-proof recovery (quorum, v2) ----------------
@@ -247,10 +255,16 @@ export function decodeShare(bytes) {
  *   x = 4  key       encrypted under a FIDO2 security key's hmac-secret, which the
  *                    key gives out only with its PIN (4.0, docs/SECURITY-KEY.md)
  *
- * Any two different parts rebuild A (the polynomial has degree 1). Parts made at
- * different times fit together, so a key added later works with an older card.
- * The split is deterministic (coefficients come from A and an epoch), so any
- * device holding A can make any part at any time and they always fit together.
+ * Any two different parts OF ONE EPOCH rebuild A (the polynomial has degree 1). Within an
+ * epoch, parts made at different times fit together, so a key added later works with an
+ * older card. The split is deterministic (coefficients come from A and the epoch), so any
+ * device holding A can make any part of the current epoch at any time.
+ *
+ * Epochs (CRYPTO-02): a new epoch is a new line through A. Every part of an older epoch is
+ * then useless with every part of the new one, so pieces a removed witness still holds, or an
+ * old card (and its blob in a server backup), can't be combined with anything current. The
+ * account's epoch is in its signed recovery-mode statement; each part carries it (in the card
+ * and key AAD and the witness share, from epoch 2 on), and combineQuorum refuses a mix.
  */
 
 export const QUORUM = Object.freeze({ witness: 1, anchor: 2, card: 3, key: 4 });
@@ -258,15 +272,16 @@ export const QUORUM_KINDS = Object.freeze(Object.keys(QUORUM));
 export const QUORUM_THRESHOLD = 2;
 const QUORUM_PART_BYTES = 65; // x ‖ y(64)
 
-/** The parts of `seed` for `epoch`, any two of which rebuild it. Returns { witness, anchor, card, key }: { x, y }. */
+/** The parts of `seed` for `epoch`, any two of which rebuild it. Returns { witness, anchor, card, key }: { x, y, epoch }. */
 export function quorumParts(seed, epoch = 1) {
   if (!(seed instanceof Uint8Array) || seed.length !== 64) throw new Error("Account seed must be 64 bytes");
+  if (!(Number.isSafeInteger(epoch) && epoch >= 1)) throw new Error("Unknown recovery epoch");
   const coeff = hkdf(sha3_256, seed, undefined, utf8(`HUMID-QUORUM-v1 coefficient epoch ${epoch}`), seed.length);
   const out = {};
   for (const [kind, x] of Object.entries(QUORUM)) {
     const y = new Uint8Array(seed.length);
     for (let k = 0; k < seed.length; k++) y[k] = mul(coeff[k], x) ^ seed[k]; // degree 1: A + c·x
-    out[kind] = { x, y };
+    out[kind] = { x, y, epoch };
   }
   wipe(coeff);
   return out;
@@ -286,31 +301,35 @@ export function decodeQuorumPart(bytes) {
 
 export const kindOfPart = (x) => QUORUM_KINDS.find((k) => QUORUM[k] === x);
 
-/** Rebuild the seed from any two different parts. */
+const epochOf = (p) => p?.epoch ?? 1;
+/** Rebuild the seed from any two different parts of the same epoch. */
 export function combineQuorum(parts) {
   const distinct = [...new Map(parts.map((p) => [p.x, p])).values()];
   if (distinct.length < QUORUM_THRESHOLD) throw new Error("Recovery needs two different kinds of proof");
-  return combine(distinct.slice(0, QUORUM_THRESHOLD));
+  const two = distinct.slice(0, QUORUM_THRESHOLD);
+  if (epochOf(two[0]) !== epochOf(two[1])) throw new Error("These proofs are from different sets of recovery pieces, so they don't fit together.");
+  return combine(two);
 }
 
-/* Seal card (v2): the card part, encrypted under the card. Same card code format. */
-const aad2 = (accountId) => utf8(`HUMID-CARD-v2|${accountId}`);
+/* Seal card (v2): the card part, encrypted under the card. Same card code format.
+ * The epoch is in the AAD from epoch 2 on (epoch 1 keeps the original bytes). */
+const aad2 = (accountId, epoch = 1) => utf8(`HUMID-CARD-v2|${accountId}${epoch > 1 ? `|epoch ${epoch}` : ""}`);
 
-export async function sealCardPart(secret, part, accountId) {
+export async function sealCardPart(secret, part, accountId, epoch = epochOf(part)) {
   const raw = cardKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
   wipe(raw);
   const nonce = random(12);
-  const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad2(accountId) }, key, encodeQuorumPart(part)));
+  const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad2(accountId, epoch) }, key, encodeQuorumPart(part)));
   return concat(nonce, ct);
 }
 
-export async function openCardPart(secret, blob, accountId) {
+export async function openCardPart(secret, blob, accountId, epoch = 1) {
   const raw = cardKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
   wipe(raw);
   try {
-    return decodeQuorumPart(new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aad2(accountId) }, key, blob.subarray(12))));
+    return { ...decodeQuorumPart(new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aad2(accountId, epoch) }, key, blob.subarray(12)))), epoch };
   } catch {
     throw new Error("This seal card does not open this vault.");
   }
@@ -327,12 +346,12 @@ const keyKdf = (secret, what, len) => {
   if (!(secret instanceof Uint8Array) || secret.length !== KEY_SECRET_BYTES) throw new Error("A security key's secret has 32 bytes");
   return hkdf(sha3_256, secret, undefined, utf8(`HUMID-KEY-v1 ${what}`), len);
 };
-const aadKey = (accountId) => utf8(`HUMID-KEY-v1|${accountId}`);
+const aadKey = (accountId, epoch = 1) => utf8(`HUMID-KEY-v1|${accountId}${epoch > 1 ? `|epoch ${epoch}` : ""}`);
 
 /** What the server finds the key part by: base32 of 16 bytes, 26 characters. Reveals nothing about the secret. */
 export const keyTag = (secret) => base32(keyKdf(secret, "tag", 16));
 
-export async function sealKeyPart(secret, part, accountId) {
+export async function sealKeyPart(secret, part, accountId, epoch = epochOf(part)) {
   if (part?.x !== QUORUM.key) throw new Error("That isn't the key part");
   const raw = keyKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
@@ -340,25 +359,66 @@ export async function sealKeyPart(secret, part, accountId) {
   const nonce = random(12);
   const plain = encodeQuorumPart(part);
   try {
-    const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadKey(accountId) }, key, plain));
+    const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadKey(accountId, epoch) }, key, plain));
     return concat(nonce, ct);
   } finally { wipe(plain); }
 }
 
-export async function openKeyPart(secret, blob, accountId) {
+export async function openKeyPart(secret, blob, accountId, epoch = 1) {
   const raw = keyKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
   wipe(raw);
   let plain;
   try {
-    plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadKey(accountId) }, key, blob.subarray(12)));
+    plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadKey(accountId, epoch) }, key, blob.subarray(12)));
   } catch {
     throw new Error("This security key doesn't open this vault.");
   }
   try {
     const part = decodeQuorumPart(plain);
     if (part.x !== QUORUM.key) throw new Error("This security key doesn't open this vault.");
-    return part;
+    return { ...part, epoch };
+  } finally { wipe(plain); }
+}
+
+/* ID chip anchor (v2): the anchor part, sealed on the holder's phone under a key from the chip's
+ * Active Authentication public key (DG15), before it is sent. This BINDS the part to one chip
+ * (another passport, an old one or a namesake's has a different DG15), and the chip proves it's
+ * there by answering a fresh challenge when it's linked and when it's used.
+ *
+ * It is NOT a secret against the server (V74-03): DG15 is public chip data, readable by anyone
+ * who taps the passport with its MRZ, and the server receives it in every link and recovery
+ * (it needs it to check the chip). The server doesn't store it, but a server that records one
+ * request can open the part. No passport exposes a static secret (Chip Authentication is an
+ * ephemeral exchange), so the real fix is a split wrap with an independent cosigner
+ * (docs/CONTINUITY.md, "The anchor and the operator"), for the owner to decide. */
+export const ANCHOR_PART_BLOB_BYTES = 12 + QUORUM_PART_BYTES + 16;
+const aadAnchor = (accountId, epoch) => utf8(`HUMID-ANCHOR-PART-v2|${accountId}|epoch ${epoch}`);
+
+/** The 32-byte key the anchor part is sealed under, from the chip's DG15 file (as read from the chip). */
+export function anchorPartKey(dg15) {
+  if (!(dg15 instanceof Uint8Array) || dg15.length < 16) throw new Error("This chip has no authentication key, so it can't hold a recovery part.");
+  return hkdf(sha3_256, dg15, undefined, utf8("HUMID-ANCHOR-PART-v2 key"), 32);
+}
+
+export async function sealAnchorPart(key, part, accountId, epoch = epochOf(part)) {
+  if (part?.x !== QUORUM.anchor) throw new Error("That isn't the anchor part");
+  const k = await subtle().importKey("raw", key, "AES-GCM", false, ["encrypt"]);
+  const nonce = random(12);
+  const plain = encodeQuorumPart(part);
+  try { return concat(nonce, new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadAnchor(accountId, epoch) }, k, plain))); }
+  finally { wipe(plain); }
+}
+
+export async function openAnchorPart(key, blob, accountId, epoch = 1) {
+  const k = await subtle().importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+  let plain;
+  try { plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadAnchor(accountId, epoch) }, k, blob.subarray(12))); }
+  catch { throw new Error("This ID chip doesn't open this vault's part. Use the passport or ID card you linked."); }
+  try {
+    const part = decodeQuorumPart(plain);
+    if (part.x !== QUORUM.anchor) throw new Error("This ID chip doesn't open this vault's part.");
+    return { ...part, epoch };
   } finally { wipe(plain); }
 }
 
@@ -409,7 +469,7 @@ export const QR_VERSION = 2;
 export const QR_MAX = 48;
 export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT", admin: "ADMIN" });
 // One spelling per payload: no leading zeros in the version or the expiry.
-const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}):([1-9A-Z][0-9A-Z]{0,7})$/;
+const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}|[0-9A-Z]{16}):([1-9A-Z][0-9A-Z]{0,7})$/;
 
 /** The text for a QR code. expiresAt in ms. */
 export function qrPayload(kind, code, expiresAt) {
@@ -435,13 +495,78 @@ export function parseQr(text) {
   return { kind, code: m[3], expiresAt };
 }
 
-/* ---------------- account check ----------------
- * Adding a device: both screens show this short string for the account, and the
- * person compares them before the new device finishes. A server that sealed some
- * other account's key to the new device would show a different one.
+/* ---------------- recovery modes ----------------
+ * Each holder chooses at setup (docs/RECOVERY.md#two-recovery-modes):
+ *   holder-only  only a live check on one of the holder's own enrolled devices opens anything.
+ *                No recovery part is ever made for the server, and it refuses to store one.
+ *                Lose every device and the vault is gone.
+ *   hardened     two different proofs, a wait, and a veto from any surviving device.
+ * The choice is signed by the account key over this statement, so a server can't change it
+ * without the holder's devices noticing. `version` only ever goes up. `epoch` is which split
+ * of the seed the account's recovery parts are made from (quorumParts): a new epoch retires
+ * every part made before it.
  */
-export const ACCOUNT_CHECK_LABEL = "HUMID-ACCOUNT-CHECK-v1";
-export function accountCheck(accountId) {
+export const RECOVERY_MODES = Object.freeze({ holderOnly: "holder-only", hardened: "hardened" });
+export const RECMODE_LABEL = "HUMID-RECMODE-v1";
+export const isRecoveryMode = (m) => m === RECOVERY_MODES.holderOnly || m === RECOVERY_MODES.hardened;
+const u32ok = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
+
+/**
+ * Statements form a chain (V74-01/02): each names the hash of the one before it (`prev`, 64 hex
+ * characters; all zeros for version 1), and versions go up by one. So a server can't put an
+ * older genuine statement back, show a different one to different devices, or delete the
+ * record and pass the account off as "from before modes", without the holder's devices
+ * noticing: each keeps the highest statement it has checked and compares.
+ */
+export const RECMODE_GENESIS = "0".repeat(64);
+const prevBytes = (prev) => {
+  const h = String(prev ?? RECMODE_GENESIS);
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new Error("Not a recovery mode statement");
+  return Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+};
+const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+
+/** The bytes the account key signs to set the recovery mode, the recovery epoch, and the link to the statement before. */
+export function recoveryModeMessage(accountId, mode, version, epoch, prev = RECMODE_GENESIS) {
+  if (!accountId || !isRecoveryMode(mode) || !u32ok(version) || !u32ok(epoch)) throw new Error("Not a recovery mode statement");
+  if ((version === 1) !== (String(prev) === RECMODE_GENESIS)) throw new Error("Not a recovery mode statement");
+  return concat(utf8(RECMODE_LABEL), lp(utf8(String(accountId)), utf8(mode), u32(version), u32(epoch), prevBytes(prev)));
+}
+
+/** A statement's hash: what the next one names as `prev`. */
+export const recoveryModeHash = (accountId, { mode, version, epoch, prev }) => hex(sha3_256(recoveryModeMessage(accountId, mode, version, epoch, prev)));
+
+/**
+ * May `next` replace `cur` (both already signature-checked, so both came from the holder)?
+ * The same statement again is fine (a retried request). Otherwise its version is higher and its
+ * epoch no lower; the very next version must name `cur`'s hash (a gap is fine: the holder's
+ * other device may have switched in between, and only the account key can sign). Never back.
+ * `cur` null or version 0: an account from before modes.
+ */
+export function followsMode(accountId, cur, next) {
+  if (!cur || !cur.version) return next.version >= 1;
+  if (next.version === cur.version) return recoveryModeHash(accountId, next) === recoveryModeHash(accountId, cur);
+  if (next.version < cur.version || next.epoch < cur.epoch) return false;
+  return next.version > cur.version + 1 || next.prev === recoveryModeHash(accountId, cur);
+}
+
+/** What a holder-only account may use to bring a device in: only another of its own devices. */
+export const routesFor = (mode) => (mode === RECOVERY_MODES.holderOnly ? ["link"] : ["link", "quorum", "card", "contacts"]);
+
+/* ---------------- account check ----------------
+ * Adding a device: both screens show this short string, and the person compares them before
+ * the new device finishes. A server that sealed some other account's key to the new device
+ * would show a different one.
+ *
+ * v2 (CRYPTO-08): it commits to the account AND this link's own public keys, which the new
+ * device made for this link and which live 10 minutes. v1 hashed the account id alone, so a
+ * server could grind, ahead of time and at leisure, an account of its own whose 40-bit check
+ * matched a victim's. Now any such grinding has to start after the link exists and finish
+ * inside its 10 minutes, for those keys only.
+ */
+export const ACCOUNT_CHECK_LABEL = "HUMID-ACCOUNT-CHECK-v2";
+export function accountCheck(accountId, linkKemPk, linkXPk) {
   if (!accountId) throw new Error("No account");
-  return base32(sha3_256(concat(utf8(ACCOUNT_CHECK_LABEL), utf8(String(accountId))))).slice(0, 8).match(/.{4}/g).join("-");
+  if (!(linkKemPk instanceof Uint8Array) || !(linkXPk instanceof Uint8Array) || !linkKemPk.length || !linkXPk.length) throw new Error("The match code needs this link's keys");
+  return base32(sha3_256(concat(utf8(ACCOUNT_CHECK_LABEL), lp(utf8(String(accountId)), linkKemPk, linkXPk)))).slice(0, 8).match(/.{4}/g).join("-");
 }

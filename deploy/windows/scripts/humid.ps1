@@ -1130,7 +1130,10 @@ function Do-Expose {
       return
     }
   }
-  Invoke-Server @('set', '--root', $DataRoot, "HUMID_PUBLIC_URL=$url")
+  # Which header names the visitor, for rate limits (SRV-31): only Cloudflare's edge overwrites
+  # CF-Connecting-IP; Tailscale Funnel and no tunnel leave nothing a visitor can't make up.
+  $trust = if ($how -eq 'cloudflare') { 'cloudflare' } else { 'off' }
+  Invoke-Server @('set', '--root', $DataRoot, "HUMID_PUBLIC_URL=$url", "HUMID_TRUST_FORWARDED=$trust")
   Stop-Server
   if (-not (Start-Server)) { exit 1 }
   if ($url) {

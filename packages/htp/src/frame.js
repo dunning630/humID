@@ -38,13 +38,23 @@ export function parseHeader(frame) {
   };
 }
 
+/**
+ * The most meta JSON a frame may carry (SRV-25). Meta is the method, path, a few headers and
+ * a step-up proof: under 16 KiB in practice. Anything larger is refused before it's parsed,
+ * so a signed-in session can't hold the server's thread with megabytes of JSON. Bodies are
+ * separate bytes and capped by the server's routes.
+ */
+export const MAX_META_BYTES = 64 * 1024;
+
 function pack(meta, body) {
   const m = utf8(JSON.stringify(meta));
+  if (m.length > MAX_META_BYTES) throw Object.assign(new Error("HTP: frame meta too large"), { code: "meta_too_large" });
   return concat(u32(m.length), m, body || new Uint8Array(0));
 }
 
 function unpack(plain) {
   const len = readU32(plain, 0);
+  if (len > MAX_META_BYTES) throw Object.assign(new Error("HTP: frame meta too large"), { code: "meta_too_large" });
   if (4 + len > plain.length) throw new Error("HTP: malformed payload");
   return { meta: JSON.parse(fromUtf8(plain.subarray(4, 4 + len))), body: plain.slice(4 + len) };
 }

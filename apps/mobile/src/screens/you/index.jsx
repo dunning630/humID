@@ -4,16 +4,18 @@
 //
 // Pushed screens this file routes (S.push.value.type): protect · devices · recovery ·
 // duress · heartbeat · help · settings · about. Sheets this file owns: the recovery card
-// shown once after it's made (S.cardCode).
-import { useEffect, useState } from "preact/hooks";
+// shown once after it's made (S.cardCode), kept as a draft across a lock until it's checked.
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
-import { Row, Banner, Sheet } from "../../ui/kit.jsx";
+import { Row, Banner, Sheet, Confirm } from "../../ui/kit.jsx";
 import { TabBanners } from "../vault.jsx";
 import { CardBox, CardConfirm, PrintableCard, CAN_PRINT, PROOFS } from "../../ui/codes.jsx";
 import { fmtAgo, fmtTime } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { loadDevices, loadRecovery, loadAlerts, loadDuress, loadAdminSummary, loadCheckin, checkinOffered, cancelRecovery, clearLockdown, lockNow, saveCard } from "../../core/index.js";
+import { loadDevices, loadAlerts, loadDuress, loadCheckin, checkinOffered, cancelRecovery, clearLockdown, lockNow, forgetNewCard } from "../../core/index.js";
+import { loadRecovery, loadAdminSummary, saveCard } from "../../core/setup.js";
 import { Countdown, go } from "./common.jsx";
+import { RECOVERY_METHOD, proofsSetUp } from "../../ui/labels.js";
 import { Protect, protectionItems } from "./protect.jsx";
 import { Devices } from "./devices.jsx";
 import { Recovery } from "./recovery.jsx";
@@ -23,7 +25,6 @@ import { Help } from "./help.jsx";
 import { Settings } from "./settings.jsx";
 import { About } from "./about.jsx";
 
-const METHOD = { card: "recovery card", contacts: "witnesses", quorum: "two proofs" };
 const PUSHED = { protect: Protect, devices: Devices, recovery: Recovery, duress: Duress, heartbeat: Heartbeat, help: Help, settings: Settings, about: About };
 
 export function You() {
@@ -44,7 +45,7 @@ function Hub() {
   const devices = S.devices.value;
   const rec = S.recovery.value;
   const dinfo = S.duressInfo.value;
-  const duressOn = !decoy && !!dinfo?.setting?.enabled;
+  const duressOn = !!dinfo?.setting?.enabled; // "off" in a decoy session unless it turned it on itself
   const protecting = decoy ? [] : S.protecting.value;
   const ck = S.checkin.value;
   const items = protectionItems(rec, devices);
@@ -61,7 +62,7 @@ function Hub() {
 
       {S.alerts.value.map((a) => (
         <Banner tone="danger" icon="alert" role="alert" key={a.ref}
-          title={`Recovery in progress · ${METHOD[a.method] || a.method}`}
+          title={`Recovery in progress · ${RECOVERY_METHOD[a.method] || a.method}`}
           text={<>Requested from {a.platform} {fmtAgo(a.createdAt)}. {a.evidence ? `Proofs so far: ${a.evidence}. ` : ""}{a.releaseAt ? <>Opens in <Countdown until={a.releaseAt} /> unless you cancel.</> : a.method === "quorum" ? "It needs a second proof before any wait starts." : `${a.approvals ?? 0} witness${a.approvals === 1 ? " has" : "es have"} helped so far.`} Cancel it and that device gets nothing.</>}
           action="Cancel it" onAction={() => cancelRecovery(a)} />
       ))}
@@ -84,11 +85,11 @@ function Hub() {
 
       <div class="rows">
         <Row icon="shield" tone={done === items.length ? "mint" : "amber"} title="Protection"
-          sub={decoy || S.offline.value || !rec || !devices ? "How HumID protects you" : done === items.length ? "All set" : `${done} of ${items.length} done`}
-          trail={!decoy && rec && devices && done < items.length ? <span class="pill amber">{items.length - done} to do</span> : null} onClick={() => go("protect")} />
+          sub={S.offline.value || !rec || !devices ? "How HumID protects you" : done === items.length ? "All set" : `${done} of ${items.length} done`}
+          trail={!S.offline.value && rec && devices && done < items.length ? <span class="pill amber">{items.length - done} to do</span> : null} onClick={() => go("protect")} />
         <Row icon="key" title="Devices" sub={devices ? `${devices.length} ${devices.length === 1 ? "device" : "devices"}` : "Loading…"} onClick={() => go("devices")} />
         <Row icon="users" tone={rec?.ready ? "mint" : ""} title="Recovery"
-          sub={!rec ? "Loading…" : rec.ready ? "Ready · two proofs set up" : `${proofs} of 2 proofs set up`}
+          sub={!rec ? "Loading…" : rec.ready ? "Ready · two proofs set up" : proofsSetUp(proofs)}
           trail={rec ? (rec.ready ? <span class="pill mint"><Icon name="check" />Ready</span> : <span class="pill amber">Needs {2 - proofs} more</span>) : null} onClick={() => go("recovery")} />
         <Row icon="siren" tone={duressOn ? "mint" : ""} title="Duress gesture" sub={duressOn ? "On · a forced unlock shows only decoys" : "Off"} onClick={() => go("duress")} />
         {checkinOffered() && (
@@ -106,15 +107,23 @@ function Hub() {
   );
 }
 
-/** The recovery card, shown once after it's made (S.cardCode); forgotten when closed. */
+/**
+ * The recovery card, shown once after it's made (S.cardCode); forgotten when closed. Until the
+ * typed-back check passes, every way of closing it (the X, a tap outside, Escape, Back) asks
+ * first: the server has already replaced the old card, so this is the only copy (APP-03).
+ */
 function CardSheet({ code }) {
   const [ok, setOk] = useState(false);
-  const close = () => { S.cardCode.value = null; };
+  const [asking, setAsking] = useState(false);
+  const checked = useRef(false); // Sheet's Escape handler keeps its first onClose: read the latest here
+  checked.current = ok;
+  const close = () => { if (checked.current) forgetNewCard(); else setAsking(true); };
   return (
+    <>
     <Sheet onClose={close} eyebrow="Shown once · write it down now" title="Your new recovery card">
       <p class="t2 small">Your old card, if you had one, no longer works. On its own this card opens nothing: recovery also needs your witnesses, your ID chip or a security key.</p>
       <CardBox code={code} />
-      <div class="row-x" style={{ marginTop: 12 }}>
+      <div class="row-x mt-3">
         {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
         <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save</button>
         <span class="fine grow">A saved file can sync to your cloud. Paper is safer.</span>
@@ -131,5 +140,11 @@ function CardSheet({ code }) {
         }}>{ok ? "I've stored it safely" : "Check your copy to continue"}</button>
       </div>
     </Sheet>
+    {asking && (
+      <Confirm title="Close without saving your new card?" action="Close without saving"
+        text="Your old card already stopped working, and this one won't be shown again. You'll need to make another."
+        onClose={() => setAsking(false)} onConfirm={forgetNewCard} />
+    )}
+    </>
   );
 }

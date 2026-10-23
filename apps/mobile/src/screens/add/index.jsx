@@ -226,7 +226,7 @@ function AddFlow({ open }) {
               </div>
             </section>
           ))}
-          <p class="fine" style={{ marginTop: 14 }}>Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
+          <p class="fine mt-3">Reading happens on this phone. Photos and details are sealed here before anything is sent.</p>
         </Step>
       )}
       {step.at === "camera" && (
@@ -310,7 +310,7 @@ function PhotoReview({ step, setStep, when, onBack, onRetake, onPick, onDraft })
         note={step.shape === "card" ? <p class="small muted">Looks like a card, but nothing could be read from it. It's kept as a photo; <button class="linklike" type="button" onClick={onPick}>say what it is</button> to file it as an ID or a payment card.</p> : null}
         onChangeKind={onPick} onSeal={seal} disabled={busy || waiting}
         secondary={{ label: "Retake", onClick: onRetake }}
-        fine="One check seals it on this phone. Only the version shown is kept." />
+        fine="One live check seals it on this phone. Only the version shown is kept." />
     </Step>
   );
 }
@@ -343,7 +343,7 @@ function FileReview({ step, onBack, onAnother, onPick, onDraft }) {
         )}
         onChangeKind={onPick} onSeal={seal} disabled={busy}
         secondary={{ label: "Choose another", onClick: onAnother }}
-        fine="One check seals it on this phone. The original file isn't kept." />
+        fine="One live check seals it on this phone. The original file isn't kept." />
     </Step>
   );
 }
@@ -369,7 +369,7 @@ function PassReview({ step, setStep, onBack, onAnother, onDraft }) {
         preview={<PassCheck check={check} onPlain={plain} onAnother={onAnother} />}
         onSeal={seal} disabled={busy || !check?.ok}
         secondary={{ label: "Choose another", onClick: onAnother }}
-        fine="One check seals the signed original on this phone, so it can go back into Wallet unchanged." />
+        fine="One live check seals the signed original on this phone, so it can go back into Wallet unchanged." />
     </Step>
   );
 }

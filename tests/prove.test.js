@@ -11,11 +11,13 @@ const rnd = (n) => new Uint8Array(randomBytes(n));
 const T0 = Date.UTC(2026, 9, 20, 16, 0, 0);
 const MIN = 60_000, DAY = 86_400_000;
 
+// Tests that aren't about stamp-key epochs use one key whose epoch covers every test date.
+const ALWAYS = { notBefore: 0, notAfter: Date.UTC(2200, 0, 1) };
 const issuer = newIssuerKey(2048);
-const stampKeys = M.importStampKeys([{ ...issuer.publicView, issuing: true }]);
+const stampKeys = M.importStampKeys([{ ...issuer.publicView, ...ALWAYS, issuing: true }]);
 const stamper = M.makeStamper(stampKeys, async (blinded) => blindSign(issuer, blinded));
 const otherIssuer = newIssuerKey(2048);
-const otherKeys = M.importStampKeys([{ ...otherIssuer.publicView, issuing: true }]);
+const otherKeys = M.importStampKeys([{ ...otherIssuer.publicView, ...ALWAYS, issuing: true }]);
 const foreignStamper = M.makeStamper(otherKeys, async (blinded) => blindSign(otherIssuer, blinded));
 
 const contains = (hay, needle) => Buffer.from(hay).indexOf(Buffer.from(needle)) >= 0;
@@ -44,10 +46,20 @@ async function meet(now = T0) {
 /** Son asks; dad's phone reads the question. */
 async function ask(son, dad, opts = {}) {
   const now = opts.now ?? T0;
-  const sent = await M.sendChallenge(son, { purpose: "call", note: "the call about the wire transfer", now, ...opts });
+  const sent = await M.sendChallenge(son, { purpose: "call", note: "the call about the wire transfer", now, stamper, ...opts });
   const got = await dad.decrypt(sent.wire, { now, stampKeys });
   return { sent, pending: sent.pending, question: M.readChallenge(got, { now }) };
 }
+
+test("MSG-11: asking 'Is this really you?' takes a live check, and a strict phone shows the question", async () => {
+  const { son, dad } = await meet();
+  await code(M.sendChallenge(son, { now: T0 + MIN }), "stamp_required");
+  const sent = await M.sendChallenge(son, { now: T0 + MIN, stamper });
+  const strict = await dad.decrypt(sent.wire, { now: T0 + MIN, stampKeys, requireLive: true });
+  assert.equal(strict.refused, undefined, "not discarded");
+  assert.equal(strict.live, true);
+  assert.equal(M.readChallenge(strict, { now: T0 + MIN }).purpose, "call");
+});
 
 /* ---------------- "Is this really you?" ---------------- */
 
@@ -248,6 +260,26 @@ test("locker: sealed items reveal nothing; open only with the locker key; items 
   const blob = Buffer.from(rec.blob, "base64url"); blob[100] ^= 1;
   await code(M.openEvidence({ ...rec, blob: blob.toString("base64url") }, key), "decrypt_failed");
   await assert.rejects(M.sealEvidence({ bytes: voice, kind: "voice", mime: "audio/mp4", capturedAt: T0 }, key, { persona: pub, now: T0 }), (e) => e.code === "stamp_required");
+});
+
+test("MSG-10: a media credential still verifies after its stamp key retires, against the issuer's archive", async () => {
+  const persona = M.newPersona(rnd(64));
+  const hourKey = newIssuerKey(2048);
+  const view = { ...hourKey.publicView, notBefore: T0, notAfter: T0 + 3600_000, acceptUntil: new Date(T0 + 15 * DAY).toISOString().slice(0, 10) };
+  const now = M.importStampKeys([{ ...view, issuing: true }]);
+  const st = M.makeStamper(now, async (b) => blindSign(hourKey, b));
+  const bytes = rnd(1000);
+  const cred = await M.makeMediaCredential({ persona, bytes, kind: "photo", mime: "image/jpeg", capturedAt: T0 + MIN, stamper: st });
+  const fresh = M.verifyMediaCredential(cred, bytes, { stampKeys: now, now: T0 + DAY });
+  assert.equal(fresh.ok, true);
+  assert.deepEqual(fresh.stampedIn, { from: T0, to: T0 + 3600_000 }, "when the live check happened, from the key's own epoch");
+  // four months on, the key is long retired; the verifier has it from the archive
+  const otherKey = newIssuerKey(2048), later = T0 + 121 * DAY;
+  const keysThen = M.importStampKeys([{ ...otherKey.publicView, notBefore: later, notAfter: later + 3600_000, issuing: true }], { archive: [view] });
+  assert.equal(M.verifyMediaCredential(cred, bytes, { stampKeys: keysThen, now: later }).ok, true, "the real you is still 'live' months later");
+  // a message's stamp under the same retired key does not count any more: messages matter on arrival
+  const c = new Uint8Array(32).fill(5);
+  assert.equal(M.verifyStamp(keysThen, await st(c, { at: T0 + MIN }), c, { now: later, at: T0 + MIN }), false);
 });
 
 test("locker release: signed and stamped, names who it went to, expires, and can't be edited", async () => {

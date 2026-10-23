@@ -1,12 +1,12 @@
 // The shell around the screens: the connection strip, the restored-draft offer, and the
 // simulation strip with its checks sheet (development builds only). Nothing here holds a
 // key; it renders what core/ tells it to.
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../brand/icons.jsx";
-import { Sheet, useNow } from "./kit.jsx";
+import { Sheet, Banner, useNow } from "./kit.jsx";
 import { fmtTime } from "./format.js";
 import * as S from "../core/state.js";
-import { retryConnection, keptDraft, takeDraft } from "../core/index.js";
+import { retryConnection, keptDraft, takeDraft, resumeNewCard, CARD_DRAFT, answerReaders } from "../core/index.js";
 
 /**
  * The vault can't be reached. In the flow of the page (3.0): it pushes the screen down
@@ -37,7 +37,10 @@ export function ConnectionBar() {
  */
 export function DraftOffer() {
   const d = keptDraft.value;
-  if (!d || S.view.value !== "app" || S.decoy.value) return null;
+  const here = !!d && S.view.value === "app" && !S.decoy.value;
+  // A new recovery card isn't offered: it comes straight back, since it's the only copy.
+  useEffect(() => { if (here && d.kind === CARD_DRAFT) resumeNewCard(takeDraft()); }, [here, d]);
+  if (!here || d.kind === CARD_DRAFT) return null;
   const what = { add: "adding to your vault", witnesses: "adding witnesses", card: "a card", id: "an ID" }[d.kind] || "what you were doing";
   const resume = () => {
     const draft = takeDraft();
@@ -109,6 +112,29 @@ export function ChecksSheet() {
         </>
       )}
       <div class="actions"><button class="btn primary mint block" onClick={close}>Done</button></div>
+    </Sheet>
+  );
+}
+
+/**
+ * Another app can read the screen (APP-09): before a document, a card or messages are shown,
+ * which apps, by name, and what they could do. The holder decides; nothing is shown until then.
+ */
+export function ReaderWarning() {
+  const w = S.readerWarning.value;
+  if (!w) return null;
+  const names = w.services.map((s) => s.label);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const acts = w.services.some((s) => s.canAct);
+  return (
+    <Sheet onClose={() => answerReaders(false)} eyebrow="Before you see it" title="Another app can read your screen">
+      <Banner tone="amber" icon="alert" role="alert" title={`${list} ${names.length === 1 ? "is turned on as an accessibility service" : "are turned on as accessibility services"}`}
+        text={`${names.length === 1 ? "It" : "They"} can read everything HumID shows, including ${w.what}${acts ? ", and tap buttons for you" : ""}. HumID can't block this.`} />
+      <p class="t2 small mt-3">If you didn't turn {names.length === 1 ? "it" : "them"} on yourself, or don't know what {names.length === 1 ? "it is" : "they are"}, don't go on: turn {names.length === 1 ? "it" : "them"} off in Settings › Accessibility first.</p>
+      <div class="actions">
+        <button class="btn quiet block" onClick={() => answerReaders(false)}>Not now</button>
+        <button class="btn primary block" onClick={() => answerReaders(true)}>Show {w.what}</button>
+      </div>
     </Sheet>
   );
 }

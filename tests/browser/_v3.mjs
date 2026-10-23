@@ -30,6 +30,8 @@ export async function enroll(page, { trust = true } = {}) {
   await page.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
   await page.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByText("If you lose every device").waitFor();
+  await page.getByRole("button", { name: "Next: lock it to you" }).click(); // the recommended mode is already selected
   await page.getByText("Your body becomes the key").waitFor();
   await page.getByRole("checkbox").first().click();
   await page.getByRole("button", { name: /Use demo mode/ }).click();

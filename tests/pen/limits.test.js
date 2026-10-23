@@ -59,17 +59,44 @@ test("oversize call body: 413 too_large at the gateway's frame limit", async () 
   } finally { await gw.stop(); }
 });
 
-test("login: unknown account and wrong key return the same error", { todo: "user enumeration: the server answers unknown_identity vs bad_proof today; fix is lane 13" }, async () => {
+test("SRV-24: unknown account, unknown device and wrong key get one answer, in similar time", async () => {
   const { api, holder } = await registered(stack, "limits-victim");
   await api.logout();
   const mallory = makeHolder("limits-mallory");
-  const wrongKey = async (m) => ({ sig: (await import("@humid/htp")).ml_dsa87.sign(m, mallory.dkeys.dsaSk), interrupt: holder.interrupt, live: holder.liveKey.sign(m) });
-  const codeOf = (p) => p.then(() => "ok", (e) => e.code);
-  const unknown = await codeOf(new HumidApi({ baseUrl: stack.baseUrl }).login({ id: `hid_${"0".repeat(40)}`, device: `dev_${"0".repeat(24)}`, sign: wrongKey }));
-  const wrong = await codeOf(new HumidApi({ baseUrl: stack.baseUrl }).login({ id: holder.id, device: holder.deviceId, sign: wrongKey }));
-  assert.notEqual(unknown, "ok");
-  assert.notEqual(wrong, "ok");
-  assert.equal(unknown, wrong, `an attacker can tell accounts apart: unknown → ${unknown}, wrong key → ${wrong}`);
+  const { ml_dsa87 } = await import("@humid/htp");
+  const wrongKey = async (m) => ({ sig: ml_dsa87.sign(m, mallory.dkeys.dsaSk), interrupt: holder.interrupt, live: holder.liveKey.sign(m) });
+  const attempt = async (id, device) => {
+    const t0 = performance.now();
+    const out = await new HumidApi({ baseUrl: stack.baseUrl }).login({ id, device, sign: wrongKey }).then(() => "ok", (e) => `${e.status}/${e.code}/${e.message}`);
+    return { out, ms: performance.now() - t0 };
+  };
+  const cases = { unknown: [`hid_${"0".repeat(40)}`, `dev_${"0".repeat(24)}`], unknownDevice: [holder.id, `dev_${"0".repeat(24)}`], wrongKey: [holder.id, holder.deviceId] };
+  const times = { unknown: [], unknownDevice: [], wrongKey: [] };
+  const answers = new Set();
+  for (let round = 0; round < 5; round++) {
+    for (const [k, [id, dev]] of Object.entries(cases)) { const r = await attempt(id, dev); answers.add(r.out); times[k].push(r.ms); }
+  }
+  assert.deepEqual([...answers], ["401/bad_proof/Sign-in proof was rejected."], "one answer, whatever was wrong");
+  // Same work on every path (the signature is always checked, the ledger note comes after the
+  // reply). A loose bound: this box is shared, so it only catches a large, systematic gap.
+  const med = (a) => [...a].sort((x, y) => x - y)[2];
+  const m = Object.values(times).map(med);
+  // before the fix an unknown account skipped every signature check (two ML-DSA verifies and a
+  // ledger write): a gap of the order of the whole sign-in. Allow scheduling noise, not that.
+  assert.ok(Math.max(...m) < 2 * Math.min(...m) + 25, `medians differ too much: ${m.map((x) => x.toFixed(1)).join(" / ")} ms`);
+});
+
+test("a replayed hello: 409 replay, and the gateway does none of the handshake work again (CRYPTO-04)", async () => {
+  const j = await (await fetch(`${stack.baseUrl}/htp/v1/keys`)).json();
+  const { wire } = clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) });
+  const body = JSON.stringify(wire);
+  assert.equal((await hello(stack.baseUrl, body)).status, 200);
+  const sessions = stack.gateway.htp.sessions.size;
+  const again = await hello(stack.baseUrl, body);
+  assert.equal(again.status, 409);
+  assert.equal(again.error, "replay");
+  assertNoLeak(assert, again.text);
+  assert.equal(stack.gateway.htp.sessions.size, sessions, "no second session");
 });
 
 test("handshake flood from one IP: at most 30 succeed per minute, the rest are 429 rate_limited", async () => {

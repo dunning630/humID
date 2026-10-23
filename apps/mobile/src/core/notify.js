@@ -21,7 +21,7 @@ export const friendly = (e) => {
   if (SESSION_LOST.has(e?.code)) return null;
   // the server says Heartbeat locked or erased the vault: show where it stands now
   if (e?.code === "checkin_missed" || e?.code === "vault_erased") setTimeout(() => R.hooks.loadCheckin?.(), 0);
-  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The check was cancelled.";
+  if (e?.name === "NotAllowedError" || e?.message === CANCELLED) return "The live check was cancelled.";
   if (e?.code === "no_match") return "That didn't match. Try again.";
   if (e?.code === "server_identity_changed") return "This server's identity changed. HumID refused to connect.";
   if (e?.code === "key_invalidated") return "This phone's HumID key is gone: its fingerprints or face changed, or HumID was reinstalled.";

@@ -11,10 +11,12 @@
 // addresses, are checked, so a VM can change its IP without new certificates, and nothing
 // outside this CA can stand in for a role.
 //
-// Ed25519 throughout (TLS 1.3). The X.509 is written here, a few hundred bytes of DER, so
+// Ed25519 certificates, TLS 1.3, and the hybrid X25519MLKEM768 key exchange only
+// (INTERNAL_TLS_GROUPS). The X.509 is written here, a few hundred bytes of DER, so
 // the server needs no OpenSSL tools and no extra packages on Windows or in a container.
 
 import { generateKeyPairSync, createPrivateKey, createPublicKey, createHash, sign, randomBytes, X509Certificate } from "node:crypto";
+import { createSecureContext } from "node:tls";
 
 export const ROLES = ["front", "core", "keys"];
 export const roleName = (role) => `humid-${role}`;
@@ -123,17 +125,36 @@ export function roleOf(cert) {
 export const daysLeft = (certPem) => (Date.parse(new X509Certificate(certPem).validTo) - Date.now()) / 86_400_000;
 
 /**
+ * Key exchange between roles: the hybrid X25519 + ML-KEM-768 group only (CRYPTO-03). What
+ * crosses these links (split-key shares, anchor parts, ID-chip fields) must stay secret against
+ * someone who records it now and has a quantum computer later, so a peer that can't do the
+ * hybrid exchange is refused rather than falling back to X25519 alone. Both ends set it.
+ */
+export const INTERNAL_TLS_GROUPS = "X25519MLKEM768";
+
+let groupsChecked = false;
+/** Fail at start-up, not at the first call, if this Node's OpenSSL can't do the hybrid group. */
+function needHybridGroup() {
+  if (groupsChecked) return;
+  try { createSecureContext({ ecdhCurve: INTERNAL_TLS_GROUPS }); }
+  catch { throw new Error(`Internal TLS needs the hybrid post-quantum key exchange ${INTERNAL_TLS_GROUPS}, which this Node (OpenSSL ${process.versions.openssl}) doesn't offer. Use a Node built with OpenSSL 3.5 or later.`); }
+  groupsChecked = true;
+}
+
+/**
  * TLS settings for a service that takes calls from other machines: { ca, cert, key } (PEM)
  * plus which client roles may call (default: only humid-front, the gateway).
  */
 export function serverTls({ ca, cert, key, allow = ["front"] }) {
-  return { ca, cert, key, allow, requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3" };
+  needHybridGroup();
+  return { ca, cert, key, allow, requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3", ecdhCurve: INTERNAL_TLS_GROUPS };
 }
 
 /** TLS settings for the gateway's calls to a role on another machine. */
 export function clientTls({ ca, cert, key, expect }) {
+  needHybridGroup();
   return {
-    ca, cert, key, minVersion: "TLSv1.3", rejectUnauthorized: true,
+    ca, cert, key, minVersion: "TLSv1.3", rejectUnauthorized: true, ecdhCurve: INTERNAL_TLS_GROUPS,
     // the CA is this server's own; the name it gave the role is what is checked, not the address
     checkServerIdentity: (_host, peer) => (roleOf(peer) === expect ? undefined : new Error(`expected ${roleName(expect)}, got ${peer?.subject?.CN || "no name"}`)),
   };

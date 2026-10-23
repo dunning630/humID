@@ -44,4 +44,12 @@ impl<R: Runtime> HumidGate<R> {
         self.0.run_mobile_plugin_async::<serde_json::Value>("forget", req).await?;
         Ok(())
     }
+
+    /// Android lists them; iOS has no API for other apps' accessibility access, so none.
+    pub async fn enabled_accessibility_services(&self) -> crate::Result<AccessibilityServices> {
+        #[cfg(target_os = "android")]
+        return Ok(self.0.run_mobile_plugin_async("enabledAccessibilityServices", ()).await?);
+        #[cfg(not(target_os = "android"))]
+        Ok(AccessibilityServices::default())
+    }
 }

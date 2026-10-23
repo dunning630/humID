@@ -152,7 +152,7 @@ try {
   step("the reader's check lapses: the thread seals itself; one check opens it");
   // Reading on, without a check, past the window (activity keeps the idle lock away meanwhile).
   for (let i = 0; i < 9; i++) { await alice.waitForTimeout(5000); await alice.keyboard.press("Shift"); }
-  await alice.locator(".sealed h3", { hasText: "Locked" }).waitFor({ timeout: 20_000 });
+  await alice.locator(".sealed h2", { hasText: "Locked" }).waitFor({ timeout: 20_000 });
   assert.equal(await alice.locator(".bubble").count(), 0, "no content on screen once the check lapsed");
   await shot(alice, "alice-lapsed");
   await alice.getByRole("button", { name: "Open with a live check" }).click();

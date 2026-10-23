@@ -1,7 +1,7 @@
 // The Android back button and edge-swipe back gesture. HumID is one page, so by
 // default Android would treat "back" as "leave the app". Instead, back closes
 // whatever is on top, the way its own close or Back button would:
-//   the camera › an open document › the top sheet (or the step inside it) ›
+//   the camera › an open document (a sheet over it first) › the top sheet (or the step inside it) ›
 //   the pushed screen's step (Add, an item) › the screen's Back button › the Vault tab.
 // At the bottom of that list it does nothing: back never exits HumID.
 //
@@ -11,6 +11,15 @@ import * as S from "./state.js";
 const visible = (el) => !!el && !el.disabled && el.getClientRects().length > 0;
 const top = (sel) => { const all = document.querySelectorAll(sel); return all[all.length - 1] || null; };
 
+/** Back on a sheet: its innermost step back, or the close a tap outside it would do (a busy sheet stays). */
+function closeSheet(sheet) {
+  const inner = [...sheet.querySelectorAll("[data-back]")].reverse().find(visible);
+  if (inner) { inner.click(); return "sheet-step"; }
+  const scrim = sheet.previousElementSibling;
+  (scrim?.classList.contains("scrim") ? scrim : top(".scrim"))?.click();
+  return "sheet";
+}
+
 /** Do what back means right now. Returns what it did, for tests. */
 export function handleBack() {
   // A live check in progress: its own prompt (or Cancel) decides; back must not race it.
@@ -18,17 +27,15 @@ export function handleBack() {
   for (const layer of [".doccam", ".interrupt.chip-read", ".viewer"]) {
     const el = top(layer);
     if (!el) continue;
+    // a sheet open inside the layer (the viewer's "Save a copy?") closes first (APP-08)
+    const inner = [...el.querySelectorAll(".sheet")].pop();
+    if (inner) { closeSheet(inner); return "sheet"; }
     const b = [...el.querySelectorAll("[data-back]")].find(visible);
     if (b) b.click();
     return layer;
   }
   const sheet = top(".sheet");
-  if (sheet) {
-    const inner = [...sheet.querySelectorAll("[data-back]")].reverse().find(visible);
-    if (inner) { inner.click(); return "sheet-step"; }
-    top(".scrim")?.click(); // the sheet closes the way a tap outside it does (a busy sheet stays)
-    return "sheet";
-  }
+  if (sheet) return closeSheet(sheet);
   // A pushed screen (the Add flow, an item): its innermost Back steps back; the top one leaves it.
   const pushed = top(".pushed");
   if (pushed) {
