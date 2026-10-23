@@ -8,9 +8,18 @@ Two ways:
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
 
-Eight small containers: **edge** (Caddy, the only one on the internet),
-**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access** and **keyshare**. They run on
-a private network with no route to the internet, read-only, as non-root.
+Small containers: **edge** (Caddy, the only one phones reach),
+**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access**, **keyshare** and **relay**. They run on
+a private network with no route to the internet, read-only, as non-root. One
+sidecar, **attestation-status**, fetches Google's list of revoked Android
+attestation keys every 6 hours and leaves it on a volume identity reads; it is
+the only container that calls out, and it holds no keys and reaches no service.
+With the default attested policy, identity refuses Android phones while that
+copy is missing or over 48 hours old (`HUMID_ATTESTATION_STATUS_REQUIRED=1`),
+so a server that can't reach `android.googleapis.com` fails safe: `docker
+compose ps` shows the sidecar unhealthy. Identity logs one `live-human posture`
+line at every start; a warning there names each setting that weakens the
+guarantee.
 
 ## What you need
 
@@ -49,6 +58,7 @@ Android apps.
 |---|---|---|
 | `HUMID_DOMAIN` | (required) | The server's domain. |
 | `HUMID_INTERNAL_SK`, `HUMID_INTERNAL_PK` | (generated) | Key pair the gateway uses to sign calls to the other services. |
+| `HUMID_CORE_STATEMENT_SK`/`_PK`, `HUMID_KEYS_STATEMENT_SK`/`_PK` | (generated) | Statement keys (SRV-30): identity and the ledger (core) and keyshare (keys) sign what the gateway can't make up, so its key alone releases and deletes nothing. The private halves go only to those services, never the gateway. `./setup.sh` adds them to an existing `.env`. |
 | `HUMID_DEVICE_POLICY` | `attested` | Which devices may join and sign in. `attested`: phones whose secure chip proves every live face or fingerprint check. `biometric`: also biometric-only desktops (Touch ID, fingerprint readers), which can't prove it. `demo`: local testing only. No policy accepts a PIN or password. |
 | `HUMID_IOS_APP_ID` | (empty) | `<Apple Team ID>.app.humid.vault`. Needed to accept iPhones (App Attest). `setup.sh` asks for the Team ID. |
 | `HUMID_APP_ATTEST_ENV` | `production` | `development` only for Xcode debug builds. |
@@ -76,6 +86,14 @@ docker compose pull vault && docker compose up -d vault
 Pulling private images needs a one-time `docker login ghcr.io` with a GitHub
 token that can read packages. Without it, `docker compose up -d --build`
 builds from the checked-out source instead.
+
+**Once, when updating to the non-root edge** (PC-21): Caddy's certificates
+were written by root before, and the edge now runs as user 65532. Hand its two
+volumes over before `up -d`, or it can't renew certificates:
+
+```bash
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint chown edge -R 65532:65532 /data /config
+```
 
 ## Keep these safe
 
@@ -113,10 +131,12 @@ payment off.
 | Setting | What it does |
 |---|---|
 | `deploy/csca/` (mounted at `/csca`) | Country signing certificates (CSCA) for passport and ID chips. Empty = ID anchors off. See [csca/README.md](csca/README.md). |
-| `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. |
+| `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. `*` (every account) is refused unless `HUMID_ALLOW_ANY_STATION=dev` is also set: local development only. |
 | `HUMID_DURESS_COOLOFF_MS` | How long it must be calm after a duress signal before the owner can lift the lockdown (default 24 h). |
 | `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. Build the apps with the same value (`HUMID_TLOG_COSIGNERS` when running `build.mjs`): phones count only cosigners built into them, never a list the server sends. |
 | `RECOVERY_DELAY_MS` | The base wait (72 h). Station = ⅓, witnesses = 1×, card + chip = 7⁄3; doubled after a duress signal. |
+| `HUMID_RECOVERY_STARTS_PER_HOUR` | New recovery requests one network (IPv4 address or IPv6 /64) may start per hour, at the gateway (default 20). |
+| `HUMID_RECOVERY_UNBOUND_TTL_MS`, `HUMID_RECOVERY_MAX_UNBOUND` | A recovery request with no proof yet is anonymous: it ends this long after it was made unless a first proof arrives (default 24 h; then the week applies), and at most this many exist at once (default 20,000; past it new ones are refused as busy). |
 
 The edge serves the public log at `/tlog/v1/checkpoint`, `/tlog/v1/consistency`
 and `/tlog/v1/cosign`. See [../docs/CONTINUITY.md](../docs/CONTINUITY.md).

@@ -68,6 +68,9 @@ try {
     await p.getByRole("button", { name: "Use a demo access code" }).click({ timeout: 20_000 });
     await p.getByText("Access pass ready").first().waitFor({ timeout: 30_000 });
     await p.getByRole("button", { name: "Continue" }).click();
+    await p.getByText("If you lose every device").waitFor();
+    await p.getByRole("button", { name: "Next: lock it to you" }).click(); // the recommended recovery mode is already selected
+    await p.getByText("Your body becomes the key").waitFor();
     await p.getByRole("checkbox").first().click();
     await p.getByRole("button", { name: /Use demo mode/ }).click();
     await hold(p);
@@ -88,7 +91,7 @@ try {
     await meter.first().waitFor({ timeout: 15_000 });
     assert.equal(await meter.count(), 4, "four proofs in the meter");
     assert.deepEqual(await meter.allInnerTexts(), ["Witnesses", "ID chip", "Recovery card", "Security key"]);
-    await p.locator(".pushed").getByText("If you lose every device, any").waitFor();
+    await p.locator(".pushed").getByText("If you lose every device, recovery needs any two").waitFor();
     await p.getByRole("button", { name: /^Security key/ }).click();
     const sheet = p.locator(".sheet");
     await sheet.getByRole("heading", { name: "Add a security key" }).waitFor();

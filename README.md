@@ -31,7 +31,7 @@ Needs Node 22.
 npm install
 npm test && npm run test:e2e   # crypto, protocol, every service end to end
 npm run build:app
-npm run dev                    # whole stack, no Docker → http://localhost:5173
+npm run dev                    # whole stack, no Docker → http://localhost:5173 (this computer only; HOST=0.0.0.0 to share it)
 ```
 
 Open http://localhost:5173 in a normal and a private window to try two
@@ -56,12 +56,21 @@ and "Use a demo access code" pays for a new HumID.
 - **Pay anonymously:** an access code (bought for cash, or online) becomes a
   pass the server signs blind, so it can't link the payment to your account.
   No name, email or phone number anywhere.
-- **Create** a HumID: bind it to your face or fingerprint, get a seal card.
-  Every check is live: your phone's secure chip signs each one, and the server
-  verifies it. A PIN or password never unlocks anything.
+- **Create** a HumID: choose how you'd get back in if you lost every device
+  (*only my own devices*, or *two proofs, a wait and a veto*), bind it to your
+  face or fingerprint, and, with recovery on, get a recovery card. Every check
+  is a live biometric match: on an iPhone or Android phone its secure chip
+  signs each one and the server verifies it. HumID relies on the phone's own
+  matcher and anti-spoofing; it doesn't do liveness detection of its own, and
+  it proves a face or finger enrolled on that phone was matched, not whose
+  ([SECURITY.md](docs/SECURITY.md#what-it-does-not-protect-against-yet)).
+  Computers can't prove their checks this way, and the default server policy
+  accepts phones only. A PIN or password never unlocks anything.
 - **Split keys:** every new document also needs its own key from a separate
   service, released one document at a time inside a live check, so spyware
-  that copies your keys off the phone still opens nothing on its own.
+  that copies your account keys off the phone can't open documents with them
+  alone. (Spyware that watches the phone while you open a document sees it, as
+  with any app.)
 - **Seal** photos, PDFs and files; search and sort them by category. The
   server never learns their names.
 - **Scan an ID:** photograph a driver's license, passport or ID card and
@@ -73,15 +82,19 @@ and "Use a demo access code" pays for a new HumID.
   in your **Activity** log, which your phone verifies for itself.
 - **Add devices** by scanning a QR code or typing a 12-character code;
   **remove** a lost one.
-- **Recover** on a new phone with any **two** of three proofs: your witnesses
-  (a majority of 2–5 people), your passport or ID chip (read with the phone's
-  NFC, or a USB card reader on a computer), your seal card. The
-  wait depends on the evidence (24 h with an in-person station check, 72 h
-  with witnesses, 7 days otherwise); every surviving device is alerted and can
-  veto. See [docs/CONTINUITY.md](docs/CONTINUITY.md).
+- **Recover** on a new phone, if you chose recovery, with any **two** of four
+  proofs: your witnesses (a majority of 2–5 people), your passport or ID chip
+  (read with the phone's NFC, or a USB card reader on a computer), your
+  recovery card, your security key. The wait depends on the evidence (24 h with
+  an in-person station check, 72 h with witnesses, 7 days otherwise); every
+  surviving device is alerted and can veto. With *only my own devices* there
+  is no recovery at all: lose every device and the vault is gone. See
+  [docs/RECOVERY.md](docs/RECOVERY.md#two-recovery-modes) for what each mode
+  trusts the server operator with, and [docs/CONTINUITY.md](docs/CONTINUITY.md).
 - **Duress gesture:** unlock into a decoy view while the server silently locks
   sensitive changes and slows recoveries. Which gesture it is stays sealed on
-  the phone until a live check.
+  the phone until a live check. The decoy view is meant to look like a calm,
+  ordinary account; someone who knows HumID well may still suspect one exists.
 - **Check-in:** before a high-stakes situation, arm a timer and check in with
   a live check every hour or two. Miss one and the vault locks; miss the grace
   period, or unlock with the duress gesture, and its documents' keys are

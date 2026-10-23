@@ -1,5 +1,6 @@
 // Boot, the connection to the vault server, unlock and lock, the offline copy, and
 // the rules for leaving the screen. The one place the app's view changes hands.
+import { updateIdentity } from "./identity.js";
 import { batch, effect } from "@preact/signals";
 import { fromB64 } from "@humid/codec";
 import { suite } from "@humid/crypto";
@@ -16,29 +17,26 @@ import { savePrefs, applyPrefs, idleLabel } from "./prefs.js";
 import { SERVER_URL, PINNED_KID } from "./config.js";
 import { R, wipe } from "./runtime.js";
 import { toast, friendly, cancelled, unreachable } from "./notify.js";
-import { showInterrupt, endInterrupt, withKeys, sessionKeys, clearKeys } from "./interrupt.js";
+import { showInterrupt, endInterrupt, withKeys, sessionKeys, clearKeys, holdCancel } from "./interrupt.js";
 import { refresh, closeViewer } from "./vault.js";
 import { loadLedger } from "./ledger.js";
 import { loadDevices } from "./devices.js";
-import { loadRecovery, loadAlerts } from "./recovery.js";
+import { loadAlerts } from "./alerts.js";
 import { loadDuressSetting, loadDuress, loadCheckin, checkinArmed } from "./safety.js";
-import { pollJoin } from "./join.js";
-import { resumePass } from "./enroll.js";
 import { keepDraft, dropDrafts } from "./drafts.js";
+import { leave, initialLeave } from "./leave.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
+
+// Setting up, joining and recovery load with their own screens (core/setup.js). The few calls
+// boot, reconnect and reloadTab make into them fetch that code when they're first needed.
+const resumePass = () => import("./enroll.js").then((m) => m.resumePass());
+const pollJoin = () => import("./join.js").then((m) => m.pollJoin());
+const loadRecovery = () => import("./recovery.js").then((m) => m.loadRecovery());
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 let link = null;                // the connection monitor (core/link.js)
 let idleTimer = null;
-let picking = false;            // a system file picker is open: HumID leaves the screen without locking
-let pickingTimer = null;
-let hiddenAt = 0;               // when HumID last left the screen, while picking
-let pickHiddenMs = 0;           // how long this picker may keep HumID off the screen
-const PICK_MS = 60_000;         // a picker that hasn't come back by then no longer excuses leaving the screen
-const PICK_HIDDEN_MS = 20_000;  // behind the picker for longer than this (another app, the home screen) locks anyway
-const PICK_MAX_MS = 90_000;
-const PICK_HIDDEN_MAX_MS = 60_000;
 let offlineWrite = Promise.resolve();
 
 export const wallet = () => sealedWallet(R.store);
@@ -87,16 +85,23 @@ export async function boot() {
   R.store = await openStore();
   watchMessaging();
   R.hooks.keyGone = keyGone;
-  S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
-  try { S.identity.value = await R.store.getIdentity(); } catch { S.identity.value = null; }
-  try { S.pass.value = await wallet().get(); } catch { S.pass.value = null; }
-  try { S.offlineReady.value = !!(await R.store.getOffline()); } catch { S.offlineReady.value = false; }
+  // Independent of each other once the store is open: the native gate probe (an IPC round
+  // trip), the identity record, the wallet and the offline copy, at the same time.
+  const [hw, identity, pass, offline] = await Promise.all([
+    bestHardwareGate(),
+    R.store.getIdentity().catch(() => null),
+    wallet().get().catch(() => null),
+    R.store.getOffline().then((o) => !!o, () => false),
+  ]);
+  batch(() => { S.hwGate.value = hw; S.identity.value = identity; S.pass.value = pass; S.offlineReady.value = offline; });
   const id = S.identity.value;
   const raw = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
   // A pin compiled into the app always wins over one the record remembers (a record is
   // writable storage; the pin is not).
   R.api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: PINNED_KID || id?.server?.kid || null, fetch: watchConnection(raw) });
+  // The newest signed policy this device has accepted: an older one served later is a replay.
+  R.api.htp.policySeen = id?.policySeen || null;
   // The server no longer knows this session (it expired, or the server restarted and the
   // reconnected channel isn't signed in): either way, one live check signs back in.
   R.api.onSignedOut = () => { if (S.view.value === "app" && !S.offline.value) lock("Your session ended. Unlock to continue."); };
@@ -156,11 +161,28 @@ export async function connectServer() {
   S.serverError.value = null;
   try {
     const s = await R.api.server();
-    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
+    S.server.value = { ...s, url: SERVER_URL || (typeof location !== "undefined" ? location.origin : ""), simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
+    await rememberPolicy();
   } catch (e) {
     S.server.value = null;
     S.serverError.value = friendly(e);
   }
+}
+
+/**
+ * Keep the newest signed policy in the identity record, so a replayed older one is refused
+ * after a restart too (round 2 of CRYPTO-07). It's the server's signed statement, checked
+ * again on every load, so it needs no sealing; it's read before unlock, to draw the screens.
+ */
+async function rememberPolicy() {
+  const id = S.identity.value, seen = R.api.htp.policySeen;
+  if (!id || !seen || (id.policySeen && id.policySeen.at >= seen.at)) return;
+  try {
+    await updateIdentity((cur) => {
+      if (cur.policySeen && cur.policySeen.at >= seen.at) return null;
+      cur.policySeen = { policy: seen.policy, at: seen.at, sig: seen.sig };
+    });
+  } catch { /* next connection tries again */ }
 }
 
 /**
@@ -172,7 +194,7 @@ export const serverPinned = () => !!PINNED_KID && String(S.server.value?.kid || 
 /** The gate to bind on this device: the live-biometric gate, or demo in a development build. */
 export function chooseGate(useDemo) {
   if (useDemo) {
-    if (!S.demoAllowed.value) { toast("HumID needs a face or fingerprint check.", "warn"); return null; }
+    if (!S.demoAllowed.value) { toast("HumID needs a live face or fingerprint check.", "warn"); return null; }
     return demoGate();
   }
   const hw = S.hwGate.value;
@@ -185,6 +207,19 @@ export const gateClaim = (gate) => (gate.needsHold
   : { gateMethod: S.hwGate.value?.probe.method, assurance: S.hwGate.value?.probe.assurance });
 
 /* ---------------- leaving the screen, idling ---------------- */
+
+// The leaving-the-screen rules are core/leave.js, a pure reducer; this feeds it the page's
+// events and does what it says. PC-17: only the biometric prompt itself excuses leaving.
+let leaveState = initialLeave;
+function feed(ev) {
+  const r = leave(leaveState, { ...ev, now: Date.now(), app: S.view.value === "app" });
+  leaveState = r.state;
+  for (const t of r.timers) setTimeout(() => feed(t.event), t.ms);
+  if (r.action === "lock") lock(ev.type === "pagehide" ? undefined : "Locked when HumID left the screen.");
+}
+// The system's face or fingerprint prompt (core/interrupt.js): on some phones it hides the app.
+R.hooks.promptStart = () => feed({ type: "promptStart" });
+R.hooks.promptEnd = () => feed({ type: "promptEnd" });
 
 let resetIdle = () => {};
 function wireGlobalEvents() {
@@ -199,29 +234,17 @@ function wireGlobalEvents() {
   // open on the table still ends in a locked app.
   const idleLock = () => { if (R.busy) { idleTimer = setTimeout(idleLock, 5000); return; } lock(`Locked after ${idleLabel(idleMs())} without activity.`); };
   // Opening the app (unlock, a finished setup or join) always starts at the vault.
-  let wasApp = false;
+  let wasApp = false, was = S.view.value;
   S.view.subscribe((v) => {
     if (v === "app") { if (!wasApp) S.tab.value = "vault"; reset(); }
-    wasApp = v === "app";
+    if (v === "app" && was === "locked") feed({ type: "opened" }); // an unlock that finished off the screen locks again
+    wasApp = v === "app"; was = v;
   });
   resetIdle = reset;
   for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reset, { passive: true });
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      // back from the picker (or another app) while picking: if it was away long, lock anyway
-      if (picking && hiddenAt && Date.now() - hiddenAt > (pickHiddenMs || PICK_HIDDEN_MS) && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); }
-      hiddenAt = 0;
-      return;
-    }
-    if (S.view.value !== "app" || R.busy) return;
-    if (!picking) return lock("Locked when HumID left the screen.");
-    // the file picker is up (it normally comes back within seconds): lock if that's not what this is
-    hiddenAt = Date.now();
-    setTimeout(() => { if (document.hidden && picking && hiddenAt && S.view.value === "app") { stopPicking(); lock("Locked when HumID left the screen."); } }, pickHiddenMs || PICK_HIDDEN_MS);
-  });
-  // leaving the page entirely (closed, navigated, suspended) is never a file picker
-  addEventListener("pagehide", () => { stopPicking(); if (S.view.value === "app" && !R.busy) lock(); });
-  addEventListener("focus", () => setTimeout(stopPicking, 1200));
+  document.addEventListener("visibilitychange", () => feed({ type: document.hidden ? "hide" : "show" }));
+  addEventListener("pagehide", () => feed({ type: "pagehide" }));
+  addEventListener("focus", () => setTimeout(() => feed({ type: "stopPick" }), 1200));
   addEventListener("online", () => { S.online.value = true; link?.online(true); if (!S.server.value) connectServer(); });
   addEventListener("offline", () => { S.online.value = false; link?.online(false); });
   // retries pause while HumID is off the screen, and resume when it's back
@@ -234,13 +257,7 @@ function wireGlobalEvents() {
  * scanner): leaving the screen for it isn't leaving HumID. Bounded: it clears itself after
  * forMs (a minute), and HumID locks if it stays off the screen longer than hiddenMs (20 s).
  */
-export const markPicking = ({ forMs = PICK_MS, hiddenMs = PICK_HIDDEN_MS } = {}) => {
-  picking = true;
-  pickHiddenMs = Math.min(hiddenMs, PICK_HIDDEN_MAX_MS);
-  clearTimeout(pickingTimer);
-  pickingTimer = setTimeout(stopPicking, Math.min(forMs, PICK_MAX_MS));
-};
-function stopPicking() { picking = false; hiddenAt = 0; pickHiddenMs = 0; clearTimeout(pickingTimer); pickingTimer = null; }
+export const markPicking = ({ forMs, hiddenMs } = {}) => feed({ type: "pick", forMs, hiddenMs });
 
 /** Change preferences: saved on this device, applied now. */
 export function setPref(patch) {
@@ -283,7 +300,10 @@ export async function unlock(used = false) {
         return { sig: ml_dsa87.sign(presence(d), dkeys.dsaSk), d, interrupt, live: live?.sig };
       }, { keepOpen: true, challenge: message }),
     });
+    // A new session starts from nothing, whatever an earlier one left behind (verify-71 #4).
+    freshSession();
     batch(() => { S.session.value = sess; S.offline.value = null; S.decoy.value = duress; });
+    if (duress) dropDrafts(); // nothing from the real session waits in memory behind a decoy one
     if (!S.server.value) await connectServer(); // its policy says whether it offers Heartbeat
     await loadCheckin(); // before anything is saved on this device: while Heartbeat is armed, nothing is
     R.offline = duress || checkinArmed() ? null : await readOffline();
@@ -341,6 +361,16 @@ async function readOffline() {
   } catch { return null; }
 }
 
+/**
+ * The offline copy as a decoy session may hold it: the documents (filtered to the decoys by
+ * refresh), the devices (the same in every session) and the ledger (filtered by decoyView).
+ * The real recovery setup and duress status are dropped before any screen can read them.
+ */
+export const decoyCopy = (copy) => {
+  const { recovery, duress, ...rest } = copy || {};
+  return { ...rest, recovery: recovery ? { anchor: { available: !!recovery.anchor?.available }, keys: { available: !!recovery.keys?.available, max: recovery.keys?.max } } : null };
+};
+
 /** Update part of the offline copy. Only from a real, online session. */
 export function keepOffline(patch) {
   const account = S.identity.value?.server?.id;
@@ -373,7 +403,9 @@ async function unlockOffline(used) {
       clearKeys();
       return toast("Nothing is saved on this device yet. Connect once to use HumID offline.", "warn");
     }
-    R.offline = copy;
+    freshSession();
+    R.offline = duress ? decoyCopy(copy) : copy;
+    if (duress) dropDrafts();
     batch(() => {
       S.session.value = null; S.lockIssue.value = null; S.decoy.value = duress;
       S.offline.value = { savedAt: copy.savedAt };
@@ -385,6 +417,17 @@ async function unlockOffline(used) {
     clearKeys();
     if (!cancelled(e) && !S.interrupt.value) toast(friendly(e), "error");
   }
+}
+
+/**
+ * At unlock, once the check has passed: every session signal back as it started, and a new
+ * epoch, so an answer still in flight from before is dropped. The live-check time stays: this
+ * check just set it, and messaging's human-to-human rule reads it.
+ */
+function freshSession() {
+  const live = S.liveAt.value, idle = S.idleDeadline.value; // a reconnect keeps its idle clock
+  R.epoch++;
+  batch(() => { S.resetSession(); S.liveAt.value = live; S.idleDeadline.value = idle; });
 }
 
 /** Back online: one live check signs in and replaces the offline copy with the vault. A decoy session stays a decoy session. */
@@ -399,7 +442,8 @@ export function reloadTab() {
 }
 
 /**
- * Lock: keys wiped, session ended, everything the vault showed forgotten. What survives
+ * Lock: keys wiped, session ended, everything the vault showed forgotten (every session
+ * signal, state.js resetSession: the search, the filters and the open sheet too). What survives
  * is a draft of what the person was in the middle of (core/drafts.js): typed text for
  * ten minutes, a captured page for two, so an incoming call doesn't cost them the form.
  */
@@ -412,25 +456,13 @@ export function lock(reason) {
   clearTimeout(idleTimer);
   R.hooks.stopCheckinWatch?.();
   R.hooks.stopMessaging?.();
-  keepDraft();
+  holdCancel(); // a demo hold still waiting: the check it belongs to ends here
+  leaveState = leave(leaveState, { type: "locked" }).state;
+  keepDraft(); // before the reset: it reads whether this was a decoy session
+  closeViewer(); // wipes the open document's bytes, not only the signal
   batch(() => {
+    S.resetSession();
     S.view.value = "locked";
-    S.checkin.value = null;
-    S.session.value = null;
-    S.items.value = [];
-    S.ledger.value = null;
-    S.devices.value = null;
-    S.recovery.value = null;
-    S.alerts.value = [];
-    S.protecting.value = [];
-    S.station.value = null;
-    S.duressInfo.value = null;
-    S.continuity.value = null;
-    S.decoy.value = false;
-    S.offline.value = null;
-    S.sheet.value = null;
-    S.push.value = null;
-    closeViewer();
   });
   if (reason) toast(reason, "warn");
 }

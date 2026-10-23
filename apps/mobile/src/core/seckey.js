@@ -86,7 +86,7 @@ export async function addSecurityKey({ name, pin, newPin = false }) {
       try {
         const blob = await sealKeyPart(got.secret, part, accountId);
         const label = await Suite.sealIndex(R.indexKey, { name: String(name || "").trim().slice(0, 40) || "Security key" });
-        await R.api.addKey({ tag: keyTag(got.secret), blob, pub: got.publicKey, credentialId: got.credentialId, authData: got.authData, signature: got.signature, label }, proof);
+        await R.api.addKey({ tag: keyTag(got.secret), blob, pub: got.publicKey, credentialId: got.credentialId, authData: got.authData, signature: got.signature, label, epoch: part.epoch }, proof);
       } finally { wipe(part.y); }
     });
     toast(got.hidden

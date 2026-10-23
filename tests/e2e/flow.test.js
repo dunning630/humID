@@ -113,6 +113,24 @@ test("the access ledger verifies on the device and records every access", async 
   const opened = l.entries.find((e) => e.type === "object.opened");
   assert.equal(opened.detail.id, docId);
   assert.match(opened.detail.proof, /^[0-9a-f]{32}$/);
+  // APP-09: each proof says which device made it and how strongly that device proves its
+  // checks, so Activity on another device never describes it by its own
+  assert.equal(opened.detail.assurance, "hardware");
+  assert.equal(opened.detail.by, aliceApi.session.device);
+});
+
+test("every step-up event records the assurance and the device that proved it (APP-09)", async () => {
+  await aliceApi.setSettings({ duressAlert: false }, alice.stepUp); // a routed event with its own detail()
+  const { envelope, index } = await sealFor(alice, "proof.txt", "who proved this");
+  const item = await aliceApi.upload(envelope, index);
+  await aliceApi.remove(item.id, alice.stepUp);
+  const l = await aliceApi.ledger();
+  const proved = l.entries.filter((e) => e.detail?.proof && e.type !== "session.opened");
+  for (const t of ["object.deleted", "settings.changed"]) assert.ok(proved.some((e) => e.type === t), `${t} with a proof is in the ledger`);
+  for (const e of proved) {
+    assert.equal(e.detail.assurance, "hardware", `${e.type} records the assurance`);
+    assert.equal(e.detail.by, aliceApi.session.device, `${e.type} records the device that proved it`);
+  }
 });
 
 test("a tampered ledger page fails verification on the device", async () => {
@@ -136,6 +154,19 @@ test("rename replaces only the encrypted index", async () => {
   const { items } = await aliceApi.list();
   const meta = await alice.S.openIndex(alice.indexKey, new Uint8Array(Buffer.from(items[0].index, "base64url")));
   assert.equal(meta.name, "Passport (scan).txt");
+});
+
+test("the app picks the item id, so its index entry is sealed to it before upload (CRYPTO-05)", async () => {
+  const id = crypto.randomUUID();
+  const { envelope } = await sealFor(alice, "bound.txt", "bound");
+  const index = await alice.S.sealIndex(alice.indexKey, { name: "bound.txt" }, { id, rev: 1 });
+  assert.equal((await aliceApi.upload(envelope, index, null, id)).id, id);
+  const got = (await aliceApi.list()).items.find((i) => i.id === id);
+  assert.equal((await alice.S.openIndex(alice.indexKey, new Uint8Array(Buffer.from(got.index, "base64url")), { id })).name, "bound.txt");
+  // an id already in use, or not a UUID v4, is refused
+  await assert.rejects(aliceApi.upload(envelope, index, null, id), (e) => e.code === "id_taken");
+  await assert.rejects(aliceApi.upload(envelope, index, null, "../x"), (e) => e.code === "bad_id");
+  await aliceApi.remove(id, alice.stepUp);
 });
 
 test("delete needs a step-up and removes the item", async () => {

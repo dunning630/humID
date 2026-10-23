@@ -14,7 +14,7 @@ import { applyPrefs } from "./core/prefs.js";
 import { SIM } from "./core/config.js";
 import { Mark } from "./brand/mark.jsx";
 import { Interrupt, ChipReadOverlay, Toasts, TabBar } from "./ui/kit.jsx";
-import { ConnectionBar, DraftOffer, SimStrip, ChecksSheet } from "./ui/shell.jsx";
+import { ConnectionBar, DraftOffer, SimStrip, ChecksSheet, ReaderWarning } from "./ui/shell.jsx";
 import { Welcome } from "./screens/welcome.jsx";
 import { Lock } from "./screens/lock.jsx";
 import { Vault, Item, Viewer } from "./screens/vault.jsx";
@@ -112,6 +112,7 @@ function App() {
         </>
       )}
       {SIM && <ChecksSheet />}
+      <ReaderWarning />
       <ChipReadOverlay />
       <Interrupt />
       <Toasts />

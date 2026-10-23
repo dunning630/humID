@@ -2,4 +2,4 @@
 
 [default]
 description = "Lets the HumID UI probe for, enrol and use the device biometric gate."
-permissions = ["allow-probe", "allow-enroll", "allow-release", "allow-forget"]
+permissions = ["allow-probe", "allow-enroll", "allow-release", "allow-forget", "allow-enabled-accessibility-services"]

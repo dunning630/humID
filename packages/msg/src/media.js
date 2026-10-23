@@ -28,7 +28,7 @@
 
 import { sha3_256 } from "@noble/hashes/sha3.js";
 import { personaFingerprint, personaId, encodePub, decodePub, dualSign, dualVerify } from "./persona.js";
-import { verifyStamp } from "./stamp.js";
+import { verifyStamp, stampEpoch } from "./stamp.js";
 import { SIZES } from "./backend.js";
 import { MsgError, H, label, lp, unlp, utf8, u32, concat, b64u, unb64u, encodeJSON, decodeJSON, guard, equal } from "./util.js";
 
@@ -125,9 +125,12 @@ export function verifyMediaCredential(cred, bytes, { stampKeys, expectSigner, no
     const st = statement({ hash, size: bytes.length, ...meta, fp: personaFingerprint(pub) });
     const sigs = { dsa: unb64u(cred.sig?.dsa, SIZES.dsaSig), slh: unb64u(cred.sig?.slh, SIZES.slhSig) };
     if (!dualVerify("media credential", concat(st, utf8(JSON.stringify(cred.stamp))), sigs, pub)) return no("bad_signature", base);
-    const live = !!stampKeys && verifyStamp(stampKeys, cred.stamp, mediaCommitment(st), { now });
+    // Not by today's date (MSG-10): a credential keeps verifying after its stamp key retires, as
+    // long as the verifier has that key from the issuer's archive. stampedIn: the key's epoch,
+    // when the live check happened (the capture time is only what the signer states).
+    const live = !!stampKeys && verifyStamp(stampKeys, cred.stamp, mediaCommitment(st), { now, longLived: true });
     if (!live) return no(stampKeys ? "not_live" : "no_stamp_keys", { ...base, live: false });
-    return { ok: true, ...base, live: true };
+    return { ok: true, ...base, live: true, stampedIn: stampEpoch(stampKeys, cred.stamp) };
   } catch (e) {
     return no(e instanceof MsgError ? e.code : "malformed");
   }

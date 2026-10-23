@@ -7,7 +7,8 @@ import { CodeBox, CodeInput, QrCode, ChipAccess } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
-import { offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, stationLookup, stationReadChip, stationVerify, chipReader } from "../../core/index.js";
+import { chipReader } from "../../core/index.js";
+import { offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, stationLookup, stationReadChip, stationVerify } from "../../core/setup.js";
 import { back, twelve, Countdown, Check } from "./common.jsx";
 
 export function Help() {
@@ -20,12 +21,12 @@ export function Help() {
   return (
     <Pushed title="Help others" onBack={back}>
       <p class="t2 small">Be one of someone's witnesses, or help a witness of yours get back in. You never see anyone's documents.</p>
-      <div class="rows" style={{ marginTop: 14 }}>
+      <div class="rows mt-3">
         <Row icon="users" title="Be a witness" sub="Show a code to someone choosing their witnesses" onClick={off ? undefined : beWitness} />
         <Row icon="user" title="Help someone recover" sub="A witness of yours lost their phone and sent you a code" onClick={off ? undefined : () => setOpen("recover")} />
         {station && <Row icon="station" tone="mint" title="Verification station" sub="Check a person and their ID in person, so their recovery can count their ID chip" trail={<span class="pill mint">Operator</span>} onClick={off ? undefined : () => setOpen("station")} />}
       </div>
-      {off && <p class="fine" style={{ marginTop: 12 }}>Helping needs a connection.</p>}
+      {off && <p class="fine mt-3">Helping needs a connection.</p>}
       {open === "witness" && offer && <OfferSheet offer={offer} onRenew={beWitness} onClose={() => { setOpen(null); setOffer(null); }} />}
       {open === "recover" && <HelpSheet onClose={() => setOpen(null)} />}
       {open === "station" && station && <StationSheet onClose={() => setOpen(null)} />}
@@ -71,7 +72,7 @@ function HelpSheet({ onClose }) {
       {req && !people && (
         <>
           <Banner tone="mint" icon="check" title="Code matches that device's keys" text={`Requested ${fmtAgo(req.createdAt)}.`} />
-          <p class="small muted">Next, one check shows whose pieces you hold.</p>
+          <p class="small muted">Next, one live check shows whose pieces you hold.</p>
           <div class="actions">
             <button class="btn primary block" onClick={reveal}><Icon name="fingerprint" />Show who I protect</button>
             <button class="btn ghost block" data-back onClick={() => setReq(null)}>Back</button>
@@ -90,7 +91,7 @@ function HelpSheet({ onClose }) {
               </button>
             ))}
           </div>
-          {pick && <div style={{ marginTop: 12 }}><Banner tone="amber" icon="alert" title={`Call ${pick.label} first`} text="Only help if they asked you themselves. Someone pretending to be them is how recovery gets abused." /></div>}
+          {pick && <div class="mt-3"><Banner tone="amber" icon="alert" title={`Call ${pick.label} first`} text="Only help if they asked you themselves. Someone pretending to be them is how recovery gets abused." /></div>}
           <div class="actions">
             <button class="btn primary block" disabled={!pick} onClick={release}><Icon name="fingerprint" />Release my piece to that device</button>
             <button class="btn ghost block" data-back onClick={() => { setPeople(null); setPick(null); }}>Back</button>
@@ -147,10 +148,10 @@ function StationSheet({ onClose }) {
               )}
               {!nfc?.available && <p class="small muted">{nfc?.reason || "This device can't read ID chips."}</p>}
               {DEMO_BUILD && (
-                <div class="field" style={{ marginTop: 0 }}>
+                <div class="field mt-0">
                   <label for="station-demo">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="station-demo" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-                  <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await stationReadChip(req.code, { demo: name }))}><Icon name="passport" />Use a demo passport</button>
+                  <button class="btn ghost block mt-2" onClick={async () => setChip(await stationReadChip(req.code, { demo: name }))}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
               <button class="btn ghost block" data-back onClick={() => setReq(null)}>Back</button>

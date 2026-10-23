@@ -14,6 +14,13 @@ import { makeHolder } from "./holder.js";
 let stack, alice, bob, aApi, bApi, keyset, aRelay, bRelay;
 const T = () => Date.now();
 
+/** The issuer's own books (exact daily totals), read from its database: /msg/stats is thresholded and rounded. */
+async function books(s = stack) {
+  const db = new DatabaseSync(join(s.root, "access", "access.db"), { readOnly: true });
+  try { return db.prepare("SELECT day, stamps, checks FROM stamp_days ORDER BY day DESC").all().map((x) => ({ day: x.day, stamps: Number(x.stamps), checks: Number(x.checks) })); }
+  finally { db.close(); }
+}
+
 /** The app's stamper: blind → one live step-up over exactly these values → finalize. */
 function stamperFor(h, api) {
   const many = async (commits) => {
@@ -106,7 +113,7 @@ test("the relay can't be used from a signed-in session (no account ever touches 
 
 test("meet and talk under the rule, through the relay service, with real stamps", async () => {
   const aStamp = stamperFor(alice, aApi), bStamp = stamperFor(bob, bApi);
-  const checksBefore = (await aApi.msgStats())[0]?.checks ?? 0;
+  const checksBefore = (await books())[0]?.checks ?? 0;
 
   // Alice invites (her live check releases the account seed the persona comes from).
   const inv = await M.createInvite(alice.seed, { now: T() });
@@ -153,10 +160,10 @@ test("meet and talk under the rule, through the relay service, with real stamps"
   }
 
   // Delete the conversation for both: one check, both messages stamped.
-  const before = (await aApi.msgStats())[0];
+  const before = (await books())[0];
   const { send } = await a.forget({ forBoth: true, stamper: aStamp, now: T() });
   for (const x of send) await aRelay.put(x.box, x.wire, x.retractTag);
-  const after = (await aApi.msgStats())[0];
+  const after = (await books())[0];
   assert.equal(after.checks - before.checks, 1);
   assert.equal(after.stamps - before.stamps, send.length);
   const gone = await poll(b, bRelay);
@@ -165,7 +172,7 @@ test("meet and talk under the rule, through the relay service, with real stamps"
   assert.deepEqual(b.messages(T()).filter((m) => m.dir === "in"), []);
 
   // The issuer's books: totals per day, nothing more.
-  const stats = await aApi.msgStats();
+  const stats = await books();
   assert.ok(stats[0].checks - checksBefore >= 5);
   assert.match(stats[0].day, /^\d{4}-\d{2}-\d{2}$/);
 });
@@ -206,4 +213,37 @@ test("one network can't fill the relay for everyone (PC-27): a daily byte quota 
   }
   assert.ok(refused, "stopped before 40 × 256 KiB");
   assert.equal(refused.code, "quota");
+});
+
+test("MSG-13: the public daily totals say nothing about a small server's few holders", async () => {
+  assert.ok((await books())[0].checks > 0, "the issuer counted today's checks");
+  const r = await aApi.htp.call("GET", "/msg/stats");
+  const j = r.json();
+  assert.deepEqual(j.days, [], "below the minimum: no day is published");
+  assert.equal(j.min, 1000);
+  assert.equal(j.rounded, 100);
+});
+
+test("MSG-03: a desktop under the biometric policy can sign in but gets no stamps (no bot farm)", async () => {
+  const lax = await startStack({ devicePolicy: "biometric" });
+  try {
+    const bot = makeHolder("bot-desktop", { kind: "desktop" }); // no hardware liveness key
+    const api = new HumidApi({ baseUrl: lax.baseUrl, pinnedKid: lax.gateway.htp.kid });
+    await api.register({ pub: bot.pub, commit: bot.commit, device: bot.device, sign: bot.registerSign });
+    assert.equal((await api.server()).policy.messaging.stampNeeds, "hardware");
+    const k = await api.msgKeys();
+    const ks = M.importStampKeys(k.stamp.keys, { passKeys: k.passKeyIds.map((id) => ({ id })) });
+    const d = M.blindStamp(ks, new Uint8Array(32).fill(9));
+    const t = await api.ticket("stamp");
+    await assert.rejects(api.stamp({ kid: ks.issuing.id, blinded: [d.blinded] }, { ticket: t, sign: (message) => bot.stepUp({ message, live: t.live }) }),
+      (e) => e.status === 403 && e.code === "stamp_needs_proven_phone");
+    assert.equal((await books(lax)).length, 0, "nothing was counted");
+    // A phone on the same server still stamps.
+    const phone = makeHolder("phone-lax");
+    const pApi = new HumidApi({ baseUrl: lax.baseUrl, pinnedKid: lax.gateway.htp.kid });
+    await pApi.register({ pub: phone.pub, commit: phone.commit, device: phone.device, sign: phone.registerSign });
+    const t2 = await pApi.ticket("stamp");
+    const [sig] = await pApi.stamp({ kid: ks.issuing.id, blinded: [d.blinded] }, { ticket: t2, sign: (message) => phone.stepUp({ message, live: t2.live }) });
+    assert.ok(M.verifyStamp(ks, M.finalizeStamp(ks, d.draft, sig), new Uint8Array(32).fill(9)));
+  } finally { await lax.stop(); }
 });

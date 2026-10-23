@@ -1,4 +1,4 @@
-// vault — zero-knowledge document storage.
+// vault — document storage that can't read what it stores (end-to-end encrypted).
 //
 // Receives HumID envelopes that were sealed ON THE PHONE (ML-KEM-1024 + X25519
 // to the holder's own keys, signed with ML-DSA-87). The vault checks the
@@ -7,16 +7,21 @@
 // "index" blob the app encrypts with a key only the holder can derive.
 //
 // Returning ciphertext requires a step-up proof: a fresh (≤ 60 s) biometric
-// signature over this exact request, checked by the gateway. A stolen session
-// alone cannot drain a vault.
+// signature over this exact request. The gateway checks it, and so does this
+// service (SRV-30), against the device key identity vouches for: a stolen
+// session alone cannot drain a vault, and neither can the gateway's own key.
+// Nothing leaves without the ledger's signed receipt for it.
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createService, serviceTlsFromEnv, openDb, env, json, bytes, parseJson, verifyAssertion, unb64u, HttpError, isMain } from "@humid/svc";
+import { createService, serviceTlsFromEnv, openDb, env, json, bytes, parseJson, verifyAssertion, verifyStatement, unb64u, HttpError, isMain } from "@humid/svc";
+import { holderProofs, checkReceipt } from "@humid/svc/holder";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
-import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
+import { sha3_256, toHex, sealLiveMessage } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function createVault({
   /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
@@ -24,6 +29,9 @@ export function createVault({
   port = Number(env("PORT", "8082")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
+  /** SRV-30: identity's and the ledger's statement key (the core role's), and keyshare's (the keys role's). */
+  corePk = env("HUMID_CORE_STATEMENT_PK"),
+  keysPk = env("HUMID_KEYS_STATEMENT_PK"),
   quotaBytes = Number(env("VAULT_QUOTA_BYTES", String(250 * 1024 * 1024))),
   maxObjectBytes = Number(env("VAULT_MAX_OBJECT_BYTES", String(50 * 1024 * 1024))),
 } = {}) {
@@ -73,12 +81,9 @@ export function createVault({
     if (idx.length < 28 || idx.length > 4096) throw new HttpError(400, "bad_index", "Index entry has an invalid size");
     return idx;
   };
-  const requireStepUp = (claims) => {
-    const s = claims.stepUp;
-    if (!s || Date.now() - s.at > STEP_UP_MAX_AGE_MS) {
-      throw new HttpError(403, "step_up_required", "This needs a fresh biometric check on your device.");
-    }
-  };
+  // SRV-30: the holder's own approval of exactly this action, checked here, not taken from the gateway.
+  const proofs = holderProofs({ corePk });
+  const requireStepUp = (claims, method, path) => proofs.check(claims.holder, { sub: requireUser(claims), method, path });
   const requireUser = (claims) => {
     if (!claims.sub) throw new HttpError(401, "unauthenticated", "Sign in first");
     return claims.sub;
@@ -115,7 +120,11 @@ export function createVault({
       const u = usage(owner);
       if (u.b + body.length > quotaBytes) throw new HttpError(507, "quota_exceeded", "Your vault is full");
       const now = new Date().toISOString();
-      const id = randomUUID();
+      // The app picks the id (CRYPTO-05): its encrypted index entry is sealed to it before upload.
+      const asked = headers["x-humid-object-id"];
+      if (asked != null && !UUID_V4.test(String(asked))) throw new HttpError(400, "bad_id", "An item id is a lowercase UUID v4");
+      if (asked != null && db.prepare("SELECT 1 FROM objects WHERE id = ?").get(String(asked))) throw new HttpError(409, "id_taken", "That item id is already in use");
+      const id = asked != null ? String(asked) : randomUUID();
       const blob = writeBlob(body);
       db.prepare(`INSERT INTO objects (id, owner, blob, size, idx, sealed_at, uploaded_at, updated_at, interrupt_method, assurance, signer_fp)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -123,9 +132,16 @@ export function createVault({
       return json(201, view(own(owner, id)));
     }, { bodyLimit: maxObjectBytes }],
 
+    // One item's metadata, as the list shows it: the gateway checks a document is the caller's
+    // before it asks for a ledger entry about opening it.
+    ["GET", "/objects/:id/meta", ({ claims, params }) => json(200, view(own(requireUser(claims), params.id)))],
+
+    // Fail closed on the ledger: the envelope leaves only with the ledger's signed receipt for
+    // opening this document under this very approval, so no open goes unrecorded.
     ["GET", "/objects/:id", ({ claims, params }) => {
       const owner = requireUser(claims);
-      requireStepUp(claims);
+      const ok = requireStepUp(claims, "GET", `/vault/objects/${params.id}`);
+      checkReceipt(corePk, claims.receipt, { sub: owner, type: "object.opened", want: { id: params.id, proof: ok.proofHash } });
       const r = own(owner, params.id);
       return bytes(200, readFileSync(blobPath(r.blob)), MEDIA_TYPE, { "x-humid-size": String(r.size) });
     }],
@@ -140,7 +156,7 @@ export function createVault({
 
     ["DELETE", "/objects/:id", ({ claims, params }) => {
       const owner = requireUser(claims);
-      requireStepUp(claims);
+      requireStepUp(claims, "DELETE", `/vault/objects/${params.id}`);
       const r = own(owner, params.id);
       db.prepare("DELETE FROM objects WHERE id = ?").run(r.id);
       const still = db.prepare("SELECT 1 FROM objects WHERE blob = ? LIMIT 1").get(r.blob);
@@ -163,13 +179,17 @@ export function createVault({
     // Check-in erased this account's document keys (docs/CHECKIN.md): its envelopes and index
     // entries go too, except `keep`, the documents whose keys keyshare still holds (decoys, and
     // anything sealed since), and anything uploaded after `before` (the erase), which a sweep
-    // racing an upload must never take. Gateway only; the holder's live check isn't there to ask for.
+    // racing an upload must never take. The holder's live check isn't there to ask for, so this
+    // needs keyshare's signed word (SRV-30): the erase token it gives for exactly this account,
+    // erase time and keep list. The gateway's key alone deletes nothing.
     ["DELETE", "/internal/objects", ({ claims, body }) => {
       if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
       const owner = requireUser(claims);
       const b = parseJson(body) || {};
-      const keep = new Set((b.keep || []).map(String));
-      const before = Number(b.before);
+      const e = verifyStatement(keysPk, b.token, "erased");
+      if (e.owner !== owner) throw new HttpError(403, "not_vouched", "That erase is for another account.");
+      const keep = new Set((Array.isArray(e.keep) ? e.keep : []).map(String));
+      const before = Number(e.erasedAt);
       if (!Number.isFinite(before)) throw new HttpError(400, "bad_request", "Say when the erase happened.");
       const rows = db.prepare("SELECT id, blob, uploaded_at FROM objects WHERE owner = ?").all(owner)
         .filter((r) => !keep.has(r.id) && Date.parse(r.uploaded_at) <= before);
@@ -186,7 +206,7 @@ export function createVault({
     // Erase everything (account closure). Needs a step-up like any destructive act.
     ["DELETE", "/objects", ({ claims }) => {
       const owner = requireUser(claims);
-      requireStepUp(claims);
+      requireStepUp(claims, "DELETE", "/identity/me");
       const rows = db.prepare("SELECT id, blob FROM objects WHERE owner = ?").all(owner);
       db.prepare("DELETE FROM objects WHERE owner = ?").run(owner);
       for (const r of rows) {
@@ -196,10 +216,13 @@ export function createVault({
     }],
   ];
 
-  return createService({ tls,
+  if (!corePk || !keysPk) throw new Error("vault needs HUMID_CORE_STATEMENT_PK and HUMID_KEYS_STATEMENT_PK (run setup again, or init on Windows)");
+  const svc = createService({ tls,
     name: "vault", port, routes, bodyLimit: 64 * 1024,
     verify: (t) => verifyAssertion(internalPk, t, "vault"),
   });
+  // close: release the database file (Windows can't delete an open one; tests remove their data)
+  return { ...svc, close: () => db.close() };
 }
 
 if (isMain(import.meta.url)) createVault().start();

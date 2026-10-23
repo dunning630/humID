@@ -4,7 +4,7 @@
 
 import { clientHello, clientFinish, keyId, fingerprint } from "./handshake.js";
 import { sealFrame, openFrame, parseHeader, DIR, MEDIA_TYPE } from "./frame.js";
-import { stepUpMessage, liveMessage, actionBytes } from "./proofs.js";
+import { stepUpMessage, liveMessage, actionBytes, verifyPolicy } from "./proofs.js";
 import { unb64u, toHex, equal, wipe, utf8, fromUtf8 } from "./primitives.js";
 
 export class HtpError extends Error {
@@ -36,7 +36,16 @@ export class HtpClient {
     this.server = null;
     this.session = null;
     this.seq = 0;
+    // Sequence numbers reserved by ticket() and not yet sent. A seq is the frame's AES-GCM
+    // nonce under the session's c2s key, so each one may be used for exactly one frame.
+    this.reserved = new Set();
     this.onSessionLost = null;
+    // The newest signed policy this client has accepted ({ policy, at, sig }), from the device's
+    // storage or this run. A signed policy older than it is a replay and is never used.
+    this.policySeen = null;
+    // A one-use pass the server handed a signed-in session, sent with the next handshake so a
+    // returning holder isn't held up by limits shared with strangers (V76-03). Spent on use.
+    this.helloPass = null;
   }
 
   /** fetch with the request timeout: a hung connection surfaces as TimeoutError (a network failure) instead of waiting forever. */
@@ -58,22 +67,42 @@ export class HtpClient {
     if (this.pinnedKid && kid !== this.pinnedKid) {
       throw new HtpError("server_identity_changed", "This server's identity does not match the one this app trusts. Refusing to connect.");
     }
-    // policy is a UI hint (e.g. whether demo identities are accepted); the server enforces it.
-    // A hint for the app's UI only; the gateway enforces the policy on every sign-in.
-    const devicePolicy = ["attested", "biometric", "demo"].includes(j.policy?.devicePolicy) ? j.policy.devicePolicy : "attested";
+    // The policy hint is believed only with the server's signature under the key this kid
+    // binds (CRYPTO-07, PC-13): a proxy that ends TLS can't point "Buy an access code"
+    // elsewhere, turn split keys off, or hide features. Unsigned, altered or stale, it's
+    // ignored and the strict defaults below apply. The gateway enforces policy either way.
+    //
+    // Within its 7 days a signed policy could be saved and served again later, after the server
+    // changed it (a new shop link, Check-in turned on). So the client remembers the newest one
+    // it has accepted (`policySeen`; the app keeps it in the identity record) and uses whichever
+    // is newer: a replayed older one, or none at all, never takes the place of the newest the
+    // server has signed. The remembered one is checked again here, so a stored copy can't be
+    // forged either; only a newer signature from this server replaces it.
+    const kidBytes = keyId(keys.kemPk, keys.xPk, keys.dsaPk);
+    const fresh = verifyPolicy(keys.dsaPk, kidBytes, j.policy, j.policySig) ? { policy: j.policy, at: Number(j.policySig.at), sig: String(j.policySig.sig) } : null;
+    const s = this.policySeen;
+    const seen = s && verifyPolicy(keys.dsaPk, kidBytes, s.policy, { at: s.at, sig: s.sig }, Date.now(), { maxAgeMs: Infinity }) ? s : null;
+    const best = fresh && (!seen || fresh.at >= seen.at) ? fresh : seen;
+    if (best !== s) this.policySeen = best;
+    const policySigned = !!best;
+    const policyReplayed = !!(fresh && seen && fresh.at < seen.at);
+    const p = best ? best.policy : {};
+    const devicePolicy = ["attested", "biometric", "demo"].includes(p.devicePolicy) ? p.devicePolicy : "attested";
     // Older servers don't say: they had no payment step, so "open".
-    const registration = j.policy?.registration === "pass" ? "pass" : "open";
-    const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(j.policy?.passBuyUrl || "")) ? j.policy.passBuyUrl : null;
+    const registration = p.registration === "pass" ? "pass" : "open";
+    const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(p.passBuyUrl || "")) ? p.passBuyUrl : null;
     // Split keys: only a server with a keyshare service keeps a document's second key. An older one would drop it.
-    const splitKeys = j.policy?.splitKeys === true;
+    const splitKeys = p.splitKeys === true;
     // Check-in (docs/CHECKIN.md): the windows (hours) and grace periods (minutes) the server allows; null if it doesn't offer it.
     const ints = (a, max) => (Array.isArray(a) && a.length > 0 && a.length <= 12 && a.every((n) => Number.isInteger(n) && n >= 0 && n <= max) ? [...a] : null);
-    const ck = j.policy?.checkin;
+    const ck = p.checkin;
     const checkin = ck && ints(ck.windowsH, 168) && ints(ck.graceMin, 1440) ? { windowsH: ints(ck.windowsH, 168), graceMin: ints(ck.graceMin, 1440) } : null;
     // 4.0: whether this server runs a messaging relay and stamp issuer (shows the Messages tab).
-    const spc = Number(j.policy?.messaging?.stampsPerCheck);
-    const messaging = j.policy?.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging } };
+    const spc = Number(p.messaging?.stampsPerCheck);
+    // stampNeeds: "hardware" (stamps only for a phone whose secure chip proves the check) or "any" (dev server)
+    const stampNeeds = p.messaging?.stampNeeds === "any" ? "any" : "hardware";
+    const messaging = p.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc, stampNeeds } : null;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging }, policySigned, policyReplayed, policyAt: best?.at ?? null };
     return this.server;
   }
 
@@ -81,9 +110,12 @@ export class HtpClient {
   async connect() {
     const server = await this.serverKeys();
     const { wire, state } = clientHello(server);
+    const pass = this.helloPass;
+    this.helloPass = null;
+    if (pass) this.onHelloPassUsed?.();
     const res = await this.request(`${this.base}/htp/v1/hello`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(pass ? { "x-humid-hello-pass": pass } : {}) },
       body: JSON.stringify(wire),
     });
     if (!res.ok) {
@@ -97,6 +129,7 @@ export class HtpClient {
     this.close();
     this.session = clientFinish(state, await res.json());
     this.seq = 0;
+    this.reserved.clear();
     return this.session;
   }
 
@@ -122,6 +155,7 @@ export class HtpClient {
     const action = { method: m, path, device: String(a.device), nonce: unb64u(String(a.nonce)), exp: Number(a.exp) };
     const s = this.session;
     const seq = ++this.seq;
+    this.reserved.add(seq);
     const at = Date.now();
     const bytes = actionBytes(action);
     return { sid: s.sidText, seq, at, method: m, path, action, actionBytes: bytes, live: liveMessage(s.th, seq, m, path, at, bytes) };
@@ -149,6 +183,9 @@ export class HtpClient {
       else ({ ticket: t, sign } = stepUp);
       if (!this.session || t.sid !== this.session.sidText) throw new HtpError("session_changed", "The session ended before this request was approved. Try again.");
       if (t.method !== meta.m || t.path !== path) throw new HtpError("ticket_mismatch", "This approval was for a different request.");
+      // One ticket, one frame (CRYPTO-06): sending a second frame under the same seq would reuse
+      // an AES-GCM nonce under the same key. A retry needs a new ticket and a new live check.
+      if (!this.reserved.delete(t.seq)) throw new HtpError("ticket_used", "This approval was already used. Approve the request again.");
       seq = t.seq;
       const message = stepUpMessage(this.session.th, seq, meta.m, path, bytes, t.at, t.actionBytes);
       const { sig, interrupt, live } = await sign(message);
@@ -190,6 +227,7 @@ export class HtpClient {
   close() {
     if (this.session) wipe(this.session.c2s, this.session.s2c);
     this.session = null;
+    this.reserved.clear();
   }
 }
 

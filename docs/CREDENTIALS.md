@@ -108,6 +108,15 @@ What that buys:
 |---|---|---|
 | `issuer+holder` | A trusted issuer signed it and the presenting device holds its key | Yes |
 | `issuer` | A trusted issuer signed it; the device didn't or couldn't prove it holds it (a passport chip without Active Authentication) | Passports only, and the result says why |
+
+A passport chip whose SOD uses SHA-1 (for its data group hashes, its
+signer's digest or its signature) is refused with `weak_hash`. Doc 9303 has
+allowed only SHA-224/256/384/512 since its 7th edition (2015, Part 12
+§4.4.4), but passports issued earlier with SHA-1 can still be in date, and
+inspection systems still read them; `verifyPassportChip(chip, { allowSha1:
+true })` (or `passiveAuth(..., { allowSha1 })`) accepts one and the result
+says `weakHash: true` with a note. The recovery service doesn't pass it, so a
+SHA-1 chip can't anchor or recover an account (CREDS-08).
 | `signature-only` | The issuer's signature verifies but its root isn't in the trust list | Only with `allowUntrustedIssuer` (the holder filing their own ID before the phone has trust lists); the device proof is still required |
 | `printed` | Read from an unsigned barcode or MRZ | Never as proof; can't back a claim |
 
@@ -118,7 +127,16 @@ that answer the question:
 
 - `age_over_18/21/25/65` from the issuer's own flag when shared, otherwise
   derived from the birth date (and marked `derived`).
-- `valid_document` from the expiry date and the revocation check.
+- `valid_document`: `true` only when the document hasn't expired, the
+  issuer's revocation list was checked (`checkStatus`) and says valid, and the
+  presenting device proved it holds the credential. Without a status check,
+  for a credential whose issuer publishes no list (passports), or for one
+  whose holder wasn't proven (a chip without Active Authentication), it's
+  refused (`unchecked`) unless the caller passes `allowUnchecked: true`; the
+  claim then states what it rests on in `basis.valid_document`
+  (`{ expiry, revocation: "valid" | "no-list" | "unchecked", holder:
+  "proven" | "not-proven" }`), inside the commitment. `false` (expired,
+  revoked, suspended) needs neither.
 - `issuing_country`, `issuing_jurisdiction`.
 - Names, birth date, document number and address only with
   `identifying: true`; a photo never goes into a claim.

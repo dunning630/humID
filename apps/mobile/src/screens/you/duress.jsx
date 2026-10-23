@@ -7,7 +7,7 @@ import { Icon } from "../../brand/icons.jsx";
 import { Mark } from "../../brand/mark.jsx";
 import { Pushed, Sheet, Row, Toggle, Empty } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
-import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, DURESS_HOLD_MS } from "../../core/index.js";
+import { saveDuress, loadDuress, setWitnessAlert, setDecoys as applyDecoys, createTapCounter, createHoldTimer, isDuressHold, describeTaps, seconds, TAP_WINDOW_MS, DURESS_HOLD_MS } from "../../core/index.js";
 import { back, Check } from "./common.jsx";
 
 const HOLD_S = Math.round(DURESS_HOLD_MS / 1000);
@@ -19,12 +19,16 @@ const GESTURES = [
 export function Duress() {
   const decoy = S.decoy.value;
   const info = S.duressInfo.value;
-  const d = decoy ? { enabled: false, gesture: "taps" } : info?.setting || { enabled: false, gesture: "taps" };
+  // a decoy session: "off" with nothing picked, like an account that never set duress up, or
+  // what it saved itself this session (core/safety.js currentDuress, S.decoyEcho)
+  const d = info?.setting || { enabled: false, gesture: "taps" };
   const [enabled, setEnabled] = useState(!!d.enabled);
   const [gesture, setGesture] = useState(d.gesture || "taps");
   const [alert, setAlert] = useState(!!info?.alert);
-  const items = decoy ? [] : S.items.value;
-  const [decoys, setDecoys] = useState(() => new Set(items.filter((i) => i.decoy).map((i) => i.id)));
+  // In a decoy session S.items holds only the decoys, so the list looks like any account's.
+  // Saving there changes nothing anywhere (saveDuress and setDecoys know the session).
+  const items = S.items.value;
+  const [decoys, setDecoys] = useState(() => new Set(decoy ? S.decoyEcho.value?.decoys || [] : items.filter((i) => i.decoy).map((i) => i.id)));
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => { loadDuress(); }, []);
@@ -43,10 +47,10 @@ export function Duress() {
     <Pushed title="Duress gesture" onBack={back}>
       <p class="t2 small">Unlock with your duress gesture and HumID opens normally, but shows only the documents you chose. Meanwhile your vault locks devices, recovery and closing your account for 24 hours, and any recovery waits twice as long for 14 days. <b>Nothing on screen will say so</b>, to you or to anyone watching.</p>
 
-      <div class="card" style={{ marginTop: 14 }}>
+      <div class="card mt-3">
         <Toggle label="Duress gesture" hint="Set on this device. Each device has its own." checked={enabled} onChange={setEnabled} />
         {enabled && (
-          <div class="options" style={{ marginTop: 10 }} role="radiogroup" aria-label="Gesture">
+          <div class="options mt-3" role="radiogroup" aria-label="Gesture">
             {GESTURES.map((g) => (
               <button class="option" role="radio" aria-checked={gesture === g.id} onClick={() => setGesture(g.id)}>
                 <span class="lead"><Icon name={g.icon} /></span>
@@ -61,20 +65,20 @@ export function Duress() {
 
       {enabled && <Practice gesture={gesture} />}
 
-      <div class="card" style={{ marginTop: 12 }}>
-        <div class="row-x" style={{ justifyContent: "space-between" }}><h3>Decoy documents</h3><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
-        <p class="small muted" style={{ marginTop: 4 }}>What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
-        {items.length === 0 ? <p class="small muted" style={{ marginTop: 8 }}>Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
+      <div class="card mt-3">
+        <div class="row-x" style={{ justifyContent: "space-between" }}><h2 class="h3">Decoy documents</h2><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
+        <p class="small muted mt-1">What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
+        {items.length === 0 ? <p class="small muted mt-2">Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
           <div class="checklist">
             {items.map((it) => (
               <Check key={it.id} checked={decoys.has(it.id)} onChange={(v) => { const s = new Set(decoys); v ? s.add(it.id) : s.delete(it.id); setDecoys(s); }}>{it.name}</Check>
             ))}
           </div>
         )}
-        {items.length > 0 && <button class="link" style={{ marginTop: 8 }} onClick={() => setPreview(true)}><Icon name="eye" />Preview the decoy view</button>}
+        {items.length > 0 && <button class="link mt-2" onClick={() => setPreview(true)}><Icon name="eye" />Preview the decoy view</button>}
       </div>
 
-      <p class="small muted" style={{ marginTop: 10 }}>Your face or fingerprint still unlocks either way, so no one can tell from watching. HumID records the signal in your ledger, where only a normal unlock shows it.</p>
+      <p class="small muted mt-3">Your face or fingerprint still unlocks either way, so no one can tell from watching. HumID records the signal in your ledger, where only a normal unlock shows it.</p>
       <div class="actions">
         <button class="btn primary block" disabled={busy || (off && changedAlert)} onClick={save}>{changedAlert && <Icon name="fingerprint" />}Save</button>
         <button class="btn ghost block" data-back onClick={back}>Cancel</button>
@@ -85,7 +89,7 @@ export function Duress() {
           {decoys.size === 0 ? <Empty icon="vault" title="An empty vault" text="With no decoys chosen, a forced unlock shows nothing at all, which may itself look suspicious." /> : (
             <div class="rows">{items.filter((i) => decoys.has(i.id)).map((i) => <Row key={i.id} icon="lock" chevron={false} title={i.name} />)}</div>
           )}
-          <p class="fine" style={{ marginTop: 12 }}>Activity, devices and recovery look calm and ordinary in that session.</p>
+          <p class="fine mt-3">Activity, devices and recovery look calm and ordinary in that session.</p>
           <div class="actions"><button class="btn primary mint block" onClick={() => setPreview(false)}>Got it</button></div>
         </Sheet>
       )}
@@ -93,32 +97,43 @@ export function Duress() {
   );
 }
 
-/** Try the gesture here. Nothing leaves the phone; the result is a line of text. */
+/**
+ * Try the gesture here. Nothing leaves the phone; the result is a line of text. The taps and
+ * the hold are recognised by the same code as the Lock screen (core/gesture.js), and the
+ * line says how far apart the taps were.
+ */
 function Practice({ gesture }) {
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null); // { yes, text }
   const [holding, setHolding] = useState(false);
-  const taps = useRef({ n: 0, t: null });
-  const press = useRef(0);
+  const taps = useRef(null);
+  if (!taps.current) taps.current = createTapCounter({ onDone: (r) => setResult({ yes: r.duress, text: describeTaps(r) }) });
+  const press = useRef(null);
+  if (!press.current) press.current = createHoldTimer();
   const timer = useRef(null);
-  useEffect(() => () => { clearTimeout(taps.current.t); clearTimeout(timer.current); }, []);
-  const onMark = () => {
-    const st = taps.current;
-    st.n += 1;
-    clearTimeout(st.t);
-    st.t = setTimeout(() => { const n = st.n; st.n = 0; setResult(n >= 3 ? "yes" : "no"); }, 650);
+  useEffect(() => () => { taps.current.cancel(); clearTimeout(timer.current); }, []);
+  const onMark = () => taps.current.tap();
+  const down = () => { press.current.down(); setHolding(true); clearTimeout(timer.current); timer.current = setTimeout(() => setHolding(false), DURESS_HOLD_MS); };
+  const up = () => {
+    const held = press.current.up();
+    if (held == null) return;
+    setHolding(false); clearTimeout(timer.current);
+    setResult(isDuressHold(held)
+      ? { yes: true, text: "That would have opened the decoy view." }
+      : { yes: false, text: `That would have been a normal unlock: you held for ${seconds(held)}. Hold for ${seconds(DURESS_HOLD_MS)}.` });
   };
-  const down = () => { press.current = Date.now(); setHolding(true); clearTimeout(timer.current); timer.current = setTimeout(() => setHolding(false), DURESS_HOLD_MS); };
-  const up = () => { if (!press.current) return; const held = Date.now() - press.current; press.current = 0; setHolding(false); clearTimeout(timer.current); setResult(held >= DURESS_HOLD_MS ? "yes" : "no"); };
+  // as on the Lock screen: a press that slides off the button, or is cancelled, counts as nothing
+  const leave = () => { press.current.cancel(); setHolding(false); clearTimeout(timer.current); };
+  const hint = gesture === "taps" ? `Tap the mark three times, each within ${seconds(TAP_WINDOW_MS)} of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
   return (
-    <div class="card" style={{ marginTop: 12 }}>
-      <h3>Practice</h3>
-      <p class="small muted" style={{ marginTop: 4 }}>Try it here as many times as you like. This sends nothing to your vault and locks nothing.</p>
+    <div class="card mt-3">
+      <h2 class="h3">Practice</h2>
+      <p class="small muted mt-1">Try it here as many times as you like. This sends nothing to your vault and locks nothing.</p>
       <div class="hero" style={{ padding: "12px 0" }}>
         {gesture === "taps"
           ? <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999 }} aria-label="The HumID mark (tap it three times)" onClick={onMark}><Mark size={120} /></button>
-          : <button class="btn primary lg block" style={{ opacity: holding ? 0.8 : 1 }} onPointerDown={down} onPointerUp={up} onPointerLeave={up} onPointerCancel={up} onContextMenu={(e) => e.preventDefault()}><Icon name="fingerprint" />Unlock (practice)</button>}
-        <p class="small" role="status" aria-live="polite" style={{ minHeight: 22, color: result === "yes" ? "var(--mint)" : result === "no" ? "var(--amber)" : "var(--muted)" }}>
-          {result === "yes" ? "That would have opened the decoy view." : result === "no" ? (gesture === "taps" ? "That would have been a normal unlock. Three quick taps." : `That would have been a normal unlock. Hold for ${HOLD_S} seconds.`) : gesture === "taps" ? "Tap the mark three times, quickly." : `Press and hold for ${HOLD_S} seconds, then let go.`}
+          : <button class="btn primary lg block" style={{ opacity: holding ? 0.8 : 1 }} onPointerDown={down} onPointerUp={up} onPointerLeave={leave} onPointerCancel={leave} onContextMenu={(e) => e.preventDefault()}><Icon name="fingerprint" />Unlock (practice)</button>}
+        <p class="small" role="status" aria-live="polite" data-practice={result ? (result.yes ? "decoy" : "normal") : ""} style={{ minHeight: 22, color: result?.yes ? "var(--mint)" : result ? "var(--amber)" : "var(--muted)" }}>
+          {result ? result.text : hint}
         </p>
       </div>
     </div>

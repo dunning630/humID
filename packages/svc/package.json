@@ -1,10 +1,16 @@
 {
   "name": "@humid/svc",
   "version": "1.2.0",
+  "private": true,
   "description": "Tiny service kit shared by HumID microservices: HTTP router, internal assertions, SQLite, logging, health, graceful shutdown. No framework.",
   "type": "module",
-  "exports": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./holder": "./src/holder.js"
+  },
   "dependencies": {
+    "@humid/attest": "^1.2.0",
+    "@humid/htp": "^1.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0"
   },

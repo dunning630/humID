@@ -163,7 +163,13 @@ capabilities dropped.
 audience-bound) for every internal call, naming the account, the device,
 key fingerprints and any step-up. Identity, vault, ledger and recovery verify
 it and accept nothing else, so a compromised edge can reach them on the
-network but cannot get them to do anything.
+network but cannot get them to do anything. The assertion says who is calling;
+it isn't enough to release or destroy a secret. For that, vault, keyshare and
+identity check the holder's own step-up signature themselves, the vault needs
+the ledger's signed receipt for the open, and the facts the gateway can't make
+up (which device keys an account has, what the ledger recorded, what Check-in
+erased) are signed with core's and keys' statement keys, which the gateway
+never holds ([SECURITY.md](SECURITY.md#a-compromised-front-host)).
 
 **Split keys.** Since split keys, each document also needs its own key from
 keyshare, released inside the same live step-up that releases its envelope. A
@@ -174,19 +180,23 @@ devices, recovery and duress status, the verified ledger), sealed under a key de
 from the account seed. With no connection, a live check opens that copy instead of
 signing in; nothing that needs the vault works until it reconnects ([SECURITY.md](SECURITY.md#offline)).
 
-**Zero knowledge in the vault.** The vault checks each upload's ML-DSA-87
+**The vault can't read what it stores.** (This is ordinary end-to-end
+encryption, not a zero-knowledge proof system.) The vault checks each upload's ML-DSA-87
 signature, that the signer is the signed-in account, and that the recipient
 is the account's own KEM key. It cannot decrypt anything. Item names and
 types are in an index blob encrypted with a key derived from the account seed.
 Returning a document's bytes needs a step-up made in the last 60 seconds.
 
-**Recovery without a master key.** The recovery service holds only things it
-cannot open: an account seed sealed to a new device's keys, a backup locked
-by the holder's recovery card, and Shamir pieces each sealed to one recovery
-contact. Its job is the rules: a code must match the keys behind it, a card
-or contact recovery is released only after a delay (72 hours by default) and
-can be cancelled from any signed-in device, and every step is in the
-account's ledger.
+**Recovery without a master key.** The holder chooses at setup. In
+*holder-only* mode the recovery service holds nothing for the account and
+refuses to store anything. In *hardened* mode it holds the pieces of
+two-proof recovery: a part locked by the holder's recovery card, parts sealed
+to each witness, security-key parts, and, if a passport is linked, a passport
+piece the operator can open (see [RECOVERY.md](RECOVERY.md#what-the-operator-can-and-cant-do)).
+Any two different proofs rebuild the account key. Its job is the rules: a
+code must match the keys behind it, a recovery is released only after a wait
+set by the evidence (24 hours to 7 days) and can be cancelled from any
+signed-in device, and every step is in the account's ledger.
 
 **Audit that cannot be skipped.** Opening and deleting a document, and
 approving a new device, are recorded in the ledger *before* the response is

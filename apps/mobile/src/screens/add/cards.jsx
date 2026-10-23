@@ -253,7 +253,7 @@ function CardForm({ rec, note, pending, resume, onRetake, onBack, onChange, onDr
       error={err}
       onSeal={save}
       secondary={rec.images.front ? null : { label: "Scan the front instead", onClick: onRetake }}
-      fine="One check seals it on this phone. Your vault list shows only the network, last four digits and expiry." />
+      fine="One live check seals it on this phone. Your vault list shows only the network, last four digits and expiry." />
   );
 }
 

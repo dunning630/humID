@@ -73,3 +73,14 @@ test("service request logs name the route, never the ids or codes in the path", 
   assert.equal(logPath(null, "/station/requests/ABCD1234EFGH/verify"), "/station/…");
   assert.doesNotMatch(logPath(null, "/x\nforged log line"), /\n/);
 });
+
+test("no workspace module can be published to npm by accident (PC-23)", async () => {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const dir = new URL("../packages/", import.meta.url);
+  const open = [];
+  for (const name of await readdir(dir)) {
+    const pkg = JSON.parse(await readFile(new URL(`${name}/package.json`, dir), "utf8"));
+    if (pkg.private !== true) open.push(pkg.name);
+  }
+  assert.deepEqual(open, [], "every packages/*/package.json says \"private\": true");
+});
