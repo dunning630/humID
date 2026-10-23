@@ -97,7 +97,7 @@ export async function makeNewCard() {
 export async function removeCard() {
   try {
     await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => R.api.removeCard(proof));
-    toast("Recovery card removed. It no longer counts on your vault server. To make it useless everywhere, make new recovery pieces.");
+    toast("Recovery card removed. It no longer counts on your vault server, but it still fits your other pieces: destroy it, or make new recovery pieces so it fits nothing new.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -146,7 +146,7 @@ export async function saveContacts(contacts, ownerName) {
 export async function removeContacts() {
   try {
     await withStepUp("removeContacts", [], "contacts", "Remove your witnesses", async ({ proof }) => R.api.removeContacts(proof));
-    toast("Witnesses removed. Their pieces no longer count on your vault server. To make them useless everywhere, make new recovery pieces.");
+    toast("Witnesses removed. Their pieces no longer count on your vault server, but still fit your other pieces: make new recovery pieces so they fit nothing new.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }

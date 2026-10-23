@@ -70,7 +70,9 @@ export function Recovery() {
 
 /**
  * Removing a witness or replacing a card only stops it counting on this server: the old piece
- * still fits with the others. New pieces (a new epoch) make every old one useless everywhere.
+ * still fits with the others. New pieces (a new epoch) can never be combined with old ones. Two
+ * OLD pieces still fit each other, though, because the account key itself doesn't change
+ * (V74-04; rotating it is VAULT-03): so the copy says to destroy them.
  */
 function NewPieces() {
   const [open, setOpen] = useState(false);
@@ -79,7 +81,8 @@ function NewPieces() {
   return (
     <div class="card" style={{ marginTop: 12 }}>
       <h3>Make new recovery pieces</h3>
-      <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces make every old one useless, everywhere: a lost card, a removed witness's piece, copies in old backups.</p>
+      <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces never fit with old ones, so a lost card or a removed witness's piece can't be combined with anything you make from now on.</p>
+      <p class="small t2" style={{ marginTop: 6 }}><b>Old pieces still fit each other.</b> Two of them together (your old card and a former witness's piece, say) could still rebuild your HumID's key, because the key itself stays the same. Destroy old recovery cards. (Witnesses' pieces are deleted from your vault server, but a witness, or an old server backup, could have kept a copy.)</p>
       <p class="small t2" style={{ marginTop: 6 }}>Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
       <div class="actions row" style={{ paddingTop: 8 }}>
         <button class="btn ghost" data-back onClick={() => setOpen(false)}>Not now</button>
@@ -132,7 +135,7 @@ function ModeSheet({ mode, onClose }) {
     <Sheet onClose={onClose} eyebrow="Recovery mode" title="Only my own devices">
       <p class="t2 small">Your vault will open only on devices you've already set up. If you lose every one of them, <b>no one can get your documents back</b>: not your witnesses, not your ID, not HumID.</p>
       {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own check. Only then does the switch happen.`} />}
-      <p class="fine" style={{ marginTop: 8 }}>Pieces already in other hands (a printed card, a witness's phone) stop counting on this server, and a new set of pieces is started, so old ones can't be combined with new ones.</p>
+      <Banner tone="danger" icon="alert" title="Old pieces still fit each other" text="This stops your vault server from keeping or using any recovery piece. But pieces made before (your printed recovery card, a witness's piece, copies in old server backups) can still rebuild your HumID's key offline if two of them come together, because the key itself doesn't change. Destroy your old recovery cards. Your witnesses' pieces are deleted from the server, but a witness or an old backup could have kept a copy. Full protection needs a new account key, which HumID can't make yet." />
       <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 10 }}>
         <span><span class="title">I understand: lose every device, lose my vault</span></span>
         <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
