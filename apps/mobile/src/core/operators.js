@@ -1,12 +1,17 @@
 // For operators: a verification station (vouching for a person in front of you) and
-// managing a HumID server (docs/ADMIN.md). Ordinary holders never see these.
-import { adminCheck } from "@humid/recovery";
+// managing a HumID server (docs/ADMIN.md). Ordinary holders never see these. Also the match
+// code for approving a new device, so @humid/recovery stays out of the first paint.
+import { adminCheck, accountCheck } from "@humid/recovery";
 import * as S from "./state.js";
-import { R } from "./runtime.js";
+import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { withStepUp, showInterrupt, needVault } from "./interrupt.js";
+import { KEY_TYPE } from "./runtime.js";
 import { demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
+
+/** This account's match code for adding the device behind `req` (a looked-up link): it commits to that link's keys too. */
+export const myAccountCheck = (req) => { const a = S.identity.value?.server?.id; return a && req?.kemPk ? accountCheck(a, req.kemPk, req.xPk) : null; };
 
 /* global __HUMID_SIM__ */
 
@@ -29,12 +34,21 @@ export async function stationReadChip(code, { access, demo } = {}) {
   } catch (e) { toast(friendly(e), "error"); return null; }
 }
 
-/** The operator vouches: document genuine, face matches, person present. Their own live check signs it. */
+/**
+ * The operator vouches: document genuine, face matches, person present. Their own live check signs it.
+ * The holder's recovery piece is sealed to their chip, so the station also hands the chip's
+ * authentication key (DG15, just read) to the recovering phone: sealed to that phone's keys,
+ * which the API checks against the recovery code first. The vault server never gets it openable.
+ */
 export async function stationVerify(code, chip, checks) {
   try {
-    return await withStepUp("stationVerify", [code], "station", "Vouch for this person", async ({ proof }) => {
+    const req = await R.api.stationRequest(code);
+    return await withStepUp("stationVerify", [code], "station", "Vouch for this person", async ({ keys, rec, proof, Suite }) => {
       showInterrupt({ progress: 0.6, message: "Checking the chip with its issuing country…" });
-      return R.api.stationVerify(code, { chip, checks, signature: chip.aaSignature }, proof);
+      const chipKey = chip.dg15 && req.kemPk
+        ? (await Suite.seal({ bytes: chip.dg15, name: "HumID ID chip key", type: KEY_TYPE }, keys, { kemPk: req.kemPk, xPk: req.xPk }, { identityCommit: S.identity.value.commit, interrupt: rec })).envelope
+        : undefined;
+      return R.api.stationVerify(code, { chip, checks, signature: chip.aaSignature, chipKey }, proof);
     });
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return null; }
 }
@@ -44,7 +58,8 @@ export async function stationVerify(code, chip, checks) {
 /** How the server is doing, for its administrators; null for everyone else (asked quietly). */
 export async function loadAdminSummary() {
   if (S.offline.value || S.decoy.value || (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true)) { S.adminSummary.value = null; return; }
-  try { S.adminSummary.value = await R.api.adminSummary(); } catch { S.adminSummary.value = null; }
+  const ep = epoch();
+  try { const a = await R.api.adminSummary(); if (!stale(ep)) S.adminSummary.value = a; } catch { if (!stale(ep)) S.adminSummary.value = null; }
 }
 
 /** What a code from the server's admin console asks for. */

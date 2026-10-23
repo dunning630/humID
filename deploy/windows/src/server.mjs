@@ -36,7 +36,7 @@ import { existsSync, writeFileSync, mkdirSync, renameSync, readFileSync, readdir
 import http from "node:http";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { newInternalKeys, isSealedText, isSealedFile, makeCa, issueRoleCert, serverTls, roleOf, daysLeft, ROLES } from "@humid/svc";
+import { newInternalKeys, newStatementKeys, isSealedText, isSealedFile, makeCa, issueRoleCert, serverTls, roleOf, daysLeft, ROLES } from "@humid/svc";
 import { loadSealKey, serverSealer, sealMode } from "./keyguard.mjs";
 import { sealer as makeSealer, writeAtomic } from "@humid/svc";
 import { createIdentity } from "../../../services/identity/src/server.js";
@@ -48,6 +48,12 @@ import { createAccess } from "../../../services/access/src/server.js";
 import { createKeyshare } from "../../../services/keyshare/src/server.js";
 import { createRelay } from "../../../services/relay/src/server.js";
 import { readEnvFile, updateEnvFile, initialEnvText, validate, DEFAULTS } from "./config.mjs";
+
+/** The statement key pairs (SRV-30), private halves sealed: what the gateway's key alone can't do. */
+const newStatements = (seal) => {
+  const core = newStatementKeys(), keys = newStatementKeys();
+  return { core: { sk: seal.sealText("humid.env/HUMID_CORE_STATEMENT_SK", core.sk), pk: core.pk }, keys: { sk: seal.sealText("humid.env/HUMID_KEYS_STATEMENT_SK", keys.sk), pk: keys.pk } };
+};
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
 import { createAdminBridge } from "./adminbridge.mjs";
@@ -98,7 +104,7 @@ function init(changes) {
   const seal = makeSealer(loadSealKey(root, { create: true, env: envNow }));
   if (!existsSync(envFile)) {
     const k = newInternalKeys();
-    writeFileSync(envFile, initialEnvText({ sk: seal.sealText("humid.env/HUMID_INTERNAL_SK", k.sk), pk: k.pk }), { mode: 0o600 });
+    writeFileSync(envFile, initialEnvText({ sk: seal.sealText("humid.env/HUMID_INTERNAL_SK", k.sk), pk: k.pk }, newStatements(seal)), { mode: 0o600 });
     process.stdout.write(`Created ${envFile} with a new internal key pair${seal.on ? " (the private half sealed)" : ""}.\n`);
   } else {
     // Older installs may lack newer settings: add any that are missing, keep the rest.
@@ -106,6 +112,11 @@ function init(changes) {
     const missing = Object.fromEntries(DEFAULTS.filter(([k]) => !(k in cur)).map(([k, v]) => [k, v]));
     if (!cur.HUMID_INTERNAL_PK) Object.assign(missing, (({ sk, pk }) => ({ HUMID_INTERNAL_SK: seal.sealText("humid.env/HUMID_INTERNAL_SK", sk), HUMID_INTERNAL_PK: pk }))(newInternalKeys()));
     else if (cur.HUMID_INTERNAL_SK && seal.on && !isSealedText(cur.HUMID_INTERNAL_SK)) missing.HUMID_INTERNAL_SK = seal.sealText("humid.env/HUMID_INTERNAL_SK", cur.HUMID_INTERNAL_SK); // seal an older install's key in place
+    // An install from before SRV-30 gets its statement keys (a core or keys machine gets them from its pki bundle).
+    if (!cur.HUMID_CORE_STATEMENT_PK && cur.HUMID_INTERNAL_SK !== "") {
+      const st = newStatements(seal);
+      Object.assign(missing, { HUMID_CORE_STATEMENT_SK: st.core.sk, HUMID_CORE_STATEMENT_PK: st.core.pk, HUMID_KEYS_STATEMENT_SK: st.keys.sk, HUMID_KEYS_STATEMENT_PK: st.keys.pk });
+    }
     if (Object.keys(missing).length) updateEnvFile(envFile, missing);
   }
   if (Object.keys(changes).length) set(changes);
@@ -209,22 +220,32 @@ async function run({ service }) {
   const opts = (name, role, offset) => remote
     ? { port: base + offset, tls: tlsFor[role], dataDir: data(name), internalPk: pk }
     : { port: 0, tls: null, dataDir: data(name), internalPk: pk };
+  // A machine that no longer runs core or keys shouldn't keep their signing keys (after a split, they live there).
+  if (!here3("core") && process.env.HUMID_CORE_STATEMENT_SK) log("warn", "this machine doesn't run core but humid.env still holds HUMID_CORE_STATEMENT_SK: clear it (humid set HUMID_CORE_STATEMENT_SK=)");
+  if (!here3("keys") && process.env.HUMID_KEYS_STATEMENT_SK) log("warn", "this machine doesn't run keys but humid.env still holds HUMID_KEYS_STATEMENT_SK: clear it (humid set HUMID_KEYS_STATEMENT_SK=) once the keys machine is running");
+  // SRV-30: statement keys. Private halves only on the role that signs with them; never the gateway's to use.
+  const st = {
+    coreSk: here3("core") ? seal.openText("humid.env/HUMID_CORE_STATEMENT_SK", S("HUMID_CORE_STATEMENT_SK", "")) : "",
+    corePk: S("HUMID_CORE_STATEMENT_PK", ""),
+    keysSk: here3("keys") ? seal.openText("humid.env/HUMID_KEYS_STATEMENT_SK", S("HUMID_KEYS_STATEMENT_SK", "")) : "",
+    keysPk: S("HUMID_KEYS_STATEMENT_PK", ""),
+  };
   if (remote) process.env.HUMID_BIND_HOST = internalBind; // createService reads it when it listens
 
   const svcs = {};
   if (here3("core")) {
-    svcs.identity = createIdentity(opts("identity", "core", 1));
-    svcs.vault = createVault(opts("vault", "core", 2));
-    svcs.ledger = createLedger({ ...opts("ledger", "core", 3), seal });
+    svcs.identity = createIdentity({ ...opts("identity", "core", 1), statementSk: st.coreSk });
+    svcs.vault = createVault({ ...opts("vault", "core", 2), corePk: st.corePk, keysPk: st.keysPk });
+    svcs.ledger = createLedger({ ...opts("ledger", "core", 3), seal, statementSk: st.coreSk });
     // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
-    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
+    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, corePk: st.corePk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
     svcs.access = createAccess({ ...opts("access", "core", 5), seal });
     // Person to person (4.1 preview): mailboxes of fixed-size ciphertext, no accounts, no addresses.
     if (S("HUMID_MESSAGING", "off") === "on") svcs.relay = createRelay(opts("relay", "core", 7));
   }
   // Split keys. On one PC the keyshare data sits beside the vault's, sealed under the same
   // machine key; on VMs the keys role runs on its own machine and storage (docs/DEPLOY-VMS.md).
-  if (here3("keys")) svcs.keyshare = createKeyshare({ ...opts("keyshare", "keys", 6), secretSeal: seal });
+  if (here3("keys")) svcs.keyshare = createKeyshare({ ...opts("keyshare", "keys", 6), secretSeal: seal, corePk: st.corePk, statementSk: st.keysSk });
   await Promise.all(Object.values(svcs).map((x) => x.start()));
   process.env.HUMID_BIND_HOST = host;
   const url = (srv) => `http://${host.includes(":") ? `[${host}]` : host}:${srv.server.address().port}`;
@@ -249,10 +270,12 @@ async function run({ service }) {
       trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
       admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
       checkin: S("HUMID_CHECKIN", "off"), // docs/CHECKIN.md
+      sharedHelloPerMin: Number(S("HUMID_SHARED_HELLO_PER_MIN", "600")), // V76-03: the tunnel's visitors can't be told apart
     });
     await gateway.start();
     edge = createEdge({
       port, host, appDir: join(here, "app"), gatewayUrl: local(gateway),
+      trustForwarded: S("HUMID_TRUST_FORWARDED", "off"), // SRV-31: which tunnel header names the visitor, if any
       log: { error: (msg, extra) => log("error", msg, extra) },
     });
   } else {
@@ -343,6 +366,11 @@ function pki(sub, args) {
     writeAtomic(join(out, `${role}.crt`), c.certPem, 0o644);
     writeAtomic(join(out, `${role}.key`), c.keyPem); // plain only for the trip: import seals it and you delete this folder
     writeAtomic(join(out, "internal.pub"), `${env.HUMID_INTERNAL_PK}\n`, 0o644);
+    // SRV-30: the statement keys this role checks, and (core or keys) the one it signs with. Plain only for the trip, like the TLS key.
+    const stOut = { HUMID_CORE_STATEMENT_PK: env.HUMID_CORE_STATEMENT_PK, HUMID_KEYS_STATEMENT_PK: env.HUMID_KEYS_STATEMENT_PK };
+    if (role === "core") stOut.HUMID_CORE_STATEMENT_SK = seal.openText("humid.env/HUMID_CORE_STATEMENT_SK", env.HUMID_CORE_STATEMENT_SK || "");
+    if (role === "keys") stOut.HUMID_KEYS_STATEMENT_SK = seal.openText("humid.env/HUMID_KEYS_STATEMENT_SK", env.HUMID_KEYS_STATEMENT_SK || "");
+    writeAtomic(join(out, "statements.env"), Object.entries(stOut).map(([k, v]) => `${k}=${v || ""}`).join("\n") + "\n");
     writeAtomic(join(out, "README.txt"), `HumID ${role} role bundle. On the ${role} machine (Terminal, Admin):\r\n  humid pki import -Path "<this folder>"\r\nthen delete this folder: it holds the role's private key until it is imported.\r\n`, 0o644);
     process.stdout.write(`Wrote the ${role} bundle to ${out}. Carry it to the ${role} machine, import it, then delete it.\n`);
     return;
@@ -360,7 +388,12 @@ function pki(sub, args) {
     writeAtomic(join(d, `${role}.key`), sealIt(role, readFileSync(join(from, `${role}.key`), "utf8")));
     // the gateway's public key, so this machine checks its assertions; this machine needs no private half
     const pub = readFileSync(join(from, "internal.pub"), "utf8").trim();
-    updateEnvFile(envFile, { HUMID_INTERNAL_PK: pub, HUMID_INTERNAL_SK: "" });
+    // the statement keys for this role (SRV-30): its own private one sealed, the others' public halves; no others' private ones
+    const stIn = existsSync(join(from, "statements.env")) ? readEnvFile(join(from, "statements.env")) : {};
+    const stSet = { HUMID_CORE_STATEMENT_PK: stIn.HUMID_CORE_STATEMENT_PK || "", HUMID_KEYS_STATEMENT_PK: stIn.HUMID_KEYS_STATEMENT_PK || "", HUMID_CORE_STATEMENT_SK: "", HUMID_KEYS_STATEMENT_SK: "" };
+    if (role === "core" && stIn.HUMID_CORE_STATEMENT_SK) stSet.HUMID_CORE_STATEMENT_SK = seal.sealText("humid.env/HUMID_CORE_STATEMENT_SK", stIn.HUMID_CORE_STATEMENT_SK);
+    if (role === "keys" && stIn.HUMID_KEYS_STATEMENT_SK) stSet.HUMID_KEYS_STATEMENT_SK = seal.sealText("humid.env/HUMID_KEYS_STATEMENT_SK", stIn.HUMID_KEYS_STATEMENT_SK);
+    updateEnvFile(envFile, { HUMID_INTERNAL_PK: pub, HUMID_INTERNAL_SK: "", ...stSet });
     process.stdout.write(`Imported the ${role} certificate${seal.on ? " (its key sealed)" : ""} and the gateway's public key. Delete ${from} now.\n`);
     return;
   }

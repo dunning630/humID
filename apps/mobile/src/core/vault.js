@@ -16,19 +16,28 @@ import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline, markPicking } from "./session.js";
 import { openChip } from "./nfc.js";
 import { mark } from "./perf.js";
+import { updateIdentity } from "./identity.js";
+import { PINNED_KID, SIM } from "./config.js";
+import { knownRevs, nextRev, noteRevs } from "./indexrev.js";
+import { screenReadersOk } from "./readers.js";
+
+/** A build pinned to its server's key id (every published build; never the simulation). */
+const pinnedRelease = () => !!PINNED_KID && !SIM;
 
 /* global __HUMID_ALLOW_DEMO__ */
 
 /**
- * The split-keys policy hint arrives in plain JSON before any session exists, so a proxy
- * could strip it. Remember the first time a vault says it splits keys, in the identity
- * record, and refuse to seal unsplit from then on.
+ * The split-keys policy hint is signed by the server (CRYPTO-07), but an unsigned or stripped
+ * hint simply reads as "no split keys". Remember the first time a vault says it splits keys,
+ * in the identity record, and refuse to seal unsplit from then on. A release build pinned to
+ * its server knows that server splits keys, so it starts out as if it had seen the hint
+ * (VAULT-04): a hostile network on the very first run can't make it seal unsplit either.
  */
-async function splitKeysRatchet(id) {
+export async function splitKeysRatchet(id) {
   const hint = !!S.server.value?.policy?.splitKeys;
+  if (!hint && pinnedRelease()) throw Object.assign(new Error("Your vault didn't offer split keys this time, so nothing was sealed. Try again on a connection you trust."), { code: "split_keys_missing" });
   if (hint && !id.splitKeysSeen) {
-    const next = { ...id, splitKeysSeen: true };
-    try { await R.store.putIdentity(next); S.identity.value = next; } catch { /* remembered next time */ }
+    try { await updateIdentity((cur) => { if (cur.splitKeysSeen) return null; cur.splitKeysSeen = true; }); } catch { /* remembered next time */ }
     return true;
   }
   if (!hint && id.splitKeysSeen) throw Object.assign(new Error("Your vault didn't offer split keys this time, so nothing was sealed. Try again on a connection you trust."), { code: "split_keys_missing" });
@@ -42,9 +51,45 @@ const idscan = () => import("@humid/idscan");
 const cards = () => import("@humid/cards");
 const walletPkg = () => import("@humid/wallet");
 
-async function decodeIndex(raw) {
-  try { return classify(await suite().openIndex(R.indexKey, fromB64u(raw))); }
+/**
+ * An item's index entry, opened as that item's (a v2 entry moved from another item doesn't
+ * open). `revs`: the highest rev this device has seen per item; an older entry than that is
+ * one the vault served back (CRYPTO-05), and none of what it says is believed.
+ */
+async function decodeIndex(it, revs) {
+  let entry;
+  try { entry = await suite().openIndex(R.indexKey, fromB64u(it.index), { id: it.id }); }
   catch { return classify({ name: "Unreadable item", type: "" }); }
+  if (entry.rev < (revs.get(it.id) || 0)) return classify({ name: "Changed on the server", type: "", rolledBack: true });
+  // An entry from before index v2 (rev 0) is kept as it was opened, to be sealed again as v2.
+  return entry.rev === 0 ? { ...classify(entry), v1: entry } : classify(entry);
+}
+
+/** How many old (v1) index entries one refresh re-seals as v2, so a large vault upgrades over a few visits. */
+const UPGRADE_PER_REFRESH = 25;
+const upgrading = new Set();
+
+/**
+ * Re-seal entries from before index v2 as v2 ({ id, rev }), unchanged otherwise (CRYPTO-05
+ * round 2). Until this runs for an item, the vault could still serve an older v1 entry for
+ * it; from then on the phone refuses anything older. Only in a real online session (a decoy
+ * session writes nothing), quietly, and never over an entry that came back stale.
+ */
+async function upgradeOldEntries(items, ep) {
+  if (S.offline.value || S.decoy.value || !R.indexKey) return;
+  const todo = items.filter((i) => i.v1 && !i.rolledBack && !upgrading.has(i.id)).slice(0, UPGRADE_PER_REFRESH);
+  for (const it of todo) {
+    if (stale(ep)) return;
+    upgrading.add(it.id);
+    try {
+      const { rev: _old, ...entry } = it.v1;
+      const rev = await nextRev(it);
+      await R.api.rename(it.id, await suite().sealIndex(R.indexKey, entry, { id: it.id, rev }));
+      await noteRevs([[it.id, rev]]);
+      it.rev = rev; delete it.v1;
+    } catch { /* tried again on the next refresh */ }
+    finally { upgrading.delete(it.id); }
+  }
 }
 
 export async function refresh() {
@@ -54,10 +99,14 @@ export async function refresh() {
   try {
     const { items, usage } = S.offline.value ? { items: R.offline?.items || [], usage: R.offline?.usage || null } : await R.api.list();
     keepOffline({ items, usage });
+    const revs = await knownRevs();
     const decoded = await Promise.all(items.map(async (it) => {
-      const meta = await decodeIndex(it.index);
+      const meta = await decodeIndex(it, revs);
       return { ...it, ...meta, id: it.id, size: meta.size ?? it.size, envelopeSize: it.size };
     }));
+    if (!S.offline.value) await noteRevs(decoded.filter((i) => i.rev > 0).map((i) => [i.id, i.rev]));
+    const rolled = decoded.filter((i) => i.rolledBack).length;
+    if (rolled && !S.decoy.value) toast(`Your vault sent an older version of the details of ${rolled === 1 ? "one document" : `${rolled} documents`} than this phone last saw. They're shown as "Changed on the server".`, "warn");
     // A decoy session shows only the documents marked for it, and their usage; only
     // their names are kept in memory (for Activity), never the others'.
     if (stale(ep)) return; // locked meanwhile: nothing from this session is shown
@@ -65,6 +114,7 @@ export async function refresh() {
     for (const i of shown) R.knownNames.set(i.id, i.name);
     const u = S.decoy.value ? { ...usage, bytes: shown.reduce((n, i) => n + (i.envelopeSize || 0), 0), count: shown.length } : usage;
     batch(() => { S.items.value = shown; S.usage.value = u; });
+    await upgradeOldEntries(decoded, ep);
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 401)) toast(friendly(e), "error");
   } finally { S.loading.value = false; }
@@ -227,15 +277,22 @@ async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], ext
     }
     if (stamp) extra = { ...extra, place: stamp };
     mark("seal-place");
+    // The item's id is chosen here, so its index entry can be sealed to it (CRYPTO-05).
+    const objectId = crypto.randomUUID();
+    const entry = { name: finalName, type, size, kind, ...(tags.length ? { tags } : {}), addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra };
+    const rev = Date.now();
     const { envelope, index } = await withKeys("seal", `Seal ${finalName}`, async ({ keys, rec, live }) => {
       mark("seal-keys");
       const sealed = Suite.finishSeal(prepared, keys, { identityCommit: id.commit, interrupt: { ...rec, ...(live ? { live: b64u(live.sig) } : {}) } });
-      const idx = await Suite.sealIndex(R.indexKey, { name: finalName, type, size, kind, ...(tags.length ? { tags } : {}), addedAt: new Date().toISOString(), plainHash, ...(share ? { split: true } : {}), ...extra });
+      const idx = await Suite.sealIndex(R.indexKey, entry, { id: objectId, rev });
       mark("seal-signed");
       return { envelope: sealed.envelope, index: idx };
     }, { challenge: sealLiveMessage(prepared.ciphertextHash) });
     S.sealing.value = "upload";
-    await R.api.upload(envelope, index, share);
+    const stored = await R.api.upload(envelope, index, share, objectId);
+    // A vault from before 4.1 picks its own id: the entry is sealed again to that one.
+    if (stored?.id && stored.id !== objectId) await R.api.rename(stored.id, await Suite.sealIndex(R.indexKey, entry, { id: stored.id, rev: rev + 1 }));
+    await noteRevs([[stored?.id || objectId, stored?.id && stored.id !== objectId ? rev + 1 : rev]]);
     mark("seal-uploaded");
     wipe(share); share = null;
     S.sealing.value = "done";
@@ -243,7 +300,7 @@ async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], ext
     mark("seal-refreshed");
     await sleep(650);
     S.sealing.value = null;
-    toast(`${finalName} sealed. Only your face or fingerprint can open it.`);
+    toast(`${finalName} sealed. It opens only after a live check on one of your devices.`);
     return true;
   } catch (e) {
     wipe(bytes, share);
@@ -286,6 +343,7 @@ export async function openItem(item) {
   const ep = epoch();
   try {
     needVault();
+    if (!(await screenReadersOk(item.type === CARD_TYPE ? "this card" : "this document"))) return;
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     if (stale(ep)) { wipe(bytes); return; } // locked while the check ran: the document is wiped, not shown
     const type = meta.type || item.type || "application/octet-stream";
@@ -326,7 +384,7 @@ export function closeViewer() {
 
 /**
  * Save an unsealed copy to this device. Always its own live check, even from an open
- * viewer, so "every open, save and delete needs a fresh check" is true, and the save is
+ * viewer, so "every open, save and delete needs a live check" is true, and the save is
  * in Activity like any other release.
  */
 export async function saveCopy(item) {
@@ -360,6 +418,14 @@ const indexEntry = (item, patch = {}) => ({
   ...(item.cardInfo ? { cardInfo: item.cardInfo } : {}), ...(item.passInfo ? { passInfo: item.passInfo } : {}), ...patch,
 });
 
+/** Seal a changed index entry to its item at a newer rev, store it, and remember the rev (CRYPTO-05). */
+async function reseal(item, entry) {
+  if (item.rolledBack) throw Object.assign(new Error("This document's details came back older than this phone last saw, so they can't be changed here. Check your vault on a connection you trust."), { code: "index_rolled_back" });
+  const rev = await nextRev(item);
+  await R.api.rename(item.id, await suite().sealIndex(R.indexKey, entry, { id: item.id, rev }));
+  await noteRevs([[item.id, rev]]);
+}
+
 /** Pin an item to the top. Sealed in the item's encrypted index entry, so it shows on every device. */
 export async function setPinned(item, on) {
   const show = () => { S.items.value = S.items.value.map((i) => (i.id === item.id ? { ...i, pinned: on || undefined } : i)); };
@@ -368,7 +434,7 @@ export async function setPinned(item, on) {
     needVault();
     const entry = indexEntry(item);
     if (on) entry.pinned = true; else delete entry.pinned;
-    await R.api.rename(item.id, await suite().sealIndex(R.indexKey, entry));
+    await reseal(item, entry);
     show();
     toast(on ? `${item.name} is pinned to the top.` : `${item.name} is unpinned.`);
   } catch (e) { toast(friendly(e), "error"); }
@@ -383,22 +449,41 @@ export async function setDecoy(item, on) { return setDecoys([{ item, on }]); }
  * on the session alone.
  */
 export async function setDecoys(changes) {
-  const todo = changes.filter(({ item, on }) => !!item.decoy !== !!on);
-  if (S.decoy.value || !todo.length) { if (S.decoy.value) toast("Updated."); return true; }
+  // in a decoy session, what it shows as picked is its own echo, not the real flags
+  const was = S.decoy.value ? new Set(S.decoyEcho.value?.decoys || []) : null;
+  const todo = changes.filter(({ item, on }) => (was ? was.has(item.id) : !!item.decoy) !== !!on);
+  if (!todo.length) return true;
   try {
     needVault();
     const label = todo.length === 1 ? (todo[0].on ? `Show ${todo[0].item.name} in the decoy view` : `Hide ${todo[0].item.name} from the decoy view`) : `Change ${todo.length} decoy documents`;
+    if (S.decoy.value) {
+      // A decoy session looks the same (the same live check, the same words) and changes nothing:
+      // the picks are echoed on its Duress screen until the lock. The items keep their real flag,
+      // so a rename in this session can't drop a document from the real decoy set.
+      await withKeys("decoy", label, async () => null, { challenge: localChallenge("decoy") });
+      const picked = new Set(S.decoyEcho.value?.decoys || []);
+      for (const { item, on } of todo) on ? picked.add(item.id) : picked.delete(item.id);
+      S.decoyEcho.value = { ...(S.decoyEcho.value || {}), decoys: [...picked] };
+      toast(decoyWords(todo));
+      return true;
+    }
     const blobs = await withKeys("decoy", label, async () => {
       const out = [];
-      for (const { item, on } of todo) { const entry = indexEntry(item); if (on) entry.decoy = true; else delete entry.decoy; out.push([item.id, await suite().sealIndex(R.indexKey, entry)]); }
+      for (const { item, on } of todo) {
+        if (item.rolledBack) throw Object.assign(new Error("This document's details came back older than this phone last saw, so they can't be changed here."), { code: "index_rolled_back" });
+        const entry = indexEntry(item); if (on) entry.decoy = true; else delete entry.decoy;
+        const rev = await nextRev(item);
+        out.push([item.id, await suite().sealIndex(R.indexKey, entry, { id: item.id, rev }), rev]);
+      }
       return out;
     }, { challenge: localChallenge("decoy") });
-    for (const [id, blob] of blobs) await R.api.rename(id, blob);
+    for (const [id, blob, rev] of blobs) { await R.api.rename(id, blob); await noteRevs([[id, rev]]); }
     await refresh();
-    toast(todo.length === 1 ? (todo[0].on ? `${todo[0].item.name} will show in the decoy view.` : `${todo[0].item.name} is hidden from the decoy view.`) : "Decoy documents updated.");
+    toast(decoyWords(todo));
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
 }
+const decoyWords = (todo) => (todo.length === 1 ? (todo[0].on ? `${todo[0].item.name} will show in the decoy view.` : `${todo[0].item.name} is hidden from the decoy view.`) : "Decoy documents updated.");
 
 /** Rename an item and set its tags (an array of tag ids; an empty one clears them). */
 export async function renameItem(item, name, tags = item.tags || []) {
@@ -406,7 +491,7 @@ export async function renameItem(item, name, tags = item.tags || []) {
     needVault();
     const entry = indexEntry(item, { name: name.trim().slice(0, 120) || item.name });
     if (tags.length) entry.tags = tags; else delete entry.tags;
-    await R.api.rename(item.id, await suite().sealIndex(R.indexKey, entry));
+    await reseal(item, entry);
     await refresh();
     toast("Updated.");
     return true;

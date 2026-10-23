@@ -71,6 +71,10 @@ if (kid && !/^[0-9a-f]{64}$/.test(kid)) { console.error("HUMID_SERVER_KID must b
 // HUMID_TLOG_COSIGNERS. Built in, so the server can't name cosigners of its own choosing.
 const cosigners = (process.env.HUMID_TLOG_COSIGNERS || "").trim();
 if (cosigners && !cosigners.split(",").every((p) => /^[A-Za-z0-9._-]{1,40}=[A-Za-z0-9_-]{100,}$/.test(p.trim()))) { console.error("HUMID_TLOG_COSIGNERS must be name=base64url-key,…"); process.exit(1); }
+// The ledger's signing-key fingerprint (the ledger logs it as "ledger key"; deploy/setup.sh prints it).
+// Built in, so a new install doesn't trust whatever ledger key it's shown first (PC-04, CRYPTO-01).
+const ledgerKeyFp = (process.env.HUMID_LEDGER_KEY_FP || "").toLowerCase();
+if (ledgerKeyFp && !/^[0-9a-f]{32}$/.test(ledgerKeyFp)) { console.error("HUMID_LEDGER_KEY_FP must be 32 hex characters"); process.exit(1); }
 
 await rm(out, { recursive: true, force: true });
 await mkdir(`${out}assets`, { recursive: true });
@@ -142,6 +146,7 @@ const defines = {
   __HUMID_KID__: JSON.stringify(kid),
   // PC-04: cosigners built into the app; the server's list never counts.
   __HUMID_TLOG_COSIGNERS__: JSON.stringify(cosigners),
+  __HUMID_LEDGER_KEY_FP__: JSON.stringify(ledgerKeyFp),
   __HUMID_VERSION__: JSON.stringify(app.version),
   __HUMID_MODULES__: JSON.stringify(versions),
   __HUMID_ALLOW_DEMO__: JSON.stringify(allowDemo),

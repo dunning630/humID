@@ -9,12 +9,14 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { verifyAndroidKey, AttestationError } from "./android.js";
 import { verifyAppAttest } from "./apple.js";
+import { isLowS } from "./ecdsa.js";
 
 export { verifyAndroidKey, readAndroidAttestation, checkAndroidPolicy, parseKeyDescription, AttestationError, KEY_DESCRIPTION_OID, serialKey } from "./android.js";
-export { revocationList, parseStatusList, STATUS_URL } from "./status.js";
+export { revocationList, parseStatusList, readStatusFile, fetchStatusToFile, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS } from "./status.js";
 export { verifyAppAttest } from "./apple.js";
 export { GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, HUMID_ANDROID_RELEASE_CERT, REVOKED_ANDROID_CERTS } from "./roots.js";
 export { decodeCbor } from "./cbor.js";
+export { isLowS, ecdsaRS, P256_N } from "./ecdsa.js";
 
 /** A P-256 public key as SPKI DER, or throws. */
 export function p256(spkiDer) {
@@ -25,9 +27,13 @@ export function p256(spkiDer) {
   return k;
 }
 
-/** ECDSA P-256 / SHA-256 signature (DER) by a liveness key over `message`. */
+/**
+ * ECDSA P-256 / SHA-256 signature (DER) by a liveness key over `message`.
+ * Low-S only (ATT-01): the other form of the same signature is refused, so a
+ * captured approval can't be re-encoded into a second valid one. See ecdsa.js.
+ */
 export function verifyLiveSig(spkiDer, message, sig) {
-  if (!spkiDer || !sig) return false;
+  if (!spkiDer || !sig || !isLowS(sig)) return false;
   try { return verify("sha256", Buffer.from(message), p256(spkiDer), Buffer.from(sig)); }
   catch { return false; }
 }
@@ -40,7 +46,7 @@ export const appAttestClientData = (challenge, spkiDer) => createHash("sha256").
  * live: { pub (SPKI DER), attestation: { kind: "android-key", chain: [DER…] } | { kind: "apple-app-attest", object: CBOR } }
  * challenge: the bytes the attestation must be bound to (the HTP transcript hash).
  * config: { androidPackages, androidDigests, iosAppId, appAttestEnvironment, roots: { android, apple }, requireLockedBoot }
- * Returns { proof, detail }.
+ * Returns { proof, detail, serials? } (serials: Android only, the chain's certificate serials).
  */
 export function verifyLiveKey(live, challenge, config = {}) {
   try { return verifyLiveKeyInner(live, challenge, config); }
@@ -64,8 +70,9 @@ function verifyLiveKeyInner(live, challenge, config) {
       revokedSerials: typeof config.revokedSerials === "function" ? config.revokedSerials() : config.revokedSerials,
     });
     if (!r.pub.equals(pub)) throw new AttestationError("bad_attestation", "The attested key is not the liveness key.");
-    const { pub: _p, proof, ...detail } = r;
-    return { proof, detail };
+    // serials: every certificate in the chain, so a server can check Google's list again at each sign-in
+    const { pub: _p, proof, serials, ...detail } = r;
+    return { proof, detail, serials };
   }
   if (a.kind === "apple-app-attest") {
     const r = verifyAppAttest({

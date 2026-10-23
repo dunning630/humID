@@ -1,6 +1,7 @@
 {
   "name": "@humid/msg",
   "version": "0.1.0",
+  "private": true,
   "description": "HumID 4.0 (provisional): person-to-person messaging. Per-contact persona IDs, approval with a live check, hybrid post-quantum double ratchet (ML-KEM-1024 + X25519), dual ML-DSA-87 + SLH-DSA handshake signatures, blind live stamps, a relay that sees only padded ciphertext.",
   "type": "module",
   "exports": {

@@ -4,6 +4,10 @@
 # Final image: distroless Node 22 (no shell, no package manager), non-root,
 # one bundled JavaScript file. Roughly 60 MB, most of it the Node runtime.
 
+# TODO(PC-21): pin both base images by digest (FROM node:22-alpine@sha256:…,
+# gcr.io/distroless/nodejs22-debian12:nonroot@sha256:…). The registries weren't
+# reachable when this was written; Dependabot's docker updates keep a pinned digest
+# current. Until then a tag can move under a rebuild.
 FROM node:22-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./

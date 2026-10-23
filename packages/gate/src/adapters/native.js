@@ -11,6 +11,7 @@
 
 import { fromB64, toB64 } from "@humid/codec";
 import { GATE_CONTRACT, ASSURANCE, CANCELLED, interruptRecord } from "../contract.js";
+import { lowS } from "../lows.js";
 
 /** What the native side accepts (it checks too): one line, at most 120 characters. */
 const promptText = (s, fallback) => {
@@ -38,7 +39,7 @@ function live(l) {
   const a = l.attestation;
   return {
     pub: l.pub ? fromB64(l.pub) : null,
-    sig: fromB64(l.sig),
+    sig: lowS(fromB64(l.sig)), // the secure chip may return either form; servers take only low-S
     ...(a ? { attestation: a.kind === "android-key" ? { kind: a.kind, chain: a.chain.map(fromB64) } : { kind: a.kind, object: fromB64(a.object) } } : {}),
   };
 }
@@ -74,6 +75,8 @@ export const nativeAdapter = {
         secret: fromB64(r.secret),
         interrupt: interruptRecord(r.method, purpose, r.assurance, r.detail || {}),
         live: live(r.live),
+        // the platform moved the secret to a new key (Android 2.0 → per-use, LIVE-01): keep this instead
+        ...(r.handle ? { handle: r.handle } : {}),
       };
     } catch (e) { throw mapError(e); }
   },
@@ -82,3 +85,21 @@ export const nativeAdapter = {
     try { await invoke("forget", { handle }); } catch { /* best effort */ }
   },
 };
+
+/**
+ * Android: the accessibility services switched on right now, `[{ id, label, canRead, canAct }]`
+ * (APP-09). An enabled service can read what HumID shows and tap its buttons, which FLAG_SECURE
+ * doesn't stop. Elsewhere, or when it can't be asked: []. Never throws.
+ */
+export async function enabledAccessibilityServices() {
+  if (!inTauri()) return [];
+  try {
+    const r = await invoke("enabled_accessibility_services");
+    return (Array.isArray(r?.services) ? r.services : []).slice(0, 32).map((s) => ({
+      id: String(s?.id || "").slice(0, 200),
+      label: String(s?.label || s?.id || "An app").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 80),
+      canRead: s?.canRead !== false, // unknown counts as able
+      canAct: s?.canAct === true,
+    }));
+  } catch { return []; }
+}

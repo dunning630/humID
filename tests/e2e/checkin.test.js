@@ -15,7 +15,7 @@ import { HumidApi } from "@humid/api";
 import { splitUnwrap } from "@humid/crypto";
 import { makeHolder, sealFor, sealSplitFor } from "./holder.js";
 import { createLedger } from "../../services/ledger/src/server.js";
-import { signRequest } from "@humid/svc";
+import { signRequest, signStatement } from "@humid/svc";
 import { CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS } from "../../services/keyshare/src/server.js";
 
 const H = 3_600_000, MIN = 60_000;
@@ -256,7 +256,7 @@ test("an erase never waits for the ledger: the keys go now, the entry when it's 
   stack.keyshare.tick();
   assert.equal(rows(a.h.id).length, 0, "keys destroyed with the ledger down");
   await stack.gateway.sweepCheckin(); // can't write the entry yet: tries again later
-  stack.ledger = createLedger({ port, dataDir: join(stack.root, "ledger"), internalPk: stack.internalPk });
+  stack.ledger = createLedger({ port, dataDir: join(stack.root, "ledger"), internalPk: stack.internalPk, statementSk: stack.coreKeys.sk });
   await stack.ledger.start();
   await stack.gateway.sweepCheckin();
   const erased = (await a.api.ledger()).entries.filter((e) => e.type === "checkin.erased");
@@ -288,8 +288,9 @@ test("a sweep never takes a document uploaded after the erase", async () => {
   stack.keyshare.tick(); // erased; the sweep hasn't run yet
   const erasedAt = (await a.api.checkin()).erasedAt;
   const fresh = await split(a, "after.txt", "sealed after the erase");
-  // the race: a sweep that listed what to keep before this upload's key reached keyshare
-  const body = JSON.stringify({ keep: [], before: erasedAt });
+  // the race: a sweep that listed what to keep before this upload's key reached keyshare (keyshare's erase token, keep: [])
+  const token = signStatement(stack.keysKeys.sk, "erased", { owner: a.h.id, erasedAt, keep: [] });
+  const body = JSON.stringify({ token });
   const assertion = signRequest(stack.internalSk, { aud: "vault", method: "DELETE", path: "/internal/objects", body: Buffer.from(body), claims: { sub: a.h.id } });
   const res = await fetch(`${stack.upstreams.vault}/internal/objects`, { method: "DELETE", headers: { "x-humid-assertion": assertion, "content-type": "application/json" }, body });
   assert.equal(res.status, 200);

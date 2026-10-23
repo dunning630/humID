@@ -32,8 +32,9 @@
 
 import { mkdirSync } from "node:fs";
 import { randomBytes, createCipheriv, createDecipheriv, hkdfSync } from "node:crypto";
-import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
-import { STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, verifyAssertion, signStatement, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
+import { holderProofs } from "@humid/svc/holder";
+import { sealShare } from "@humid/htp";
 
 const OBJ_RE = /^[0-9a-f-]{36}$/;
 const OWNER_RE = /^hid_[0-9a-f]{40}$/;
@@ -54,6 +55,14 @@ export function createKeyshare({
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
   releasesPerHour = Number(env("HUMID_SHARE_RELEASES_PER_HOUR", "120")),
+  /**
+   * SRV-30. The core role's statement key (public half): identity vouches with it that a device
+   * key belongs to an account, so this service checks the holder's own live proof before it
+   * releases or destroys a key, instead of taking the gateway's word for it.
+   */
+  corePk = env("HUMID_CORE_STATEMENT_PK"),
+  /** This role's statement key: signs "these keys were erased", the only thing that lets the vault drop envelopes without a live check. */
+  statementSk = secretSeal.openText("humid.env/HUMID_KEYS_STATEMENT_SK", env("HUMID_KEYS_STATEMENT_SK")),
   rollbackWindowMs = 120_000,
   now = () => Date.now(),
   mono = () => performance.now(), // Check-in deadlines: never goes back, ignores wall-clock changes
@@ -78,6 +87,8 @@ export function createKeyshare({
                            erased_at INTEGER, cleaned INTEGER NOT NULL DEFAULT 1)`,
     // how many document keys an erase destroyed: the count the ledger records, however many sweeps it takes
     `ALTER TABLE checkin ADD COLUMN erased_count INTEGER`,
+    // keyshare 1.2 (SRV-30): duress sign-ins already acted on
+    `CREATE TABLE duress_used (proof TEXT PRIMARY KEY, at INTEGER NOT NULL)`,
   ]);
   // state is 'armed' or 'erased' on disk; "locked" is only ever worked out from the clock (status()).
   // A deleted share's bytes are overwritten in the database file, not left in free pages.
@@ -110,16 +121,38 @@ export function createKeyshare({
 
   const gatewayOnly = (claims) => { if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only"); };
   const owner = (claims) => { if (!claims.sub) throw new HttpError(401, "unauthenticated", "Sign in first"); return claims.sub; };
-  const stepUp = (claims) => {
-    const s = claims.stepUp;
-    if (!s || now() - s.at > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_required", "This needs a fresh biometric check on your device.");
-  };
+  // SRV-30: the holder's own approval of exactly this action (the app's method and path),
+  // checked here against the device key identity vouches for. The gateway's key alone is not
+  // enough to release or destroy a key. Returns the body the holder signed.
+  const proofs = holderProofs({ corePk, now });
+  const stepUp = (claims, method, path) => proofs.check(claims.holder, { sub: owner(claims), method, path });
+  const signedJson = (proof) => { try { return JSON.parse(Buffer.from(proof.body).toString() || "{}") || {}; } catch { return {}; } };
+  // a duress sign-in erases an armed vault once: its proof carries no time, so the ones acted on are remembered
+  const duressSeen = (ph) => !!db.prepare("SELECT 1 FROM duress_used WHERE proof = ?").get(ph);
   const object = (id) => { if (!OBJ_RE.test(String(id))) throw new HttpError(400, "bad_object", "Unknown document id"); return String(id); };
   const mine = (o, id) => {
     const r = db.prepare("SELECT * FROM shares WHERE object = ?").get(id);
     if (!r || r.owner !== o) throw new HttpError(404, "no_share", "This document has no split key here.");
     return r;
   };
+
+  /** The share row a release of `id` for `o` would open, null for an unsplit document; or the refusal (locked, erased, over the hourly cap). */
+  function releasable(o, id) {
+    const st = status(o);
+    if (st.state === "locked") throw LOCKED();
+    const r = db.prepare("SELECT * FROM shares WHERE object = ?").get(id);
+    if (!r) {
+      // its key went with a Check-in erase, and the vault hasn't dropped the envelope yet
+      if (st.state === "erased" && db.prepare("SELECT cleaned FROM checkin WHERE owner = ?").get(o)?.cleaned === 0) throw ERASED();
+      return null;
+    }
+    if (r.owner !== o) throw new HttpError(404, "no_share", "This document has no split key here.");
+    const t = now();
+    db.prepare("DELETE FROM releases WHERE at < ?").run(t - HOUR);
+    const n = db.prepare("SELECT COUNT(*) AS n FROM releases WHERE owner = ? AND at > ?").get(o, t - HOUR).n;
+    if (n >= releasesPerHour) throw new HttpError(429, "share_rate_limited", "You've opened a lot of documents in the last hour. Wait a while and try again.");
+    return r;
+  }
 
   /* ---------------- Check-in ---------------- */
 
@@ -230,32 +263,42 @@ export function createKeyshare({
       return json(200, { removed: r.changes === 1 });
     }],
 
-    // Release one document's key: its owner, a fresh live step-up, under the hourly cap.
-    ["GET", "/shares/:id", ({ claims, params }) => {
+    // Would a release go through now? { split }, or the error the release would give. Releases
+    // nothing: the gateway asks first so the ledger entry for an open is written before anything
+    // leaves, and a refused open isn't recorded as one.
+    ["GET", "/internal/shares/:id/state", ({ claims, params }) => {
+      gatewayOnly(claims);
+      return json(200, { split: !!releasable(owner(claims), object(params.id)) });
+    }],
+
+    // Release one document's key: its owner, a fresh live step-up for opening exactly this
+    // document (checked here), under the hourly cap. The key leaves sealed to the one-time key
+    // the phone put in the body it signed (CRYPTO-03), so the gateway forwards only ciphertext.
+    ["GET", "/shares/:id", async ({ claims, params }) => {
       const o = owner(claims);
-      stepUp(claims);
-      const st = status(o);
-      if (st.state === "locked") throw LOCKED();
-      const r = db.prepare("SELECT * FROM shares WHERE object = ?").get(object(params.id));
-      if (!r) {
-        // its key went with a Check-in erase, and the vault hasn't dropped the envelope yet
-        if (st.state === "erased" && db.prepare("SELECT cleaned FROM checkin WHERE owner = ?").get(o)?.cleaned === 0) throw ERASED();
-        return json(404, { error: "no_share", message: "This document has no split key." }); // sealed before split keys
-      }
-      if (r.owner !== o) throw new HttpError(404, "no_share", "This document has no split key here.");
+      const id = object(params.id);
+      const signed = stepUp(claims, "GET", `/vault/objects/${id}`);
+      let to = null;
+      try {
+        const t = signedJson(signed).to;
+        if (t) to = { kemPk: unb64u(String(t.kemPk ?? "")), xPk: unb64u(String(t.xPk ?? "")) };
+      } catch { to = null; }
+      const r = releasable(o, id);
+      if (!r) return json(404, { error: "no_share", message: "This document has no split key." }); // sealed before split keys
+      // An app from before CRYPTO-03 asks for the key in the clear: it must update first.
+      if (!to || to.kemPk.length !== 1568 || to.xPk.length !== 32) throw new HttpError(426, "update_required", "Update HumID to open this document: its key now travels sealed to your phone.");
       const t = now();
-      db.prepare("DELETE FROM releases WHERE at < ?").run(t - HOUR);
-      const n = db.prepare("SELECT COUNT(*) AS n FROM releases WHERE owner = ? AND at > ?").get(o, t - HOUR).n;
-      if (n >= releasesPerHour) throw new HttpError(429, "share_rate_limited", "You've opened a lot of documents in the last hour. Wait a while and try again.");
       db.prepare("INSERT INTO releases (owner, at) VALUES (?, ?)").run(o, t);
       db.prepare("UPDATE shares SET released = released + 1, last_released_at = ? WHERE object = ?").run(t, r.object);
-      return json(200, { share: b64u(open(r)) });
+      const share = open(r);
+      try { return json(200, { sealed: b64u(await sealShare(share, to, { account: o, object: r.object })) }); }
+      finally { share.fill(0); }
     }],
 
     // The document was deleted (the gateway calls this after the vault, under the same step-up).
     ["DELETE", "/shares/:id", ({ claims, params }) => {
       const o = owner(claims);
-      stepUp(claims);
+      stepUp(claims, "DELETE", `/vault/objects/${object(params.id)}`);
       mine(o, object(params.id));
       db.prepare("DELETE FROM shares WHERE object = ?").run(params.id);
       return json(200, { deleted: true });
@@ -264,7 +307,7 @@ export function createKeyshare({
     // Account closed: every key goes, and Check-in with it.
     ["DELETE", "/shares", ({ claims }) => {
       const o = owner(claims);
-      stepUp(claims);
+      stepUp(claims, "DELETE", "/identity/me");
       const f = fuses.get(o);
       if (f) { f.raw.fill(0); f.key.fill(0); fuses.delete(o); }
       const r = db.prepare("DELETE FROM shares WHERE owner = ?").run(o);
@@ -287,8 +330,11 @@ export function createKeyshare({
     ["POST", "/internal/checkin/arm", ({ claims, body }) => {
       gatewayOnly(claims);
       const o = owner(claims);
-      stepUp(claims);
-      const r = parseJson(body) || {};
+      // The settings and the decoy marks are the ones the holder signed (holderBody: the app's
+      // body, in this request's body rather than a header); the gateway adds the vault's list.
+      const req = parseJson(body) || {};
+      const h = signedJson(proofs.check({ ...claims.holder, body: req.holderBody }, { sub: o, method: "POST", path: "/checkin/arm" }));
+      const r = { objects: req.objects, windowMs: h.windowMs, maxWindowMs: h.maxWindowMs, graceMs: h.graceMs, keep: h.keep };
       const windowMs = pick(r.windowMs, CHECKIN_WINDOWS_MS, "window");
       const maxWindowMs = pick(r.maxWindowMs ?? r.windowMs, CHECKIN_WINDOWS_MS, "longest window");
       const graceMs = pick(r.graceMs, CHECKIN_GRACE_MS, "grace period");
@@ -333,14 +379,13 @@ export function createKeyshare({
 
     // A check-in: the next deadline, from now. nextWindowMs (optional) up to the armed maximum,
     // e.g. a longer one for the night. Allowed during the grace window.
-    ["POST", "/internal/checkin/check", ({ claims, body }) => {
+    ["POST", "/internal/checkin/check", ({ claims }) => {
       gatewayOnly(claims);
       const o = owner(claims);
-      stepUp(claims);
+      const r = signedJson(stepUp(claims, "POST", "/checkin/check"));
       const st = status(o);
       if (st.state === "erased") throw ERASED();
       if (st.state === "off") throw new HttpError(409, "checkin_off", "Check-in isn't on.");
-      const r = parseJson(body) || {};
       const next = r.nextWindowMs == null ? st.windowMs : pick(r.nextWindowMs, CHECKIN_WINDOWS_MS, "window");
       if (next > st.maxWindowMs) throw new HttpError(400, "bad_checkin", "That's longer than the longest window you allowed.");
       const f = fuses.get(o);
@@ -353,7 +398,7 @@ export function createKeyshare({
     ["POST", "/internal/checkin/disarm", ({ claims }) => {
       gatewayOnly(claims);
       const o = owner(claims);
-      stepUp(claims);
+      stepUp(claims, "POST", "/checkin/disarm");
       const st = status(o);
       if (st.state === "erased") throw ERASED();
       if (st.state === "off") return json(200, { state: "off" });
@@ -367,10 +412,15 @@ export function createKeyshare({
       return json(200, { state: "off" });
     }],
 
-    // Erase now: the gateway saw a duress signal from this account. Nothing happens if it isn't armed.
+    // Erase now: a duress sign-in from this account. Nothing happens if it isn't armed. The
+    // gateway hands over the sign-in itself (the device key signed d = 1 in a live check), and
+    // each one erases once: the gateway's key alone can't set off an erase.
     ["POST", "/internal/checkin/erase", ({ claims }) => {
       gatewayOnly(claims);
       const o = owner(claims);
+      const d = proofs.checkDuress(claims.duress, { sub: o });
+      if (duressSeen(d.proofHash)) throw new HttpError(409, "already_used", "That duress sign-in was already acted on.");
+      db.prepare("INSERT INTO duress_used (proof, at) VALUES (?, ?)").run(d.proofHash, now());
       const st = status(o);
       if (st.state !== "armed" && st.state !== "locked") return json(200, { erased: false });
       erase(o);
@@ -383,7 +433,11 @@ export function createKeyshare({
       gatewayOnly(claims);
       const rows = db.prepare("SELECT owner, erased_at, erased_count FROM checkin WHERE state = 'erased' AND cleaned = 0 LIMIT 50").all();
       const keepOf = db.prepare("SELECT object FROM shares WHERE owner = ?");
-      return json(200, { erased: rows.map((r) => ({ owner: r.owner, erasedAt: r.erased_at, count: r.erased_count ?? null, keep: keepOf.all(r.owner).map((x) => x.object) })) });
+      // token: this service's word that these keys are gone, which the vault needs before it drops the envelopes (SRV-30)
+      return json(200, { erased: rows.map((r) => {
+        const keep = keepOf.all(r.owner).map((x) => x.object);
+        return { owner: r.owner, erasedAt: r.erased_at, count: r.erased_count ?? null, keep, token: signStatement(statementSk, "erased", { owner: r.owner, erasedAt: r.erased_at, keep }, 10 * MINUTE) };
+      }) });
     }],
     ["POST", "/internal/checkin/erased/:owner/cleaned", ({ claims, params }) => {
       gatewayOnly(claims);
@@ -393,6 +447,7 @@ export function createKeyshare({
     }],
   ];
 
+  if (!statementSk) throw new Error("keyshare needs its statement key, HUMID_KEYS_STATEMENT_SK (run setup again, or init on Windows)");
   const svc = createService({ tls, name: "keyshare", port, routes, bodyLimit: 4 * 1024, verify: (t) => verifyAssertion(internalPk, t, "keyshare") });
   return {
     ...svc,

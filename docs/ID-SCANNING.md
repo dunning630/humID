@@ -86,12 +86,17 @@ Each field remembers where it came from, and a better source replaces a
 weaker one: **typed** (the holder's correction) > **chip** > **barcode** >
 **MRZ from a photo**. The record shows the strongest source:
 
-- **Chip.** The data groups are hashed and compared with the hashes the
-  issuing country signed in EF.SOD (`checkIntegrity`). The app doesn't check
-  the Document Signer's certificate chain to the country's CSCA; the recovery
-  service does that, with the CSCA certificates the server trusts, when a chip
-  *anchors* an identity (Security → ID chip). The chip's files stay in the
-  record, so the check can be repeated.
+- **Chip.** The data groups are hashed and compared with the list of hashes
+  in EF.SOD (`checkIntegrity`). The app doesn't check the signature on that
+  list or the Document Signer's chain to the country's CSCA, and a cloned or
+  made-up chip supplies both the files and the list, so a match only shows the
+  copy is self-consistent. The record says so: **"Read from the chip, issuer
+  not verified on this phone"**, in amber (`chip-issuer-unverified`). The green
+  "Read from the chip" tier (`chip`) needs a fresh issuer check passed to
+  `provenance(rec, { chip })`, which the app can't make until it carries a CSCA
+  list. The recovery service does check the chain, with the CSCA certificates
+  the server trusts, when a chip *anchors* an identity (Security → ID chip).
+  The chip's files stay in the record, so the check can be repeated.
 - **Barcode.** Read exactly, but a barcode isn't signed: it proves what's
   printed, not that the card is genuine.
 - **MRZ from a photo.** OCR, checked with the ICAO check digits. A character

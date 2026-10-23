@@ -173,6 +173,37 @@ test("refresh: each source independent; a failing one keeps its last good data",
   assert.equal(store.forVerifier().iaca.length, 1);
 });
 
+test("CREDS-06: master lists only move forward; replaying an older one can't drop CSCAs", () => {
+  const publisher = testCsca("Test Publisher CSCA", "DE");
+  const pin = fingerprint(Buffer.from(publisher.pem.replace(/-----[^-]+-----|\s/g, ""), "base64"));
+  const opts = { source: "icao", publisherCscas: [publisher.pem], publisherPins: [pin] };
+  const a = testCsca("Country A", "AA"), b = testCsca("Country B", "BB");
+  const der = (c) => ({ der: Buffer.from(c.pem.replace(/-----[^-]+-----|\s/g, ""), "base64") });
+  const t0 = new Date(Date.now() - 30 * DAY), t1 = new Date(Date.now() - DAY);
+  const older = masterList({ publisher, cscas: [der(a)], signingTime: t0 });
+  const newer = masterList({ publisher, cscas: [der(a), der(b)], signingTime: t1 });
+  const store = createTrustStore();
+  assert.equal(applyMasterList(store, newer, opts).signedAt, new Date(Math.floor(t1 / 1000) * 1000).toISOString());
+  assert.equal(store.status().cscaCountries, 2);
+  const rev = store.rev;
+  // The attack: last month's list, still validly signed, replayed by a hostile relay.
+  assert.throws(() => applyMasterList(store, older, opts), code("rollback"));
+  assert.equal(store.status().cscaCountries, 2, "country B is kept");
+  assert.equal(store.rev, rev);
+  // Same signing time, different contents; no signing time once one was seen; a list dated ahead.
+  assert.throws(() => applyMasterList(store, masterList({ publisher, cscas: [der(a)], signingTime: t1 }), opts), code("rollback"));
+  assert.throws(() => applyMasterList(store, masterList({ publisher, cscas: [der(a)], signingTime: null }), opts), code("rollback"));
+  assert.throws(() => applyMasterList(store, masterList({ publisher, cscas: [der(a)], signingTime: new Date(Date.now() + 3 * DAY) }), opts), code("bad_master_list"));
+  // The same list again is a no-op, a newer one replaces, and the guard survives a snapshot.
+  assert.equal(applyMasterList(store, newer, opts).unchanged, true);
+  assert.equal(store.rev, rev);
+  applyMasterList(store, masterList({ publisher, cscas: [der(b)], signingTime: new Date() }), opts);
+  assert.equal(store.status().cscaCountries, 1, "a newer list may remove a CSCA");
+  assert.throws(() => applyMasterList(loadTrustStore(store.toJSON()), newer, opts), code("rollback"));
+  // Sources are independent: the BSI list isn't held to ICAO's clock.
+  assert.equal(applyMasterList(store, older, { ...opts, source: "bsi" }).added, 1);
+});
+
 /** A one-file zip (deflated), as master lists are often published. */
 function zipOf(name, data) {
   const comp = deflateRawSync(data), n = Buffer.from(name);

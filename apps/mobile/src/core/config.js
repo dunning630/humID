@@ -1,6 +1,6 @@
 // Build-time configuration (see build.mjs). In the installable web app the
 // server is the same origin; the native apps are built with HUMID_SERVER_URL.
-/* global __HUMID_SERVER__, __HUMID_KID__, __HUMID_TLOG_COSIGNERS__, __HUMID_VERSION__, __HUMID_MODULES__, __HUMID_SIM__ */
+/* global __HUMID_SERVER__, __HUMID_KID__, __HUMID_TLOG_COSIGNERS__, __HUMID_LEDGER_KEY_FP__, __HUMID_VERSION__, __HUMID_MODULES__, __HUMID_SIM__ */
 
 /** Simulation build: the vault server runs inside the app, over the real HTP/1 protocol. */
 export const SIM = typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true;
@@ -9,6 +9,8 @@ export const SERVER_URL = SIM ? SIM_URL : typeof __HUMID_SERVER__ !== "undefined
 export const PINNED_KID = (typeof __HUMID_KID__ !== "undefined" && __HUMID_KID__) || null;
 /** The public log's independent cosigners this build trusts ("name=key,…"); only these count as cosigned. */
 export const TLOG_COSIGNERS = (typeof __HUMID_TLOG_COSIGNERS__ !== "undefined" && __HUMID_TLOG_COSIGNERS__) || "";
+/** The ledger's signing-key fingerprint this build trusts (32 hex), so no install trusts the first key it's shown. */
+export const LEDGER_KEY_FP = (typeof __HUMID_LEDGER_KEY_FP__ !== "undefined" && __HUMID_LEDGER_KEY_FP__) || null;
 export const VERSION = typeof __HUMID_VERSION__ !== "undefined" ? __HUMID_VERSION__ : "dev";
 export const MODULES = typeof __HUMID_MODULES__ !== "undefined" ? __HUMID_MODULES__ : {};
 export { DEMO_BUILD } from "@humid/gate";

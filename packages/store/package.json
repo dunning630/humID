@@ -1,6 +1,7 @@
 {
   "name": "@humid/store",
   "version": "1.4.0",
+  "private": true,
   "description": "Identity and vault persistence with per-record schema migrations.",
   "type": "module",
   "exports": "./src/index.js",

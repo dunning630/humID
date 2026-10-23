@@ -29,6 +29,7 @@
 // released the moment the screen is left or the app goes to the background.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
+import { useModal } from "../../ui/kit.jsx";
 import { markPicking, toast, buzz as buzzPref } from "../../core/index.js";
 import {
   barcodeReader, mrzReader, frameInVideo, grab, imageData, imageBytes, imageUrl, jpeg, fileToCanvas, mrzBand, looksBlank,
@@ -214,7 +215,9 @@ export function DocCamera(props) {
   const spotBack = side === "front" && (kind === "driver_license" || kind === "id_card") && !read.barcode;
   const noun = tpl?.noun || "document";
 
-  const video = useRef(null), frame = useRef(null), file = useRef(null);
+  const video = useRef(null), frame = useRef(null), file = useRef(null), root = useRef(null);
+  // The camera is a modal layer of its own (APP-12): it opens over, and beside, a pushed screen.
+  useModal(root);
   const [flow, setFlow] = useState(() => begin({ expect: want }));
   const [box, setBox] = useState(null);           // the lock box, in shares of the frame
   const [freeze, setFreeze] = useState(null);     // the photo just taken, shown in the frame
@@ -736,7 +739,7 @@ export function DocCamera(props) {
   );
 
   return (
-    <div class="doccam" role="dialog" aria-modal="true" aria-label={title} data-guided={guided ? "1" : undefined} data-phase={flow.phase} data-shape={shape} data-look={frameState} data-tone={vw.tone}>
+    <div class="doccam" ref={root} role="dialog" aria-modal="true" aria-label={title} data-guided={guided ? "1" : undefined} data-phase={flow.phase} data-shape={shape} data-look={frameState} data-tone={vw.tone}>
       <video ref={video} playsInline muted autoplay onPointerDown={tapFocus} />
       <div class="dc-stage">
         <div class="dc-frame" data-shape={shape} data-template={tpl?.id} data-state={frameState} data-far={far ? "1" : undefined} ref={frame}>

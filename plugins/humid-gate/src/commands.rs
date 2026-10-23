@@ -33,3 +33,9 @@ pub(crate) async fn release<R: Runtime>(
 pub(crate) async fn forget<R: Runtime>(app: AppHandle<R>, handle: Handle) -> Result<()> {
     app.humid_gate().forget(ForgetRequest { handle }).await
 }
+
+/// Android: the accessibility services switched on (APP-09). Other platforms: none.
+#[command]
+pub(crate) async fn enabled_accessibility_services<R: Runtime>(app: AppHandle<R>) -> Result<AccessibilityServices> {
+    app.humid_gate().enabled_accessibility_services().await
+}

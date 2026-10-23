@@ -55,8 +55,35 @@ export const isBox = (s) => typeof s === "string" && BOX_RE.test(s);
  */
 export const boxFor = (boxKey, day) => toHex(mac(boxKey, Uint8Array.of(...label("box"), ...u32(day)))).slice(0, 32);
 
-/** Days a receiver polls: yesterday, today, tomorrow (clock skew between phones). */
-export const pollDays = (now) => { const d = dayOf(now); return [d - 1, d, d + 1]; };
+/**
+ * Days a receiver polls: yesterday and today, plus tomorrow only within NEAR_MIDNIGHT_MS of
+ * midnight UTC (a contact whose clock runs ahead). Asking for tomorrow every time would put
+ * box(d+1) in day d's poll and box(d+1) again in day d+1's, chaining a conversation's
+ * mailboxes across days for anyone who records polls (security review MSG-02).
+ */
+export const NEAR_MIDNIGHT_MS = 2 * 60_000;
+const DAY_MS = 86_400_000;
+export const pollDays = (now) => {
+  const d = dayOf(now);
+  const toMidnight = (d + 1) * DAY_MS - now;
+  return toMidnight <= NEAR_MIDNIGHT_MS ? [d - 1, d, d + 1] : [d - 1, d];
+};
+/** How far back a receiver fetches after being away: what the relay can still hold (14 days). */
+export const BACKFILL_DAYS = 14;
+/**
+ * Days to poll for a conversation last polled at `since` (null: never): every day from the day
+ * before it (or BACKFILL_DAYS ago, whichever is later) to today, and tomorrow near midnight.
+ * So messages sent while the phone stayed closed for days are still fetched (MSG-04).
+ */
+export function daysSince(since, now) {
+  const d = dayOf(now);
+  const days = pollDays(now);
+  if (!Number.isFinite(since)) return days;
+  const from = Math.max(dayOf(since) - 1, d - BACKFILL_DAYS);
+  const out = [];
+  for (let x = from; x < d - 1; x++) out.push(x);
+  return [...out, ...days];
+}
 
 /* ---------- unsend tokens ----------
  * Every object a phone posts comes with a random 16-byte unsend token, kept on

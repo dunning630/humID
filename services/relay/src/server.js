@@ -10,9 +10,11 @@
 //   - An empty mailbox and one that never existed answer identically (audit SEC-S-13).
 //   - Unsend: an object posted with a tag (SHA3 of a token only the sender holds) is removed
 //     when the sender shows the token, if it hasn't been fetched yet.
-//   - Caps on every dimension (audit SEC-S-02, -03, -08, precert PC-27): objects and bytes per
-//     mailbox, bytes per network per day (so one address can't fill the relay for everyone),
-//     total bytes, and calls per network per minute, with IPv6 counted per /64.
+//   - Caps on every dimension (audit SEC-S-02, -03, -08, precert PC-27, review MSG-05): objects
+//     and bytes per mailbox; bytes per day per address (IPv6 /64), per site (IPv6 /48) and per
+//     block (IPv4 /24, IPv6 /32), so a few dozen addresses can't fill the relay for everyone;
+//     near full, a fair share per block; total bytes; and calls per network per minute. Every
+//     counter is a fixed-size sketch, so none of them can fill up and lock new networks out.
 //
 // What it stores: mailbox id, arrival time (to the minute), the object, the unsend tag. What
 // it is told about the caller: a rate key (an IPv4 address or an IPv6 /64), used for limits
@@ -39,6 +41,10 @@ export function createRelay({
   /** Bytes one network may deposit per day (PC-27: one address must not fill the relay for everyone). */
   // well under maxTotalBytes / 8, counted per IPv4 address or IPv6 /48 (security review M1)
   maxNetBytesPerDay = Number(env("HUMID_RELAY_MAX_NET_BYTES_DAY", String(48 * 1024 * 1024))),
+  /** Bytes one IPv4 /24 or IPv6 /32 may deposit per day, all its addresses together (MSG-05). */
+  maxBlockBytesPerDay = Number(env("HUMID_RELAY_MAX_BLOCK_BYTES_DAY", String(128 * 1024 * 1024))),
+  /** Past this fraction of maxTotalBytes, only blocks under a fair share of today's deposits may add more. */
+  fairAboveFraction = Number(env("HUMID_RELAY_FAIR_ABOVE", "0.75")),
   depositsPerMinute = Number(env("HUMID_RELAY_DEPOSITS_PER_MIN", String(RELAY_DEFAULTS.depositsPerMinute))),
   fetchesPerMinute = Number(env("HUMID_RELAY_FETCHES_PER_MIN", String(RELAY_DEFAULTS.fetchesPerMinute))),
   maxRateKeys = RELAY_DEFAULTS.maxRateKeys,
@@ -67,47 +73,72 @@ export function createRelay({
     if (q.expire.run(t - ttlMs).changes) total = Number(q.total.get().n);
   }
 
-  // Fixed-window counters, bounded, failing closed when full (the reference relay's rule).
-  function limiter(limit, windowMs) {
-    const m = new Map();
-    return (key, cost = 1) => {
-      const w = Math.floor(now() / windowMs);
-      const e = m.get(key);
-      if (e && e.w === w) { if (e.n + cost > limit) return false; e.n += cost; return true; }
-      if (e) { if (cost > limit) return false; e.w = w; e.n = cost; return true; }
-      if (m.size >= maxRateKeys) {
-        for (const [k, v] of m) if (v.w !== w) m.delete(k);
-        if (m.size >= maxRateKeys) return false;
-      }
-      if (cost > limit) return false;
-      m.set(key, { w, n: cost });
-      return true;
-    };
-  }
-  const canDeposit = limiter(depositsPerMinute, MINUTE);
-  const canFetch = limiter(fetchesPerMinute, MINUTE);
-  const netBytes = dailySketch(maxNetBytesPerDay);
-
   /**
-   * Bytes per network per day, in a fixed-size count-min sketch (security review M1): it never
-   * fills up and never forgets a heavy sender, so cycling through addresses can neither reset a
-   * network's count nor lock everyone else out. It can only over-count (a rare false "quota").
+   * A count-min sketch per fixed window (security review M1, MSG-05): fixed memory, so it never
+   * fills up, never forgets a heavy sender within its window, and never refuses a NEW key for lack
+   * of room (the old per-minute table failed closed once 100,000 keys were live, and one IPv6 /48
+   * holds 65,536 /64s). It can only over-count: a rare false "slow down" for a key that shares
+   * every cell with busy ones.
+   *   take(key, cost) → true and counted, or false (over the limit, nothing counted)
+   *   peek(key)       → the current estimate
    */
-  function dailySketch(limit, rows = 4, width = 1 << 15) {
-    let day = -1, t = null;
+  function sketch(limit, windowMs, rows = 4, width = 1 << 15) {
+    let win = -1, t = null;
     const idx = (key) => { const h = createHash("sha256").update(key).digest(); return Array.from({ length: rows }, (_, r) => h.readUInt32BE(r * 4) % width); };
-    return (key, bytes) => {
-      const d = Math.floor(now() / DAY);
-      if (d !== day || !t) { day = d; t = Array.from({ length: rows }, () => new Float64Array(width)); }
-      const ix = idx(key);
-      const est = Math.min(...ix.map((i, r) => t[r][i]));
-      if (est + bytes > limit) return false;
-      ix.forEach((i, r) => { t[r][i] += bytes; });
-      return true;
+    const roll = () => {
+      const w = Math.floor(now() / windowMs);
+      if (w !== win || !t) { win = w; t = Array.from({ length: rows }, () => new Float64Array(width)); }
+    };
+    const est = (ix) => Math.min(...ix.map((i, r) => t[r][i]));
+    return {
+      take(key, cost = 1, max = limit) {
+        roll();
+        const ix = idx(key);
+        if (est(ix) + cost > max) return false;
+        ix.forEach((i, r) => { t[r][i] += cost; });
+        return true;
+      },
+      peek(key) { roll(); return est(idx(key)); },
     };
   }
-  // IPv6 counted per /48 for the daily quota: one site's allocation, not one of its 65,536 /64s
-  const quotaKey = (k) => (k.startsWith("v6:") ? `${k.split(":").slice(0, 4).join(":")}::/48` : k);
+  // maxRateKeys is kept as an option for compatibility; the sketches don't need it.
+  void maxRateKeys;
+  const deposits = sketch(depositsPerMinute, MINUTE);
+  const fetches = sketch(fetchesPerMinute, MINUTE);
+  const canDeposit = (key) => deposits.take(key);
+  const canFetch = (key) => fetches.take(key);
+
+  /*
+   * Bytes per network per day, at three sizes of "network" (MSG-05): the rate key itself (an IPv4
+   * address or IPv6 /64), its site (IPv6 /48), and its provider-sized block (IPv4 /24, IPv6 /32),
+   * each with its own daily quota. A few dozen addresses or /48s spread over one /24 or /32 now
+   * count together. And when the relay is nearly full, it stops taking from whoever already holds
+   * more than a fair share of today's deposits, instead of refusing everyone.
+   */
+  const netBytes = sketch(maxNetBytesPerDay, DAY);
+  const siteBytes = sketch(maxNetBytesPerDay, DAY);
+  const blockBytes = sketch(maxBlockBytesPerDay, DAY);
+  const siteKey = (k) => (k.startsWith("v6:") ? `${k.split(":").slice(0, 4).join(":")}::/48` : k);
+  const blockKey = (k) => {
+    if (k.startsWith("v4:")) return `${k.split(".").slice(0, 3).join(".")}.0/24`;
+    if (k.startsWith("v6:")) return `${k.split(":").slice(0, 3).join(":")}::/32`;
+    return k;
+  };
+  // how many distinct blocks deposited today, for the fair share (a small daily set, bounded)
+  let activeDay = -1;
+  const active = new Set();
+  const MAX_ACTIVE = 200_000;
+  function noteActive(block) {
+    const d = Math.floor(now() / DAY);
+    if (d !== activeDay) { activeDay = d; active.clear(); }
+    if (active.size < MAX_ACTIVE) active.add(block);
+  }
+  /** Near full (over fairAboveFraction of the total), a block may hold at most total / active blocks of today's deposits. */
+  function overFairShare(block, bytes) {
+    if (total + bytes <= maxTotalBytes * fairAboveFraction) return false;
+    const share = maxTotalBytes / Math.max(1, active.size + (active.has(block) ? 0 : 1));
+    return blockBytes.peek(block) + bytes > share;
+  }
 
   const gatewayOnly = (claims) => { if (claims?.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only"); };
   const rk = (claims) => (typeof claims.rk === "string" && claims.rk.length <= 64 ? claims.rk : "unknown");
@@ -128,7 +159,13 @@ export function createRelay({
       const use = q.boxUse.get(b);
       if (Number(use.c) >= maxPerBox || Number(use.n) + body.length > maxBoxBytes) throw new HttpError(507, "box_full", "Mailbox is full");
       if (total + body.length > maxTotalBytes) throw new HttpError(507, "relay_full", "Relay is full");
-      if (!netBytes(quotaKey(key), body.length)) throw new HttpError(429, "quota", "This network has sent too much today");
+      const site = siteKey(key), block = blockKey(key);
+      // all three quotas checked before any is counted, so a refusal costs the sender nothing
+      if (netBytes.peek(key) + body.length > maxNetBytesPerDay || siteBytes.peek(site) + body.length > maxNetBytesPerDay
+        || blockBytes.peek(block) + body.length > maxBlockBytesPerDay) throw new HttpError(429, "quota", "This network has sent too much today");
+      if (overFairShare(block, body.length)) throw new HttpError(429, "quota", "The relay is nearly full; this network has sent its share today");
+      netBytes.take(key, body.length); siteBytes.take(site, body.length); blockBytes.take(block, body.length);
+      noteActive(block);
       q.insert.run(b, minute(), tag, body.length, Buffer.from(body));
       total += body.length;
       return json(201, { ok: true });
@@ -182,7 +219,9 @@ export function createRelay({
     }, { bodyLimit: 4 * 1024 }],
   ];
 
-  const svc = createService({ tls, name: "relay", port, routes, bodyLimit: 8 * 1024, verify: (t) => verifyAssertion(internalPk, t, "relay") });
+  // quiet: no per-request log lines; the relay keeps arrival to the minute, and a millisecond log
+  // line per deposit and fetch would undo that (MSG-13)
+  const svc = createService({ tls, name: "relay", port, routes, bodyLimit: 8 * 1024, verify: (t) => verifyAssertion(internalPk, t, "relay"), quiet: true });
   return { ...svc, close: () => db.close(), get totalBytes() { return total; } };
 }
 

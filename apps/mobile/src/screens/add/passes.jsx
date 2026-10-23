@@ -116,7 +116,7 @@ export function PassView({ v }) {
       {pass.fields.back.length > 0 && (
         <details class="card pass-back">
           <summary>Details on the back of the pass</summary>
-          {pass.fields.back.map((f) => <div style={{ marginTop: 10 }}><div class="small muted">{f.label}</div><div class="t2" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{f.value}</div></div>)}
+          {pass.fields.back.map((f) => <div class="mt-3"><div class="small muted">{f.label}</div><div class="t2" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{f.value}</div></div>)}
         </details>
       )}
       <div class="actions">

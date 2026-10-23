@@ -59,6 +59,36 @@ The app accepts a server only if `kid` matches its pin:
 A changed key is never accepted silently. The client raises
 `server_identity_changed` and the app stops on a warning screen.
 
+### The signed policy hint
+
+`GET /htp/v1/keys` also carries the server's **policy hint** (device policy,
+registration, split keys, Check-in, messaging, the access-code shop link) for
+the app's screens. The gateway enforces policy on every request either way;
+the hint only decides what the app offers. It is signed with the server's
+ML-DSA-87 key, the one `kid` binds:
+
+```
+policySig = { at, sig: ML-DSA-87.Sign(dsaSk, "HTP/1 policy" || lp(kid, canonical JSON(policy), u64(at))) }
+```
+
+Canonical JSON sorts object keys at every level. The gateway re-signs once an
+hour or when the policy changes. The app believes a hint only when the
+signature checks under the pinned server's `dsaPk` and `at` is under 7 days
+old. Anything else (no signature, an altered policy, another server's
+signature) is ignored and the strict defaults apply: attested devices only,
+no shop link, no split keys, no Check-in, no messaging. A build pinned to its
+server also refuses to seal a document unsplit when the hint says otherwise,
+from its very first run.
+
+A signed policy stays valid for 7 days, so someone who saved one could serve
+it again after the server changed it. The app therefore keeps the newest
+signed policy it has accepted (`policySeen` in the identity record, with its
+signature, checked again on every load) and uses whichever of that and the
+one just served is newer. A replayed older policy, or none at all, never
+replaces it: split keys can't go from on to off and the shop link can't
+revert. Before the first honest connection there is nothing to compare
+against; a pinned build's split-keys rule covers that case.
+
 ## Handshake
 
 ```
@@ -125,8 +155,32 @@ response meta       { s: status, h?: headers }
 - The server keeps a 256-entry sliding replay window per session. A `seq` is
   processed at most once, and anything older than the window is refused.
 - Frames with `ts` more than 2 minutes from server time are refused.
-- Sessions expire after 15 minutes idle and 8 hours absolute. Logout, closing
-  the identity and expiry all erase the session keys on the server.
+- The meta JSON is at most 64 KiB (`413 too_large` otherwise, refused before it is parsed). A frame from a
+  session that hasn't signed in is at most 512 KiB; a signed-in session's frame
+  may be as large as a vault upload, but once it is open the gateway holds the
+  body to the route's own cap before anything parses it (`413 too_large`):
+  64 KiB for JSON and control routes, a few hundred KiB for recovery routes
+  that carry envelopes or ID-chip reads, and the full frame cap only for
+  `POST /vault/objects`.
+- Sessions expire after 15 minutes idle and 8 hours absolute; a session that
+  hasn't signed in, after 2 minutes idle. Logout, closing the identity and
+  expiry all erase the session keys on the server.
+- Each hello is answered once: the server remembers the client nonce `nC` for
+  the hello's 5-minute window and refuses a repeat (`replay`), so a captured
+  hello can't be sent again to make the server do the handshake work.
+- Each client network (an IPv4 address or an IPv6 /64) may hold 20 sessions
+  that haven't signed in; a 21st replaces its own oldest. When the whole table
+  (50,000) is full, the least recently used session that hasn't signed in makes
+  room, so a flood can't lock out people signing in. One account holds at
+  most 16 signed-in sessions (`HUMID_SESSIONS_PER_ACCOUNT`); signing in again
+  past that drops that account's own least recently used session, never the
+  new one and never another account's. Only a table of signed-in sessions
+  answers `busy`, and filling it takes about 3,000 accounts, each registered
+  (with a paid pass where registration needs one) and signed in with a live
+  check, inside a 15-minute idle window.
+- A step-up ticket's `seq` is sent in exactly one frame; the client refuses to
+  use a ticket twice (`ticket_used`), because a second frame would reuse its
+  AES-GCM nonce.
 
 ## Binding a person to the session
 
@@ -230,9 +284,11 @@ The client surfaces these codes:
 | `server_identity_changed` | Server's kid differs from the pin. Hard stop. |
 | `server_unreachable` | Keys or hello endpoint unavailable. |
 | `session_expired` / `session_unknown` | Server no longer knows the session. The client drops its keys and the app asks for a new biometric sign-in. |
-| `replay` / `stale_frame` | Sequence number reused, or frame time outside the window. |
+| `replay` / `stale_frame` | Sequence number reused, a hello sent twice, or frame time outside the window. |
+| `ticket_used` | The app tried to send a second request under one step-up ticket (client-side, nothing is sent). |
 | `step_up_required` / `step_up_stale` / `bad_proof` | Sensitive request without a valid, fresh proof. Rejected proofs are logged as `access.denied`. |
-| `rate_limited` | 30 handshakes per minute per IP, 600 calls per minute per session, failed sign-in proofs: 10 per 5 minutes per identity, 20 per address, 200 in all (past the budget a failure is `rate_limited`; a valid proof is never refused). Frames: 512 KiB before sign-in, an unknown session `session_unknown` from the header alone. |
+| `rate_limited` | 30 handshakes per minute per IPv4 address or IPv6 /64, 600 calls per minute per session, failed sign-in proofs: 10 per 5 minutes per identity, 20 per address or /64, 200 in all (past the budget a failure is `rate_limited`; a valid proof is never refused). Frames: 512 KiB before sign-in, an unknown session `session_unknown` from the header alone. |
+| `too_large` | A body over the frame cap, or over the route's own cap once the frame is open. |
 | `audit_unavailable` | The ledger could not record an access, so the access was refused (fail closed). |
 | `device_removed` | This device was removed from the account. |
 | `device_not_proven` | The device can't prove a live check the way the server's device policy requires. |

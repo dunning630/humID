@@ -3,8 +3,8 @@
 // (and in the app's control) and this module never holds a private key.
 
 import { HtpClient, HtpError } from "@humid/htp/client";
-import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
-import { verifyLedger, verifyCheckpoint, parseCosigners } from "@humid/audit";
+import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, setupCardMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
+import { verifyLedger, verifyBridge, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
 
@@ -36,6 +36,8 @@ const STEP_UP = {
   setAnchor: () => ["PUT", "/recovery/anchor"],
   addKey: () => ["POST", "/recovery/keys"],
   removeKey: (id) => ["DELETE", `/recovery/keys/${keyIdOf(id)}`],
+  removeAllKeys: () => ["DELETE", "/recovery/keys"],
+  setRecoveryMode: () => ["POST", "/recovery/mode"],
   removeAnchor: () => ["DELETE", "/recovery/anchor"],
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
@@ -67,16 +69,30 @@ const keyIdOf = (id) => {
 };
 const codeOf = (input) => {
   const c = parseCode(input);
-  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 letters and numbers.");
+  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 or 16 letters and numbers.");
   return c;
 };
 
+/** At most this many entries are fetched to link a page back to the head a device saw last. */
+const BRIDGE_MAX = 20_000;
+
 export class HumidApi {
-  constructor({ baseUrl = "", pinnedKid = null, fetch } = {}) {
+  /**
+   * helloPassStore: where the one-use hello pass is kept between app launches (V76-03), so a
+   * holder whose app was closed still skips limits shared with strangers. Default: this
+   * device's localStorage when there is one, else memory only. The pass opens nothing: it
+   * only lets one handshake past the rate limits.
+   */
+  constructor({ baseUrl = "", pinnedKid = null, fetch, helloPassStore = defaultPassStore(baseUrl) } = {}) {
     this.htp = new HtpClient({ baseUrl, pinnedKid, ...(fetch ? { fetch } : {}) });
+    this.passStore = helloPassStore;
+    try { this.htp.helloPass = helloPassStore?.get() || null; } catch {}
+    this.htp.onHelloPassUsed = () => { try { helloPassStore?.set(null); } catch {} };
     this.session = null;
     this.onSignedOut = null;
     this.htp.onSessionLost = () => { this.session = null; this.onSignedOut?.("expired"); };
+    /** The most entries ledger() fetches to link a page back to the head seen last (BRIDGE_MAX). */
+    this.bridgeMax = BRIDGE_MAX;
   }
 
   /**
@@ -96,7 +112,7 @@ export class HumidApi {
   /** Server identity, for display ("Connected to … · 7A3F-91C2-…") and pinning, plus its policy hint. */
   async server() {
     const s = await this.htp.serverKeys();
-    return { kid: s.kid, fingerprint: s.fingerprint, policy: s.policy };
+    return { kid: s.kid, fingerprint: s.fingerprint, policy: s.policy, policyAt: s.policyAt };
   }
 
   get signedIn() { return !!this.session && this.htp.connected; }
@@ -112,6 +128,14 @@ export class HumidApi {
     return res;
   }
   #json(method, path, opts) { return this.#call(method, path, opts).then((r) => r.json()); }
+  /** A signed-in session's answer: keep its one-use hello pass for the next handshake (V76-03). */
+  #signedIn(view) {
+    if (typeof view?.helloPass === "string") {
+      this.htp.helloPass = view.helloPass;
+      try { this.passStore?.set(view.helloPass); } catch {}
+    }
+    return view;
+  }
 
   /* ---------------- accounts & devices ---------------- */
 
@@ -124,21 +148,26 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign, card, soleBiometric, pass }) {
+  async register({ pub, commit, device, sign, card, soleBiometric, pass, recoveryMode }) {
     await this.htp.connect();
     const th = this.htp.transcript;
-    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
+    // card: the setup recovery card, which the account key also signs in this check (the recovery
+    // service stores it only with that signature: there is no step-up yet to approve it)
+    const cardMsg = card ? setupCardMessage(th, identityId(pub.dsaPk), card.tag, card.blob) : undefined;
+    const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th, ...(cardMsg ? { card: cardMsg } : {}) });
     this.session = await this.#json("POST", "/auth/register", {
       body: {
         kemPk: b64u(pub.kemPk), dsaPk: b64u(pub.dsaPk), xPk: b64u(pub.xPk), commit, sig: b64u(sigs.registerSig),
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
-        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        ...(card ? { card: { tag: card.tag, blob: b64u(card.blob), ...(sigs.cardSig ? { sig: b64u(sigs.cardSig) } : {}) } } : {}),
+        // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
+        ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, prev: recoveryMode.prev, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
       },
-    });
+    }).then((v) => this.#signedIn(v));
     return this.session;
   }
 
@@ -192,7 +221,7 @@ export class HumidApi {
   async enrollDevice({ account, device, via, recoveryId, linkCode, sign, soleBiometric }) {
     await this.htp.connect();
     const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
-    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } }));
     return this.session;
   }
 
@@ -209,7 +238,7 @@ export class HumidApi {
     const presence = (d) => loginPresenceMessage(th, who, nonce, d);
     const { sig, interrupt, live, d } = await sign(loginMessage(th, who, nonce), { presence });
     const body = { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}), ...(d === 0 || d === 1 ? { d } : {}) };
-    this.session = await this.#json("POST", "/auth/login", { body });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/login", { body }));
     return this.session;
   }
 
@@ -221,6 +250,13 @@ export class HumidApi {
   }
 
   me() { return this.#json("GET", "/identity/me"); }
+  /**
+   * This device's biometric keys are gone (Android or iOS destroyed them: fingerprints or
+   * face changed, app reinstalled). Tells the server, so the holder's Activity shows it and
+   * the device is marked as needing setup again (LIVE-06). Needs no sign-in: there is
+   * nothing left to sign with. Always answers ok.
+   */
+  reportKeysGone({ id, device }) { return this.#json("POST", "/auth/key-invalidated", { body: { id, device } }); }
 
   /* ---------------- duress ---------------- */
 
@@ -271,8 +307,9 @@ export class HumidApi {
 
   /** Upload an envelope sealed on this device, plus its encrypted index entry. */
   /** Upload a sealed envelope. `share`: a split document's key (32 bytes), stored by the keyshare service, never the vault. */
-  upload(envelope, indexBlob, share) {
-    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob), ...(share ? { "x-humid-share": b64u(share) } : {}) } });
+  /** `id`: the item id the app chose and sealed its index entry to (CRYPTO-05). An older vault ignores it and picks its own. */
+  upload(envelope, indexBlob, share, id) {
+    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob), ...(share ? { "x-humid-share": b64u(share) } : {}), ...(id ? { "x-humid-object-id": id } : {}) } });
   }
 
   rename(id, indexBlob) { return this.#json("PATCH", `/vault/objects/${id}`, { headers: { "x-humid-index": b64u(indexBlob) } }); }
@@ -280,11 +317,23 @@ export class HumidApi {
   /** Fetch ciphertext. stepUp({ message }) must run a fresh biometric check and return { sig, interrupt }. */
   async download(id, stepUp) { return (await this.#call("GET", `/vault/objects/${id}`, { stepUp })).body; }
 
-  /** Envelope plus, for a split document, its key, released under the same step-up. share is null for older documents. */
+  /**
+   * Envelope plus, for a split document, its key, released under the same step-up. share is
+   * null for older documents. The key comes back sealed to a one-time key made here for this
+   * open, named in the body the step-up signs, so nothing between keyshare and this device can
+   * read it (CRYPTO-03).
+   */
   async downloadWithShare(id, stepUp) {
-    const r = await this.#call("GET", `/vault/objects/${id}`, { stepUp });
+    const rx = shareReceiver();
+    let r;
+    try { r = await this.#call("GET", `/vault/objects/${id}`, { stepUp, body: { to: { kemPk: b64u(rx.pub.kemPk), xPk: b64u(rx.pub.xPk) } } }); }
+    catch (e) { rx.sk.kemSk.fill(0); rx.sk.xSk.fill(0); throw e; }
     const h = r.headers?.["x-humid-share"];
-    return { envelope: r.body, share: h ? unb64u(String(h)) : null };
+    if (!h) { rx.sk.kemSk.fill(0); rx.sk.xSk.fill(0); return { envelope: r.body, share: null }; }
+    let sealed;
+    try { sealed = unb64u(String(h)); } catch { sealed = null; }
+    const account = this.session?.id;
+    return { envelope: r.body, share: await openShare(sealed, rx, { account, object: id }) };
   }
 
   remove(id, stepUp) { return this.#json("DELETE", `/vault/objects/${id}`, { stepUp }); }
@@ -293,24 +342,59 @@ export class HumidApi {
    * Check this account's place in the public transparency log: the latest ledger
    * entry is in the published tree, and the tree extends `previous` ({ size, root }),
    * the checkpoint this device verified last time. Returns verifyCheckpoint's result.
-   * `trustedKeyFp`: the ledger key this device saw first (a different key is refused).
+   * `trustedKeyFp`: the ledger key this device trusts (built in, or the one it saw first).
    * `cosigners`: the cosigners built into the app (parseCosigners); only they count.
+   *
+   * `head` ({ seq, hash }): the head of the ledger page this device just verified
+   * (CRYPTO-01). The log is asked about exactly that entry, and an answer for any other
+   * seq or hash fails with `mismatch: true`: the history shown on this phone isn't the
+   * one the public log holds, so "Verified" and "Published" can never describe two
+   * different histories.
    */
-  async continuity({ previous, trustedKeyFp, cosigners } = {}) {
-    const inc = await this.#json("GET", "/ledger/tlog/inclusion");
+  async continuity({ previous, trustedKeyFp, cosigners, head } = {}) {
+    const want = head?.seq > 0 ? head : null;
+    const inc = await this.#json("GET", `/ledger/tlog/inclusion${want ? `?seq=${Number(want.seq)}` : ""}`);
     let consistency = null;
     if (previous?.size > 0 && previous.size <= inc.checkpoint.size) {
       consistency = (await this.#json("GET", `/ledger/tlog/consistency?from=${previous.size}&to=${inc.checkpoint.size}`)).proof;
     }
     const r = verifyCheckpoint(inc, { trustedKeyFp, cosigners, previous, consistency, inclusion: { owner: inc.owner, seq: inc.seq, hash: inc.hash, index: inc.index, proof: inc.proof } });
     if (r.ok && this.session?.id && inc.owner !== this.session.id) return { ok: false, reason: "The log answered for someone else" };
-    return { ...r, seq: inc.seq };
+    if (r.ok && want && (inc.seq !== want.seq || inc.hash !== want.hash)) {
+      return { ok: false, mismatch: true, reason: `Your history doesn't match the public log at entry ${want.seq}` };
+    }
+    return { ...r, seq: inc.seq, hash: inc.hash };
   }
 
-  /** Read and VERIFY the access ledger. Returns the verification result with parsed entries. */
-  async ledger({ limit = 200, trustedKeyFp } = {}) {
+  /**
+   * Read and VERIFY the access ledger. Returns the verification result with parsed entries.
+   * `previousHead` ({ seq, hash }): the head this device verified last time. The history
+   * must still contain it, unchanged (CRYPTO-01): on the page, or, when more has happened
+   * since than one page holds, in the entries in between, fetched and checked link by link.
+   */
+  async ledger({ limit = 200, trustedKeyFp, previousHead } = {}) {
     const page = await this.#json("GET", `/ledger/events?limit=${limit}`);
-    return { ...verifyLedger(page, { expectedOwner: this.session?.id, trustedKeyFp }), count: page.entries.length };
+    const l = verifyLedger(page, { expectedOwner: this.session?.id, trustedKeyFp, previousHead });
+    if (l.ok && l.previousHeadOnPage === false) {
+      const first = page.entries[0];
+      // More has happened since this phone last checked than it will fetch to link the two.
+      // That isn't evidence of tampering, but nothing here proves the history either: say so,
+      // show the entries as unverified, and remember nothing (the old head stays the anchor).
+      if (first.seq - previousHead.seq > this.bridgeMax) {
+        return { ...l, ok: false, pending: true, unverified: true, reason: `More than ${this.bridgeMax.toLocaleString("en-US")} events since this phone last checked, too many to check here`, head: undefined, count: page.entries.length };
+      }
+      const bridge = [];
+      for (let from = previousHead.seq; from < first.seq && bridge.length <= this.bridgeMax;) {
+        const r = await this.#json("GET", `/ledger/events?from=${from}&to=${first.seq - 1}`);
+        if (!r.entries?.length) break;
+        bridge.push(...r.entries);
+        from = r.entries[r.entries.length - 1].seq + 1;
+      }
+      if (!verifyBridge(page.owner, bridge, previousHead, first)) {
+        return { ok: false, reason: `Your history no longer contains entry ${previousHead.seq} as this phone saw it`, entries: [], count: 0 };
+      }
+    }
+    return { ...l, count: page.entries.length };
   }
 
   /* ---------------- device links ---------------- */
@@ -346,7 +430,8 @@ export class HumidApi {
   /* ---------------- recovery card ---------------- */
 
   card() { return this.#json("GET", "/recovery/card"); }
-  setCard({ tag, blob }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob) }, stepUp }); }
+  /** epoch: which set of recovery pieces the card's part is from (the account's current one). */
+  setCard({ tag, blob, epoch }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob), ...(epoch ? { epoch } : {}) }, stepUp }); }
   removeCard(stepUp) { return this.#json("DELETE", "/recovery/card", { stepUp }); }
 
   /* ---------------- recovery contacts ---------------- */
@@ -370,9 +455,9 @@ export class HumidApi {
     return { ...r, guardians: (r.guardians || []).map((g) => ({ ...g, label: g.label ? unb64u(g.label) : null })) };
   }
   /** guardians: [{ contact, offer (code), envelope (bytes), label (bytes) }] */
-  setContacts({ threshold, guardians, scheme }, stepUp) {
+  setContacts({ threshold, guardians, scheme, epoch }, stepUp) {
     return this.#json("PUT", "/recovery/contacts", {
-      body: { threshold, scheme, guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
+      body: { threshold, scheme, ...(epoch ? { epoch } : {}), guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
       stepUp,
     });
   }
@@ -387,8 +472,16 @@ export class HumidApi {
 
   /** { available, exists, document?, country?, createdAt? } */
   anchor() { return this.#json("GET", "/recovery/anchor"); }
-  /** Bind a passport or ID chip ({ dg1, sod, dg15? }) and store the anchor part under it. */
-  setAnchor({ chip, part }, stepUp) { return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), part: b64u(part) }, stepUp }); }
+  /** A fresh challenge (bytes) for the chip being linked to answer: copied chip files can't. */
+  async anchorChallenge() { return unb64u((await this.#json("POST", "/recovery/anchor/challenge")).nonce); }
+  /**
+   * Link a passport or ID chip ({ dg1, sod, dg15 }). sealedPart: the anchor part already sealed on
+   * this phone under anchorPartKey(dg15) (sealAnchorPart), so the server never sees it openable.
+   * signature: the chip's answer to anchorChallenge(). epoch: which set of recovery pieces it belongs to.
+   */
+  setAnchor({ chip, sealedPart, signature, hash, epoch }, stepUp) {
+    return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), sealedPart: b64u(sealedPart), signature: b64u(signature || new Uint8Array(0)), ...(hash ? { hash } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
+  }
   removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
   settings() { return this.#json("GET", "/recovery/settings"); }
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
@@ -408,10 +501,25 @@ export class HumidApi {
     return { challenge: unb64u(r.challenge), exclude: (r.exclude || []).map(unb64u) };
   }
   /** Store the key part under a key: { tag, blob, pub, credentialId, authData, signature, label? } (bytes, except tag). */
-  addKey({ tag, blob, pub, credentialId, authData, signature, label }, stepUp) {
-    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}) }, stepUp });
+  addKey({ tag, blob, pub, credentialId, authData, signature, label, epoch }, stepUp) {
+    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
   }
   removeKey(id, stepUp) { return this.#json("DELETE", `/recovery/keys/${keyIdOf(id)}`, { stepUp }); }
+  removeAllKeys(stepUp) { return this.#json("DELETE", "/recovery/keys", { stepUp }); }
+
+  /* ---------------- recovery mode (docs/RECOVERY.md#two-recovery-modes) ---------------- */
+
+  /**
+   * { mode: "holder-only" | "hardened", version, epoch, sig, escrow: [recovery material still stored] }.
+   * sig is the account key's signature (bytes, or null for an account from before modes):
+   * check it with recoveryModeMessage before believing the mode.
+   */
+  async recoveryMode() {
+    const r = await this.#json("GET", "/recovery/mode");
+    return { ...r, sig: r.sig ? unb64u(r.sig) : null };
+  }
+  /** Switch modes (or start a new set of recovery pieces): { mode, version, epoch, sig } signed by the account key, with a step-up. */
+  setRecoveryMode({ mode, version, epoch, prev, sig }, stepUp) { return this.#json("POST", "/recovery/mode", { body: { mode, version, epoch, prev, sig: b64u(sig) }, stepUp }); }
 
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
@@ -428,12 +536,21 @@ export class HumidApi {
   /* ---------------- verification stations ---------------- */
 
   station() { return this.#json("GET", "/recovery/station"); }
-  stationRequest(code) { return this.#json("GET", `/recovery/station/requests/${codeOf(code)}`); }
+  /** What's waiting under a recovery code, with the recovering device's keys, checked against the code. */
+  async stationRequest(input) {
+    const code = codeOf(input);
+    const r = await this.#json("GET", `/recovery/station/requests/${code}`);
+    if (!r.kemPk) return r;
+    const out = { ...r, kemPk: unb64u(r.kemPk), xPk: unb64u(r.xPk) };
+    checkCode(code, REQUEST_LABEL, out.kemPk, out.xPk);
+    return out;
+  }
   /** checks: { document, face, present } — what the operator confirmed in person. */
   /** A fresh challenge for the chip in front of the station (bytes). */
   async stationChallenge(code) { return unb64u((await this.#json("POST", `/recovery/station/requests/${codeOf(code)}/challenge`)).nonce); }
-  stationVerify(code, { chip, checks, signature, hash }, stepUp) {
-    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}) };
+  /** chipKey: the chip's DG15, sealed to the recovering device's keys and signed by the station's account (an envelope). */
+  stationVerify(code, { chip, checks, signature, hash, chipKey }, stepUp) {
+    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}), ...(chipKey ? { chipKey: b64u(chipKey) } : {}) };
     return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body, stepUp });
   }
 
@@ -475,6 +592,9 @@ export class HumidApi {
     return {
       ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined,
       anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined, keyBlob: r.keyBlob ? unb64u(r.keyBlob) : undefined,
+      // v2 anchor: the part as the holder's phone sealed it (open with anchorPartKey(dg15)), and,
+      // after a station, the chip's DG15 sealed to this device's recovery keys
+      anchorSealed: r.anchorSealed ? unb64u(r.anchorSealed) : undefined, anchorKey: r.anchorKey ? unb64u(r.anchorKey) : undefined,
     };
   }
   /** A contact looks up the recovery code someone sent them. */
@@ -490,12 +610,21 @@ export class HumidApi {
 
   /* ---------------- person to person (4.0, docs/MESSAGING.md) ---------------- */
 
-  /** The server's stamp keys, and its pass key ids (the app refuses a stamp key that is also a pass key). */
-  msgKeys() { return this.#json("GET", "/msg/keys"); }
+  /**
+   * The server's stamp keys (this epoch's and the next, plus `archive`: retired keys whose stamps
+   * still count), and its pass key ids (the app refuses a stamp key that is also a pass key).
+   * since (ms): only retired keys whose epoch ended after it. all: every retired key from `since`
+   * on (a page of up to 1,000, oldest first), for checking stamped media and evidence releases.
+   */
+  msgKeys({ since = 0, all = false } = {}) {
+    const q = [since > 0 ? `since=${Math.floor(since)}` : "", all ? "all=1" : ""].filter(Boolean).join("&");
+    return this.#json("GET", q ? `/msg/keys?${q}` : "/msg/keys");
+  }
   /** Network-wide daily totals of live-approved messages. */
   msgStats() { return this.#json("GET", "/msg/stats").then((r) => r.days); }
   /**
-   * Blind-signed stamps for the blinded values ONE live check approved (1 to 4).
+   * Blind-signed stamps for the blinded values ONE live check approved (1 or 2).
+   * kid: the stamp key of this epoch the values were blinded for (blindStamp's draft.kid).
    * stepUp: from api.ticket("stamp") signed during the check. Returns blind signatures, in order.
    */
   async stamp({ kid, blinded }, stepUp) {
@@ -543,6 +672,18 @@ export class RelayClient {
   /** Unsend: true if the object was still there and is now gone. */
   async retract(box, token) { return !!(await this.#call("POST", "/msg/relay/retract", { body: { box, token: b64u(token) } })).removed; }
   close() { this.htp.close?.(); }
+}
+
+/** The hello pass in localStorage, per server; null where there's none (Node, a locked-down WebView). */
+function defaultPassStore(baseUrl) {
+  let ls;
+  try { ls = globalThis.localStorage; ls?.getItem("x"); } catch { ls = null; }
+  if (!ls) return null;
+  const key = `humid.helloPass:${baseUrl}`;
+  return {
+    get: () => { try { return ls.getItem(key); } catch { return null; } },
+    set: (v) => { try { if (v) ls.setItem(key, v); else ls.removeItem(key); } catch {} },
+  };
 }
 
 function deviceBody(device, sigs) {

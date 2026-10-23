@@ -4,13 +4,14 @@
 import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Sheet, Banner, Row, proofLabel } from "../../ui/kit.jsx";
+import { VIA } from "../../ui/labels.js";
 import { CodeBox, CodeInput } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { loadDevices, myAccountCheck, findLink, approveLink, removeDevice } from "../../core/index.js";
+import { loadDevices, findLink, approveLink, removeDevice } from "../../core/index.js";
+import { myAccountCheck } from "../../core/setup.js";
 import { back, twelve } from "./common.jsx";
 
-const VIA = { register: "Created HumID", link: "Added from another device", card: "Recovered with older card", contacts: "Recovered with older witnesses", quorum: "Recovered with two proofs" };
 
 export function Devices() {
   const devices = S.devices.value;
@@ -20,14 +21,14 @@ export function Devices() {
   useEffect(() => { loadDevices(); }, []);
   return (
     <Pushed title="Devices" onBack={back} trailing={!off && <button class="btn quiet sm" onClick={() => setAdding(true)}><Icon name="plus" />Add</button>}>
-      <p class="t2 small">Your other phones go here. Each one proves its checks with its own secure chip; remove a lost one and it can never reach your vault again.</p>
-      <div class="rows" style={{ marginTop: 14 }}>
+      <p class="t2 small">Your other phones and computers go here. Each one makes its own live checks (on a phone, its secure chip signs them); remove a lost one and it can never reach your vault again.</p>
+      <div class="rows mt-3">
         {!devices && <Row chevron={false} title="Loading…" />}
         {devices?.length === 0 && <Row chevron={false} title="Nothing here yet" sub="Add a second device so a lost phone isn't an emergency." />}
         {devices?.map((d) => (
           <div key={d.id}>
             <Row icon="key" tone={d.current ? "mint" : ""} chevron={false}
-              title={<>{d.platform || "Device"}{d.current && <span class="pill mint" style={{ marginLeft: 8 }}>This device</span>}</>}
+              title={<>{d.platform || "Device"}{d.current && <span class="pill mint" style={{ marginLeft: 8 }}>This device</span>}{d.needsSetup && <span class="pill danger" style={{ marginLeft: 8 }}>Needs setting up again</span>}</>}
               sub={<>{VIA[d.via] || d.via} · {fmtDate(d.enrolledAt)}{d.lastSeenAt && !d.current ? ` · seen ${fmtAgo(d.lastSeenAt)}` : ""}<br />{proofLabel(d.proof, d.assurance)}</>}
               trail={!d.current && !off && removing !== d.id ? <button class="link" onClick={() => setRemoving(d.id)}>Remove</button> : null} />
             {removing === d.id && (
@@ -42,7 +43,7 @@ export function Devices() {
           </div>
         ))}
       </div>
-      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Adding or removing needs a connection.</p>}
+      {off && <p class="fine mt-3">Offline: as of your last sync. Adding or removing needs a connection.</p>}
       {adding && <AddDeviceSheet onClose={() => setAdding(false)} />}
     </Pushed>
   );
@@ -53,7 +54,7 @@ function AddDeviceSheet({ onClose }) {
   const [req, setReq] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  const check = myAccountCheck();
+  const check = myAccountCheck(req);
   const find = async (c = code) => { if (busy) return; setBusy(true); setReq(await findLink(c)); setBusy(false); };
   const approve = async () => { setBusy(true); if (await approveLink(req)) setDone(true); setBusy(false); };
   return (

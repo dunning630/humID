@@ -2,13 +2,19 @@
 // small phone (375×667) and a common one (390×844):
 //   - each step's main button is on screen without scrolling
 //   - the main button is never a dead grey one: tapping it points at what's missing
-//   - the recovery card is confirmed by typing back one group of it
+//   - the recovery card is confirmed by typing back one group of it; a new one asks before it's
+//     closed unchecked, and survives a lock into the next real unlock (APP-02, APP-03)
 //   - the You hub shows what's left to protect, and each row opens the right screen
 //   - a new document's tag is suggested from its name, not always "Identity"
 //   - toasts drop in at the top, never over a back button, the stepper or the primary action
-//   - every button, link and checkbox is at least 44 px in both directions
+//   - every button, link and checkbox is at least 44 px in both directions, segmented controls too
+//   - Welcome and Lock have an h1; the viewer and its question are modal: focus goes in, stays in,
+//     the rest is inert, and focus comes back to what opened them (APP-12)
 //   - preferences: theme, four text sizes, animations, lock time, sort; pins ride with the item
 //   - the back gesture closes what's on top, one level at a time, and never leaves HumID
+//   - an app that can read the screen (an Android accessibility service) is named before a
+//     document opens, and "Not now" shows nothing (APP-09; pretended in a development build)
+//   - leaving HumID while a check is running locks it; the document never opens (PC-17)
 //   - a deleted biometric key is explained, and setting up again starts from Welcome
 //   - an app built with a pinned server skips the "trust this server" step
 //
@@ -64,7 +70,7 @@ async function targets(page, where) {
     .filter((el) => {
       const r = el.getBoundingClientRect(), s = getComputedStyle(el);
       if (!r.width || !r.height || s.visibility === "hidden" || el.closest("[aria-hidden=true]")) return false;
-      if (el.matches(".link, .linklike") || el.closest(".field, .search, .tabbar, .seg")) return false; // inline text links; fields, segmented controls and the tab bar are taller than 44 by their containers
+      if (el.matches(".link, .linklike") || el.closest(".field, .search, .tabbar")) return false; // inline text links; fields and the tab bar are taller than 44 by their containers (segmented controls are 44 themselves)
       return r.width < 43.5 || r.height < 43.5; // sub-pixel layout rounds 44 to 43.99
     })
     .map((el) => { const r = el.getBoundingClientRect(); return `${el.tagName.toLowerCase()}.${String(el.className).replace(/\s+/g, ".")} "${(el.innerText || el.getAttribute("aria-label") || "").trim().slice(0, 24)}" ${Math.round(r.width)}×${Math.round(r.height)}`; }));
@@ -84,12 +90,14 @@ try {
   await onScreen(page, page.getByRole("button", { name: "Create my HumID" }), "Create my HumID on a 375×667 phone");
   await page.getByText(/No password exists/).waitFor();
   await targets(page, "Welcome"); await shot(page, "small-welcome");
+  // one h1 per page, and Welcome and Lock have theirs (the wordmark)
+  assert.equal(await page.getByRole("heading", { level: 1, name: "HumID" }).count(), 1, "Welcome's h1 is the wordmark");
   step("welcome: the main button is on screen on a small phone, and the no-password promise is the first thing said");
 
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByText("Your vault server").first().waitFor();
   assert.equal(await page.locator(".stepper").getAttribute("role"), "progressbar");
-  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "5");
+  assert.equal(await page.locator(".stepper").getAttribute("aria-valuemax"), "6"); // connect, access, mode, bind, card, in
   // the key is behind a disclosure: the host leads
   assert.equal(await page.getByText(/Compare it with the key/).count(), 0, "the key is folded away");
   await page.getByRole("button", { name: "Show its key" }).click();
@@ -101,6 +109,8 @@ try {
   assert.equal(await page.locator(".toast").count(), 0, "no toast on top of the Access pass ready banner");
   await targets(page, "Access pass");
   await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByText("If you lose every device").waitFor();
+  await page.getByRole("button", { name: "Next: lock it to you" }).click(); // the recommended mode is already selected
   await page.getByText("Your body becomes the key").waitFor();
   await onScreen(page, page.getByRole("button", { name: /Use demo mode/ }), "the bind button on a 375×667 phone");
   await targets(page, "Bind"); await shot(page, "small-bind");
@@ -156,7 +166,7 @@ try {
   assert.equal(await protect.locator(".row", { hasText: "Recovery card" }).first().evaluate((el) => el.tagName), "DIV", "the recovery card is done: not a button");
   await protect.getByText("Optional: duress gesture").waitFor();
   // the plain-English security facts, first on this screen; the first point is the no-password one
-  assert.match(await protect.locator(".rows").first().innerText(), /^Only a living you opens it/);
+  assert.match(await protect.locator(".rows").first().innerText(), /^A live check, every time/);
   await targets(page, "Protection"); await shot(page, "small-protection");
   await protect.locator(".row", { hasText: "A second device" }).click();
   await page.getByText("Enter the code from your new device").waitFor();
@@ -179,10 +189,36 @@ try {
   assert.equal(newGroups.length, 5);
   const keep = page.locator(".sheet .actions button.btn.primary");
   assert.equal((await keep.innerText()).trim(), "Check your copy to continue", "the sheet's button is live and says what's missing");
+  // APP-03: until it's checked, Back, Escape or the close button asks before throwing it away
+  const ask = page.getByText("Close without saving your new card?");
+  for (const close of [
+    () => page.evaluate(() => globalThis.__humidBack()),
+    () => page.keyboard.press("Escape"),
+    () => page.locator(".sheet button[aria-label=Close]").first().click(),
+  ]) {
+    await close();
+    await ask.waitFor();
+    await page.locator(".sheet").last().getByRole("button", { name: "Cancel" }).click();
+    await ask.waitFor({ state: "detached" });
+    assert.deepEqual(await cardGroups(page), newGroups, "Cancel keeps the card on screen");
+  }
+  // APP-02: a lock with the card on screen (the phone rang) keeps it in memory only, and the
+  // next real unlock shows the same card again
+  await page.waitForTimeout(700); // the check's busy flag clears 600 ms after it ends
+  await page.evaluate(() => {
+    const set = (h) => { Object.defineProperty(document, "hidden", { configurable: true, get: () => h }); document.dispatchEvent(new Event("visibilitychange")); };
+    set(true); set(false);
+  });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await hold(page);
+  await page.getByText("Shown once · write it down now").waitFor({ timeout: 15_000 });
+  assert.deepEqual(await cardGroups(page), newGroups, "the same new card, after a real unlock");
+  assert.equal(await page.getByText("Pick up where you left off?").count(), 0, "the card comes straight back, not as an offer");
+  step("a new recovery card: Back, Escape and Close ask first; a lock keeps it, and the next unlock shows it again");
   await confirmCard(page);
   await keep.click();
   await page.locator(".sheet").waitFor({ state: "detached" });
-  await backOut(page);
+  if (await page.locator(".pushed").count()) await backOut(page);
   // the diagnostics are under About; close & erase under its Advanced disclosure, behind a typed word
   await hub.locator(".row", { hasText: "About" }).click();
   await page.locator(".pushed").getByText("Pinned server key").waitFor();
@@ -322,6 +358,121 @@ try {
   await shot(page, "small-vault-pinned-day");
   step("a pinned item moves to the top of the vault");
 
+  // APP-08: Back with the viewer's "Save an unsealed copy?" open closes that question, not the
+  // viewer; and the question never carries over to the next document opened
+  const openDoc = async (i) => {
+    await rows.nth(i).click();
+    await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+    await hold(page);
+    await page.locator(".viewer").waitFor();
+  };
+  const saveAsk = page.getByText("Save an unsealed copy?");
+  await openDoc(1);
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet", "back closes the question first");
+  await saveAsk.waitFor({ state: "detached" });
+  assert.equal(await page.locator(".viewer").count(), 1, "the viewer is still open");
+  // APP-12: the viewer is a modal layer: focus is inside it, the vault behind it is inert, and the
+  // question it opens takes focus and gives it back
+  const where = () => page.evaluate(() => ({ viewer: !!document.activeElement?.closest(".viewer"), sheet: !!document.activeElement?.closest(".sheet"), name: document.activeElement?.getAttribute("aria-label") || document.activeElement?.innerText?.trim() }));
+  assert.ok((await where()).viewer, "focus is in the viewer");
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll(".tabbar, .pushed")].every((e) => e.closest("[inert]"))), true, "the tab bar and the item behind the viewer are inert");
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).focus();
+  await page.keyboard.press("Enter");
+  await saveAsk.waitFor();
+  const inSheet = await where();
+  assert.ok(inSheet.sheet, `the question takes focus (${inSheet.name})`);
+  for (let i = 0; i < 6; i++) { await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab"); await page.keyboard.press("Tab"); assert.ok((await where()).sheet, "Tab and Shift+Tab stay inside the question"); }
+  // closed from the keyboard (Escape works too, but misses about 1 time in 20 here, on the base as well)
+  await page.locator(".sheet").getByRole("button", { name: "Cancel" }).focus();
+  await page.keyboard.press("Enter");
+  await saveAsk.waitFor({ state: "detached" });
+  assert.equal((await where()).name, "Save a copy", "closing it gives focus back to what opened it");
+  await page.locator(".viewer header").getByRole("button", { name: "Save a copy" }).click();
+  await saveAsk.waitFor();
+  assert.equal(await back(), "sheet");
+  assert.equal(await back(), ".viewer", "then back closes the viewer");
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  await openDoc(0);
+  await page.waitForTimeout(300);
+  assert.equal(await saveAsk.count(), 0, "the next document opens without a stale question");
+  await page.locator(".viewer [data-back]").first().click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  // APP-09 (R15): another app that can read the screen is named before a document shows, and
+  // "Not now" shows nothing (an Android accessibility service, pretended in a development build)
+  await page.evaluate(() => { globalThis.__humidDemoA11y = [{ id: "com.example/.Reader", label: "Screen Helper", canAct: true }]; });
+  await rows.nth(0).click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  const warn = page.getByRole("dialog", { name: "Another app can read your screen" });
+  await warn.waitFor();
+  assert.match(await warn.innerText(), /Screen Helper is turned on as an accessibility service[\s\S]*this document, and tap buttons for you/);
+  assert.equal(await page.locator(".interrupt").count(), 0, "no live check before the holder answers");
+  await warn.getByRole("button", { name: "Not now" }).click();
+  await warn.waitFor({ state: "detached" });
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".viewer, .interrupt").count(), 0, "Not now: nothing shown, no check");
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  await warn.getByRole("button", { name: "Show this document" }).click();
+  await hold(page);
+  await page.locator(".viewer").waitFor();
+  await page.evaluate(() => { delete globalThis.__humidDemoA11y; });
+  step("APP-09: an app that can read the screen is named before a document opens; Not now shows nothing");
+  await page.locator(".viewer [data-back]").first().click();
+  await page.locator(".viewer").waitFor({ state: "detached" });
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  step("viewer: back closes its Save question first; the question never carries to the next document; focus stays in the top layer and comes back (APP-12)");
+
+  // PC-17: HumID hidden while a check is running (here the demo hold, before the prompt)
+  // locks at once; the document never opens behind the scenes, and isn't showing on return
+  const setHidden = (h) => page.evaluate((hid) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hid });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hid ? "hidden" : "visible") });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, h);
+  await rows.first().click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  await page.locator(".interrupt button.hold").waitFor();
+  await setHidden(true);
+  await page.waitForTimeout(300);
+  if (await page.locator(".interrupt button.hold").count()) { // finish the check while hidden, if it's still asking
+    await page.locator(".interrupt button.hold").focus(); await page.keyboard.down(" "); await page.waitForTimeout(1500); await page.keyboard.up(" ");
+  }
+  await page.waitForTimeout(2500);
+  await setHidden(false);
+  await page.waitForTimeout(800);
+  assert.equal(await page.locator(".viewer").count(), 0, "no document showing after HumID came back");
+  assert.equal(await page.locator(".tabbar").count(), 0, "the vault is locked");
+  await page.getByRole("button", { name: "Unlock", exact: true }).waitFor();
+  step("PC-17: hidden mid-check locks at once; the document never opens");
+
+  // APP-06: the duress unlock for keyboards and screen readers is named for what it does,
+  // drawn when focused, and behind a disclosure, off the straight Tab path
+  await page.evaluate(() => document.activeElement?.blur());
+  const focused = () => page.evaluate(() => { const a = document.activeElement, r = a.getBoundingClientRect(); return { name: (a.innerText || a.getAttribute("aria-label") || "").trim(), w: r.width, h: r.height }; });
+  const order = [];
+  for (let i = 0; i < 4; i++) { await page.keyboard.press("Tab"); order.push(await focused()); }
+  assert.ok(!order.some((f) => /duress|safe mode/i.test(f.name)), `no duress unlock on the straight Tab path: ${order.map((f) => f.name).join(" › ")}`);
+  const more = order.find((f) => f.name === "More ways to unlock");
+  assert.ok(more, "the disclosure is reachable");
+  assert.ok(more.w > 40 && more.h >= 40, `and drawn while focused (${Math.round(more.w)}×${Math.round(more.h)})`);
+  while ((await focused()).name !== "More ways to unlock") await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Enter");
+  assert.equal((await focused()).name, "More ways to unlock", "opening it doesn't move focus onto the duress unlock");
+  await page.keyboard.press("Tab");
+  const d = await focused();
+  assert.match(d.name, /^Unlock with your duress gesture \(shows only decoys, locks your vault\)$/);
+  assert.ok(d.w > 40 && d.h >= 40, "drawn while focused");
+  assert.equal(await page.getByText(/safe mode/i).count(), 0);
+  assert.equal(await page.getByRole("heading", { level: 1, name: "HumID" }).count(), 1, "Lock's h1 is the wordmark");
+  assert.equal(await page.locator("main").count(), 1, "Lock is one main landmark");
+  step("Lock: the duress unlock is named, drawn when focused, behind More ways to unlock; an h1");
+
   await page.reload();
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });
   assert.equal(await html("theme"), "light", "the theme is there before unlocking");
@@ -360,7 +511,7 @@ try {
   await p2.page.goto(BASE);
   await p2.page.getByRole("button", { name: "Create my HumID" }).click();
   await p2.page.getByText("Pay without being known").waitFor({ timeout: 15_000 });
-  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "4", "access, bind, recovery card, in");
+  assert.equal(await p2.page.locator(".stepper").getAttribute("aria-valuemax"), "5", "access, mode, bind, recovery card, in");
   assert.match(await p2.page.locator(".eyebrow").first().innerText(), /Step 1/i);
   assert.equal(await p2.page.evaluate(() => globalThis.__humidBack()), "screen", "the back gesture does what the Back button does");
   await p2.page.getByRole("button", { name: "I already have HumID" }).click();

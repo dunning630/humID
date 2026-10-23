@@ -14,7 +14,7 @@
 //                          dual-signs the transcript (ML-DSA-87 + SLH-DSA), attaches
 //                          a live stamp, posts to A's reply box.
 //   A  readRequest         decrypts, checks both signatures and the stamp, shows
-//                          "HC-…  wants to connect · live human ✓ · safety code".
+//                          "HC-…  wants to connect · asked with a live check · safety code".
 //   A  acceptRequest       (after a live check) starts the conversation; the first
 //                          message is an "accept".
 //   B  — the accept arrives in the conversation's inbox; B's session opens it.
@@ -84,7 +84,10 @@ const bindKey = (secret) => kdf(secret, undefined, "invite bind");
  */
 export async function createInvite(accountSeed, { now = Date.now(), ttlMs = DEFAULT_INVITE_TTL, uses = 1 } = {}) {
   if (!(ttlMs > 0 && ttlMs <= MAX_INVITE_TTL)) throw new MsgError("bad_ttl", "An invite lasts at most 7 days");
-  if (!(Number.isInteger(uses) && uses >= 1 && uses <= 20)) throw new MsgError("bad_uses", "An invite admits 1 to 20 people");
+  // One invite, one persona, one person (precert PC-26). An invite that admitted several people
+  // would show each of them the SAME persona ID, and two of them comparing notes would know they
+  // know the same person: the one thing personas exist to prevent. Make one invite per person.
+  if (uses !== 1) throw new MsgError("bad_uses", "An invite admits one person. Make a new invite for each person.");
   const b = backend();
   const persona = newPersona(accountSeed);
   const secret = random(INVITE_SECRET_BYTES);
@@ -148,7 +151,7 @@ const REQ_OVERHEAD = REQ_PREFIX + 16;
 
 /**
  * @param invite   result of openInvite
- * @param opts.stamper  (commitment) → stamp: one live check proves a live human made this request
+ * @param opts.stamper  (commitment) → stamp: one live check (a biometric match on a proven phone) approved this request
  * @param opts.intro    optional short note shown with the request ("Parker, from the workshop")
  * @returns {{ box, wire, session, persona }}  post wire to box; keep the session (status "requested") and persona salt
  */
@@ -175,7 +178,8 @@ async function makeRequest(accountSeed, invite, { intro = "", stamper = null, no
 
   const rxSk = random(32), rxPk = b.x25519.publicKey(rxSk);
   const rek = b.kem.keygen(random(SIZES.kemSeed));
-  const stamp = stamper ? await stamper(requestCommitment({ th0, senderFp: personaFingerprint(me.pub) })) : null;
+  // the stamp covers when the request was made, and is checked against its key's epoch (MSG-01)
+  const stamp = stamper ? await stamper(requestCommitment({ th0, senderFp: personaFingerprint(me.pub), at: now }), { at: now }) : null;
   if (requireLive && !stamp) {
     wipe(xe, k1.sharedSecret, k2.sharedSecret, dh1, dh2, dh3, bind, wrapKey);
     throw new MsgError("stamp_required", "The live check didn't complete, so no request was made");
@@ -213,7 +217,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
   return guard(async () => {
     // The human-to-human rule (live.js): a request without a valid live stamp is never shown.
     if (requireLive && !stampKeys) throw new MsgError("no_stamp_keys", "Can't check live stamps yet");
-    if (state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
+    if (state.used >= 1 || state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
     if (now > state.expires) throw new MsgError("invite_expired", "This invite has expired");
     checkWire(wire);
     let o = 1;
@@ -243,7 +247,7 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
     wipe(ss1, ss2, dh1, dh2, dh3, bind);
     const senderFp = personaFingerprint(peer);
     let live = null;
-    if (r.st && stampKeys) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp }), { now });
+    if (r.st && stampKeys && Number.isSafeInteger(r.at)) live = verifyStamp(stampKeys, r.st, requestCommitment({ th0, senderFp, at: r.at }), { now, at: r.at });
     if (requireLive && live !== true) {
       wipe(rk0);
       throw new MsgError("not_live", r.st ? "This request's live check didn't verify, so it isn't shown" : "This request wasn't approved with a live check, so it isn't shown");
@@ -257,14 +261,15 @@ export async function readRequest(state, persona, wire, { now = Date.now(), stam
 }
 
 /**
- * Approve (the app runs a live check first). Marks the invite used; once all
- * its uses are spent, its one-time secret keys are erased.
+ * Approve (the app runs a live check first). Marks the invite used and erases its one-time
+ * secret keys: an invite admits one person (PC-26; a saved invite from before that which said
+ * otherwise is treated the same).
  * @returns the Session (role "a"). Send its first message: session.encrypt("accept", "").
  */
 export function acceptRequest(state, persona, request, { now = Date.now() } = {}) {
   const a = request._accept;
   if (!a) throw new MsgError("malformed", "Not a request read by readRequest");
-  if (state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
+  if (state.used >= 1 || state.used >= state.uses) throw new MsgError("invite_used", "This invite has already been used");
   const thHex = toHex(a.th);
   if (state.seen.includes(thHex)) throw new MsgError("replay_or_old", "This request was already handled");
   const session = Session.create({
@@ -274,8 +279,33 @@ export function acceptRequest(state, persona, request, { now = Date.now() } = {}
   wipe(a.rk0);
   state.seen.push(thHex);
   state.used += 1;
-  if (state.used >= state.uses) closeInvite(state);
+  closeInvite(state);
   return session;
+}
+
+/**
+ * Approve and send the acceptance as one step that either happens or doesn't (security review
+ * MSG-08). `send(session)` makes and saves the "accept" (it asks for the live stamp); only when it
+ * succeeds is the invite marked used and its one-time keys erased. If the check is cancelled, the
+ * server is busy or the stamp key just changed, the invite and the request are as they were, and
+ * approving again works.
+ * @returns whatever `send` returns, and the session: { session, sent }
+ */
+export async function approveRequest(state, persona, request, send, { now = Date.now() } = {}) {
+  const a = request._accept;
+  if (!a) throw new MsgError("malformed", "Not a request read by readRequest");
+  // work on copies: acceptRequest marks the invite used and wipes what it consumed
+  const trial = structuredClone(state);
+  const req = { ...request, _accept: { ...a, rk0: a.rk0.slice() } };
+  const session = acceptRequest(trial, persona, req, { now });
+  let sent;
+  try { sent = await send(session); }
+  catch (e) { wipe(trial.otkSk, trial.otxSk, trial.secret); throw e; }
+  // done: the real invite is spent the same way, and the original handshake key wiped
+  Object.assign(state, { seen: trial.seen, used: trial.used });
+  closeInvite(state);
+  wipe(a.rk0);
+  return { session, sent };
 }
 
 /** Decline: remembered so the same request can't be shown again. Nothing is sent. */

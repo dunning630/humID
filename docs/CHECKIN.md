@@ -106,7 +106,12 @@ this cryptographic erase.
 - **A sign-in lockout can't cause an erase, and can't keep you from checking
   in.** Only three things destroy a fuse key: a missed deadline plus grace
   inside keyshare, a duress sign-in, and a restart of keyshare. A refused
-  sign-in is none of them. Sign-in throttling counts failed proofs only and
+  sign-in is none of them. Keyshare checks the duress sign-in itself (the
+  device key's signature over the sign-in with the duress flag, and the
+  liveness key's), and acts on each one once, so the gateway's key alone can't
+  set off an erase; arming, checking in and turning it off are checked against
+  the holder's own step-up the same way (SRV-30). The vault drops an erased
+  account's envelopes only with keyshare's signed word that its keys are gone. Sign-in throttling counts failed proofs only and
   never refuses a request before its proof is checked, so someone who knows
   your account id (it isn't secret) cannot use up your allowance: your valid
   sign-in always works, and a check-in needs nothing but that sign-in.

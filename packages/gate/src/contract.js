@@ -9,7 +9,9 @@
 //   id                  stable string, stored with the identity
 //   probe()             -> { available, method, assurance, label, modalities, proof, reason }
 //   enroll(opts)        -> { handle, bindingId, secret, interrupt, live }
-//   release(handle, opts) -> { secret, interrupt, live }
+//   release(handle, opts) -> { secret, interrupt, live, handle? }
+//                       handle: a replacement the caller must store in place of the one it
+//                       passed (the gate moved the secret to a new key); absent = unchanged
 //   forget(handle)      optional; removes the OS-held key material
 //
 // opts: { purpose, prompt, challenge, attest }
@@ -18,7 +20,7 @@
 //   attest     bytes (the session transcript) to make a fresh liveness key and
 //              attest it to: Android key attestation or Apple App Attest
 // live: null (no liveness key on this platform) or
-//   { pub: SPKI bytes, sig: DER ECDSA P-256 over challenge,
+//   { pub: SPKI bytes, sig: DER ECDSA P-256 over challenge, low-S (lows.js),
 //     attestation?: { kind: "android-key", chain: [DER…] } | { kind: "apple-app-attest", object: CBOR } }
 // modalities: which live biometrics this gate accepts, e.g. ["face", "fingerprint"].
 // proof: what can vouch for it to a server: "android-key" | "apple-app-attest" | null.

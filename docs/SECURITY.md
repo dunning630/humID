@@ -17,7 +17,7 @@ it until that review and the items under *Before real data* are done.
 | **Spyware on the phone copies the keys** (a Pegasus-class kernel exploit reading memory during a biometric check) | Split keys: every document sealed since split keys also needs its own 256-bit key, held by the separate keyshare service and released one document at a time inside a live, chip-signed check, capped per hour. The stolen account keys, even with a full copy of the vault, open nothing. See [*A compromised phone*](#a-compromised-phone). |
 | **A stolen or lost phone** | Keys are released only by a live biometric check in the Secure Enclave or Android Keystore. Remove the device from any other device: its sessions end and the server refuses it. |
 | **A stolen session or a replayed request** | Opening, deleting, exporting, adding or removing devices, changing recovery, and closing the account each need a fresh biometric signature over that exact request, bound to the session, at most 60 seconds old. The app reserves the request slot first (a *ticket*), so the liveness key signs that exact request during the check; a signature captured for one request can't approve another. Frames carry sequence numbers checked against a replay window. |
-| **A stolen seal card** | Two-proof recovery: the card is one of three parts, and any recovery needs a second, different proof (witnesses or the ID chip). Then a wait of 24 h to 7 days, set by the evidence, during which any surviving device can veto. See [CONTINUITY.md](CONTINUITY.md). |
+| **A stolen recovery card** | Two-proof recovery: the card is one of four kinds of proof, and any recovery needs a second, different one (witnesses, the ID chip or a security key). A holder-only account has no card at all. Then a wait of 24 h to 7 days, set by the evidence, during which any surviving device can veto. See [CONTINUITY.md](CONTINUITY.md). |
 | **Rogue or coerced witnesses** | A majority must approve, each with their own live biometric, and that counts as one proof only. Fewer pieces reveal nothing. |
 | **A copied passport chip** | Remote ID proofs need Active Authentication: the chip signs a fresh server nonce with its private key. Copied files can't. Otherwise only an in-person station check counts. |
 | **A forged or altered ID** | ICAO passive authentication: data-group hashes, the Document Signer's signature, and a chain to a trusted country CSCA. |
@@ -31,11 +31,21 @@ it until that review and the items under *Before real data* are done.
 ## What it does not protect against yet
 
 - **Unreviewed composition.** See the status note above.
+- **"Live" means a biometric match, not liveness detection.** HumID requires
+  a Class-3 biometric match on attested hardware and relies on the device's own
+  anti-spoofing; it performs no additional liveness detection. A lifted
+  fingerprint or a mask that fools a phone's sensor fools HumID too; how well
+  each phone resists that is the phone maker's, and isn't attested.
 - **Attestation proves the key, not the person.** The secure chip proves a
   live biometric match on that phone unlocked the key. It can't tell whose
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
   Keys are destroyed if enrolment changes, and the owner confirms at setup
-  that only their own biometrics are enrolled (recorded in the ledger).
+  that only their own biometrics are enrolled (recorded in the ledger). When
+  that happens the phone tells the server, without signing in (it can't any
+  more): the holder's Activity shows *HumID key gone* and the device is marked
+  *Needs setting up again* until a live sign-in from it clears the mark. The
+  report is unauthenticated, so it is best effort, once a day per device, and
+  answers the same for accounts that don't exist.
 - **A live check is not consent.** It proves an enrolled face or finger was
   matched live, not that its owner meant it: a finger pressed while asleep, or
   under force (the duress gesture covers force), passes.
@@ -106,11 +116,36 @@ it until that review and the items under *Before real data* are done.
   account ([ANONYMITY.md](ANONYMITY.md) lists what that doesn't cover: network,
   timing within a day, the seller). A document's location stamp, like its name,
   is inside the encrypted index: the server never sees it. The public log reveals the total number of
-  ledger events. The server holds a keyed hash of an anchored ID's stable
-  fields, and its issuing country.
+  ledger events. The server holds a keyed fingerprint of an anchored ID chip's own key
+  (not the holder's details), and its issuing country. A holder-only account has no
+  recovery material on the server at all ([RECOVERY.md](RECOVERY.md#two-recovery-modes)).
 - **Demo mode has no biometric.** It exists only in local development builds
   (`npm run dev`); release builds don't contain it, and servers refuse it
   unless `HUMID_DEVICE_POLICY=demo`.
+- **A new install takes the ledger's key on trust unless the build carries
+  it.** Activity checks the history against the ledger's signing key. A
+  release built with `HUMID_LEDGER_KEY_FP` (the fingerprint
+  `deploy/setup.sh` prints, set as a repository variable) checks it against
+  that key from the first run. Without it, a new install, or one whose data
+  was cleared, pins the first ledger key it's shown. A server already
+  malicious at that moment could present a history under a key of its own,
+  and that install would believe it until the key changed. The public log
+  and cosigners still see the real one. *Release apps* warns when the
+  variable isn't set.
+- **The phone's memory of document versions is only as old as its storage.**
+  To stop the vault from serving back an older index entry (a decoy flag
+  you turned off, an old name or pin), the phone keeps the highest version
+  it has seen for each document, sealed in its own storage (`index-revs`
+  under the index key). With that store missing, on a new install, a second
+  phone, after the app's data is cleared, or after a restore, the phone
+  starts from whatever the vault shows. The vault could then serve any
+  entry this account once sealed for that document, as long as it's still
+  bound to the document and still opens. From that point on, nothing older
+  than what the phone saw is accepted. Entries sealed before 4.1 also carry
+  no version until the app re-seals them, which it does the next time it
+  lists the vault online. Removing a document from the decoy view protects
+  you against a coercer only once the phone that made the change has seen
+  it saved.
 - **Server keys are files.** The gateway's HTP key, the ledger's signing key,
   the access service's pass keys and keyshare's `share-key.bin` live on the
   server's volumes, not in a hardware security module.
@@ -153,8 +188,14 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
    can't store it, the upload is undone, so no document exists without its key.
 2. **Opening.** The step-up that already lets the vault return the envelope
    (a fresh live check, signed by the phone's secure chip over that exact
-   request) also lets keyshare release that one document's key. The gateway
-   records the open in the ledger before releasing either. No extra prompt.
+   request) also lets keyshare release that one document's key. Vault and
+   keyshare each check that signature themselves (server 4.1.x, SRV-30; see
+   [*A compromised front host*](#a-compromised-front-host)). The open is
+   written to the ledger first, and the vault releases the envelope only
+   against the ledger's signed receipt for it. The key leaves keyshare sealed
+   (ML-KEM-1024 + X25519) to a one-time key the phone made for this open and
+   named in the body it signed, so the gateway in between forwards ciphertext
+   only (CRYPTO-03). No extra prompt.
 3. **Separation.** Keyshare never sees an envelope, a name or an account key;
    the vault never sees a document key. Keyshare stores keys encrypted
    (AES-256-GCM, bound to account and document) under `share-key.bin`. In the
@@ -193,6 +234,74 @@ recovery and can veto it.
 and the second device shows what is really being approved); account-key
 rotation (stolen keys stop working; also removes the "older documents" gap);
 a security-patch gate (refuse phones whose attested patch level is stale).
+
+## A compromised front host
+
+The front host (edge and gateway) is the only machine reachable from the
+internet, so it is the most likely to be taken over. Until server 4.1.x the
+gateway's internal key alone was enough to have vault and keyshare release
+both server-held halves of a split document, to delete a vault, and to do it
+without a ledger entry (SRV-30): the other services took the gateway's word
+that a live check had happened.
+
+Now the service that releases or destroys a secret checks the holder's own
+proof itself:
+
+- **Vault and keyshare** check the device key's ML-DSA-87 signature over the
+  exact request, and the liveness key's signature where the device has one,
+  against the device keys identity vouches for. Each proof is used once.
+  Identity checks the same before removing a device or closing an account.
+- **The ledger** signs a receipt for each entry; the vault releases an
+  envelope only against the receipt for opening that document under that
+  proof. An open can't happen without its entry.
+- **Check-in** erases only on keyshare's own deadline or a duress sign-in
+  signed by the device (keyshare checks it, once each), and the vault drops a
+  Check-in-erased account's envelopes only with keyshare's signed erase token
+  for that account.
+- **Document keys** cross the gateway sealed to the phone (above).
+
+The facts the gateway can't make up are signed with keys it never holds:
+identity and the ledger sign with the **core** role's statement key, keyshare
+with the **keys** role's (`HUMID_CORE_STATEMENT_*`, `HUMID_KEYS_STATEMENT_*`;
+setup.sh and `humid init` make them, and `humid pki issue` carries each
+role's own to its machine).
+
+**What this trusts, honestly.** Vault and keyshare trust identity for which
+device keys belong to an account. Identity adds a device only with the
+account key's signature (which never leaves the phone) or a released
+recovery, so the gateway's key can't make identity vouch for a phone of the
+attacker's own. But whoever controls the **core** role (identity's statement
+key) can vouch for any key, and core also holds the vault; so a takeover of
+core together with keys can still release both halves. What holds:
+
+| Who is compromised | Gets |
+|---|---|
+| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open, no change to recovery material. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
+| Keys role alone | Encrypted document keys; nothing opens without envelopes and the account keys. |
+| Core role alone | Envelopes and identity's statement key; no document keys. |
+| Core and keys together | Both server-held halves, still useless without the account keys, which never leave the phone. |
+| Any of these | Never the account keys, so never a document's contents. |
+
+- **The recovery service** checks the same way before anything that changes
+  or releases recovery material:
+  - setting or removing a seal card, contacts, an ID anchor, a security key or
+    recovery settings;
+  - approving a device link;
+  - a witness releasing their piece;
+  - cancelling a recovery;
+  - a station's in-person verification;
+  - closing the account.
+
+  It checks the proof against the body it received, so the gateway can't turn
+  one approval into a different change. The recovery card made with a new
+  account has no step-up yet. The account key signs that card inside the
+  registration's live check, and identity's signed statement says the
+  account was created in that session. The recovery mode itself was already
+  a statement signed by the account key (docs/RECOVERY.md).
+
+**What a front host can still do with recovery:** see that recoveries happen
+and refuse service. It can also start a recovery request, which anyone
+can, and which still needs two real proofs, the wait and no veto.
 
 ## Offline
 
@@ -261,7 +370,9 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
   opened setting (`apps/mobile/src/core/duress.js`).
 - **Leaving the screen locks**, even with a file picker open: the exemption is bounded
   (60 s, `pagehide`, a 20 s hidden span; the Android document scanner, below, 90 s and a
-  60 s hidden span).
+  60 s hidden span). A check in progress is no exemption: only the phone's own face or
+  fingerprint prompt is, for 60 s at most, with 1.5 s after it closes to come back (PC-17;
+  `apps/mobile/src/core/leave.js`, `tests/leave.test.js`).
 - **Names are forgotten on lock**; a decoy session never decrypts the other names.
 - **Release builds carry no demo or simulation code** (`tests/bundle.test.js`); the
   simulation app has its own bundle identifier.
@@ -270,6 +381,14 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
 - **Every request times out** (45 s), so a silent server can't hold a live check open.
 - **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
   a chip that fails its own hash list.
+- **An app that can read the screen is named first (Android, APP-09).** An enabled
+  accessibility service can read everything in HumID's WebView and tap its buttons;
+  `FLAG_SECURE`, hidden overlays and filtered touches don't stop it, and HumID can't. Before
+  a document, a card, a recovery card or messages are shown, the app asks the phone which
+  services are on (`enabledAccessibilityServices` in the gate plugin) and, if one can read
+  the screen, names it and lets the holder decide (`apps/mobile/src/core/readers.js`). A
+  warning, not a guard: a holder who says yes, or malware that hides as a trusted service,
+  still reads. iOS gives apps no such list. Needs a device to confirm.
 - **iOS backups exclude the WebView's data store.**
 
 ## The Android document scanner (apps 2.1.1, narrowed in 2.1.2)
@@ -394,7 +513,10 @@ remaining item under *Before real data* #9.
 ## Live biometric checks
 
 "Human validated" means the server has evidence, for every action, that a
-live face or fingerprint match happened on a device it trusts. Here is how.
+face or fingerprint matched one enrolled on a device it trusts, at that moment.
+HumID requires a Class-3 biometric match on attested hardware and relies on the
+device's own anti-spoofing; it performs no additional liveness detection. Here
+is how.
 
 **When a phone joins** (first device, link, recovery), its secure chip makes a
 new P-256 *liveness key* that can only be used after a live biometric match,
@@ -407,7 +529,20 @@ for one operation at a time:
 
 The liveness key then signs the device-enrolment statement in the same check.
 The server stores the key and the proof (`android-tee`, `android-strongbox`
-or `apple-secure-enclave`) with the device.
+or `apple-secure-enclave`) with the device, and for Android the serials of
+every certificate in its attestation chain. Google's revocation list is
+checked against those serials at every sign-in, not only when the phone
+joins: a revoked certificate (a leaked or extracted device key) removes the
+device at its next sign-in, and with `HUMID_ATTESTATION_STATUS_REQUIRED=1`
+(the default with the attested policy) a list that is missing or over 48 hours
+old refuses Android sign-ins (503 `status_stale`) until it is fresh again.
+Android phones enrolled before the serials were kept can't be checked, so
+under a required list they are refused with `reattest_required` and set up
+again with *I already have HumID*; refusing them is the only way the promise
+holds, and accepting them unchecked would leave exactly the extracted-key case
+open. With Check-in armed, an outage of the list for over 48 hours keeps
+Android holders from checking in, so its fetch must be monitored (the
+sidecar's health check) on any server where Check-in is on.
 
 **Every later check** is signed by that key:
 
@@ -420,6 +555,13 @@ or `apple-secure-enclave`) with the device.
 A missing or wrong signature is refused and logged in the holder's activity
 as an access denied, so a bot holding the account's keys gets nowhere and
 leaves a trace.
+
+Each signature has one accepted form: the server takes only low-S ECDSA
+(`s ≤ n/2`), so a signature seen on the wire can't be rewritten into a second
+valid one with a different proof hash. The app normalises what the chip
+returns. Checks of other people's signatures (ID documents, mDLs, SD-JWT
+credentials, security keys) follow their own standards, which allow either
+form; they trust what was signed, never the signature's bytes.
 
 **Device policy** (`HUMID_DEVICE_POLICY` on the gateway): `attested`
 (default) accepts only proven phones; `biometric` also accepts
