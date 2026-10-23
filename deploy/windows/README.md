@@ -82,6 +82,7 @@ phone ──https──► Tailscale Funnel or Cloudflare Tunnel ──► 127.0
 | Isolation between services | separate read-only containers on an internal network | one process; services talk over 127.0.0.1 |
 | TLS | Caddy on the server, automatic certificates | the tunnel |
 | Client address for rate limits | Caddy's `X-Forwarded-For` | `HUMID_TRUST_FORWARDED`, set by `humid expose`: `cloudflare` believes Cloudflare's `CF-Connecting-IP`; `off` (Tailscale Funnel, and the default) believes no header, so every visitor shares the tunnel's address and the per-address limits apply to all of them together; `xff` only for a tunnel you know appends the visitor's address |
+| Rate limits behind Tailscale Funnel | per visitor address | **shared**: see *Rate limits behind a tunnel* below |
 | Updates | `docker compose pull` per service | from the admin console (approved on a phone, automatic rollback), or unzip and run the installer again |
 
 The service code, the device policy, the attestation checks and the data
@@ -104,6 +105,46 @@ license keys, with `humid mint 100 counter-2026-10` (one code per line; the
 batch name is for your records). `humid set HUMID_PASS_BUY_URL=https://…` makes
 the app link to your shop. How it stays anonymous:
 [docs/ANONYMITY.md](../../docs/ANONYMITY.md).
+
+## Rate limits behind a tunnel
+
+The gateway limits handshakes and failed sign-ins per visitor address. Behind
+**Cloudflare Tunnel** it knows the address (`HUMID_TRUST_FORWARDED=cloudflare`,
+which `humid expose cloudflare` sets). Behind **Tailscale Funnel**, with the
+default `HUMID_TRUST_FORWARDED=off`, it doesn't: every visitor arrives from the
+tunnel's own 127.0.0.1, so a per-address limit would be one bucket for everyone
+and one visitor could keep every holder from connecting. So when the address is
+unknown:
+
+- **Handshakes** share one server-wide ceiling, `HUMID_SHARED_HELLO_PER_MIN`
+  (600 a minute by default), instead of 30 per address. One busy visitor can
+  still spend it; it takes 10 handshakes a second to do so.
+- **A holder who has signed in before always gets through.** Each sign-in hands
+  the app a one-use *hello pass* inside the encrypted session; its next
+  handshake presents it and skips every handshake limit. So unlocking, and
+  checking in when Check-in is armed, never fails because strangers used up the
+  shared ceiling. A pass works once, opens nothing, and a new one comes with
+  each sign-in. Passes are kept in memory: right after the server restarts,
+  a holder's first handshake goes through the shared ceiling like anyone's.
+- **Failed sign-ins** are counted per HumID and server-wide, not per address.
+- Once a session is open, its own per-session limits apply as everywhere.
+
+What you give up with `off`: one visitor can still spend the shared ceiling and
+keep **new** visitors (people setting up HumID, or a phone whose app data was
+cleared) from connecting while they keep at it, and a new holder's phone has no
+pass until its first sign-in. If you can, use Cloudflare Tunnel, or put the
+server where the visitor's address is known.
+
+Whether Tailscale Funnel passes the visitor's address on: Tailscale's
+documentation doesn't say. Tailscale's Serve code reportedly *replaces*
+`X-Forwarded-For` with the connection's source, and for Funnel that source is the
+visitor, which would make `HUMID_TRUST_FORWARDED=xff` correct behind Funnel. That
+is not confirmed, and if it's wrong `xff` lets anyone name their own address, so
+the default stays `off`. To check on your server: open the app from a phone off
+your tailnet (mobile data), send a request with a made-up `X-Forwarded-For`
+(`curl -H "X-Forwarded-For: 1.2.3.4" https://<your funnel address>/htp/v1/keys`)
+and look at what reached the edge. If the made-up value never arrives and your
+phone's public address does, `humid set HUMID_TRUST_FORWARDED=xff`.
 
 ## Check-in
 
