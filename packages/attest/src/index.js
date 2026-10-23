@@ -12,7 +12,7 @@ import { verifyAppAttest } from "./apple.js";
 import { isLowS } from "./ecdsa.js";
 
 export { verifyAndroidKey, readAndroidAttestation, checkAndroidPolicy, parseKeyDescription, AttestationError, KEY_DESCRIPTION_OID, serialKey } from "./android.js";
-export { revocationList, parseStatusList, STATUS_URL } from "./status.js";
+export { revocationList, parseStatusList, readStatusFile, fetchStatusToFile, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS } from "./status.js";
 export { verifyAppAttest } from "./apple.js";
 export { GOOGLE_ATTESTATION_ROOTS, APPLE_APP_ATTEST_ROOT, HUMID_ANDROID_RELEASE_CERT, REVOKED_ANDROID_CERTS } from "./roots.js";
 export { decodeCbor } from "./cbor.js";

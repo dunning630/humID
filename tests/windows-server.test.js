@@ -22,6 +22,8 @@ test("settings: a new file holds the key pair and every default; edits keep comm
   assert.equal(cfg.HUMID_BIND_HOST, "127.0.0.1");
   assert.equal(cfg.HUMID_PORT, "8480");
   assert.equal(cfg.HUMID_TRUST_FORWARDED, "off", "no tunnel header is trusted until `humid expose` says which tunnel");
+  assert.equal(cfg.HUMID_ATTESTATION_STATUS_REQUIRED, "1", "revocation fails closed on a new install (PC-14)");
+  assert.equal(cfg.HUMID_ANDROID_ALLOW_ANY_SIGNER, "0");
   updateEnvFile(f, { HUMID_DEVICE_POLICY: "biometric", NEW_SETTING: "x" });
   const text = readFileSync(f, "utf8");
   assert.ok(text.includes("# attested = phones whose secure chip"), "comments survive");
@@ -39,6 +41,11 @@ test("settings: validation explains what's wrong", () => {
   assert.throws(() => validate({ ...ok, HUMID_PUBLIC_URL: "http://x.example" }), /https/);
   assert.throws(() => validate({ ...ok, HUMID_PORT: "99999" }), /port/);
   assert.throws(() => validate({}), /init/);
+  // LIVE-04: the test-only signer lever can't sit beside the attested policy unannounced
+  assert.throws(() => validate({ ...ok, HUMID_ANDROID_ALLOW_ANY_SIGNER: "1" }), /HUMID_INSECURE_TEST=1/);
+  validate({ ...ok, HUMID_ANDROID_ALLOW_ANY_SIGNER: "1", HUMID_INSECURE_TEST: "1" });
+  validate({ ...ok, HUMID_ANDROID_ALLOW_ANY_SIGNER: "1", HUMID_DEVICE_POLICY: "biometric" });
+  assert.throws(() => validate({ ...ok, HUMID_ATTESTATION_STATUS_REQUIRED: "yes" }), /0 or 1/);
 });
 
 test("client address: no tunnel header is believed unless HUMID_TRUST_FORWARDED says which (SRV-31)", () => {

@@ -28,7 +28,7 @@ each item stands. **Status:** ✅ fixed · ◑ partly, with what's left · ⬜ o
 |---|---|---|---|
 | Chain to pinned Google roots | `packages/attest/src/android.js` | Yes | ➖ |
 | Every certificate above the leaf in date; every issuer a CA | same | Intermediates' dates only; no CA check | ✅ (leaf dates left out, as Google's verifier does: devices set them unreliably) |
-| Google's revocation/status list | `packages/attest/src/status.js` | Never fetched | ✅ refreshed every 6 h; `HUMID_ATTESTATION_STATUS_REQUIRED=1` refuses until fetched |
+| Google's revocation/status list | `packages/attest/src/status.js` | Never fetched | ✅ refreshed every 6 h; in Docker by the `attestation-status` sidecar (identity has no internet) into a file identity reads; with the attested policy `HUMID_ATTESTATION_STATUS_REQUIRED` defaults to 1 and refuses Android phones while the copy is missing or over 48 h old (PC-14 / LIVE-02 / SRV-33, `tests/e2e/attestation-status.test.js`) |
 | Both security levels TEE or StrongBox; Software refused | `android.js` | `≥ 1` (so KeyMint's `100` passed) | ✅ allow-list {TEE, StrongBox} for both |
 | Verified boot, locked bootloader | same | Yes (`HUMID_REQUIRE_LOCKED_BOOT`, default on) | ➖ 🔒 rooted-phone test |
 | Biometric-only auth type, no `noAuthRequired`, timeout 0 | same | Yes | ➖ |

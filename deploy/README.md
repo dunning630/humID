@@ -8,9 +8,18 @@ Two ways:
   Tailscale Funnel. Good for a pilot on a laptop.
 - **On a Linux server with Docker** (this page).
 
-Eight small containers: **edge** (Caddy, the only one on the internet),
-**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access** and **keyshare**. They run on
-a private network with no route to the internet, read-only, as non-root.
+Small containers: **edge** (Caddy, the only one phones reach),
+**gateway**, **identity**, **vault**, **ledger**, **recovery**, **access**, **keyshare** and **relay**. They run on
+a private network with no route to the internet, read-only, as non-root. One
+sidecar, **attestation-status**, fetches Google's list of revoked Android
+attestation keys every 6 hours and leaves it on a volume identity reads; it is
+the only container that calls out, and it holds no keys and reaches no service.
+With the default attested policy, identity refuses Android phones while that
+copy is missing or over 48 hours old (`HUMID_ATTESTATION_STATUS_REQUIRED=1`),
+so a server that can't reach `android.googleapis.com` fails safe: `docker
+compose ps` shows the sidecar unhealthy. Identity logs one `live-human posture`
+line at every start; a warning there names each setting that weakens the
+guarantee.
 
 ## What you need
 
