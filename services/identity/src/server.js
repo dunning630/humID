@@ -19,6 +19,7 @@
 
 import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain } from "@humid/svc";
 import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { recoveryModeMessage, isRecoveryMode, RECOVERY_MODES } from "@humid/recovery";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, STATUS_URL, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
 /** An attestation is made for one enrolment, in a session at most this old. */
@@ -86,6 +87,12 @@ export function createIdentity({
      ALTER TABLE identities ADD COLUMN last_duress_at TEXT`,
     // Each attestation challenge (a session's transcript hash) enrols at most one device.
     `CREATE TABLE attest_challenges (th TEXT PRIMARY KEY, device_id TEXT NOT NULL, used_at TEXT NOT NULL)`,
+    // Recovery mode (docs/RECOVERY.md#two-recovery-modes), signed by the account key over
+    // recoveryModeMessage. No row (NULL) means an account from before modes: hardened.
+    `ALTER TABLE identities ADD COLUMN recovery_mode TEXT;
+     ALTER TABLE identities ADD COLUMN recovery_mode_version INTEGER;
+     ALTER TABLE identities ADD COLUMN recovery_mode_epoch INTEGER;
+     ALTER TABLE identities ADD COLUMN recovery_mode_sig BLOB`,
   ]);
   const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, required: statusRequired, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
   if (status) attest = { ...attest, revokedSerials: () => status.serials() };
@@ -143,10 +150,32 @@ export function createIdentity({
       throw e;
     }
   }
+  /**
+   * A recovery mode statement { mode, version, epoch, sig } for `account`, checked against its
+   * account key. Versions only go up, and epochs never go down; the same statement again is
+   * accepted (a retried request).
+   */
+  function checkedMode(account, m) {
+    const mode = String(m?.mode || ""), version = Number(m?.version), epoch = Number(m?.epoch);
+    const u32 = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
+    if (!isRecoveryMode(mode) || !u32(version) || !u32(epoch)) throw new HttpError(400, "bad_recovery_mode", "Unknown recovery mode.");
+    const sig = unb64u(String(m?.sig || ""));
+    if (!verify(sig, recoveryModeMessage(account.id, mode, version, epoch), new Uint8Array(account.dsa_pk))) {
+      throw new HttpError(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+    }
+    const cur = account.recovery_mode_version || 0;
+    if (version < cur || (version === cur && (account.recovery_mode !== mode || account.recovery_mode_epoch !== epoch))) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
+    if (epoch < (account.recovery_mode_epoch || 1)) throw new HttpError(409, "stale_recovery_mode", "Recovery pieces can't go back to an older set.");
+    return { mode, version, epoch, sig };
+  }
+  const saveMode = (id, m) => db.prepare("UPDATE identities SET recovery_mode = ?, recovery_mode_version = ?, recovery_mode_epoch = ?, recovery_mode_sig = ? WHERE id = ?").run(m.mode, m.version, m.epoch, m.sig, id);
+  const modeView = (r) => (r.recovery_mode ? { mode: r.recovery_mode, version: r.recovery_mode_version, epoch: r.recovery_mode_epoch, sig: b64u(r.recovery_mode_sig) } : null);
   const assuranceOf = (proof, gateMethod) => (attested(proof) ? "hardware" : DESKTOP_BIOMETRIC.has(gateMethod) ? "os" : "none");
   const accountView = (r, current) => ({
     id: r.id, status: r.status, createdAt: r.created_at, commit: r.commit_hex,
     dsaFp: fp(r.dsa_pk), kemFp: fp(r.kem_pk),
+    // The signed statement itself, so every device checks it against the account key.
+    recoveryMode: modeView(r),
     devices: activeDevices.all(r.id).map((d) => deviceView(d, current)),
   });
   const active = (id) => {
@@ -214,6 +243,8 @@ export function createIdentity({
         if (!existing) {
           db.prepare("INSERT INTO identities (id, kem_pk, dsa_pk, x_pk, commit_hex, created_at) VALUES (?, ?, ?, ?, ?, ?)")
             .run(id, keys.kemPk, keys.dsaPk, keys.xPk, commit, new Date().toISOString());
+          // The choice made at setup, signed by the same account key.
+          if (r.recoveryMode != null) saveMode(id, checkedMode(getAccount.get(id), r.recoveryMode));
         }
         const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy, Number(r.sessionAgeMs));
         db.exec("COMMIT");
@@ -266,6 +297,20 @@ export function createIdentity({
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
       db.prepare("UPDATE device_keys SET last_seen_at = ? WHERE id = ?").run(new Date().toISOString(), device.id);
       return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });
+    }],
+
+    // Recovery mode: the account's signed statement, and its public key so another service can check it too.
+    ["GET", "/internal/recovery-mode/:id", ({ params, claims }) => {
+      gatewayOnly(claims);
+      const a = active(params.id);
+      return json(200, { account: a.id, dsaPk: b64u(a.dsa_pk), recoveryMode: modeView(a) || { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, sig: null } });
+    }],
+    ["POST", "/internal/recovery-mode", ({ body, claims }) => {
+      gatewayOnly(claims);
+      const r = parseObject(body);
+      const a = active(String(r.account));
+      saveMode(a.id, checkedMode(a, r));
+      return json(200, { recoveryMode: modeView(getAccount.get(a.id)) });
     }],
 
     // Duress. The gateway sets and reads this; it is never shown in /me.

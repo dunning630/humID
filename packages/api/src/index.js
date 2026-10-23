@@ -36,6 +36,8 @@ const STEP_UP = {
   setAnchor: () => ["PUT", "/recovery/anchor"],
   addKey: () => ["POST", "/recovery/keys"],
   removeKey: (id) => ["DELETE", `/recovery/keys/${keyIdOf(id)}`],
+  removeAllKeys: () => ["DELETE", "/recovery/keys"],
+  setRecoveryMode: () => ["POST", "/recovery/mode"],
   removeAnchor: () => ["DELETE", "/recovery/anchor"],
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
@@ -124,7 +126,7 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign, card, soleBiometric, pass }) {
+  async register({ pub, commit, device, sign, card, soleBiometric, pass, recoveryMode }) {
     await this.htp.connect();
     const th = this.htp.transcript;
     const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
@@ -134,6 +136,8 @@ export class HumidApi {
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
         ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
+        ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
@@ -412,6 +416,21 @@ export class HumidApi {
     return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}) }, stepUp });
   }
   removeKey(id, stepUp) { return this.#json("DELETE", `/recovery/keys/${keyIdOf(id)}`, { stepUp }); }
+  removeAllKeys(stepUp) { return this.#json("DELETE", "/recovery/keys", { stepUp }); }
+
+  /* ---------------- recovery mode (docs/RECOVERY.md#two-recovery-modes) ---------------- */
+
+  /**
+   * { mode: "holder-only" | "hardened", version, epoch, sig, escrow: [recovery material still stored] }.
+   * sig is the account key's signature (bytes, or null for an account from before modes):
+   * check it with recoveryModeMessage before believing the mode.
+   */
+  async recoveryMode() {
+    const r = await this.#json("GET", "/recovery/mode");
+    return { ...r, sig: r.sig ? unb64u(r.sig) : null };
+  }
+  /** Switch modes (or start a new set of recovery pieces): { mode, version, epoch, sig } signed by the account key, with a step-up. */
+  setRecoveryMode({ mode, version, epoch, sig }, stepUp) { return this.#json("POST", "/recovery/mode", { body: { mode, version, epoch, sig: b64u(sig) }, stepUp }); }
 
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
