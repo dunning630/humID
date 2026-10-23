@@ -36,6 +36,9 @@ export class HtpClient {
     this.server = null;
     this.session = null;
     this.seq = 0;
+    // Sequence numbers reserved by ticket() and not yet sent. A seq is the frame's AES-GCM
+    // nonce under the session's c2s key, so each one may be used for exactly one frame.
+    this.reserved = new Set();
     this.onSessionLost = null;
   }
 
@@ -97,6 +100,7 @@ export class HtpClient {
     this.close();
     this.session = clientFinish(state, await res.json());
     this.seq = 0;
+    this.reserved.clear();
     return this.session;
   }
 
@@ -122,6 +126,7 @@ export class HtpClient {
     const action = { method: m, path, device: String(a.device), nonce: unb64u(String(a.nonce)), exp: Number(a.exp) };
     const s = this.session;
     const seq = ++this.seq;
+    this.reserved.add(seq);
     const at = Date.now();
     const bytes = actionBytes(action);
     return { sid: s.sidText, seq, at, method: m, path, action, actionBytes: bytes, live: liveMessage(s.th, seq, m, path, at, bytes) };
@@ -149,6 +154,9 @@ export class HtpClient {
       else ({ ticket: t, sign } = stepUp);
       if (!this.session || t.sid !== this.session.sidText) throw new HtpError("session_changed", "The session ended before this request was approved. Try again.");
       if (t.method !== meta.m || t.path !== path) throw new HtpError("ticket_mismatch", "This approval was for a different request.");
+      // One ticket, one frame (CRYPTO-06): sending a second frame under the same seq would reuse
+      // an AES-GCM nonce under the same key. A retry needs a new ticket and a new live check.
+      if (!this.reserved.delete(t.seq)) throw new HtpError("ticket_used", "This approval was already used. Approve the request again.");
       seq = t.seq;
       const message = stepUpMessage(this.session.th, seq, meta.m, path, bytes, t.at, t.actionBytes);
       const { sig, interrupt, live } = await sign(message);
@@ -190,6 +198,7 @@ export class HtpClient {
   close() {
     if (this.session) wipe(this.session.c2s, this.session.s2c);
     this.session = null;
+    this.reserved.clear();
   }
 }
 
