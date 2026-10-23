@@ -103,7 +103,7 @@ try {
   const practice = page.getByRole("button", { name: /The HumID mark \(tap it three times\)/ });
   for (let i = 0; i < 3; i++) { if (i) await page.waitForTimeout(500); await practice.click(); }
   await page.locator('[data-practice="decoy"]').waitFor({ timeout: 5000 });
-  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*0\.5 s, 0\.5 s apart/);
+  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*Your taps were 0\.5\d? s, 0\.5\d? s apart/);
   await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
   await toast(page, /Duress protection is on/);
   await tab(page, "Vault");
