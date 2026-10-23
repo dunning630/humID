@@ -260,14 +260,38 @@ test("record: chip data from an unchecked chip is not applied and is labelled no
   const empty = applyChip(newRecord("passport"), chip, { mrz, integrity: null, b64 });
   assert.deepEqual(empty.fields, {});
   assert.equal(provenance(empty).level, "chip-failed");
-  // A hash-consistent chip is applied, and described as integrity-checked, never as verified.
+  // A hash-consistent chip is applied, and says plainly that its issuer wasn't verified on this phone.
   const ok = applyChip(newRecord("passport"), chip, { mrz, integrity: checkIntegrity(passport.sod, { 1: passport.dg1, 2: passport.dg2 }), b64 });
   assert.equal(ok.source.given, "chip");
   assert.equal(ok.verified.chip.integrity, true);
-  assert.equal(provenance(ok).level, "chip");
-  assert.match(provenance(ok).text, /^Chip data integrity-checked/);
-  assert.match(provenance(ok).text, /signature isn't checked on this phone/);
-  assert.doesNotMatch(provenance(ok).text, /\bverified\b/i);
+  assert.equal(provenance(ok).level, "chip-issuer-unverified");
+  assert.match(provenance(ok).text, /^Read from the chip, issuer not verified on this phone/);
+  assert.match(provenance(ok).text, /signature on that list isn't checked here/);
+});
+
+test("CREDS-04: a chip whose signer chains to no trusted CSCA never earns the top 'chip' tier", () => {
+  // A wholly made-up chip: self-consistent hashes, a broken SOD signature, a CSCA nobody trusts.
+  const nobody = testCsca("Unverifiable issuer");
+  const forged = testPassport({ csca: nobody, mrz: { surname: "SAMPLE" }, tamper: "signature" });
+  const b64 = (b) => Buffer.from(b).toString("base64");
+  const integrity = safeCheckIntegrity(forged.sod, { 1: forged.dg1, 15: forged.dg15 });
+  assert.equal(integrity.ok, true, "the phone's hash check is only the chip agreeing with itself");
+  const rec = applyChip(newRecord("passport"), { ...forged, access: "BAC" }, { mrz: readDg1(forged.dg1).mrz, integrity, b64 });
+  const p = provenance(rec);
+  assert.equal(p.level, "chip-issuer-unverified");
+  assert.match(p.text, /issuer not verified on this phone/);
+  assert.doesNotMatch(p.text, /integrity-checked|\bverified by\b/i);
+  // The top tier needs a fresh issuer check from the caller; a failed one is "not verified".
+  assert.equal(provenance(rec, { chip: { ok: true, chain: "trusted" } }).level, "chip");
+  assert.equal(provenance(rec, { chip: { ok: true, chain: "unchecked" } }).level, "chip-issuer-unverified");
+  assert.equal(provenance(rec, { chip: { ok: false, reason: "the chip's signer isn't a country HumID trusts" } }).level, "chip-mismatch");
+  // ...and the app's tier for it is amber, never the mint "Read from the chip".
+  const ids = readFileSync(new URL("../apps/mobile/src/screens/add/ids.jsx", import.meta.url), "utf8");
+  const tier = /if \(level === "chip-issuer-unverified"\) return (\{[^}]+\})/.exec(ids);
+  assert.ok(tier, "proofTier names the phone-only chip tier");
+  assert.match(tier[1], /tone: "amber"/);
+  assert.match(tier[1], /issuer not verified on this phone/);
+  assert.match(ids, /if \(level === "chip"\) return \{[^}]+tone: "mint"/, "mint stays for an issuer-checked chip only");
 });
 
 test("APP-05: the chip label is re-checked from the chip's files, never taken from a stored flag", () => {
@@ -297,7 +321,7 @@ test("APP-05: the chip label is re-checked from the chip's files, never taken fr
   const photo = make(); photo.images.portrait = { type: "image/jpeg", data: b64(Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3])), size: 6 };
   assert.equal(provenance(photo).level, "chip-mismatch");
   const realPhoto = make(); realPhoto.images.portrait = { type: "image/jpeg", data: b64(readDg2(passport.dg2).bytes), size: 1 };
-  assert.equal(provenance(realPhoto).level, "chip");
+  assert.equal(provenance(realPhoto).level, "chip-issuer-unverified");
   assert.equal(recheckChip(realPhoto).portrait, "matches");
   // A flag set on a record with no chip read at all is caught too.
   const flagOnly = applyMrz(newRecord("passport"), parseMrz(td3(MRZ), { now: NOW }));

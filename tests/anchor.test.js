@@ -83,6 +83,20 @@ test("passive authentication refuses altered data, a forged signature, an untrus
   assert.throws(() => passiveAuth(swapped, { cscas: [csca.pem] }), (e) => e.code === "data_altered");
 });
 
+test("CREDS-08: passive authentication refuses a SHA-1 SOD unless asked, and then says so", () => {
+  for (const dsKind of ["ec", "rsa"]) {
+    const old = testPassport({ csca, dsKind, hash: "sha1" });
+    assert.throws(() => passiveAuth(old, { cscas: [csca.pem] }), (e) => e.code === "weak_hash", dsKind);
+    const r = passiveAuth(old, { cscas: [csca.pem], allowSha1: true });
+    assert.equal(r.weakHash, true);
+    assert.equal(r.hashAlg, "sha1");
+  }
+  // The same chip's other checks still run when SHA-1 is allowed.
+  assert.throws(() => passiveAuth(testPassport({ csca, hash: "sha1", tamper: "signature" }), { cscas: [csca.pem], allowSha1: true }), (e) => e.code === "bad_signature");
+  assert.throws(() => passiveAuth(testPassport({ csca, hash: "sha1" }), { cscas: [other.pem], allowSha1: true }), (e) => e.code === "untrusted_country");
+  assert.equal(passiveAuth(testPassport({ csca }), { cscas: [csca.pem] }).weakHash, false);
+});
+
 for (const aaKind of ["rsa", "ec"]) {
   test(`active authentication: the chip answers this challenge (${aaKind}); a copy can't`, () => {
     const p = testPassport({ csca, aaKind });

@@ -196,7 +196,12 @@ export const summary = (rec) => ({ kind: rec.kind, issuer: rec.fields.issuer || 
 /** How sure HumID is of the details, in words, strongest source first. */
 // The phone checks the chip's files against the chip's own list of hashes, but not
 // the issuing country's signature on that list (only the server does that, when an
-// ID is used to recover). So this never says "verified by the country".
+// ID is used to recover). A cloned or made-up chip supplies both the files and the
+// list, so a match proves only that the copy is self-consistent: it gets the amber
+// "issuer not verified on this phone" tier, never the top one (CREDS-04). The top
+// "chip" tier needs a fresh issuer check from the caller (opts.chip: the SOD
+// signature verified and its signer chained to a CSCA the phone trusts), which the
+// app can't make yet: it has no CSCA list.
 //
 // The stored `verified` flags are never trusted on their own: a record is just
 // JSON, so anyone who can hand the app a record could set them (precert
@@ -204,14 +209,16 @@ export const summary = (rec) => ({ kind: rec.kind, issuer: rec.fields.issuer || 
 // every time, and the fields the record says came from the chip must still
 // match the chip's DG1. A mobile ID's labels need a fresh check from the
 // caller (opts.mdoc, from recheckMdoc in the app); without one they say so.
-export function provenance(rec, { mdoc } = {}) {
+export function provenance(rec, { mdoc, chip } = {}) {
   const v = rec.verified || {};
   const typed = Object.values(rec.source || {}).includes("typed");
   if (v.chip) {
     const c = recheckChip(rec);
     if (!c.ok) return { level: "chip-mismatch", text: `Not verified: ${c.reason}` };
+    if (chip && chip.ok !== true) return { level: "chip-mismatch", text: `Not verified: ${chip.reason || "the issuing country's signature doesn't check out"}` };
     if (typed || c.edited) return { level: "chip-edited", text: "Read from the chip, then changed by hand" };
-    return { level: "chip", text: "Chip data integrity-checked: its files match the chip's own list of hashes (the issuing country's signature isn't checked on this phone)" };
+    if (chip?.ok === true && chip.chain === "trusted") return { level: "chip", text: "Read from the chip; signed by the issuing country, checked against its signing certificate on this phone" };
+    return { level: "chip-issuer-unverified", text: "Read from the chip, issuer not verified on this phone: its files match the chip's own list of hashes, but the issuing country's signature on that list isn't checked here" };
   }
   if (v.mdoc) {
     if (mdoc && !mdoc.ok) return { level: "mdoc-mismatch", text: `Not verified: ${mdoc.reason || "the issuer's signature no longer checks out"}` };

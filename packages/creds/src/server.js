@@ -24,12 +24,14 @@ function mrzDate(yymmdd, kind, now = new Date()) {
  * signature over the server's fresh nonce.
  *   cscas: trusted CSCAs (from a directory, a master list, or both)
  *   active: { nonce, signature, hash? } — required when the chip has an AA key
+ *   allowSha1: accept an older chip signed with SHA-1 (refused by default,
+ *              CREDS-08); the result then says weakHash: true
  */
-export function verifyPassportChip(chip, { cscas, active, now = new Date() } = {}) {
+export function verifyPassportChip(chip, { cscas, active, allowSha1 = false, now = new Date() } = {}) {
   const bytes = (v) => v == null || v instanceof Uint8Array;
   if (!chip || typeof chip !== "object" || !["dg1", "sod", "dg15"].every((k) => bytes(chip[k]))) fail("bad_request", "The chip data must be bytes.");
   if (active && (!bytes(active.nonce) || !bytes(active.signature))) fail("bad_request", "The chip's answer must be bytes.");
-  const pa = wrap(() => passiveAuth(chip, { cscas, now }));
+  const pa = wrap(() => passiveAuth(chip, { cscas, now, allowSha1 }));
   let holder = false;
   if (pa.aaRequired) {
     if (!active?.nonce || !active?.signature) fail("no_chip_proof", "This chip can prove it's the original; answer the challenge to continue.");
@@ -47,8 +49,9 @@ export function verifyPassportChip(chip, { cscas, active, now = new Date() } = {
       document_number: m.number || null, expiry_date: mrzDate(m.expiry, "expiry", now),
       issuing_country: country, nationality: m.nationality || null, sex: m.sex || null,
     }).filter(([, v]) => v != null)),
-    values: null, validUntil: mrzDate(m.expiry, "expiry", now), statusRef: null, status: null,
-    note: holder ? null : "This chip has no Active Authentication key, so a copy of its data can't be told from the original.",
+    values: null, validUntil: mrzDate(m.expiry, "expiry", now), statusRef: null, status: null, weakHash: pa.weakHash,
+    note: [holder ? null : "This chip has no Active Authentication key, so a copy of its data can't be told from the original.",
+      pa.weakHash ? "This chip's data is signed with SHA-1, which is no longer collision-resistant." : null].filter(Boolean).join(" ") || null,
   };
 }
 
@@ -70,7 +73,9 @@ export { safeFetch, statusListFetcher, publicAddress, checkUrl, strictBlockList 
  *   publisherCscas: the publisher's CSCA certificate(s) (PEM, DER or X509Certificate):
  *                   the UN CSCA for ICAO's list, Germany's CSCA for the BSI list
  *   publisherPins:  their SHA-256 fingerprints, confirmed out of band (required)
- * Returns { added, countries }.
+ * Lists only move forward: one signed earlier than the list already applied
+ * for `source` is refused (`rollback`), as applyVical refuses an older VICAL.
+ * Returns { added, countries, signedAt } ({ unchanged: true } for the same list again).
  */
 export function applyMasterList(store, bytes, { source, publisherCscas = [], publisherPins = [], now = new Date() } = {}) {
   if (!publisherPins.length) fail("no_trust", "Pin the master list publisher's certificate fingerprint first.");
@@ -78,13 +83,15 @@ export function applyMasterList(store, bytes, { source, publisherCscas = [], pub
   const pins = publisherPins.map((p) => String(p).toLowerCase().replace(/[^0-9a-f]/g, ""));
   const pinned = certs.filter((c) => pins.includes(createHash("sha256").update(c.raw).digest("hex")));
   if (!pinned.length) fail("no_trust", "None of the publisher certificates given matches a pinned fingerprint.");
-  const cscas = cscasFromMasterList(bytes, { publisherCscas: pinned, now });
+  const { cscas, signingTime } = wrap(() => readMasterList(bytes, { publisherCscas: pinned, now }));
   const entries = cscas
     .filter((c) => now <= new Date(c.validTo))
     .map((c) => ({ der: new Uint8Array(c.raw), country: /(?:^|\n)C=([A-Z]{2})(?:\n|$)/.exec(c.subject)?.[1] || null, notAfter: new Date(c.validTo).toISOString() }))
     .filter((e) => e.country);
-  store.setCscas(source, entries, { appliedAt: now.toISOString(), sha256: createHash("sha256").update(bytes).digest("hex") });
-  return { added: entries.length, countries: [...new Set(entries.map((e) => e.country))].sort() };
+  const signedAt = signingTime ? signingTime.toISOString() : null;
+  const r = store.setCscas(source, entries, { appliedAt: now.toISOString(), signedAt, sha256: createHash("sha256").update(bytes).digest("hex") }, { now });
+  if (r?.unchanged) return { added: 0, countries: [], signedAt, unchanged: true };
+  return { added: entries.length, countries: [...new Set(entries.map((e) => e.country))].sort(), signedAt };
 }
 
 /** The store's CSCAs as X509Certificates, for verifyPassportChip({ cscas }). */
