@@ -17,6 +17,8 @@ const ID_RE = "hid_[0-9a-f]{40}";
 const DEV_RE = "dev_[0-9a-f]{24}";
 const OBJ_RE = "[0-9a-f-]{36}";
 const CODE_RE = "[0-9A-HJKMNP-TV-Z]{12}";
+/** A recovery request's code: 16 characters, it lives up to a week (CRYPTO-08). Older 12-character ones still work. */
+const RCODE_RE = "[0-9A-HJKMNP-TV-Z]{12}(?:[0-9A-HJKMNP-TV-Z]{4})?";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
 const KEY_RE = "[0-9a-f]{32}";
@@ -118,9 +120,9 @@ const ROUTES = [
   { m: "PUT", p: re("/recovery/settings"), to: "recovery", path: "/settings", auth: true, guard: true, event: "settings.changed", detail: (r, su) => ({ duressAlert: r?.duressAlert, proof: su?.proof }) },
   // verification stations
   { m: "GET", p: re("/recovery/station"), to: "recovery", path: "/station", auth: true },
-  { m: "GET", p: re(`/recovery/station/requests/(${CODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
-  { m: "POST", p: re(`/recovery/station/requests/(${CODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/station/requests/(${RCODE_RE})`), to: "recovery", path: "/station/requests/$1", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/challenge`), to: "recovery", path: "/station/requests/$1/challenge", auth: true },
+  { m: "POST", p: re(`/recovery/station/requests/(${RCODE_RE})/verify`), h: "stationVerify", auth: true, guard: true },
   // recovering on a new device
   { m: "POST", p: re("/recovery/requests"), h: "startRecovery", anon: true },
   { m: "GET", p: re(`/recovery/requests/(${REQ_RE})`), to: "recovery", path: "/requests/$1", anon: true },
@@ -129,8 +131,8 @@ const ROUTES = [
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/anchor`), h: "addEvidence", kind: "anchor", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key/challenge`), to: "recovery", path: "/requests/$1/key/challenge", anon: true },
   { m: "POST", p: re(`/recovery/requests/(${REQ_RE})/key`), h: "addEvidence", kind: "key", anon: true },
-  { m: "GET", p: re(`/recovery/help/(${CODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
-  { m: "POST", p: re(`/recovery/help/(${CODE_RE})`), h: "helpRecover", auth: true, guard: true },
+  { m: "GET", p: re(`/recovery/help/(${RCODE_RE})`), to: "recovery", path: "/help/$1", auth: true },
+  { m: "POST", p: re(`/recovery/help/(${RCODE_RE})`), h: "helpRecover", auth: true, guard: true },
   { m: "GET", p: re("/recovery/alerts"), to: "recovery", path: "/alerts", auth: true },
   { m: "POST", p: re(`/recovery/alerts/(${REF_RE})/cancel`), to: "recovery", path: "/alerts/$1/cancel", auth: true, event: "recovery.cancelled", detail: (r, su) => ({ ref: r?.ref, method: r?.method, platform: r?.platform, proof: su?.proof }) },
 

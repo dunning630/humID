@@ -69,7 +69,7 @@ const keyIdOf = (id) => {
 };
 const codeOf = (input) => {
   const c = parseCode(input);
-  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 letters and numbers.");
+  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 or 16 letters and numbers.");
   return c;
 };
 
