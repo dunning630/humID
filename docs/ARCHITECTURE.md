@@ -163,7 +163,13 @@ capabilities dropped.
 audience-bound) for every internal call, naming the account, the device,
 key fingerprints and any step-up. Identity, vault, ledger and recovery verify
 it and accept nothing else, so a compromised edge can reach them on the
-network but cannot get them to do anything.
+network but cannot get them to do anything. The assertion says who is calling;
+it isn't enough to release or destroy a secret. For that, vault, keyshare and
+identity check the holder's own step-up signature themselves, the vault needs
+the ledger's signed receipt for the open, and the facts the gateway can't make
+up (which device keys an account has, what the ledger recorded, what Check-in
+erased) are signed with core's and keys' statement keys, which the gateway
+never holds ([SECURITY.md](SECURITY.md#a-compromised-front-host)).
 
 **Split keys.** Since split keys, each document also needs its own key from
 keyshare, released inside the same live step-up that releases its envelope. A

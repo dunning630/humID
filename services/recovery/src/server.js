@@ -73,9 +73,17 @@ export function createRecovery({
   trustFile = env("HUMID_TRUST_STORE", ""),   // trust.json from tools/trust.mjs (ICAO / BSI master lists)
   cscas: extraCscas = [],
   stations = list(env("HUMID_STATION_ACCOUNTS", "")),
+  /** "*" in stations (every account is a station) is for local development only, and only with this set (HUMID_ALLOW_ANY_STATION=dev). */
+  allowAnyStation = env("HUMID_ALLOW_ANY_STATION", "") === "dev",
   linkTtlMs = 10 * 60_000,
   offerTtlMs = 15 * 60_000,
   collectTtlMs = 7 * 24 * HOUR,   // contacts have a week to respond
+  // SRV-34: a request nobody has proved anything for yet (a contacts or two-proof request not
+  // yet tied to an account) is anonymous and costs nothing to make. It lives this long until its
+  // first proof arrives (a day: time for a first witness to answer), then the week applies; and
+  // at most this many exist at once (fail closed, like the relay's cap).
+  unboundTtlMs = Number(env("HUMID_RECOVERY_UNBOUND_TTL_MS", String(24 * HOUR))),
+  maxUnbound = Number(env("HUMID_RECOVERY_MAX_UNBOUND", "20000")),
   releasedTtlMs = 7 * 24 * HOUR,  // a released request can be collected for a week
   challengeTtlMs = 5 * 60_000,
   maxOpenPerAccount = 3,
@@ -168,6 +176,12 @@ export function createRecovery({
     return cscas;
   };
   const stationSet = new Set(stations);
+  // "*" makes every account a verification station, which can vouch any recovery onto the
+  // fastest wait (VAULT-08). One env value away in production, so it needs a second, explicit flag.
+  if (stationSet.has("*")) {
+    if (!allowAnyStation) throw new Error('HUMID_STATION_ACCOUNTS="*" makes every account a verification station. That is for local development only: set HUMID_ALLOW_ANY_STATION=dev to allow it, or list the station accounts.');
+    log.error("EVERY ACCOUNT IS A VERIFICATION STATION (HUMID_STATION_ACCOUNTS=*, HUMID_ALLOW_ANY_STATION=dev). Local development only: anyone can put any recovery on the fastest wait.");
+  }
   log.info("identity anchors", { countries: currentCscas().length, stations: stationSet.size });
 
   /** AES-256-GCM under a key from the server secret and `context` (identity fields, or a request id). */
@@ -266,6 +280,11 @@ export function createRecovery({
     db.prepare("DELETE FROM challenges WHERE expires_at < ?").run(t);
     db.prepare("DELETE FROM key_challenges WHERE expires_at < ?").run(t);
     db.prepare("UPDATE requests SET status = 'expired', closed_at = ? WHERE status IN ('collecting', 'waiting') AND expires_at < ?").run(t, t);
+    // SRV-34: a request that got no first proof within unboundTtlMs (a day) ends then, not a week on, and
+    // leaves no trace: nothing ties it to anyone. A first proof binds it to an account, and from
+    // then on the week (collectTtlMs) applies.
+    db.prepare("UPDATE requests SET status = 'expired', closed_at = ? WHERE status = 'collecting' AND account IS NULL AND created_at < ?").run(t, t - unboundTtlMs);
+    db.prepare("DELETE FROM requests WHERE account IS NULL AND status IN ('expired', 'cancelled') AND id NOT IN (SELECT request_id FROM approvals)").run();
     db.prepare("DELETE FROM approvals WHERE request_id IN (SELECT id FROM requests WHERE status IN ('expired', 'cancelled', 'completed'))").run();
     db.prepare("UPDATE requests SET anchor_blob = NULL WHERE status IN ('expired', 'cancelled', 'completed') AND anchor_blob IS NOT NULL").run();
   }
@@ -273,6 +292,7 @@ export function createRecovery({
 
   const getRequest = db.prepare("SELECT * FROM requests WHERE id = ?");
   const approvalCount = (id) => db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE request_id = ?").get(id).n;
+  const unboundCount = () => db.prepare("SELECT COUNT(*) AS n FROM requests WHERE account IS NULL AND status = 'collecting'").get().n;
   const openRequests = (account) => db.prepare("SELECT COUNT(*) AS n FROM requests WHERE account = ? AND status IN ('collecting', 'waiting')").get(account).n;
   const recentDuress = (account, t = now()) => {
     const d = account && db.prepare("SELECT last_at FROM duress WHERE account = ?").get(account);
@@ -869,6 +889,8 @@ export function createRecovery({
         const kemPk = key(r.kemPk, "kemPk"), xPk = key(r.xPk, "xPk");
         const code = keyCode(REQUEST_LABEL, kemPk, xPk);
         if (db.prepare("SELECT 1 FROM requests WHERE code = ?").get(code)) throw new HttpError(409, "code_in_use", "Start again.");
+        // SRV-34: unbound, it's anonymous: a ceiling on how many exist (and the sweep ends it early without a first proof).
+        if (unboundCount() >= maxUnbound) throw new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
         db.prepare(`INSERT INTO requests (id, ref, code, method, kem_pk, x_pk, platform, created_at, expires_at, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'collecting')`)
           .run(id, ref, code, r.method, kemPk, xPk, platformOf(r.platform), t, t + collectTtlMs);

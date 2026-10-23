@@ -17,8 +17,9 @@
 // accepts desktop biometric-only gates without hardware proof, "demo" accepts
 // anything (local development only).
 
-import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, unb64u, b64u, HttpError, isMain, logger } from "@humid/svc";
-import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS } from "@humid/htp";
+import { createService, serviceTlsFromEnv, openDb, env, json, parseJson, parseObject, verifyAssertion, signStatement, unb64u, b64u, HttpError, isMain, logger, sealerFromEnv } from "@humid/svc";
+import { holderProofs } from "@humid/svc/holder";
+import { identityId, deviceId, registerMessage, deviceMessage, verify, sha3_256, toHex, STEP_UP_MAX_AGE_MS, ml_dsa87 } from "@humid/htp";
 import { recoveryModeMessage, isRecoveryMode, followsMode, RECMODE_GENESIS, RECOVERY_MODES } from "@humid/recovery";
 import { verifyLiveKey, verifyLiveSig, AttestationError, revocationList, runStatusFetcher, STATUS_URL, STATUS_MAX_AGE_MS, HUMID_ANDROID_RELEASE_CERT } from "@humid/attest";
 
@@ -40,6 +41,11 @@ export function createIdentity({
   port = Number(env("PORT", "8081")),
   dataDir = env("DATA_DIR", "/data"),
   internalPk = env("HUMID_INTERNAL_PK"),
+  /**
+   * The core role's statement key (SRV-30): vouches to vault and keyshare that a device key
+   * belongs to an account, so they can check the holder's own proof. Never given to the gateway.
+   */
+  statementSk = sealerFromEnv().openText("humid.env/HUMID_CORE_STATEMENT_SK", env("HUMID_CORE_STATEMENT_SK", "")),
   // After a duress signal the account stays locked down until its owner clears it, calmly, at least this long after the last signal.
   duressCoolOffMs = Number(env("HUMID_DURESS_COOLOFF_MS", String(24 * 3600_000))),
   // Google's list of revoked or suspended attestation certificates ("" turns it off), fetched
@@ -129,6 +135,9 @@ export function createIdentity({
   const useChallenge = db.prepare("INSERT OR IGNORE INTO attest_challenges (th, device_id, used_at) VALUES (?, ?, ?)");
 
   const getAccount = db.prepare("SELECT * FROM identities WHERE id = ?");
+  // A key no device has: sign-in proofs for an account or device that doesn't exist are checked
+  // against it, so they cost the same as a wrong signature from a real device (SRV-24).
+  const nobodyPk = ml_dsa87.keygen().publicKey;
   const getDevice = db.prepare("SELECT * FROM device_keys WHERE id = ?");
   const activeDevices = db.prepare("SELECT * FROM device_keys WHERE account_id = ? AND revoked_at IS NULL ORDER BY enrolled_at");
 
@@ -250,6 +259,20 @@ export function createIdentity({
     return { device: getDevice.get(id), created: true };
   }
 
+  // The holder's own approval for removing a device or closing the account, checked here too
+  // (SRV-30), against the device keys this service holds.
+  const proofs = holderProofs({
+    resolve: (deviceIdText, account) => {
+      const d = getDevice.get(deviceIdText);
+      if (!d || d.account_id !== account || d.revoked_at) return null;
+      return { dsaPk: new Uint8Array(d.dsa_pk), livePub: d.live_pub ? new Uint8Array(d.live_pub) : null };
+    },
+  });
+  const needHolder = (claims, method, path) => {
+    if (!claims.stepUp) throw new HttpError(403, "step_up_required", "This needs a fresh biometric check.");
+    proofs.check(claims.holder, { sub: claims.sub, method, path });
+  };
+
   const internalDevice = (device) => ({ device: deviceView(device, device.id), deviceDsaPk: b64u(device.dsa_pk), deviceLivePub: device.live_pub ? b64u(device.live_pub) : null });
   const respondWithDevice = (status, account, device) => json(status, { ...accountView(account, device.id), ...internalDevice(device) });
 
@@ -312,26 +335,35 @@ export function createIdentity({
       return json(200, { marked: true, platform: d.platform });
     }],
     // Gateway only: undo an enrolment whose evidence turned out to be spent meanwhile.
+    // Only a device enrolled moments ago (SRV-30): the gateway's key alone can't remove an older one.
     ["POST", "/internal/devices/:id/revoke", ({ params, claims, body }) => {
       gatewayOnly(claims);
       const r = parseObject(body);
-      db.prepare("UPDATE device_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL").run(new Date().toISOString(), params.id, String(r.account));
+      db.prepare("UPDATE device_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL AND enrolled_at > ?").run(new Date().toISOString(), params.id, String(r.account), new Date(Date.now() - 120_000).toISOString());
       return json(200, { revoked: true });
     }],
 
     // Check a sign-in signature made by one device of an account.
+    // SRV-24: an unknown account, an unknown device and a wrong key get one answer (401
+    // bad_signature) after the same work: the signature is checked first, against a throwaway
+    // key when there is no such device, so neither the answer nor its timing says which. Only a
+    // caller who has just proved they hold this device's key learns more (closed, removed, no
+    // live check). `known` is for the gateway alone (whether to note it in a ledger); it strips it.
     ["POST", "/internal/verify", ({ body, claims }) => {
       gatewayOnly(claims);
       const r = parseObject(body);
-      const account = active(String(r.account));
-      const device = getDevice.get(String(r.device));
-      if (!device || device.account_id !== account.id) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
+      const account = getAccount.get(String(r.account));
+      const found = getDevice.get(String(r.device));
+      const device = account && found && found.account_id === account.id ? found : null;
+      let message, sig;
+      try { message = unb64u(String(r.message)); sig = unb64u(String(r.sig)); } catch { message = new Uint8Array(0); sig = new Uint8Array(0); }
+      const signedOk = verify(sig, message, device ? new Uint8Array(device.dsa_pk) : nobodyPk);
+      if (!device || !signedOk) return json(401, { ok: false, error: "bad_signature", message: "Sign-in proof was rejected.", known: !!(device && account.status === "active" && !device.revoked_at) });
+      if (account.status !== "active") throw new HttpError(404, "unknown_identity", "No such identity");
       if (device.revoked_at) throw new HttpError(403, "device_removed", "This device was removed from your HumID.");
-      const message = unb64u(String(r.message));
       // The liveness key signs the challenge it was given before the prompt; the device key may
       // sign a longer message that also carries what the check decided (the duress flag).
       const liveMessage = r.liveMessage != null ? unb64u(String(r.liveMessage)) : message;
-      if (!verify(unb64u(String(r.sig)), message, new Uint8Array(device.dsa_pk))) return json(401, { ok: false, error: "bad_signature" });
       // A device with a liveness key must prove a live biometric on every sign-in.
       if (device.live_pub && !verifyLiveSig(device.live_pub, liveMessage, r.live ? unb64u(String(r.live)) : null)) {
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
@@ -355,6 +387,19 @@ export function createIdentity({
       saveMode(a.id, checkedMode(a, r));
       return json(200, { recoveryMode: modeView(getAccount.get(a.id)) });
     }],
+    // SRV-30: this device key (and liveness key) belongs to this account, now. Vault and keyshare
+    // check the holder's proofs against it; the gateway can ask, but can't make it vouch for a
+    // key the account didn't add (adding one needs the account key's signature).
+    ["POST", "/internal/vouch", ({ body, claims }) => {
+      gatewayOnly(claims);
+      if (!statementSk) throw new HttpError(503, "no_statement_key", "This server has no core statement key (HUMID_CORE_STATEMENT_SK).");
+      const r = parseObject(body);
+      const account = active(String(r.account));
+      const d = getDevice.get(String(r.device));
+      if (!d || d.account_id !== account.id || d.revoked_at) throw new HttpError(404, "unknown_device", "This device is not part of the identity.");
+      const vouch = signStatement(statementSk, "device", { account: account.id, device: d.id, dsaPk: b64u(d.dsa_pk), ...(d.live_pub ? { livePub: b64u(d.live_pub) } : {}) }, 120_000);
+      return json(200, { vouch });
+    }],
 
     // Duress. The gateway sets and reads this; it is never shown in /me.
     ["POST", "/internal/duress", ({ body, claims }) => {
@@ -371,8 +416,11 @@ export function createIdentity({
       const last = a?.last_duress_at ? Date.parse(a.last_duress_at) : null;
       return json(200, { lockdown: !!a?.lockdown_at, since: a?.lockdown_at || null, lastDuressAt: a?.last_duress_at || null, clearableAt: last ? last + duressCoolOffMs : null });
     }],
+    // Lifting a lockdown needs the holder's own live check, checked here (SRV-30).
     ["POST", "/internal/lockdown/:id/clear", ({ params, claims }) => {
       gatewayOnly(claims);
+      if (claims.sub !== params.id) throw new HttpError(403, "forbidden", "Only the account itself can lift its lockdown.");
+      needHolder(claims, "POST", "/auth/duress/clear");
       const a = active(params.id);
       if (!a.lockdown_at) return json(200, { cleared: false, lockdown: false });
       const clearableAt = Date.parse(a.last_duress_at) + duressCoolOffMs;
@@ -387,7 +435,7 @@ export function createIdentity({
     // Remove another device. Needs a fresh biometric check on the device asking.
     ["DELETE", "/devices/:id", ({ params, claims }) => {
       const account = active(claims.sub);
-      if (!claims.stepUp || Date.now() - claims.stepUp.at > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_required", "Removing a device needs a fresh biometric check.");
+      needHolder(claims, "DELETE", `/identity/devices/${params.id}`);
       const d = getDevice.get(params.id);
       if (!d || d.account_id !== account.id || d.revoked_at) throw new HttpError(404, "unknown_device", "No such device on your HumID.");
       if (d.id === claims.device) throw new HttpError(400, "current_device", "You can't remove the device you're using. Remove it from another device.");
@@ -398,7 +446,7 @@ export function createIdentity({
     // Close the account. Public keys stay on file (closed) so old ledger proofs remain checkable.
     ["DELETE", "/me", ({ claims }) => {
       active(claims.sub);
-      if (!claims.stepUp || Date.now() - claims.stepUp.at > STEP_UP_MAX_AGE_MS) throw new HttpError(403, "step_up_required", "Closing an identity needs a fresh biometric check.");
+      needHolder(claims, "DELETE", "/identity/me");
       const now = new Date().toISOString();
       db.prepare("UPDATE identities SET status = 'closed' WHERE id = ?").run(claims.sub);
       db.prepare("UPDATE device_keys SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL").run(now, claims.sub);

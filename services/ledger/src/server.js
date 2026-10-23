@@ -15,7 +15,7 @@
 // different histories to different people, without a provable fork.
 
 import { mkdirSync } from "node:fs";
-import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
+import { createService, serviceTlsFromEnv, sealerFromEnv, secretFile, openDb, env, json, parseJson, parseObject, verifyAssertion, signStatement, HttpError, b64u, unb64u, isMain, logger } from "@humid/svc";
 import { ml_dsa87, sha3_256, toHex } from "@humid/htp";
 import {
   GENESIS, entryHash, headMessage, leafHash, nodeHash, EMPTY_ROOT,
@@ -83,8 +83,15 @@ export function createLedger({
    * the ML-DSA signing and the stored checkpoints to one per interval, not one per entry.
    */
   checkpointEveryMs = Number(env("HUMID_TLOG_CHECKPOINT_MS", "5000")),
+  /**
+   * The core role's statement key (SRV-30): each appended entry comes back with a signed receipt,
+   * and the vault releases an envelope only against the receipt for opening it. Without the key
+   * no receipts are given, and a vault that needs them refuses (fail closed).
+   */
+  statementSk = seal.openText("humid.env/HUMID_CORE_STATEMENT_SK", env("HUMID_CORE_STATEMENT_SK", "")),
 } = {}) {
   const log = logger("ledger");
+  if (!statementSk) log.warn("no core statement key (HUMID_CORE_STATEMENT_SK): entries get no receipts, so the vault can't release documents");
   mkdirSync(dataDir, { recursive: true });
   // The log's signing key, sealed at rest when the server has a seal key (a plain one is sealed in place: same key).
   const keyFile = `${dataDir}/ledger-key.json`;
@@ -252,7 +259,9 @@ export function createLedger({
       if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only");
       const e = parseObject(body);
       if (!/^hid_[0-9a-f]{40}$/.test(String(e.sub))) throw new HttpError(400, "bad_subject", "Unknown subject");
-      return json(201, append(e.sub, String(e.type), e.detail));
+      const out = append(e.sub, String(e.type), e.detail);
+      const receipt = statementSk ? signStatement(statementSk, "ledger", { owner: e.sub, type: String(e.type), detail: e.detail || {}, seq: out.seq, hash: out.hash }) : undefined;
+      return json(201, { ...out, ...(receipt ? { receipt } : {}) });
     }],
 
     ["GET", "/events", ({ claims, query }) => {

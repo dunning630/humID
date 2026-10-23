@@ -164,8 +164,14 @@ How it works ([`packages/crypto/src/split.js`](../packages/crypto/src/split.js),
    can't store it, the upload is undone, so no document exists without its key.
 2. **Opening.** The step-up that already lets the vault return the envelope
    (a fresh live check, signed by the phone's secure chip over that exact
-   request) also lets keyshare release that one document's key. The gateway
-   records the open in the ledger before releasing either. No extra prompt.
+   request) also lets keyshare release that one document's key. Vault and
+   keyshare each check that signature themselves (server 4.1.x, SRV-30; see
+   [*A compromised front host*](#a-compromised-front-host)). The open is
+   written to the ledger first, and the vault releases the envelope only
+   against the ledger's signed receipt for it. The key leaves keyshare sealed
+   (ML-KEM-1024 + X25519) to a one-time key the phone made for this open and
+   named in the body it signed, so the gateway in between forwards ciphertext
+   only (CRYPTO-03). No extra prompt.
 3. **Separation.** Keyshare never sees an envelope, a name or an account key;
    the vault never sees a document key. Keyshare stores keys encrypted
    (AES-256-GCM, bound to account and document) under `share-key.bin`. In the
@@ -204,6 +210,59 @@ recovery and can veto it.
 and the second device shows what is really being approved); account-key
 rotation (stolen keys stop working; also removes the "older documents" gap);
 a security-patch gate (refuse phones whose attested patch level is stale).
+
+## A compromised front host
+
+The front host (edge and gateway) is the only machine reachable from the
+internet, so it is the most likely to be taken over. Until server 4.1.x the
+gateway's internal key alone was enough to have vault and keyshare release
+both server-held halves of a split document, to delete a vault, and to do it
+without a ledger entry (SRV-30): the other services took the gateway's word
+that a live check had happened.
+
+Now the service that releases or destroys a secret checks the holder's own
+proof itself:
+
+- **Vault and keyshare** check the device key's ML-DSA-87 signature over the
+  exact request, and the liveness key's signature where the device has one,
+  against the device keys identity vouches for. Each proof is used once.
+  Identity checks the same before removing a device or closing an account.
+- **The ledger** signs a receipt for each entry; the vault releases an
+  envelope only against the receipt for opening that document under that
+  proof. An open can't happen without its entry.
+- **Check-in** erases only on keyshare's own deadline or a duress sign-in
+  signed by the device (keyshare checks it, once each), and the vault drops a
+  Check-in-erased account's envelopes only with keyshare's signed erase token
+  for that account.
+- **Document keys** cross the gateway sealed to the phone (above).
+
+The facts the gateway can't make up are signed with keys it never holds:
+identity and the ledger sign with the **core** role's statement key, keyshare
+with the **keys** role's (`HUMID_CORE_STATEMENT_*`, `HUMID_KEYS_STATEMENT_*`;
+setup.sh and `humid init` make them, and `humid pki issue` carries each
+role's own to its machine).
+
+**What this trusts, honestly.** Vault and keyshare trust identity for which
+device keys belong to an account. Identity adds a device only with the
+account key's signature (which never leaves the phone) or a released
+recovery, so the gateway's key can't make identity vouch for a phone of the
+attacker's own. But whoever controls the **core** role (identity's statement
+key) can vouch for any key, and core also holds the vault; so a takeover of
+core together with keys can still release both halves. What holds:
+
+| Who is compromised | Gets |
+|---|---|
+| Front host (gateway key, sessions, traffic inside HTP) | Nothing it can open: no document key, no envelope without a live proof from the holder's phone, no delete, no unlogged open. It can still refuse service, see metadata, and pass on what the holder's own live checks release (envelopes, and keys only sealed to the phone). |
+| Keys role alone | Encrypted document keys; nothing opens without envelopes and the account keys. |
+| Core role alone | Envelopes and identity's statement key; no document keys. |
+| Core and keys together | Both server-held halves, still useless without the account keys, which never leave the phone. |
+| Any of these | Never the account keys, so never a document's contents. |
+
+**Not covered yet:** recovery-service changes (cards, contacts, anchors,
+security keys) still take the gateway's word for the step-up; a compromised
+front host can change them, though every change is recorded and no recovery
+releases without its wait and the holder's veto. Moving recovery onto the same
+checks is the follow-up.
 
 ## Offline
 

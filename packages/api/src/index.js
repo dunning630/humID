@@ -3,7 +3,7 @@
 // (and in the app's control) and this module never holds a private key.
 
 import { HtpClient, HtpError } from "@humid/htp/client";
-import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
+import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8, shareReceiver, openShare } from "@humid/htp";
 import { verifyLedger, verifyBridge, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
@@ -295,11 +295,23 @@ export class HumidApi {
   /** Fetch ciphertext. stepUp({ message }) must run a fresh biometric check and return { sig, interrupt }. */
   async download(id, stepUp) { return (await this.#call("GET", `/vault/objects/${id}`, { stepUp })).body; }
 
-  /** Envelope plus, for a split document, its key, released under the same step-up. share is null for older documents. */
+  /**
+   * Envelope plus, for a split document, its key, released under the same step-up. share is
+   * null for older documents. The key comes back sealed to a one-time key made here for this
+   * open, named in the body the step-up signs, so nothing between keyshare and this device can
+   * read it (CRYPTO-03).
+   */
   async downloadWithShare(id, stepUp) {
-    const r = await this.#call("GET", `/vault/objects/${id}`, { stepUp });
+    const rx = shareReceiver();
+    let r;
+    try { r = await this.#call("GET", `/vault/objects/${id}`, { stepUp, body: { to: { kemPk: b64u(rx.pub.kemPk), xPk: b64u(rx.pub.xPk) } } }); }
+    catch (e) { rx.sk.kemSk.fill(0); rx.sk.xSk.fill(0); throw e; }
     const h = r.headers?.["x-humid-share"];
-    return { envelope: r.body, share: h ? unb64u(String(h)) : null };
+    if (!h) { rx.sk.kemSk.fill(0); rx.sk.xSk.fill(0); return { envelope: r.body, share: null }; }
+    let sealed;
+    try { sealed = unb64u(String(h)); } catch { sealed = null; }
+    const account = this.session?.id;
+    return { envelope: r.body, share: await openShare(sealed, rx, { account, object: id }) };
   }
 
   remove(id, stepUp) { return this.#json("DELETE", `/vault/objects/${id}`, { stepUp }); }

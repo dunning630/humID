@@ -71,18 +71,31 @@ export function updateEnvFile(file, changes) {
   writeFileSync(file, next.join("\r\n") + "\r\n", { mode: 0o600 });
 }
 
-/** A new humid.env: the internal key pair, then every default with its explanation. */
-export function initialEnvText(keys) {
+/**
+ * A new humid.env: the internal key pair, the statement key pairs, then every default with its
+ * explanation. statements: { core: { sk, pk }, keys: { sk, pk } } (SRV-30), optional for tests.
+ */
+export function initialEnvText(keys, statements = null) {
   const lines = [
     "# HumID Server settings. Change with:  humid set KEY=VALUE   (in Terminal (Admin); it restarts the server)",
     "# Keep this file private: the internal key below lets a program impersonate the gateway to the other services.",
     `HUMID_INTERNAL_SK=${keys.sk}`,
     `HUMID_INTERNAL_PK=${keys.pk}`,
+    ...(statements ? [
+      "# What the gateway's key alone can't do (docs/DEPLOY-VMS.md): core vouches for devices and signs ledger receipts, keys signs Check-in erases.",
+      ...statementLines(statements),
+    ] : []),
     "",
   ];
   for (const [k, v, help] of DEFAULTS) lines.push(`# ${help}`, `${k}=${v}`, "");
   return lines.join("\r\n");
 }
+
+/** The statement key settings (SRV-30), as KEY=VALUE lines. */
+export const statementLines = ({ core, keys }) => [
+  `HUMID_CORE_STATEMENT_SK=${core.sk}`, `HUMID_CORE_STATEMENT_PK=${core.pk}`,
+  `HUMID_KEYS_STATEMENT_SK=${keys.sk}`, `HUMID_KEYS_STATEMENT_PK=${keys.pk}`,
+];
 
 export const VALID_POLICIES = ["attested", "biometric", "demo"];
 
@@ -93,6 +106,9 @@ export function validate(cfg) {
   if (!roles.length || roles.some((r) => !["front", "core", "keys"].includes(r))) problems.push("HUMID_ROLES must be some of front, core, keys (comma-separated).");
   if (!cfg.HUMID_INTERNAL_PK) problems.push("HUMID_INTERNAL_PK is missing (run `init`, or `pki import` on a core or keys machine).");
   if (roles.includes("front") && !cfg.HUMID_INTERNAL_SK) problems.push("HUMID_INTERNAL_SK is missing: the front role signs internal requests with it (run `init`).");
+  if ((roles.includes("core") || roles.includes("keys")) && !cfg.HUMID_CORE_STATEMENT_PK) problems.push("HUMID_CORE_STATEMENT_PK is missing (run `init`, or `pki import` on a core or keys machine).");
+  if (roles.includes("core") && (!cfg.HUMID_CORE_STATEMENT_SK || !cfg.HUMID_KEYS_STATEMENT_PK)) problems.push("The core role needs HUMID_CORE_STATEMENT_SK and HUMID_KEYS_STATEMENT_PK (run `init`).");
+  if (roles.includes("keys") && !cfg.HUMID_KEYS_STATEMENT_SK) problems.push("The keys role needs HUMID_KEYS_STATEMENT_SK (run `init`, or `pki import` of a keys bundle).");
   if (roles.includes("front") && !roles.includes("core") && !cfg.HUMID_CORE_HOST) problems.push("HUMID_CORE_HOST must name the machine that runs core.");
   if (roles.includes("front") && !roles.includes("keys") && !cfg.HUMID_KEYS_HOST) problems.push("HUMID_KEYS_HOST must name the machine that runs keys.");
   if (cfg.HUMID_SEAL && !["dpapi", "file", "off"].includes(String(cfg.HUMID_SEAL).toLowerCase())) problems.push("HUMID_SEAL must be dpapi, file or off.");

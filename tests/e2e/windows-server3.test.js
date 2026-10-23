@@ -156,6 +156,11 @@ test("split roles: front+core on one machine, keys on another, mutual TLS betwee
   assert.ok(existsSync(join(bundle, "keys.key")));
   K.run("pki", "import", "--from", bundle);
   assert.match(readFileSync(join(K.root, "humid.env"), "utf8"), /^HUMID_INTERNAL_SK=$/m, "the keys machine holds no private gateway key");
+  // SRV-30: it holds its own statement key (sealed) and core's public one, never core's private one
+  const kenv = readFileSync(join(K.root, "humid.env"), "utf8");
+  assert.match(kenv, /^HUMID_KEYS_STATEMENT_SK=sealed:v1:/m);
+  assert.match(kenv, /^HUMID_CORE_STATEMENT_SK=$/m);
+  assert.match(kenv, /^HUMID_CORE_STATEMENT_PK=\S+/m);
   assert.match(readFileSync(join(K.root, "pki", "keys.key"), "utf8"), /^\{"humid-sealed":1/, "its TLS key is sealed");
   rmSync(bundle, { recursive: true, force: true });
   K.run("set", "HUMID_ROLES=keys", "HUMID_INTERNAL_BIND=127.0.0.1", `HUMID_INTERNAL_PORT_BASE=${base}`);
