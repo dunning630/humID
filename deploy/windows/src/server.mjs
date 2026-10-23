@@ -238,7 +238,7 @@ async function run({ service }) {
     svcs.vault = createVault({ ...opts("vault", "core", 2), corePk: st.corePk, keysPk: st.keysPk });
     svcs.ledger = createLedger({ ...opts("ledger", "core", 3), seal, statementSk: st.coreSk });
     // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
-    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
+    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, corePk: st.corePk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
     svcs.access = createAccess({ ...opts("access", "core", 5), seal });
     // Person to person (4.1 preview): mailboxes of fixed-size ciphertext, no accounts, no addresses.
     if (S("HUMID_MESSAGING", "off") === "on") svcs.relay = createRelay(opts("relay", "core", 7));

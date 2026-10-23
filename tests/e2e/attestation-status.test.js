@@ -50,7 +50,7 @@ before(async () => {
   const svcs = {
     vault: createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, corePk: core.pk, keysPk: keys.pk }),
     ledger: createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, statementSk: core.sk }),
-    recovery: createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk }),
+    recovery: createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, corePk: core.pk }),
     access: createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: 2048, stampKeyBits: 2048 }),
     keyshare: createKeyshare({ port: 0, dataDir: join(root, "keyshare"), internalPk: ik.pk, statementSk: keys.sk, corePk: core.pk }),
   };

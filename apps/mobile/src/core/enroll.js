@@ -136,7 +136,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
       device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
-      sign: async ({ register, device, th }) => {
+      sign: async ({ register, device, th, card: cardMsg }) => {
         showInterrupt({ progress: 0.3, needsHold: !!gate.needsHold, message: gate.needsHold ? holdMessage : "Look at your phone or touch the sensor to lock HumID to you." });
         await waitForHold(gate);
         enrolled = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: device, attest: th });
@@ -144,6 +144,8 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
         showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
         return {
           registerSig: ml_dsa87.sign(register, keys.dsaSk),
+          // the setup recovery card, approved by the account key in this same check
+          ...(cardMsg ? { cardSig: ml_dsa87.sign(cardMsg, keys.dsaSk) } : {}),
           sigAccount: ml_dsa87.sign(device, keys.dsaSk),
           sigDevice: ml_dsa87.sign(device, dkeys.dsaSk),
           live: enrolled.live, gateMethod: enrolled.interrupt.method, assurance: enrolled.interrupt.assurance,

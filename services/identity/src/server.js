@@ -302,7 +302,15 @@ export function createIdentity({
         }
         const { device } = addDevice(getAccount.get(id), th, r.device, "register", r.policy, Number(r.sessionAgeMs));
         db.exec("COMMIT");
-        return respondWithDevice(existing ? 200 : 201, getAccount.get(id), device);
+        const out = respondWithDevice(existing ? 200 : 201, getAccount.get(id), device);
+        // A new account, in this session: the recovery service stores its setup card on this and
+        // the account key's own signature over the card (SRV-30), never on the gateway's word.
+        if (!existing && statementSk) {
+          const v = JSON.parse(Buffer.from(out.body).toString());
+          v.created = signStatement(statementSk, "created", { account: id, th: b64u(th) }, 120_000);
+          out.body = Buffer.from(JSON.stringify(v));
+        }
+        return out;
       } catch (e) { db.exec("ROLLBACK"); throw e; }
     }],
 
