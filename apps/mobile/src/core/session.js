@@ -97,6 +97,8 @@ export async function boot() {
   // A pin compiled into the app always wins over one the record remembers (a record is
   // writable storage; the pin is not).
   R.api = new HumidApi({ baseUrl: id?.server?.url ?? SERVER_URL, pinnedKid: PINNED_KID || id?.server?.kid || null, fetch: watchConnection(raw) });
+  // The newest signed policy this device has accepted: an older one served later is a replay.
+  R.api.htp.policySeen = id?.policySeen || null;
   // The server no longer knows this session (it expired, or the server restarted and the
   // reconnected channel isn't signed in): either way, one live check signs back in.
   R.api.onSignedOut = () => { if (S.view.value === "app" && !S.offline.value) lock("Your session ended. Unlock to continue."); };
@@ -156,11 +158,26 @@ export async function connectServer() {
   S.serverError.value = null;
   try {
     const s = await R.api.server();
-    S.server.value = { ...s, url: SERVER_URL || location.origin, simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
+    S.server.value = { ...s, url: SERVER_URL || (typeof location !== "undefined" ? location.origin : ""), simulated: (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) };
+    await rememberPolicy();
   } catch (e) {
     S.server.value = null;
     S.serverError.value = friendly(e);
   }
+}
+
+/**
+ * Keep the newest signed policy in the identity record, so a replayed older one is refused
+ * after a restart too (round 2 of CRYPTO-07). It's the server's signed statement, checked
+ * again on every load, so it needs no sealing; it's read before unlock, to draw the screens.
+ */
+async function rememberPolicy() {
+  const id = S.identity.value, seen = R.api.htp.policySeen;
+  if (!id || !seen || (id.policySeen && id.policySeen.at >= seen.at)) return;
+  // TODO(merge): route through updateIdentity (core/identity.js, PR #71) once both are on one branch.
+  const record = { ...id, policySeen: { policy: seen.policy, at: seen.at, sig: seen.sig } };
+  delete record.schema;
+  try { await R.store.putIdentity(record); S.identity.value = { ...record, schema: id.schema ?? 4 }; } catch { /* next connection tries again */ }
 }
 
 /**

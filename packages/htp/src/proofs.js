@@ -96,11 +96,14 @@ export const policyMessage = (kid, policy, at) =>
 /** How old a signed policy the app still believes. The gateway re-signs it every hour. */
 export const POLICY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** True when `sig` ({ at, sig }) is the server's signature over exactly this policy, and recent. */
-export function verifyPolicy(dsaPk, kid, policy, sig, now = Date.now()) {
+/**
+ * True when `sig` ({ at, sig }) is the server's signature over exactly this policy, and no
+ * more than `maxAgeMs` from now (Infinity: any age, for a policy remembered on the device).
+ */
+export function verifyPolicy(dsaPk, kid, policy, sig, now = Date.now(), { maxAgeMs = POLICY_MAX_AGE_MS } = {}) {
   if (!policy || typeof policy !== "object" || !sig || typeof sig !== "object") return false;
   const at = Number(sig.at);
-  if (!Number.isSafeInteger(at) || at < 0 || Math.abs(now - at) > POLICY_MAX_AGE_MS) return false;
+  if (!Number.isSafeInteger(at) || at < 0 || Math.abs(now - at) > maxAgeMs) return false;
   try { return ml_dsa87.verify(unb64u(String(sig.sig)), policyMessage(kid, policy, at), dsaPk); } catch { return false; }
 }
 
