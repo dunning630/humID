@@ -17,6 +17,9 @@ export const passBusy = signal(false);
 export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
 export const joinMethod = signal(null);      // link | quorum | card | contacts
 export const joinStatus = signal(null);      // last polled status from the server
+// The recovery mode of the HumID being joined, as far as this new device knows: null (not said),
+// or "holder-only" (the holder said so, or the vault refused a recovery): then only a link is offered.
+export const joinMode = signal(null);
 
 export const identity = signal(null);        // local identity record (public parts + wrapped seeds)
 export const hwGate = signal(null);          // { adapter, probe } strongest hardware gate on this device
@@ -36,6 +39,10 @@ export const ledgerLoading = signal(false);
 
 export const devices = signal(null);         // this account's devices (from the identity service)
 export const recovery = signal(null);        // { card, contacts: { n, threshold, names[], scheme }, anchor, settings, ready }
+// The recovery mode (core/recmode.js): { mode: "holder-only" | "hardened", version, epoch, escrow, trusted }.
+export const recoveryMode = signal(null);
+// Chosen during setup, before the account exists: "hardened" (recommended) unless the holder picks holder-only.
+export const setupMode = signal("hardened");
 export const protecting = signal([]);        // alerts about people this HumID protects: recoveries, duress signals
 export const adminSummary = signal(null);    // { health, alerts, updates, version } — this HumID administers its server
 export const station = signal(null);         // { station: bool, countries } — this HumID runs a verification station

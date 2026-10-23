@@ -20,6 +20,7 @@ import { refresh } from "./vault.js";
 import { loadAlerts, demoPassport } from "./recovery.js";
 import { readChip } from "./chips.js";
 import { readKeyForRecovery } from "./seckey.js";
+import { routesFor, HOLDER_ONLY } from "./recmode.js";
 
 /*
  * What a two-proof recovery keeps under this device's lock while it waits (layout 2, 4.0):
@@ -52,13 +53,25 @@ let joinTimer = null;
 // waits every 30 s, and nothing at all while HumID is off the screen.
 const POLL_LINK = 3000, POLL_COLLECT = 5000, POLL_SLOW = 30_000;
 
-export function startJoin() { S.joinStep.value = serverPinned() ? 1 : 0; S.joinMethod.value = null; S.joinStatus.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
+export function startJoin() { S.joinStep.value = serverPinned() ? 1 : 0; S.joinMethod.value = null; S.joinStatus.value = null; S.joinMode.value = null; S.view.value = "join"; if (!S.server.value) connectServer(); }
+
+/** The routes this device may offer for the HumID being joined (only a link, for holder-only). */
+export const joinRoutes = () => routesFor(S.joinMode.value);
+/** The holder says (or the vault said) this HumID opens only on its own devices. */
+export function setJoinMode(mode) { S.joinMode.value = mode === HOLDER_ONLY ? HOLDER_ONLY : null; if (S.joinMethod.value && !joinRoutes().includes(S.joinMethod.value)) { S.joinMethod.value = null; S.joinStep.value = 1; } }
+/** The vault refused a recovery because the HumID is holder-only: from now on offer only a link. */
+function holderOnlyRefusal(e) {
+  if (e?.code !== "holder_only") return false;
+  setJoinMode(HOLDER_ONLY);
+  return true;
+}
 
 /**
  * Bind this device and start the chosen route.
  * method: "link" | "quorum" (two proofs) | "card" | "contacts" (older single-proof routes).
  */
 export async function beginJoin(method, { useDemo = false, cardInput = "", soleBiometric = false } = {}) {
+  if (!joinRoutes().includes(method)) { toast("This HumID opens only on its own devices. Add this one from a device you already use.", "warn"); return; }
   let cardSecret = null;
   if (method === "card" || (method === "quorum" && cardInput.trim())) {
     try { cardSecret = parseCard(cardInput); } catch (e) { toast(e.message, "warn"); return; }
@@ -118,6 +131,7 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
     pollJoin();
   } catch (err) {
     await endInterrupt(false, friendly(err), cancelled(err) ? 700 : 1800);
+    holderOnlyRefusal(err);
   } finally {
     wipe(secret, dseed, x, both, cardSecret);
     if (dkeys) Suite.wipeKeys(dkeys);
@@ -184,6 +198,7 @@ export async function pollJoin() {
     if (p.method === "link") { S.joinStatus.value = { ...st, check: accountCheck(st.account) }; return; }
     return finishJoin(st);
   }
+  if (st?.reason === "holder_only") setJoinMode(HOLDER_ONLY);
   if (st && ["expired", "cancelled", "completed"].includes(st.status)) return;
   const quick = p.method === "link" || (st?.releaseAt && st.releaseAt - Date.now() < 60_000);
   if (p.method === "quorum" && st?.status === "collecting") { joinTimer = setTimeout(pollJoin, POLL_COLLECT); return; }
@@ -326,6 +341,7 @@ export async function addCardToJoin(cardInput) {
     return true;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    holderOnlyRefusal(e);
     return false;
   } finally {
     wipe(secret, both, next, cardSecret);
@@ -376,6 +392,7 @@ export async function addKeyToJoin(pin) {
     return true;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
+    holderOnlyRefusal(e);
     return false;
   } finally {
     wipe(secret, both, next);
@@ -402,7 +419,7 @@ export async function addChipToJoin(source) {
     toast("Your ID chip is verified.");
     pollJoin();
     return true;
-  } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); return false; }
+  } catch (e) { if (e?.code !== "cancelled") toast(friendly(e), "error"); holderOnlyRefusal(e); return false; }
 }
 
 /** Development builds: a demo passport as a live chip source for addChipToJoin. */

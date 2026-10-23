@@ -1,6 +1,7 @@
-// Recovery: the four proofs (witnesses · ID chip · recovery card · security key); any two bring the
-// vault back on a new phone. This screen shows which exist and opens each; progress
-// lives on the Protection screen.
+// Recovery: first the recovery mode (holder-only or hardened, docs/RECOVERY.md) and the switch;
+// then, for hardened, the four proofs (witnesses · ID chip · recovery card · security key); any
+// two bring the vault back on a new phone. This screen shows which exist and opens each;
+// progress lives on the Protection screen.
 //
 // Witnesses are gathered one at a time: each code is checked the moment it's complete,
 // the list is kept as a draft across a lock, and one check saves the set.
@@ -15,6 +16,7 @@ import {
   loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, readChipFiles, demoPassport, setAnchor, removeAnchor,
   readChip, chipReader, markPicking, setDraft, clearDraft, draft, toast,
   keyReader, addSecurityKey, removeSecurityKey,
+  switchToHardened, switchToHolderOnly, escrowWords, HOLDER_ONLY,
 } from "../../core/index.js";
 import { back, twelve, Countdown } from "./common.jsx";
 
@@ -23,12 +25,17 @@ const threshold = (n) => Math.floor(n / 2) + 1;
 
 export function Recovery() {
   const rec = S.recovery.value;
-  const [open, setOpen] = useState(S.push.value?.open || null); // witnesses | anchor | card | key
+  const mode = S.recoveryMode.value;
+  const [open, setOpen] = useState(S.push.value?.open || null); // witnesses | anchor | card | key | mode
   useEffect(() => { loadRecovery(); chipReader(); }, []);
   const off = !!S.offline.value;
+  const holderOnly = mode?.mode === HOLDER_ONLY;
   return (
     <Pushed title="Recovery" onBack={back}>
-      <p class="t2 small">If you lose every device, any <b>two</b> of these four prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
+      <ModeCard mode={mode} off={off} onSwitch={() => setOpen("mode")} />
+      {open === "mode" && <ModeSheet mode={mode} onClose={() => setOpen(null)} />}
+      {holderOnly ? null : <>
+      <p class="t2 small" style={{ marginTop: 16 }}>If you lose every device, any <b>two</b> of these four prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
       {rec && <ProofMeter have={PROOFS.map((p) => p.id).filter((k) => rec.proofs[k])} />}
       <div class="rows" style={{ marginTop: 14 }}>
         <Row icon="users" tone={rec?.proofs.witness ? "mint" : ""} title="Witnesses"
@@ -50,12 +57,57 @@ export function Recovery() {
         <div class="rows">{WAITS.map((w) => <Row chevron={false} title={w.pair} trail={w.wait} />)}</div>
         <p class="fine" style={{ marginTop: 8 }}>Every device that still has your HumID is alerted and can veto during the wait.</p>
       </section>
-      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
       {open === "witnesses" && <WitnessesSheet onClose={() => setOpen(null)} />}
       {open === "anchor" && <AnchorSheet onClose={() => setOpen(null)} />}
       {open === "card" && <CardInfoSheet onClose={() => setOpen(null)} />}
       {open === "key" && <SecurityKeySheet onClose={() => setOpen(null)} />}
+      </>}
+      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
     </Pushed>
+  );
+}
+
+/* ---------------- the recovery mode ---------------- */
+
+function ModeCard({ mode, off, onSwitch }) {
+  if (!mode) return <div class="card"><span class="muted small">Checking how you can get back in…</span></div>;
+  const holderOnly = mode.mode === HOLDER_ONLY;
+  return (
+    <div class="card">
+      <div class="eyebrow">How you get back in</div>
+      <h2 style={{ marginTop: 6 }}>{holderOnly ? "Only my own devices" : "A safe way back in"}</h2>
+      <p class="small t2" style={{ marginTop: 6 }}>{holderOnly
+        ? "Your vault opens only on devices you've already set up. HumID keeps no recovery for you, so if you lose every one of them, no one can bring it back, not even HumID."
+        : "If you lose every device, any two of your proofs bring your vault back after a wait that any device you still have can cancel."}</p>
+      {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" title="Your vault's record of this choice doesn't check out" text="It isn't signed by your HumID's own key, so this phone won't trust it. HumID treats your account as Only my own devices until you choose again here. Tell whoever runs your vault server." /></div>}
+      {!off && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
+    </div>
+  );
+}
+
+function ModeSheet({ mode, onClose }) {
+  const holderOnly = mode?.mode === HOLDER_ONLY;
+  const left = escrowWords(mode?.escrow);
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (fn) => { setBusy(true); try { if (await fn()) onClose(); } finally { setBusy(false); } };
+  return holderOnly ? (
+    <Sheet onClose={onClose} eyebrow="Recovery mode" title="Turn on a safe way back in">
+      <p class="t2 small">You'll then set up two proofs: people you trust, your passport or ID card, a recovery card or a security key. Getting back in takes any two of them and a wait that any of your devices can cancel. Some of that proof is kept on HumID's servers, locked so they can't open it on their own.</p>
+      <p class="fine" style={{ marginTop: 8 }}>One live check signs this change with your HumID's key, and it's recorded in your activity.</p>
+      <div class="actions"><button class="btn primary block" disabled={busy} onClick={() => run(switchToHardened)}><Icon name="fingerprint" />Turn on recovery</button></div>
+    </Sheet>
+  ) : (
+    <Sheet onClose={onClose} eyebrow="Recovery mode" title="Only my own devices">
+      <p class="t2 small">Your vault will open only on devices you've already set up. If you lose every one of them, <b>no one can get your documents back</b>: not your witnesses, not your ID, not HumID.</p>
+      {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own check. Only then does the switch happen.`} />}
+      <p class="fine" style={{ marginTop: 8 }}>Pieces already in other hands (a printed card, a witness's phone) stop counting on this server, and a new set of pieces is started, so old ones can't be combined with new ones.</p>
+      <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 10 }}>
+        <span><span class="title">I understand: lose every device, lose my vault</span></span>
+        <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
+      </button>
+      <div class="actions"><button class="btn danger block" disabled={busy || !sure} onClick={() => run(switchToHolderOnly)}><Icon name="fingerprint" />{left.length ? "Delete my proofs and switch" : "Switch"}</button></div>
+    </Sheet>
   );
 }
 

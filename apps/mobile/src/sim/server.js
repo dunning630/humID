@@ -30,6 +30,7 @@ import {
   ml_dsa87, sha3_256, toHex, fromHex, b64u, unb64u, utf8, fromUtf8, random,
 } from "@humid/htp";
 import { GENESIS, entryHash, headMessage, leafHash, treeHash, inclusionProof, consistencyProof, checkpointMessage } from "@humid/audit";
+import { recoveryModeMessage, isRecoveryMode } from "@humid/recovery";
 import { suiteForEnvelope } from "@humid/crypto";
 import { isEnvelope } from "@humid/codec";
 import { p256 } from "@noble/curves/nist.js";
@@ -153,6 +154,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   const accountView = (a, current) => ({
     id: a.id, status: a.status, createdAt: a.createdAt, commit: a.commit,
     dsaFp: toHex(sha3_256(unb64u(a.dsaPk))), kemFp: toHex(sha3_256(unb64u(a.kemPk))),
+    recoveryMode: a.recoveryMode || null,
     devices: Object.values(st.devices).filter((d) => d.account === a.id && !d.revokedAt).map((d) => deviceView(d, current)),
   });
   const deviceView = (d, current) => ({
@@ -272,7 +274,14 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!verify(unb64u(String(r.sig || "")), registerMessage(s.th, keys, r.commit), keys.dsaPk)) throw fail(401, "bad_proof", "Proof of possession failed: the device does not hold this identity key.");
     const id = identityId(keys.dsaPk);
     const created = !st.accounts[id];
-    if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso() };
+    // The recovery mode, signed by the account key: the same check the identity and recovery services make.
+    let mode = null;
+    if (created && r.recoveryMode) {
+      const m = r.recoveryMode;
+      if (!isRecoveryMode(m.mode) || !verify(unb64u(String(m.sig || "")), recoveryModeMessage(id, m.mode, Number(m.version), Number(m.epoch)), keys.dsaPk)) throw fail(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
+      mode = { mode: m.mode, version: Number(m.version), epoch: Number(m.epoch), sig: m.sig };
+    }
+    if (created) st.accounts[id] = { id, kemPk: b64u(keys.kemPk), dsaPk: b64u(keys.dsaPk), xPk: b64u(keys.xPk), commit: r.commit, status: "active", createdAt: iso(), recoveryMode: mode };
     const a = st.accounts[id];
     let enrolled;
     try { enrolled = enrolDevice(a, s.th, r.device, "register"); }
@@ -285,7 +294,8 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     record(id, "device.added", { device: device.id, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, checks: checks.filter((c) => c.ok).length });
     record(id, "session.opened", { device: device.id, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
     let cardSet = false;
-    if (created && r.card?.tag) { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
+    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup" });
+    if (created && r.card?.tag && mode?.mode !== "holder-only") { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
     report("Your HumID was registered", checks, { kind: "enrol" });
     return [created ? 201 : 200, sessionView(s, { created, cardSet })];
   });
@@ -502,8 +512,13 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
 
   /* recovery: the parts one person on one phone can do */
   route("GET", "/recovery/card", (s) => { const c = st.cards[s.subject]; return [200, c ? { exists: true, createdAt: c.createdAt, scheme: c.scheme } : { exists: false }]; }, { auth: true });
+  route("GET", "/recovery/mode", (s) => {
+    const m = st.accounts[s.subject]?.recoveryMode;
+    return [200, { ...(m || { mode: "hardened", version: 0, epoch: 1, sig: null }), escrow: st.cards[s.subject] ? ["card"] : [] }];
+  }, { auth: true });
   route("PUT", "/recovery/card", (s, r, su) => {
     needStepUp(su, "Making a seal card");
+    if (st.accounts[s.subject]?.recoveryMode?.mode === "holder-only") throw fail(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
     const scheme = unb64u(String(r.blob || "")).length === 12 + 65 + 16 ? "quorum" : "full";
     st.cards[s.subject] = { tag: r.tag, blob: r.blob, createdAt: iso(), scheme };
     record(s.subject, "recovery.card_set", { scheme, proof: su.proof });
@@ -535,6 +550,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     ["POST", "/recovery/requests.*", "Recovering"], ["GET", "/recovery/requests/.*", "Recovering"], ["GET", "/recovery/help/.*", "Helping someone recover"], ["POST", "/recovery/help/.*", "Helping someone recover"],
     ["PUT", "/recovery/anchor", "Anchoring your ID"],
     ["POST", "/recovery/keys.*", "Adding a security key"], ["DELETE", "/recovery/keys/.*", "Removing a security key"],
+    ["POST", "/recovery/mode", "Changing how you recover"],
   ]) route(m, p, NOT_HERE(what));
 
   /* ---------- a step-up: both signatures over this exact request ---------- */

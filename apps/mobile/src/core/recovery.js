@@ -14,14 +14,16 @@ import { R, KEY_TYPE, wipe } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
+import { loadRecoveryMode, isHolderOnly } from "./recmode.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
 export async function loadRecovery() {
-  if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; return; }
+  if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; S.recoveryMode.value = R.offline?.recoveryMode || S.recoveryMode.value; return; }
   const [card, contacts, anchor, settings, keyList] = await Promise.all([
     quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings()),
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
+    loadRecoveryMode(),
   ]);
   if (!card || !contacts) return;
   const names = [];
@@ -49,8 +51,9 @@ export async function loadRecovery() {
     contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names, scheme: contacts.scheme },
     keys: { available: !!keyList, max: keyList?.max || 4, list: keys },
     proofs, ready: Object.values(proofs).filter(Boolean).length >= 2, legacy,
+    holderOnly: isHolderOnly(),
   };
-  keepOffline({ recovery: S.recovery.value });
+  keepOffline({ recovery: S.recovery.value, recoveryMode: S.recoveryMode.value });
   if (!S.decoy.value) {
     R.api.protectingAlerts().then((a) => { S.protecting.value = a; }).catch(() => {});
     R.api.station().then((st) => { S.station.value = st; }).catch(() => {});

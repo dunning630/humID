@@ -10,7 +10,7 @@ import { fmtLeft } from "../ui/format.js";
 import { CodeBox, QrCode, ProofMeter, tierText, WAITS, ChipAccess, PROOFS } from "../ui/codes.jsx";
 import { TopBar, ConnectStep, SoleBiometric, BindButtons } from "./create.jsx";
 import * as S from "../core/state.js";
-import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned } from "../core/index.js";
+import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/index.js";
 import { parseCard } from "@humid/recovery";
 import { serverHost, DEMO_BUILD } from "../core/config.js";
 
@@ -32,6 +32,9 @@ export function Join() {
   const shown = step - (serverPinned() ? 1 : 0);
   const back = step === 0 || (step === 1 && serverPinned()) ? () => (S.view.value = "welcome") : step < 3 ? () => (S.joinStep.value = step - 1) : null;
   const n = (k) => `Step ${k - (serverPinned() ? 1 : 0) + 1} of ${steps}`;
+  // Only the routes this HumID's recovery mode allows: just "from another device" for holder-only.
+  const allowed = joinRoutes();
+  const holderOnly = S.joinMode.value === HOLDER_ONLY;
   if (step === 4) return <Mismatch />;
   return (
     <main class="screen">
@@ -41,9 +44,11 @@ export function Join() {
         <>
           <div class="eyebrow">{n(1)} · Bring your HumID here</div>
           <h1 style={{ marginTop: 8 }}>How do you want to get in?</h1>
-          <p class="lede" style={{ marginTop: 10 }}>Your vault key never passes through the server in a form it can read, whichever you choose.</p>
+          <p class="lede" style={{ marginTop: 10 }}>{holderOnly
+            ? "Your HumID opens only on your own devices, so this one joins from a device you already use. There's no other way in, by your choice."
+            : "Your vault key never passes through the server in a form it can read, whichever you choose."}</p>
           <div class="options" style={{ marginTop: 20 }}>
-            {(old ? [...ROUTES, ...OLD_ROUTES] : ROUTES).map((r) => (
+            {(old ? [...ROUTES, ...OLD_ROUTES] : ROUTES).filter((r) => allowed.includes(r.id)).map((r) => (
               <button class="option" onClick={() => { S.joinMethod.value = r.id; S.joinStep.value = 2; setPrelude(true); }}>
                 <span class="lead"><Icon name={r.icon} /></span>
                 <span><span class="title">{r.title}</span><span class="sub" style={{ display: "block" }}>{r.desc}</span></span>
@@ -51,7 +56,11 @@ export function Join() {
               </button>
             ))}
           </div>
-          {!old && <button class="link" style={{ marginTop: 14 }} onClick={() => setOld(true)}>I have an older recovery card or witnesses</button>}
+          {!old && !holderOnly && <button class="link" style={{ marginTop: 14 }} onClick={() => setOld(true)}>I have an older recovery card or witnesses</button>}
+          {!holderOnly
+            ? <button class="link muted" style={{ marginTop: 6 }} onClick={() => setJoinMode(HOLDER_ONLY)}>I chose Only my own devices</button>
+            : <p class="fine" style={{ marginTop: 14 }}>Lost every device? Then no one can bring this HumID back: that's what Only my own devices means. You can create a new HumID instead.</p>}
+          {holderOnly && <button class="link muted" style={{ marginTop: 6 }} onClick={() => setJoinMode(null)}>I'm not sure: show every way in</button>}
         </>
       )}
       {step === 2 && method === "link" && (
@@ -206,7 +215,9 @@ function JoinWait({ eyebrow }) {
       <div style={{ marginTop: 16 }}>
         {expired && p.method === "link" && <Banner tone="amber" icon="clock" title="That code expired" text="Get a fresh one: this phone stays locked to you, no need to start over." action="New code" onAction={renewLink} />}
         {st?.status === "expired" && p.method !== "link" && <Banner tone="amber" icon="clock" title="This expired" text="Start again to get a fresh code." />}
-        {st?.status === "cancelled" && <Banner tone="danger" icon="alert" title="Cancelled from one of your devices" text={st.reason === "card_replaced" ? "The recovery card was replaced." : "If that wasn't you, someone else has your HumID unlocked."} />}
+        {st?.status === "cancelled" && (st.reason === "holder_only"
+          ? <Banner tone="amber" icon="key" title="This HumID opens only on its own devices" text="Its holder chose that, so no recovery can finish. Add this device from one of theirs instead." />
+          : <Banner tone="danger" icon="alert" title="Cancelled from one of your devices" text={st.reason === "card_replaced" ? "The recovery card was replaced." : "If that wasn't you, someone else has your HumID unlocked."} />)}
         {st?.status === "error" && <Banner tone="danger" icon="alert" title="Couldn't finish" text={st.message} />}
       </div>
       <div class="foot">
