@@ -1,0 +1,40 @@
+[Unit]
+Description=HumID Server __HUMID_SERVER_VERSION__ (the vault the HumID apps talk to)
+Documentation=file:///opt/humid/README.txt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=humid
+Group=humid
+# The seal key: LoadCredentialEncrypted (or the plain-key fallback) is set by `humid install`
+# in /etc/systemd/system/humid.service.d/seal.conf.
+ExecStart=/opt/humid/bin/humid-node humid-server.mjs run --service
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+# Listens on 127.0.0.1 only; phones arrive through a tunnel (humid expose tailscale).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/humid
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

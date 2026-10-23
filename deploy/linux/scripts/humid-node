@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs one HumID program with this server's seal key (HumID Server for Linux __HUMID_SERVER_VERSION__).
+#   humid-node humid-server.mjs run --service      (the systemd service)
+#   humid-node humid-server.mjs set KEY=VALUE      (the humid command, through systemd-run)
+# The seal key opens every sealed server secret. With systemd-creds it is decrypted (with the
+# TPM where there is one) into a private in-memory file only this process can read; without,
+# it is /etc/humid/seal.key, readable by the humid user only.
+set -eu
+HUMID_DIR=${HUMID_DIR:-/opt/humid}
+HUMID_ROOT=${HUMID_ROOT:-/var/lib/humid}
+if [ -n "${CREDENTIALS_DIRECTORY:-}" ] && [ -r "$CREDENTIALS_DIRECTORY/seal" ]; then
+  HUMID_SEAL_KEY_FILE="$CREDENTIALS_DIRECTORY/seal"
+elif [ -r /etc/humid/seal.key ]; then
+  HUMID_SEAL_KEY_FILE=/etc/humid/seal.key
+else
+  echo "humid: no seal key (expected the systemd credential 'seal' or /etc/humid/seal.key). Run: humid install" >&2
+  exit 1
+fi
+export HUMID_SEAL=file HUMID_SEAL_KEY_FILE NODE_NO_WARNINGS=1
+prog=$1; shift
+exec "$HUMID_DIR/node/bin/node" --no-warnings "$HUMID_DIR/$prog" "$@" --root "$HUMID_ROOT"

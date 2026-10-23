@@ -5,8 +5,9 @@
 //     README.txt          what's inside, which server the apps are pinned to, how to install
 //     SHA256SUMS.txt
 //     Android/            HumID-<version>-android.apk (release-signed), .aab
-//     iPhone/  Mac/  Windows/  Linux/
+//     iPhone/  Mac/  Windows/  Linux/      (desktop apps, while paused: not built)
 //     Windows Server/     HumID-Server-Windows-<server version>.zip
+//     Linux Server/       HumID-Server-Linux-<server version>.tar.gz
 //
 //   node tools/bundle-release.mjs <downloaded-artifacts-dir> <out-dir>
 // Writes name=<artifact name> to $GITHUB_OUTPUT when it is set.
@@ -34,8 +35,9 @@ const APPS = [
   { artifact: "humid-ios", folder: "iPhone", rename: (f) => /\.ipa$/.test(f) ? `HumID-${appVersion}-iphone.ipa` : f },
   { artifact: "humid-macos", folder: "Mac" },
   { artifact: "humid-windows", folder: "Windows" },
-  { artifact: "humid-linux", folder: "Linux" },
+  { artifact: "humid-linux-desktop", folder: "Linux" },
   { artifact: "HumID-Server-Windows", folder: "Windows Server" },
+  { artifact: "HumID-Server-Linux", folder: "Linux Server" },
 ];
 const HOWTO = {
   "Android": [
@@ -46,6 +48,10 @@ const HOWTO = {
   "Mac": ["Open the .dmg and drag HumID to Applications."],
   "Windows": ["Run the -setup.exe (or the .msi)."],
   "Linux": [".deb / .rpm for your distribution, or the .AppImage. Needs fprintd for the fingerprint reader."],
+  "Linux Server": [
+    "The vault server for one Linux machine (systemd). tar -xzf, cd humid-server, sudo ./bin/humid install.",
+    "Step-by-step instructions are in README.txt inside.",
+  ],
   "Windows Server": [
     "The vault server for one Windows PC. Unzip, then double-click \"Install HumID Server.cmd\".",
     "Step-by-step instructions are in README.txt inside the zip.",
@@ -97,7 +103,7 @@ const lines = [
     ...(HOWTO[f] || []).map((h) => `    - ${h}`),
     "",
   ]),
-  folders.includes("Windows Server") ? `Windows Server is version ${serverVersion}; it runs the vault the apps talk to.\n` : null,
+  folders.some((f) => f.endsWith(" Server")) ? `The server packages are version ${serverVersion}; either runs the vault the apps talk to.\n` : null,
   "Every check is a live face or fingerprint: no PIN or password ever unlocks HumID.",
   "Proof of concept: don't store real customer data before the independent security review (docs/SECURITY.md).",
   "",

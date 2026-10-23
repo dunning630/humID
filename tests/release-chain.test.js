@@ -46,7 +46,7 @@ test("release.yml: least privilege, the guard, and the release environment", () 
   for (const [name, job] of Object.entries(jobs)) {
     assert.ok(job.permissions !== undefined, `${name} states its permissions`);
     const write = Object.entries(job.permissions || {}).filter(([, v]) => v === "write").map(([k]) => k);
-    if (name === "publish" || name === "server-windows") assert.deepEqual(write, ["contents"], `${name} may write contents only`);
+    if (name === "publish" || name === "server-windows" || name === "server-linux") assert.deepEqual(write, ["contents"], `${name} may write contents only`);
     else assert.deepEqual(write, [], `${name} has no write permission`);
     if (name !== "plan" && name !== "guard") assert.ok([].concat(job.needs).includes("guard"), `${name} needs the guard`);
   }
@@ -119,8 +119,8 @@ test("secret material stays out of git and every new commit is scanned", () => {
   assert.match(run, /gitleaks" git \. --config \.gitleaks\.toml/);
 });
 
-test("server-windows.yml: install scripts never run next to a token that can write (PC-20 / SRV-35)", () => {
-  const w = wf("server-windows.yml");
+for (const file of ["server-windows.yml", "server-linux.yml"]) test(`${file}: install scripts never run next to a token that can write (PC-20 / SRV-35)`, () => {
+  const w = wf(file);
   assert.deepEqual(w.permissions, {}, "workflow-level permissions are empty");
   for (const [name, job] of Object.entries(w.jobs)) {
     const write = Object.entries(job.permissions || {}).filter(([, v]) => v === "write").map(([k]) => k);

@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# HumID Server for Linux __HUMID_SERVER_VERSION__: install, run and manage the HumID vault server.
+#
+#   sudo ./bin/humid install [--policy attested|biometric|demo] [--apple-team-id ABCDE12345] [--port 8480]
+#   sudo humid expose tailscale | none       a public https address through Tailscale Funnel
+#   sudo humid status | start | stop | restart | logs [-f]
+#   sudo humid set KEY=VALUE ...              change settings, then restart
+#   sudo humid show                           settings (secret keys hidden)
+#   sudo humid mint 50 [batch]                access codes to sell
+#   sudo humid selftest [ACCESS-CODE]         the end-to-end self-test against this server
+#   sudo humid backup-key new /media/usb/humid-backup.key [--replace]   once: the backup key (keep the file off this machine)
+#   sudo humid backup [DIR]                   two encrypted files: the backup and keyshare's half
+#   sudo humid restore BACKUP KEYSHARE KEYFILE
+#   sudo humid pki init|status|issue ROLE --out DIR|import --from DIR
+#   sudo humid uninstall [--remove-data]
+#   humid version
+#
+# The server runs as the system user "humid" under systemd, listens on 127.0.0.1 only, and keeps
+# its data in /var/lib/humid. Its secrets are sealed under a seal key that systemd decrypts with
+# this machine's TPM (systemd-creds; the host key where there is no TPM).
+set -euo pipefail
+
+VERSION="__HUMID_SERVER_VERSION__"
+DIR=/opt/humid
+ROOT=/var/lib/humid
+ETC=/etc/humid
+UNIT=/etc/systemd/system/humid.service
+DROPIN=/etc/systemd/system/humid.service.d
+NODE_MAJOR=22
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\033[36m-> %s\033[0m\n' "$*"; }
+good() { printf '\033[32mOK %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m!  %s\033[0m\n' "$*" >&2; }
+die()  { printf '\033[31mX  %s\033[0m\n' "$*" >&2; exit 1; }
+
+need_root() { [ "$(id -u)" = 0 ] || die "This needs root: sudo humid $*"; }
+need_installed() { [ -x "$DIR/node/bin/node" ] && [ -f "$UNIT" ] || die "HumID Server isn't installed. Run: sudo ./bin/humid install (from the unpacked package)"; }
+setting() { [ -f "$ROOT/humid.env" ] && sed -n "s/^$1=//p" "$ROOT/humid.env" | tail -1 | tr -d '\r' || true; }
+port() { local p; p=$(setting HUMID_PORT); echo "${p:-8480}"; }
+seal_mode() { if [ -f "$ETC/seal.cred" ]; then echo credential; elif [ -f "$ETC/seal.key" ]; then echo file; else echo none; fi; }
+
+# One HumID program with the seal key: as the humid user (default) or root (--as-root, for backups to wherever you name).
+run_node() {
+  local as=humid
+  if [ "${1:-}" = "--as-root" ]; then as=root; shift; fi
+  if [ "$(seal_mode)" = credential ]; then
+    local u=(); [ "$as" = humid ] && u=(--uid=humid --gid=humid)
+    systemd-run --quiet --wait --pipe --collect "${u[@]}" -p "LoadCredentialEncrypted=seal:$ETC/seal.cred" \
+      -p "Environment=HUMID_DIR=$DIR HUMID_ROOT=$ROOT" "$DIR/bin/humid-node" "$@"
+  elif [ "$as" = humid ]; then
+    runuser -u humid -- env HUMID_DIR="$DIR" HUMID_ROOT="$ROOT" "$DIR/bin/humid-node" "$@"
+  else
+    HUMID_DIR="$DIR" HUMID_ROOT="$ROOT" "$DIR/bin/humid-node" "$@"
+  fi
+}
+
+healthy() { curl -fsS --max-time 3 "http://127.0.0.1:$(port)/healthz" >/dev/null 2>&1; }
+wait_healthy() {
+  for _ in $(seq 1 60); do healthy && return 0; sleep 1; done
+  warn "The server didn't answer on 127.0.0.1:$(port). Recent log:"; journalctl -u humid -n 40 --no-pager >&2 || true; return 1
+}
+
+node_arch() {
+  case "$(uname -m)" in x86_64|amd64) echo x64 ;; aarch64|arm64) echo arm64 ;; *) die "Unsupported CPU $(uname -m): HumID Server needs x86_64 or arm64." ;; esac
+}
+
+install_node() {
+  local arch ver tgz tmp
+  arch=$(node_arch)
+  for t in curl tar xz sha256sum; do command -v "$t" >/dev/null || die "$t is missing (apt install curl xz-utils, or your distribution's equivalent)"; done
+  step "Finding the latest Node.js $NODE_MAJOR from nodejs.org"
+  ver=$(curl -fsSL https://nodejs.org/dist/index.json | grep -o "\"version\":\"v$NODE_MAJOR\.[0-9]*\.[0-9]*\"" | head -1 | cut -d'"' -f4)
+  [ -n "$ver" ] || die "Couldn't read nodejs.org's release list."
+  if [ -x "$DIR/node/bin/node" ] && [ "$("$DIR/node/bin/node" --version)" = "$ver" ]; then good "Node.js $ver already in place"; return; fi
+  tmp=$(mktemp -d); tgz="node-$ver-linux-$arch.tar.xz"
+  curl -fsSL "https://nodejs.org/dist/$ver/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
+  curl -fsSL "https://nodejs.org/dist/$ver/$tgz" -o "$tmp/$tgz"
+  (cd "$tmp" && grep " $tgz\$" SHASUMS256.txt | sha256sum -c --quiet -) || die "Node.js download didn't match nodejs.org's checksum. Nothing was installed."
+  tar -xJf "$tmp/$tgz" -C "$tmp"
+  rm -rf "$DIR/node"; mv "$tmp/node-$ver-linux-$arch" "$DIR/node"; rm -rf "$tmp"
+  rm -rf "$DIR/node/include" "$DIR/node/share" "$DIR/node/lib/node_modules"
+  rm -f "$DIR/node/bin/npm" "$DIR/node/bin/npx" "$DIR/node/bin/corepack"
+  "$DIR/node/bin/node" -e 'require("tls").createSecureContext({ ecdhCurve: "X25519MLKEM768" })' 2>/dev/null \
+    || die "Node.js $ver lacks the hybrid post-quantum key exchange (OpenSSL 3.5) HumID needs."
+  good "Node.js $ver ($arch), checksum verified"
+}
+
+make_seal_key() {
+  install -d -m 0700 -o root -g root "$ETC"
+  if [ "$(seal_mode)" != none ]; then good "Seal key already in place ($(seal_mode))"; return; fi
+  if command -v systemd-creds >/dev/null; then
+    local with=host
+    if systemd-creds has-tpm2 >/dev/null 2>&1; then with=tpm2; fi
+    head -c 32 /dev/urandom | systemd-creds encrypt --with-key="$with" --name=seal - "$ETC/seal.cred"
+    chmod 0600 "$ETC/seal.cred"
+    if [ "$with" = tpm2 ]; then good "Seal key made and sealed to this machine's TPM"
+    else warn "No TPM 2.0 found: the seal key is encrypted with this machine's systemd host key instead (a copied data folder still opens nothing, but root on this machine can open it)."; fi
+  else
+    warn "systemd-creds isn't available (systemd older than 250): the seal key is a plain file only the humid user can read. Prefer a distribution with systemd 250 or later (Ubuntu 24.04, Debian 12)."
+    head -c 32 /dev/urandom > "$ETC/seal.key"
+    chown humid:humid "$ETC/seal.key"; chmod 0400 "$ETC/seal.key"
+    chmod 0711 "$ETC"
+  fi
+}
+
+write_dropin() {
+  install -d -m 0755 "$DROPIN"
+  if [ "$(seal_mode)" = credential ]; then
+    printf '[Service]\nLoadCredentialEncrypted=seal:%s/seal.cred\n' "$ETC" > "$DROPIN/seal.conf"
+  else
+    printf '[Service]\nReadOnlyPaths=%s/seal.key\n' "$ETC" > "$DROPIN/seal.conf"
+  fi
+}
+
+do_install() {
+  need_root install
+  [ -d /run/systemd/system ] || die "HumID Server for Linux runs under systemd, which isn't running here."
+  local policy="" team="" p="" src
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --policy) policy=$2; shift 2 ;;
+      --apple-team-id) team=$2; shift 2 ;;
+      --port) p=$2; shift 2 ;;
+      --yes|-y) shift ;;
+      *) die "Unknown option $1" ;;
+    esac
+  done
+  src=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+  [ -f "$src/humid-server.mjs" ] || die "Run this from the unpacked package: sudo ./bin/humid install"
+
+  step "Installing HumID Server $VERSION to $DIR"
+  id humid >/dev/null 2>&1 || useradd --system --home-dir "$ROOT" --no-create-home --shell /usr/sbin/nologin humid
+  install -d -m 0755 "$DIR" "$DIR/bin"
+  if [ "$src" != "$DIR" ]; then
+    systemctl stop humid 2>/dev/null || true
+    rm -rf "$DIR/app"
+    cp -a "$src/app" "$src/humid-server.mjs" "$src/humid-backup.mjs" "$src/humid-selftest.mjs" "$src/VERSION.txt" "$src/README.txt" "$DIR/"
+    install -m 0755 "$src/bin/humid" "$src/bin/humid-node" "$DIR/bin/"
+    install -m 0644 "$src/humid.service" "$UNIT"
+  fi
+  chown -R root:root "$DIR"; chmod -R a+rX "$DIR"
+  install_node
+  install -d -m 0700 -o humid -g humid "$ROOT"
+  make_seal_key
+  write_dropin
+  ln -sf "$DIR/bin/humid" /usr/local/bin/humid
+
+  step "Settings and keys"
+  local sets=(--set HUMID_SEAL=file)
+  [ -n "$policy" ] && sets+=(--set "HUMID_DEVICE_POLICY=$policy")
+  [ -n "$team" ] && sets+=(--set "HUMID_IOS_APP_ID=$team.app.humid.vault")
+  [ -n "$p" ] && sets+=(--set "HUMID_PORT=$p")
+  run_node humid-server.mjs init "${sets[@]}"
+
+  systemctl daemon-reload
+  systemctl enable --now humid >/dev/null
+  systemctl restart humid
+  step "Waiting for the server"
+  wait_healthy || die "HumID Server didn't start (journalctl -u humid)."
+  good "HumID Server $VERSION is running on 127.0.0.1:$(port)"
+  do_status
+  say ""
+  say "Next:"
+  say "  1. A public https address:   sudo humid expose tailscale"
+  say "  2. The backup key, onto a USB drive:   sudo humid backup-key new /media/<usb>/humid-backup.key"
+  say "  3. Point the apps at it: the address and key id above go in HUMID_SERVER_URL / HUMID_SERVER_KID (README.txt)."
+}
+
+do_status() {
+  need_root status
+  local active; active=$(systemctl is-active humid 2>/dev/null || true)
+  say "HumID Server     $VERSION ($active)"
+  if [ -f "$ROOT/server.json" ]; then
+    "$DIR/node/bin/node" -e '
+      const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const row = (k, v) => console.log(k.padEnd(17) + (v ?? "(none)"));
+      row("Local address", s.localUrl); row("Public address", s.publicUrl); row("Key id", s.kid); row("Fingerprint", s.fingerprint);
+      row("Device policy", s.devicePolicy); row("Registration", s.registration); row("Secrets sealed", s.sealed); row("App version", s.appVersion);
+    ' "$ROOT/server.json"
+  fi
+  say "Seal key         $(seal_mode)$( [ -f "$ETC/seal.cred" ] && systemd-creds has-tpm2 >/dev/null 2>&1 && echo ' (TPM 2.0 present)')"
+  if healthy; then good "Answering on 127.0.0.1:$(port)"; else warn "Not answering on 127.0.0.1:$(port)"; fi
+}
+
+do_expose() {
+  need_root expose; need_installed
+  case "${1:-}" in
+    tailscale)
+      command -v tailscale >/dev/null || die "Tailscale isn't installed: curl -fsSL https://tailscale.com/install.sh | sh, then sudo tailscale up"
+      local name
+      name=$(tailscale status --json | "$DIR/node/bin/node" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write((JSON.parse(s).Self?.DNSName||"").replace(/\.$/,"")))')
+      [ -n "$name" ] || die "Tailscale isn't signed in: sudo tailscale up"
+      step "Turning on Funnel: https://$name -> 127.0.0.1:$(port)"
+      tailscale funnel --bg --yes "$(port)" || die "Funnel didn't turn on. If Tailscale printed a link to allow Funnel for your tailnet, open it, approve, and run this again."
+      run_node humid-server.mjs set "HUMID_PUBLIC_URL=https://$name" HUMID_TRUST_FORWARDED=off
+      systemctl restart humid; wait_healthy
+      good "Public address https://$name"
+      ;;
+    none)
+      command -v tailscale >/dev/null && tailscale funnel reset >/dev/null 2>&1 || true
+      run_node humid-server.mjs set HUMID_PUBLIC_URL= HUMID_TRUST_FORWARDED=off
+      systemctl restart humid; wait_healthy
+      good "Not public any more (127.0.0.1 only)"
+      ;;
+    *) die "Usage: humid expose tailscale | none" ;;
+  esac
+}
+
+do_backup_key() {
+  need_root backup-key; need_installed
+  case "${1:-show}" in
+    new)
+      local out=${2:-}; [ -n "$out" ] || die "Usage: humid backup-key new /media/<usb>/humid-backup.key [--replace]"
+      case "$out" in /*) ;; *) out="$(pwd)/$out" ;; esac
+      case "$out" in "$ROOT"/*|"$DIR"/*|"$ETC"/*) die "The backup key must be kept off this computer (a USB drive), never in $ROOT, $DIR or $ETC." ;; esac
+      local extra=(); [ "${3:-}" = "--replace" ] && extra=(--replace)
+      run_node --as-root humid-backup.mjs backup-key-new --out "$out" "${extra[@]}"
+      chown -R humid:humid "$ROOT/admin" 2>/dev/null || true
+      ;;
+    show) run_node --as-root humid-backup.mjs backup-key-show ;;
+    *) die "Usage: humid backup-key new <file> [--replace] | show" ;;
+  esac
+}
+
+do_backup() {
+  need_root backup; need_installed
+  local dir=${1:-/root} stamp; stamp=$(date +%Y%m%d-%H%M%S)
+  local out="$dir/HumID-backup-$stamp.humidbak" ks="$dir/HumID-keyshare-$stamp.humidbak"
+  run_node --as-root humid-backup.mjs backup --out "$out" --keyshare-out "$ks" --check
+  step "Stopping the server for a consistent copy"
+  systemctl stop humid
+  local rc=0
+  run_node --as-root humid-backup.mjs backup --out "$out" --keyshare-out "$ks" || rc=$?
+  chown -R humid:humid "$ROOT"
+  systemctl start humid; wait_healthy || true
+  [ $rc = 0 ] || die "The backup failed; the server is running again."
+  warn "Put $ks on a different disk from $out: together they hold both halves of every split key."
+}
+
+do_restore() {
+  need_root restore; need_installed
+  local file=${1:-} ks=${2:-} key=${3:-}
+  [ -n "$file" ] && [ -n "$ks" ] && [ -n "$key" ] || die "Usage: humid restore <HumID-backup-….humidbak> <HumID-keyshare-….humidbak> <backup key file>"
+  local stamp into tmpkey; stamp=$(date +%Y%m%d-%H%M%S)
+  into="$ROOT.restore-$stamp"; tmpkey=$(mktemp -p /run humid-seal.XXXXXX)
+  trap 'shred -u "$tmpkey" 2>/dev/null || rm -f "$tmpkey"' RETURN
+  step "Checking and unpacking the backup"
+  HUMID_SEAL=off "$DIR/node/bin/node" --no-warnings "$DIR/humid-backup.mjs" restore --into "$into" --in "$file" --keyshare "$ks" --key "$key" --seal-key-out "$tmpkey" --root "$ROOT"
+  systemctl stop humid
+  [ -d "$ROOT" ] && mv "$ROOT" "$ROOT.before-restore-$stamp"
+  mv "$into" "$ROOT"
+  if [ -s "$tmpkey" ]; then
+    # The server's own seal key, from the backup: kept under this machine's protection from now on.
+    step "Sealing the restored seal key to this machine"
+    rm -f "$ETC/seal.cred" "$ETC/seal.key"
+    if command -v systemd-creds >/dev/null; then
+      local with=host; systemd-creds has-tpm2 >/dev/null 2>&1 && with=tpm2
+      systemd-creds encrypt --with-key="$with" --name=seal "$tmpkey" "$ETC/seal.cred"; chmod 0600 "$ETC/seal.cred"
+    else
+      install -m 0400 -o humid -g humid "$tmpkey" "$ETC/seal.key"
+    fi
+    write_dropin; systemctl daemon-reload
+  fi
+  # A backup from Windows names DPAPI; on Linux the seal key always comes through humid-node.
+  sed -i 's/^HUMID_SEAL=.*/HUMID_SEAL=file/' "$ROOT/humid.env" 2>/dev/null || true
+  chown -R humid:humid "$ROOT"; chmod 0700 "$ROOT"
+  systemctl start humid; wait_healthy || die "Restored, but the server didn't start (journalctl -u humid). The previous data is in $ROOT.before-restore-$stamp."
+  good "Restored. The previous data is in $ROOT.before-restore-$stamp (delete it once you're happy)."
+  do_status
+}
+
+do_uninstall() {
+  need_root uninstall
+  local remove=0; [ "${1:-}" = "--remove-data" ] && remove=1
+  systemctl disable --now humid 2>/dev/null || true
+  rm -rf "$UNIT" "$DROPIN"; systemctl daemon-reload
+  rm -f /usr/local/bin/humid
+  rm -rf "$DIR"
+  if [ $remove = 1 ]; then
+    rm -rf "$ROOT" "$ETC"; userdel humid 2>/dev/null || true
+    good "HumID Server and all its data removed."
+  else
+    good "HumID Server removed. Its data is still in $ROOT and its seal key in $ETC (sudo humid uninstall --remove-data deletes them)."
+  fi
+}
+
+cmd=${1:-help}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  install)    do_install "$@" ;;
+  status)     do_status ;;
+  start)      need_root start; need_installed; systemctl start humid; wait_healthy && good "Started." ;;
+  stop)       need_root stop; systemctl stop humid; good "Stopped." ;;
+  restart)    need_root restart; need_installed; systemctl restart humid; wait_healthy && good "Restarted." ;;
+  logs)       need_root logs; if [ "${1:-}" = "-f" ]; then journalctl -u humid -f -o cat; else journalctl -u humid -n 200 --no-pager -o cat; fi ;;
+  set)        need_root set; need_installed; [ $# -gt 0 ] || die "Usage: humid set KEY=VALUE ..."; run_node humid-server.mjs set "$@"; systemctl restart humid; wait_healthy && good "Restarted with the new settings." ;;
+  show)       need_root show; need_installed; run_node humid-server.mjs show ;;
+  mint)       need_root mint; need_installed; run_node humid-server.mjs mint "$@" ;;
+  pki)        need_root pki; need_installed; run_node humid-server.mjs pki "$@" ;;
+  selftest)   need_root selftest; need_installed; "$DIR/node/bin/node" --no-warnings "$DIR/humid-selftest.mjs" "http://127.0.0.1:$(port)" "$@" ;;
+  expose)     do_expose "$@" ;;
+  backup-key) do_backup_key "$@" ;;
+  backup)     do_backup "$@" ;;
+  restore)    do_restore "$@" ;;
+  uninstall)  do_uninstall "$@" ;;
+  version)    say "$VERSION" ;;
+  *)          sed -n '2,20p' "$(readlink -f "$0")" | sed 's/^# \{0,1\}//' ;;
+esac

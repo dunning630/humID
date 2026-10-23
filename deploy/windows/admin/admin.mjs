@@ -177,7 +177,10 @@ switch (command) {
   }
   case "restore": {
     const into = flag("--into"), file = flag("--in"), keyshareFile = flag("--keyshare"), keyFile = flag("--key");
-    if (!into || (!file && !keyshareFile)) fail("Usage: restore --into DIR [--in F] [--keyshare K] [--key KEYFILE]", 2);
+    // HumID Server for Linux: the raw seal key the backup carried goes to this file (mode 600,
+    // on tmpfs), so the humid command can seal it again with systemd-creds and then shred it.
+    const sealKeyOut = flag("--seal-key-out");
+    if (!into || (!file && !keyshareFile)) fail("Usage: restore --into DIR [--in F] [--keyshare K] [--key KEYFILE] [--seal-key-out FILE]", 2);
     await step(async () => {
       let keyText = null;
       if (keyFile) { try { keyText = readFileSync(keyFile, "utf8"); } catch (e) { throw new Error(`Can't read the backup key file ${keyFile}: ${e.message}`); } }
@@ -185,7 +188,10 @@ switch (command) {
       // The seal key the backup carried, sealed again under this machine's own DPAPI (it stays
       // inside `into`, the folder only SYSTEM and Administrators can open, until it's swapped in).
       let sealed = false;
-      if (r.sealKey) {
+      if (r.sealKey && sealKeyOut) {
+        try { writeFileSync(sealKeyOut, Buffer.from(r.sealKey), { mode: 0o600 }); sealed = true; }
+        catch (e) { rmSync(into, { recursive: true, force: true }); throw new Error(`The backup checks out, but its seal key couldn't be handed over (${e.message}). Nothing was restored.`); }
+      } else if (r.sealKey) {
         try { sealed = storeSealKey(into, r.sealKey, serverEnv()); }
         catch (e) { rmSync(into, { recursive: true, force: true }); throw new Error(`The backup checks out, but its seal key couldn't be kept on this machine (${e.message}). Nothing was restored.`); }
       }
