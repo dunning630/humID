@@ -324,7 +324,13 @@ export function createGateway({
     return () => { if (released) return; released = true; inflightAll--; const k = (inflight.get(ip) || 1) - 1; if (k > 0) inflight.set(ip, k); else inflight.delete(ip); };
   };
 
-  const clientIp = (req) => (trustProxy && req.headers["x-forwarded-for"]?.split(",")[0].trim()) || req.socket.remoteAddress;
+  /**
+   * The visitor's address. With trustProxy, the LAST X-Forwarded-For entry: the one the proxy in
+   * front of the gateway wrote (V76-04). Caddy 2.5+ (the Docker edge, no trusted_proxies) replaces
+   * the header with the connection's address, and the Windows edge sends a single entry, so today
+   * there is one; a proxy that appends would leave the visitor's own claims to the left of it.
+   */
+  const clientIp = (req) => (trustProxy && String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean).pop()) || req.socket.remoteAddress;
 
   /* ---------- internal calls ---------- */
 
