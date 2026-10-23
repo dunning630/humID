@@ -160,6 +160,7 @@ export class HtpServer {
       if (e?.code === "meta_too_large") throw new HtpServerError(413, "too_large", "Request headers are too large.");
       throw new HtpServerError(400, "bad_frame", "Frame failed authentication.");
     }
+    if (session.dead) throw new HtpServerError(401, "session_unknown", "Unknown session; handshake again.");
     // Replay check only after the frame proves it came from the session holder.
     if (!session.replay.accept(parsed.seq)) throw new HtpServerError(409, "replay", "Sequence number already used.");
     session.touchedAt = now;
@@ -167,12 +168,21 @@ export class HtpServer {
   }
 
   seal(session, seq, status, headers, body) {
+    // A session dropped while its request was in flight (device removed, eviction, expiry) has had
+    // its keys wiped. Sealing with the wiped key would encrypt the reply under 32 zero bytes, which
+    // anyone on the path can open (review 2026-10-23, CRYPTO-01). Refuse instead.
+    if (session.dead || !session.s2c || this.sessions.get(session.sidText) !== session) {
+      throw new HtpServerError(401, "session_unknown", "Unknown session; handshake again.");
+    }
     return sealFrame(session.s2c, DIR.response, session.sid, seq, { s: status, h: headers || {} }, body);
   }
 
   drop(session) {
+    session.dead = true;
     wipe(session.c2s, session.s2c);
-    this.sessions.delete(session.sidText);
+    session.c2s = null;
+    session.s2c = null;
+    if (this.sessions.get(session.sidText) === session) this.sessions.delete(session.sidText);
   }
 
   sweep(now = Date.now()) {

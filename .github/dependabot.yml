@@ -1,31 +1,48 @@
 # Keeps pinned dependencies current. Actions are pinned to commit SHAs with a
 # "# vX.Y.Z" comment; Dependabot updates both. Every update is a pull request
 # that runs CI and the secret scan like any other change.
+#
+# One grouped pull request per ecosystem per week, so updates arrive as a few
+# reviewable PRs rather than a branch per package. Major versions (Preact 11,
+# Node 25, and so on) are left for a deliberate upgrade: they change behaviour,
+# and Node's odd-numbered majors never become long-term-support releases.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule: { interval: weekly, day: monday }
     groups:
       actions: { patterns: ["*"] }
 
   - package-ecosystem: npm
     directory: /
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 10
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    groups:
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: cargo
-    directory: /apps/mobile/src-tauri
-    schedule: { interval: weekly }
-
-  - package-ecosystem: cargo
-    directory: /plugins/humid-nfc
-    schedule: { interval: weekly }
+    directories: [/apps/mobile/src-tauri, /plugins/humid-gate, /plugins/humid-nfc, /plugins/humid-docscan]
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
-    directory: /services
-    schedule: { interval: weekly }
-
-  - package-ecosystem: docker
-    directory: /services/edge
-    schedule: { interval: weekly }
+    directories: [/services, /services/edge]
+    schedule: { interval: weekly, day: monday }
+    groups:
+      base-images: { patterns: ["*"] }
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]

@@ -1432,7 +1432,13 @@ export function createGateway({
       if (!(e instanceof HttpError)) log.error("dispatch failed", { err: e.stack });
       out = { status: e.status || 500, headers: { "content-type": "application/json" }, body: utf8(JSON.stringify({ error: e.code || "internal", message: e instanceof HttpError ? e.message : "Internal error" })) };
     }
-    const frame = await htp.seal(s, seq, out.status, out.headers, out.body);
+    let frame;
+    try { frame = await htp.seal(s, seq, out.status, out.headers, out.body); }
+    catch (e) {
+      // The session was dropped while this request ran: answer in the clear with no content.
+      if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message });
+      throw e;
+    }
     if (s.closeAfterReply) htp.drop(s); // logout / close: reply first, then destroy the keys
     return bytes(200, frame, MEDIA_TYPE);
   }
