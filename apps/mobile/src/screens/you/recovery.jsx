@@ -13,7 +13,7 @@ import { fmtDate } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
 import { readChip, chipReader, setDraft, clearDraft, draft, toast } from "../../core/index.js";
-import { loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor, keyReader, addSecurityKey, removeSecurityKey, switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY } from "../../core/setup.js";
+import { loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor, keyReader, addSecurityKey, removeSecurityKey, switchToHardened, switchToHolderOnly, newRecoveryPieces, confirmModeHere, modeHistory, escrowWords, HOLDER_ONLY } from "../../core/setup.js";
 import { back, twelve, Countdown } from "./common.jsx";
 import { RECOVERY_IF_LOST } from "../../ui/labels.js";
 
@@ -27,11 +27,14 @@ export function Recovery() {
   useEffect(() => { loadRecovery(); chipReader(); }, []);
   const off = !!S.offline.value;
   const holderOnly = mode?.mode === HOLDER_ONLY;
+  // Hardened, but not a choice this phone can vouch for itself: no proofs are offered (V74B-01).
+  const unconfirmed = !!(mode && !holderOnly && mode.trusted && mode.vouched === false);
   return (
     <Pushed title="Recovery" onBack={back}>
-      <ModeCard mode={mode} off={off} onSwitch={() => setOpen("mode")} />
+      <ModeCard mode={mode} off={off} onSwitch={() => setOpen("mode")} onConfirm={() => setOpen("confirm")} />
       {open === "mode" && <ModeSheet mode={mode} onClose={() => setOpen(null)} />}
-      {holderOnly ? null : <>
+      {open === "confirm" && <ConfirmSheet onClose={() => setOpen(null)} />}
+      {holderOnly || unconfirmed ? null : <>
       <p class="t2 small mt-4">Set up <b>two</b> of these four. One proof alone never opens your vault, and HumID never holds a key that does.</p>
       {rec && <ProofMeter have={PROOFS.map((p) => p.id).filter((k) => rec.proofs[k])} />}
       <div class="rows mt-3">
@@ -99,7 +102,7 @@ const UNTRUSTED = {
   forked: "It doesn't follow from the choice this phone remembers.",
 };
 
-function ModeCard({ mode, off, onSwitch }) {
+function ModeCard({ mode, off, onSwitch, onConfirm }) {
   if (!mode) return <div class="card"><span class="muted small">Checking how you can get back in…</span></div>;
   const holderOnly = mode.mode === HOLDER_ONLY;
   return (
@@ -111,8 +114,36 @@ function ModeCard({ mode, off, onSwitch }) {
         : `${RECOVERY_IF_LOST} Then there's a wait that any device you still have can cancel.`}</p>
       {!mode.trusted && <div class="mt-3"><Banner tone="danger" icon="alert" role="alert" title="Your vault server's record of this choice doesn't check out"
         text={`${UNTRUSTED[mode.reason] || UNTRUSTED.unsigned} This phone won't act on it: it treats your HumID as Only my own devices and won't make any recovery piece until the server shows your real choice again. Your documents aren't affected. Tell whoever runs your vault server.`} /></div>}
+      {!holderOnly && mode.trusted && mode.vouched === false && <div class="mt-3"><Banner tone="amber" icon="shield" title="This phone can't confirm this choice yet"
+        text={mode.legacy
+          ? "Your vault server is too old to keep a choice signed with your HumID's key, so this phone has only the server's word for it. It won't make recovery pieces on that. Ask whoever runs your server to update it."
+          : "Your choice is signed with your HumID's key, but this phone hasn't seen it before: it came back through recovery without it, or was set up before phones remembered it. Your vault server could be showing an older choice than your newest, and its public log can't prove otherwise. So this phone makes no recovery piece until you confirm the choice here, or add this phone again from another of your devices."}
+        action={!off && !mode.legacy ? "Check and confirm" : undefined} onAction={onConfirm} /></div>}
       {!off && mode.trusted && <button class="btn quiet sm mt-3" onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
     </div>
+  );
+}
+
+/**
+ * Confirm, on this phone, a hardened choice it can't vouch for (V74B-01). The history this phone
+ * could verify comes first: if it shows a switch the holder doesn't remember, or the holder knows
+ * they turned recovery off, they stop here.
+ */
+function ConfirmSheet({ onClose }) {
+  const [busy, setBusy] = useState(false);
+  const history = modeHistory();
+  const words = (h) => h.mode === HOLDER_ONLY ? "Only my own devices" : "Recovery with two proofs";
+  return (
+    <Sheet onClose={onClose} eyebrow="Recovery" title="Is this still your choice?">
+      <p class="t2 small">Your vault server says your HumID can be recovered with two proofs. Before this phone makes any recovery piece, check that's still what you want. Here's every change your activity record shows:</p>
+      <div class="rows mt-3">
+        {history.length ? history.map((h) => <Row chevron={false} icon={h.mode === HOLDER_ONLY ? "key" : "shield"} title={words(h)} sub={`${h.setup ? "Chosen at setup" : "Changed"}${h.at ? `, ${fmtDate(h.at)}` : ""}`} />)
+          : <Row chevron={false} icon="info" title="No changes recorded" sub="Your activity record shows none" />}
+      </div>
+      <Banner tone="danger" icon="alert" title="Did you turn recovery off on another device?" text="Then stop: don't confirm. Your vault server may be showing this phone your older choice. Open HumID on that device instead, and tell whoever runs your vault server." />
+      <p class="fine mt-2">Confirming takes one live check. It signs your choice again with your HumID's key and starts a fresh set of recovery pieces, so you set up your proofs again. Your other devices see it.</p>
+      <div class="actions"><button class="btn primary block" disabled={busy} onClick={async () => { setBusy(true); try { if (await confirmModeHere()) onClose(); } finally { setBusy(false); } }}><Icon name="fingerprint" />Yes, confirm recovery here</button></div>
+    </Sheet>
   );
 }
 

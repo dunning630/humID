@@ -58,6 +58,61 @@ You → Recovery.
   nothing more is stored or released. The holder's own phone checks the
   statement against its account key too, and says so if it doesn't verify.
 
+### When a phone makes recovery pieces
+
+A phone makes a recovery piece (a card, witness pieces, an ID-chip link, a
+security key, or new pieces) only for a hardened choice **it can vouch for
+itself**. What identity, the recovery service and the ledger show is never
+enough on its own: they all belong to the operator, and an operator who
+controls all three could show a phone an older choice the holder really made
+and has since changed. Concretely, a phone makes pieces only when the choice
+the servers show, checked against the account key, is:
+
+1. **its pin, or one after it.** The pin is the newest statement this phone
+   has checked itself: the one it signed at setup or when it changed the
+   mode, or the newest it has seen since. It's kept in the phone's sealed
+   identity record and only moves forward, whatever writes the record.
+2. **the pin it was handed when it was added.** A phone added from another of
+   your devices gets that device's pin inside the hand-over, which is sealed
+   to the new phone and signed by the account key. A server can't change it.
+3. **the choice its recovery pieces were made under.** A phone that came back
+   through two-proof recovery has no pin, but the pieces it combined each
+   carry their set (epoch) inside their sealed or signed contents, and only a
+   hardened choice ever makes pieces. So it accepts hardened at exactly that
+   epoch and pins it, and refuses an older epoch, or holder-only at that one.
+4. **one it signs now.** Anywhere else (a phone recovered with older
+   single-proof pieces, an identity record written before pins, a server too
+   old to keep the signed choice) the phone shows the choice but makes no
+   piece. Recovery and Protection ask the holder to **Check and confirm**:
+   the phone shows every mode change its verified activity record holds, says
+   to stop if they turned recovery off on another device, and then one live
+   check signs a new statement (the next version, a new epoch) with the
+   account key and pins it. That act is the holder's own: no server can make
+   it. If the holder had turned recovery off elsewhere, that device sees two
+   different statements at one version and reports it.
+
+**What this doesn't cover.** A phone that pinned a choice before you changed
+it on another device, and hasn't seen the change since, can be held at its
+pin by an operator that hides the change from every source at once. It's
+your own earlier choice, signed by you, but not your newest. That phone
+would then offer recovery set-up again. The same goes for a phone recovered
+with old pieces that still fit each other (see "What switching doesn't undo"):
+it starts from the old set's choice. Two things would close it, and neither
+is built:
+
+- **The public log can't prove "nothing newer".** A cosigned checkpoint
+  proves an entry is in the log, not that no later entry for the same account
+  exists. Proving that needs the log to commit to each account's latest
+  entry, with cosigners refusing two different latest entries for one
+  account. Until then a cosigned checkpoint isn't counted as a vouch, whether
+  this build has cosigners (`HUMID_TLOG_COSIGNERS`) or not.
+- **Your devices don't compare pins with each other** except when one adds
+  another.
+
+So: after you turn recovery off, open HumID once on each of your other
+devices. Each one pins the change the first time it sees it and never goes
+back.
+
 ### Switching
 
 - **Holder-only → hardened** adds ways back in. It needs a fresh live check,
