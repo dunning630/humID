@@ -7,7 +7,7 @@
 "@humid/mobile": minor
 ---
 
-The recovery mode can't be deleted or rolled back (V74-01, V74-02).
+The recovery mode can't be deleted or rolled back below what each device has seen (V74-01, V74-02).
 
 - Each mode statement now names the hash of the one before it: `recoveryModeMessage(account, mode, version, epoch, prev)`. Version 1 names `RECMODE_GENESIS`. `followsMode` decides whether a statement may replace another.
 - Identity accepts only statements that follow its own and is the source of truth.
