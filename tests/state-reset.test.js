@@ -76,7 +76,7 @@ test("forgetting this device's HumID resets the session too", async () => {
 });
 
 test("lock, erase and reset each call resetSession, and nothing keeps its own list", () => {
-  const src = (f) => readFileSync(new URL(`../apps/mobile/src/core/${f}`, import.meta.url), "utf8");
+  const src = (f) => readFileSync(new URL(`../apps/mobile/src/core/${f}`, import.meta.url), "utf8").replace(/\r\n/g, "\n"); // CRLF on a Windows checkout
   const body = (s, name) => { const i = s.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return s.slice(i, s.indexOf("\n}\n", i)); };
   assert.match(body(src("session.js"), "lock"), /S\.resetSession\(\)/);
   assert.match(body(src("account.js"), "eraseEverything"), /S\.resetSession\(\)/);

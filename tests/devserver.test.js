@@ -3,10 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { devFile } from "../tools/devfiles.mjs";
 
-const root = join("/srv", "humid", "apps", "mobile", "dist");
+// resolve, not join: on Windows an absolute path carries the drive letter, as devFile returns it
+const root = resolve("/srv", "humid", "apps", "mobile", "dist");
 const dist = root + sep; // as tools/dev.mjs passes it, with the trailing separator
 const at = (p) => devFile(dist, new URL(p, "http://x").pathname);
 
