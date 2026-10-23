@@ -9,7 +9,11 @@
 
 Two HumID holders approve each other and talk directly. Each knows the other
 only by an ID. Every message is end-to-end encrypted with post-quantum keys,
-and carries proof that a live human sent it, without saying which human.
+and carries proof that a face or fingerprint enrolled on a proven phone
+approved it, without saying whose. "Live" throughout means that match, made at
+that moment: HumID requires a Class-3 biometric match on attested hardware and
+relies on the device's own anti-spoofing; it performs no additional liveness
+detection.
 
 ## The human-to-human rule
 
@@ -488,6 +492,10 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
 
 ## Limits
 
+- **A match, not liveness detection.** HumID requires a Class-3 biometric
+  match on attested hardware and relies on the device's own anti-spoofing; it
+  performs no additional liveness detection. A stamp is as hard to fake as that
+  phone's sensor is to fool.
 - **A human can approve someone else's words.** A stamp proves a live check
   approved these bytes; a person paid to approve a bot's messages would produce
   valid stamps. Each stamp costs one live check, which caps it at human speed.

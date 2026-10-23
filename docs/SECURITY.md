@@ -31,6 +31,11 @@ it until that review and the items under *Before real data* are done.
 ## What it does not protect against yet
 
 - **Unreviewed composition.** See the status note above.
+- **"Live" means a biometric match, not liveness detection.** HumID requires
+  a Class-3 biometric match on attested hardware and relies on the device's own
+  anti-spoofing; it performs no additional liveness detection. A lifted
+  fingerprint or a mask that fools a phone's sensor fools HumID too; how well
+  each phone resists that is the phone maker's, and isn't attested.
 - **Attestation proves the key, not the person.** The secure chip proves a
   live biometric match on that phone unlocked the key. It can't tell whose
   enrolled face or finger it was: anyone the phone's owner enrolled can pass.
@@ -394,7 +399,10 @@ remaining item under *Before real data* #9.
 ## Live biometric checks
 
 "Human validated" means the server has evidence, for every action, that a
-live face or fingerprint match happened on a device it trusts. Here is how.
+face or fingerprint matched one enrolled on a device it trusts, at that moment.
+HumID requires a Class-3 biometric match on attested hardware and relies on the
+device's own anti-spoofing; it performs no additional liveness detection. Here
+is how.
 
 **When a phone joins** (first device, link, recovery), its secure chip makes a
 new P-256 *liveness key* that can only be used after a live biometric match,
