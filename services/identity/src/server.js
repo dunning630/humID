@@ -125,10 +125,21 @@ export function createIdentity({
     `ALTER TABLE device_keys ADD COLUMN keys_gone_at TEXT`,
     // Statements are chained (V74-01/02): each names the hash of the one before.
     `ALTER TABLE identities ADD COLUMN recovery_mode_prev TEXT`,
+    // V76-02: the serials of every certificate in an Android device's attestation chain, as
+    // enrolment saw them (JSON array), so Google's revocation list is checked at every sign-in.
+    // NULL for iPhones (App Attest has no revocation list) and for Android phones enrolled before.
+    `ALTER TABLE device_keys ADD COLUMN att_serials TEXT`,
   ]);
   const status = attest.revokedSerials ? null : revocationList({ url: statusUrl, file: statusFile, maxAgeMs: statusMaxAgeMs, log: (event, detail) => console.warn(JSON.stringify({ t: new Date().toISOString(), svc: "identity", event, ...detail })) });
   /** Whether a phone may be checked against a missing or stale list, under the gateway's policy. */
   const statusNeeded = (policy) => statusRequired === "auto" ? policy === "attested" : statusRequired;
+  /**
+   * Google's list as it stands, for `policy`: throws status_unavailable / status_stale when
+   * the policy needs a fresh copy and there isn't one. A fixed list (tests) is never stale.
+   */
+  const revokedNow = (policy) => status
+    ? status.serials({ required: statusNeeded(policy) })
+    : (typeof attest.revokedSerials === "function" ? attest.revokedSerials() : attest.revokedSerials || new Set());
   /** The attestation rules for one enrolment under `policy` (revocation fails closed when needed). */
   const attestFor = (policy) => status ? { ...attest, revokedSerials: () => status.serials({ required: statusNeeded(policy) }) } : attest;
   const usedChallenge = db.prepare("SELECT device_id FROM attest_challenges WHERE th = ?");
@@ -164,12 +175,12 @@ export function createIdentity({
    * opened in the last few minutes) and enrol one device only.
    */
   function liveness(live, th, message, deviceIdHex, sessionAgeMs, policy) {
-    if (!live) return { proof: "none", livePub: null, detail: null };
+    if (!live) return { proof: "none", livePub: null, detail: null, serials: null };
     const livePub = unb64u(String(live.pub || ""));
     if (!verifyLiveSig(livePub, message, unb64u(String(live.sig || "")))) {
       throw new HttpError(401, "bad_live_proof", "The device's secure chip did not sign this enrolment.");
     }
-    if (!live.attestation) return { proof: "unattested-key", livePub, detail: null };
+    if (!live.attestation) return { proof: "unattested-key", livePub, detail: null, serials: null };
     if (!(Number.isFinite(sessionAgeMs) && sessionAgeMs >= 0 && sessionAgeMs <= ATTEST_MAX_AGE_MS)) {
       throw new HttpError(403, "attestation_stale", "The device's proof is too old. Start adding it again.");
     }
@@ -181,9 +192,9 @@ export function createIdentity({
       ? { kind: a.kind, chain: (Array.isArray(a.chain) ? a.chain : []).slice(0, 10).map((c) => unb64u(String(c))) }
       : { kind: a.kind, object: unb64u(String(a.object || "")) };
     try {
-      const { proof, detail } = verifyLiveKey({ pub: livePub, attestation: att }, th, attestFor(policy));
+      const { proof, detail, serials } = verifyLiveKey({ pub: livePub, attestation: att }, th, attestFor(policy));
       useChallenge.run(thHex, deviceIdHex, new Date().toISOString());
-      return { proof, livePub, detail };
+      return { proof, livePub, detail, serials: serials || null };
     } catch (e) {
       if (e instanceof AttestationError) throw new HttpError(403, e.code, e.message);
       throw e;
@@ -252,10 +263,10 @@ export function createIdentity({
       return { device: existing, created: false };
     }
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO device_keys (id, account_id, dsa_pk, platform, gate_method, assurance, via, enrolled_at, last_seen_at, live_pub, proof, proof_detail)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO device_keys (id, account_id, dsa_pk, platform, gate_method, assurance, via, enrolled_at, last_seen_at, live_pub, proof, proof_detail, att_serials)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, account.id, dsaPk, String(d.platform || "unknown").slice(0, 40), gateMethod, assuranceOf(live.proof, gateMethod), via, now, now,
-        live.livePub, live.proof, live.detail ? JSON.stringify(live.detail) : null);
+        live.livePub, live.proof, live.detail ? JSON.stringify(live.detail) : null, live.serials ? JSON.stringify(live.serials) : null);
     return { device: getDevice.get(id), created: true };
   }
 
@@ -272,6 +283,29 @@ export function createIdentity({
     if (!claims.stepUp) throw new HttpError(403, "step_up_required", "This needs a fresh biometric check.");
     proofs.check(claims.holder, { sub: claims.sub, method, path });
   };
+  /**
+   * V76-02: an Android phone's attestation chain is checked against Google's list at every
+   * sign-in, not only when it joined: a hardware key extracted later is used on a phone that
+   * is already enrolled. A listed certificate removes the device for good. When the policy
+   * needs a fresh list and there isn't one, the sign-in is refused (503) like an enrolment.
+   * A phone enrolled before its chain was kept can't be checked: under such a policy it has
+   * to be set up again (reattest_required); see docs/SECURITY.md.
+   */
+  function stillAttested(device, policy) {
+    if (!/^android-/.test(device.proof || "")) return;
+    let listed;
+    try { listed = revokedNow(policy); }
+    catch (e) { if (e instanceof AttestationError) throw new HttpError(503, e.code, e.message); throw e; }
+    const serials = device.att_serials ? JSON.parse(device.att_serials) : null;
+    if (!serials) {
+      if (status && statusNeeded(policy)) throw new HttpError(403, "reattest_required", "This phone joined before HumID kept its secure chip's certificates, so the server can't check them against Google's list. Set HumID up again on this phone with I already have HumID.");
+      return;
+    }
+    if (serials.some((x) => listed.has(x))) {
+      db.prepare("UPDATE device_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(new Date().toISOString(), device.id);
+      throw new HttpError(403, "attestation_revoked", "Google has revoked this phone's secure-chip certificate (a leaked or compromised device key), so it was removed from your HumID. Use another device or your recovery proofs.");
+    }
+  }
 
   const internalDevice = (device) => ({ device: deviceView(device, device.id), deviceDsaPk: b64u(device.dsa_pk), deviceLivePub: device.live_pub ? b64u(device.live_pub) : null });
   const respondWithDevice = (status, account, device) => json(status, { ...accountView(account, device.id), ...internalDevice(device) });
@@ -377,6 +411,7 @@ export function createIdentity({
         return json(401, { ok: false, error: "bad_live_proof", message: "The device's secure chip did not confirm a live biometric." });
       }
       allowed(r.policy, device.proof, device.gate_method); // the server's policy may have tightened since enrolment
+      stillAttested(device, r.policy); // and Google may have revoked its chain since (V76-02)
       // A live sign-in proves this device's keys are there: any "keys gone" report about it is void.
       db.prepare("UPDATE device_keys SET last_seen_at = ?, keys_gone_at = NULL WHERE id = ?").run(new Date().toISOString(), device.id);
       return json(200, { ok: true, ...accountView(account, device.id), ...internalDevice(device) });

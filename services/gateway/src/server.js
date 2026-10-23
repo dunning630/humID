@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
-import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, identityId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8 } from "@humid/htp";
+import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, identityId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8, sha3_256, toHex } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 import { rateKey, isBox, TAG_RE } from "@humid/msg/relay-rules";
 
@@ -200,7 +200,8 @@ const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try agai
 
 const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index", "x-humid-object-id"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
-const SHARE_HEADER = "x-humid-share"; // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
+const SHARE_HEADER = "x-humid-share";
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]); // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
 
 /**
  * Token buckets per key. At `max` keys the least recently used one is forgotten, never the
@@ -259,6 +260,14 @@ export function createGateway({
   checkin = env("HUMID_CHECKIN", "off"),
   /** How often the gateway tidies up after a Check-in erase: the vault's envelopes, and the ledger entry. */
   checkinSweepMs = 10_000,
+  /**
+   * Handshakes a minute, server-wide, from visitors whose address the proxy in front couldn't
+   * know (it forwards its own loopback address: the Windows edge behind Tailscale Funnel with
+   * HUMID_TRUST_FORWARDED=off). Per-address limits would put every visitor in one bucket of 30,
+   * so one visitor could lock everyone out (V76-03). Returning holders skip this bucket with a
+   * one-use hello pass (below).
+   */
+  sharedHelloPerMin = Number(env("HUMID_SHARED_HELLO_PER_MIN", "600")),
   /** Server secrets sealed at rest (packages/svc/src/seal.js): HUMID_SEAL_KEY_FILE, or the host's sealer. */
   seal = sealerFromEnv(),
   /**
@@ -286,6 +295,7 @@ export function createGateway({
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
   if (!REGISTRATION.includes(registration)) throw new Error(`HUMID_REGISTRATION must be one of ${REGISTRATION.join(", ")}`);
   if (passBuyUrl && !/^https:\/\//.test(passBuyUrl)) throw new Error("HUMID_PASS_BUY_URL must be an https:// URL");
+  if (!(Number.isInteger(sharedHelloPerMin) && sharedHelloPerMin >= 30)) throw new Error("HUMID_SHARED_HELLO_PER_MIN must be a whole number, at least 30");
 
   // Long-term HTP keys. Losing this file changes the server's identity, and apps that pinned it will refuse to connect.
   mkdirSync(dataDir, { recursive: true });
@@ -297,6 +307,47 @@ export function createGateway({
   setInterval(() => htp.sweep(), 60_000).unref();
 
   const helloLimit = new Buckets(30, 60_000);   // per client network: an IPv4 address or an IPv6 /64 (rateKey)
+  const sharedHello = new Buckets(sharedHelloPerMin, 60_000); // server-wide, for visitors with no knowable address
+  /**
+   * Hello passes (V76-03). Each sign-in hands the app a random one-use pass inside the encrypted
+   * session; at its next handshake the app presents it and skips the address limits, so a holder
+   * can always open a session (and check in) however much anonymous traffic shares their
+   * address. One use each, so an observer of the tunnel never sees the same value twice and
+   * can't link a device's sessions. Kept in memory: after a gateway restart a holder's first
+   * handshake goes through the ordinary limits again.
+   */
+  const helloPasses = new Map(); // sha3(pass) hex -> { device, exp }
+  const passByDevice = new Map(); // device -> sha3(pass) hex (one live pass per device)
+  const HELLO_PASS_MS = 30 * 24 * 3_600_000;
+  function issueHelloPass(device) {
+    const pass = random(32);
+    const h = toHex(sha3_256(pass));
+    const old = passByDevice.get(device);
+    if (old) helloPasses.delete(old);
+    if (helloPasses.size >= 200_000) { helloPasses.clear(); passByDevice.clear(); }
+    helloPasses.set(h, { device, exp: Date.now() + HELLO_PASS_MS });
+    passByDevice.set(device, h);
+    return b64u(pass);
+  }
+  /** Spend the pass a hello carries: true if it was live (it is gone either way). */
+  function spendHelloPass(req) {
+    const v = req.headers["x-humid-hello-pass"];
+    if (typeof v !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(v)) return false;
+    const h = toHex(sha3_256(unb64u(v)));
+    const p = helloPasses.get(h);
+    if (!p) return false;
+    helloPasses.delete(h);
+    if (passByDevice.get(p.device) === h) passByDevice.delete(p.device);
+    return p.exp > Date.now();
+  }
+  /** The proxy in front forwarded its own loopback address: it doesn't know the visitor's. */
+  const addressUnknown = (ip) => trustProxy && LOOPBACK.has(ip);
+  /** May this request open a handshake (or another anonymous, costly call)? */
+  const helloAllowed = (req, { pass = false } = {}) => {
+    if (pass && spendHelloPass(req)) return true;
+    const ip = clientIp(req);
+    return addressUnknown(ip) ? sharedHello.take("*") : helloLimit.take(rateKey(ip || ""));
+  };
   const callLimit = new Buckets(600, 60_000);   // per session
   // Sign-in throttles count FAILED proofs only and never refuse a request before its proof has been
   // checked. See the note at `login` and docs/CHECKIN.md: a lockout must never keep the holder from
@@ -307,7 +358,9 @@ export function createGateway({
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
-  const keysGoneNote = new Buckets(1, 24 * 3_600_000); // one "keys gone" report per device a day
+  // one "keys gone" line in a device's Activity a day, spent only once identity has marked that
+  // device for the account the report named (V76-01: a wrong-account report spends nothing)
+  const keysGoneNote = new Buckets(1, 24 * 3_600_000);
   // SRV-34: new recovery requests per source network (IPv4 address or IPv6 /64). Anonymous and
   // kept by the recovery service, so a session's own limit isn't enough: one person recovering
   // starts one or two. The recovery service also caps how many unproven requests exist at all.
@@ -317,15 +370,22 @@ export function createGateway({
   const inflight = new Map();
   let inflightAll = 0;
   const admitBody = (perIp = 16, all = 1024) => (req) => {
+    // an unknown address is everyone's (V76-03): only the server-wide cap applies to it
     const ip = clientIp(req);
-    const n = inflight.get(ip) || 0;
+    const n = addressUnknown(ip) ? 0 : inflight.get(ip) || 0;
     if (n >= perIp || inflightAll >= all) throw new HttpError(429, "rate_limited", "Too many requests in flight");
     inflight.set(ip, n + 1); inflightAll++;
     let released = false;
     return () => { if (released) return; released = true; inflightAll--; const k = (inflight.get(ip) || 1) - 1; if (k > 0) inflight.set(ip, k); else inflight.delete(ip); };
   };
 
-  const clientIp = (req) => (trustProxy && req.headers["x-forwarded-for"]?.split(",")[0].trim()) || req.socket.remoteAddress;
+  /**
+   * The visitor's address. With trustProxy, the LAST X-Forwarded-For entry: the one the proxy in
+   * front of the gateway wrote (V76-04). Caddy 2.5+ (the Docker edge, no trusted_proxies) replaces
+   * the header with the connection's address, and the Windows edge sends a single entry, so today
+   * there is one; a proxy that appends would leave the visitor's own claims to the left of it.
+   */
+  const clientIp = (req) => (trustProxy && String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean).pop()) || req.socket.remoteAddress;
 
   /* ---------- internal calls ---------- */
 
@@ -416,7 +476,8 @@ export function createGateway({
     s.platform = String(view.device.platform || "unknown").slice(0, 40);
     s.authAt = Date.now();
   }
-  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, proof: s.proof, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, ...extra });
+  // helloPass: for this device's next handshake only (V76-03); a new one with every sign-in
+  const sessionView = (s, extra = {}) => ({ id: s.subject, device: s.deviceId, assurance: s.assurance, proof: s.proof, gateMethod: s.gateMethod, expiresAt: s.expiresAt, idleTimeoutMs: htp.idleMs, helloPass: issueHelloPass(s.deviceId), ...extra });
   const dropWhere = (pred) => { for (const x of [...htp.sessions.values()]) if (pred(x)) htp.drop(x); };
 
   /* ---------- handlers (run inside the encrypted channel) ---------- */
@@ -705,7 +766,8 @@ export function createGateway({
       // The note is written after the reply, so it can't make a real account's refusal slower.
       const known = v.status !== 401 || v.data?.error !== "bad_signature" || v.data?.known === true;
       const noteLater = (detail) => { if (known) setImmediate(() => recordQuietly(r.id, "access.denied", { ...detail, device: r.device })); };
-      const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(rateKey(s.clientIp || "")), loginFailAll.take("*")].every(Boolean);
+      // an unknown address (V76-03) is everyone's: only the per-identity and server-wide budgets count
+      const throttled = failed && ![loginFailId.take(r.id), addressUnknown(s.clientIp) || loginFailIp.take(rateKey(s.clientIp || "")), loginFailAll.take("*")].every(Boolean);
       if (throttled) {
         if (loginNote.take(r.id)) noteLater({ reason: "sign_in_throttled" });
         throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
@@ -715,8 +777,12 @@ export function createGateway({
         noteLater({ reason: live ? "no_live_biometric" : "bad_login_proof" });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
-      if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
+      if (v.status === 403 && ["device_removed", "device_not_proven", "attestation_revoked", "reattest_required"].includes(v.data?.error)) {
         await recordQuietly(r.id, "access.denied", { reason: v.data.error, device: r.device });
+        if (v.data.error === "attestation_revoked") {
+          await recordQuietly(r.id, "device.removed", { device: r.device, reason: "attestation_revoked" });
+          dropWhere((x) => x.subject === r.id && x.deviceId === r.device); // and its open sessions end now
+        }
       }
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);
@@ -728,19 +794,23 @@ export function createGateway({
     /**
      * LIVE-06. The phone's keys are gone, so it holds nothing it can sign with: the report is
      * unauthenticated, and so it does as little as possible. The device is marked as needing
-     * setup again (its next sign-in clears that) and its owner's Activity says so, at most
-     * once a day per device. The answer is the same whether or not the account or device
-     * exists, so it tells a stranger nothing.
+     * setup again and its owner's Activity says so, once per mark (its next sign-in clears it).
+     * The answer is the same whether or not the account or device exists, so it tells a
+     * stranger nothing, and a report naming the wrong account spends nothing (V76-01).
      */
     async keyInvalidated(s, body) {
       const { id, device } = parseJson(body) || {};
       if (!re(ID_RE).test(String(id)) || !re(DEV_RE).test(String(device))) throw new HttpError(400, "bad_identity", "Unknown identity format");
-      const mine = !s.subject || s.subject === id; // a signed-in session speaks only for its own account
-      if (mine && keysGoneNote.take(device)) {
-        const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
-        if (r?.status === 200 && r.data?.marked) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
-      }
-      return { status: 202, json: { ok: true } };
+      const ok = { status: 202, json: { ok: true } }; // the same answer whatever happens below: no oracle
+      if (s.subject && s.subject !== id) return ok; // a signed-in session speaks only for its own account
+      // Identity marks the device only when it is an active device of that account and not
+      // already marked; the mark itself is the once-per-device allowance (until the device's
+      // next sign-in clears it), so a wrong account or a repeat changes and spends nothing.
+      // No per-source bucket: one a stranger could drain would drop the genuine report (V76-01);
+      // the call is one indexed lookup, inside the per-session anonymous limit (20 a minute).
+      const r = await internalJson("identity", "POST", `/internal/devices/${device}/keys-gone`, { json: { account: id } }).catch(() => null);
+      if (r?.status === 200 && r.data?.marked && keysGoneNote.take(`${id}/${device}`)) await recordQuietly(id, "device.keys_invalidated", { device, platform: r.data.platform });
+      return ok;
     },
 
     async logout(s) {
@@ -1358,7 +1428,7 @@ export function createGateway({
   const cors = (req) => {
     const o = req.headers.origin;
     if (!o || !allowedOrigins.includes(o)) return {};
-    return { "access-control-allow-origin": o, vary: "origin", "access-control-allow-methods": "GET, POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+    return { "access-control-allow-origin": o, vary: "origin", "access-control-allow-methods": "GET, POST", "access-control-allow-headers": "content-type, x-humid-hello-pass", "access-control-max-age": "600" };
   };
 
   const routes = [
@@ -1367,8 +1437,12 @@ export function createGateway({
     // ML-DSA-87 key (CRYPTO-07), so the app believes it only from the server it pinned.
     ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2, stampNeeds: DEMO_STAMPS ? "any" : "hardware" } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) }) }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
-      const group = rateKey(clientIp(req) || "");
-      if (!helloLimit.take(group)) return json(429, { error: "rate_limited", message: "Too many handshakes" });
+      if (!helloAllowed(req, { pass: true })) return json(429, { error: "rate_limited", message: "Too many handshakes" });
+      // The per-network cap on sessions that haven't signed in (CRYPTO-04) needs a knowable
+      // network: visitors who all share the tunnel's address each get their own group, and only
+      // the table-wide eviction applies to them (V76-03), so a stranger can't evict them.
+      const ip = clientIp(req);
+      const group = addressUnknown(ip) ? `u:${toHex(random(8))}` : rateKey(ip || "");
       try { return json(200, htp.hello(parseJson(body), Date.now(), { group })); }
       catch (e) { if (e instanceof HtpServerError) return json(e.status, { error: e.code, message: e.message }); throw e; }
     }, { public: true, bodyLimit: 16 * 1024 }],
@@ -1385,7 +1459,7 @@ export function createGateway({
       return internal("ledger", "GET", `/tlog/consistency?${q}`);
     }, { public: true }],
     ["POST", "/tlog/v1/cosign", ({ req, body }) => {
-      if (!helloLimit.take(rateKey(clientIp(req) || ""))) return json(429, { error: "rate_limited", message: "Slow down" });
+      if (!helloAllowed(req)) return json(429, { error: "rate_limited", message: "Slow down" });
       return internal("ledger", "POST", "/tlog/cosign", { body, headers: { "content-type": "application/json" } });
     }, { public: true, bodyLimit: 16 * 1024, admit: admitBody() }],
     ["OPTIONS", "/htp/v1/keys", () => ({ status: 204, headers: {}, body: "" }), { public: true }],

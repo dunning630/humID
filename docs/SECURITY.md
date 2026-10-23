@@ -521,7 +521,20 @@ for one operation at a time:
 
 The liveness key then signs the device-enrolment statement in the same check.
 The server stores the key and the proof (`android-tee`, `android-strongbox`
-or `apple-secure-enclave`) with the device.
+or `apple-secure-enclave`) with the device, and for Android the serials of
+every certificate in its attestation chain. Google's revocation list is
+checked against those serials at every sign-in, not only when the phone
+joins: a revoked certificate (a leaked or extracted device key) removes the
+device at its next sign-in, and with `HUMID_ATTESTATION_STATUS_REQUIRED=1`
+(the default with the attested policy) a list that is missing or over 48 hours
+old refuses Android sign-ins (503 `status_stale`) until it is fresh again.
+Android phones enrolled before the serials were kept can't be checked, so
+under a required list they are refused with `reattest_required` and set up
+again with *I already have HumID*; refusing them is the only way the promise
+holds, and accepting them unchecked would leave exactly the extracted-key case
+open. With Check-in armed, an outage of the list for over 48 hours keeps
+Android holders from checking in, so its fetch must be monitored (the
+sidecar's health check) on any server where Check-in is on.
 
 **Every later check** is signed by that key:
 

@@ -77,8 +77,17 @@ const codeOf = (input) => {
 const BRIDGE_MAX = 20_000;
 
 export class HumidApi {
-  constructor({ baseUrl = "", pinnedKid = null, fetch } = {}) {
+  /**
+   * helloPassStore: where the one-use hello pass is kept between app launches (V76-03), so a
+   * holder whose app was closed still skips limits shared with strangers. Default: this
+   * device's localStorage when there is one, else memory only. The pass opens nothing: it
+   * only lets one handshake past the rate limits.
+   */
+  constructor({ baseUrl = "", pinnedKid = null, fetch, helloPassStore = defaultPassStore(baseUrl) } = {}) {
     this.htp = new HtpClient({ baseUrl, pinnedKid, ...(fetch ? { fetch } : {}) });
+    this.passStore = helloPassStore;
+    try { this.htp.helloPass = helloPassStore?.get() || null; } catch {}
+    this.htp.onHelloPassUsed = () => { try { helloPassStore?.set(null); } catch {} };
     this.session = null;
     this.onSignedOut = null;
     this.htp.onSessionLost = () => { this.session = null; this.onSignedOut?.("expired"); };
@@ -119,6 +128,14 @@ export class HumidApi {
     return res;
   }
   #json(method, path, opts) { return this.#call(method, path, opts).then((r) => r.json()); }
+  /** A signed-in session's answer: keep its one-use hello pass for the next handshake (V76-03). */
+  #signedIn(view) {
+    if (typeof view?.helloPass === "string") {
+      this.htp.helloPass = view.helloPass;
+      try { this.passStore?.set(view.helloPass); } catch {}
+    }
+    return view;
+  }
 
   /* ---------------- accounts & devices ---------------- */
 
@@ -150,7 +167,7 @@ export class HumidApi {
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
       },
-    });
+    }).then((v) => this.#signedIn(v));
     return this.session;
   }
 
@@ -204,7 +221,7 @@ export class HumidApi {
   async enrollDevice({ account, device, via, recoveryId, linkCode, sign, soleBiometric }) {
     await this.htp.connect();
     const sigs = await sign(deviceMessage(this.htp.transcript, account, device.dsaPk), this.htp.transcript);
-    this.session = await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/device", { body: { account, via, recoveryId, ...(linkCode ? { linkCode } : {}), device: deviceBody(device, sigs), ...(soleBiometric ? { soleBiometric: true } : {}) } }));
     return this.session;
   }
 
@@ -221,7 +238,7 @@ export class HumidApi {
     const presence = (d) => loginPresenceMessage(th, who, nonce, d);
     const { sig, interrupt, live, d } = await sign(loginMessage(th, who, nonce), { presence });
     const body = { id, device, sig: b64u(sig), interrupt, ...(live ? { live: b64u(live) } : {}), ...(d === 0 || d === 1 ? { d } : {}) };
-    this.session = await this.#json("POST", "/auth/login", { body });
+    this.session = this.#signedIn(await this.#json("POST", "/auth/login", { body }));
     return this.session;
   }
 
@@ -655,6 +672,18 @@ export class RelayClient {
   /** Unsend: true if the object was still there and is now gone. */
   async retract(box, token) { return !!(await this.#call("POST", "/msg/relay/retract", { body: { box, token: b64u(token) } })).removed; }
   close() { this.htp.close?.(); }
+}
+
+/** The hello pass in localStorage, per server; null where there's none (Node, a locked-down WebView). */
+function defaultPassStore(baseUrl) {
+  let ls;
+  try { ls = globalThis.localStorage; ls?.getItem("x"); } catch { ls = null; }
+  if (!ls) return null;
+  const key = `humid.helloPass:${baseUrl}`;
+  return {
+    get: () => { try { return ls.getItem(key); } catch { return null; } },
+    set: (v) => { try { if (v) ls.setItem(key, v); else ls.removeItem(key); } catch {} },
+  };
 }
 
 function deviceBody(device, sigs) {

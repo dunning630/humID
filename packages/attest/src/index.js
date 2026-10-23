@@ -46,7 +46,7 @@ export const appAttestClientData = (challenge, spkiDer) => createHash("sha256").
  * live: { pub (SPKI DER), attestation: { kind: "android-key", chain: [DER…] } | { kind: "apple-app-attest", object: CBOR } }
  * challenge: the bytes the attestation must be bound to (the HTP transcript hash).
  * config: { androidPackages, androidDigests, iosAppId, appAttestEnvironment, roots: { android, apple }, requireLockedBoot }
- * Returns { proof, detail }.
+ * Returns { proof, detail, serials? } (serials: Android only, the chain's certificate serials).
  */
 export function verifyLiveKey(live, challenge, config = {}) {
   try { return verifyLiveKeyInner(live, challenge, config); }
@@ -70,8 +70,9 @@ function verifyLiveKeyInner(live, challenge, config) {
       revokedSerials: typeof config.revokedSerials === "function" ? config.revokedSerials() : config.revokedSerials,
     });
     if (!r.pub.equals(pub)) throw new AttestationError("bad_attestation", "The attested key is not the liveness key.");
-    const { pub: _p, proof, ...detail } = r;
-    return { proof, detail };
+    // serials: every certificate in the chain, so a server can check Google's list again at each sign-in
+    const { pub: _p, proof, serials, ...detail } = r;
+    return { proof, detail, serials };
   }
   if (a.kind === "apple-app-attest") {
     const r = verifyAppAttest({
