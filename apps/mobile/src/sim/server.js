@@ -295,7 +295,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     record(id, "device.added", { device: device.id, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, checks: checks.filter((c) => c.ok).length });
     record(id, "session.opened", { device: device.id, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
     let cardSet = false;
-    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup" });
+    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: device.id });
     if (created && r.card?.tag && mode?.mode !== "holder-only") { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
     report("Your HumID was registered", checks, { kind: "enrol" });
     return [created ? 201 : 200, sessionView(s, { created, cardSet })];
