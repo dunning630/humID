@@ -91,7 +91,7 @@ try {
     await meter.first().waitFor({ timeout: 15_000 });
     assert.equal(await meter.count(), 4, "four proofs in the meter");
     assert.deepEqual(await meter.allInnerTexts(), ["Witnesses", "ID chip", "Recovery card", "Security key"]);
-    await p.locator(".pushed").getByText("If you lose every device, any").waitFor();
+    await p.locator(".pushed").getByText("If you lose every device, recovery needs any two").waitFor();
     await p.getByRole("button", { name: /^Security key/ }).click();
     const sheet = p.locator(".sheet");
     await sheet.getByRole("heading", { name: "Add a security key" }).waitFor();
