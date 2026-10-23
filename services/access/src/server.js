@@ -154,12 +154,19 @@ export function createAccess({
     return making;
   }
   const view = (row, issuing) => ({ ...JSON.parse(row.pub), issuing, notBefore: row.not_before, notAfter: row.issue_until, acceptUntil: day(row.accept_until) });
-  /** Published: the current epoch's key (issuing) and the next. Archive: retired keys whose stamps still count. */
-  function stampKeySet({ since = 0 } = {}) {
+  /**
+   * Published: the current epoch's key (issuing) and the next. Archive: retired keys whose message
+   * stamps still count (15 days); with all, every retired public key since `since`, oldest first, a
+   * page at a time, for checking stamped media and evidence releases by their own time (MSG-10).
+   */
+  const ARCHIVE_PAGE = 1000;
+  function stampKeySet({ since = 0, all = false } = {}) {
     ensureStampKeys();
     const e = epochOf(now());
     const published = [view(stampRow.get(e), true), view(stampRow.get(e + EPOCH), false)];
-    const archive = db.prepare("SELECT * FROM stamp_keys WHERE not_before IS NOT NULL AND not_before < ? AND accept_until > ? AND issue_until > ? ORDER BY not_before DESC").all(e, now(), since).map((r) => view(r, false));
+    const archive = all
+      ? db.prepare("SELECT * FROM stamp_keys WHERE not_before IS NOT NULL AND not_before < ? AND issue_until > ? ORDER BY not_before ASC LIMIT ?").all(e, since, ARCHIVE_PAGE).map((r) => view(r, false))
+      : db.prepare("SELECT * FROM stamp_keys WHERE not_before IS NOT NULL AND not_before < ? AND accept_until > ? AND issue_until > ? ORDER BY not_before DESC").all(e, now(), since).map((r) => view(r, false));
     return { published, archive };
   }
   /** The key a stamp request names, if it may sign now: its epoch, give or take the skew. */
@@ -248,7 +255,7 @@ export function createAccess({
     ["GET", "/internal/stamp/keys", ({ claims, query }) => {
       gatewayOnly(claims);
       const since = Number(query.get("since") || 0);
-      const { published, archive } = stampKeySet({ since: Number.isSafeInteger(since) ? since : 0 });
+      const { published, archive } = stampKeySet({ since: Number.isSafeInteger(since) ? since : 0, all: query.get("all") === "1" });
       return json(200, { suite: "RSABSSA-SHA384-PSS-Randomized", epochMs: EPOCH, keys: published, archive });
     }],
 

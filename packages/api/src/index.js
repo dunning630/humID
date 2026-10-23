@@ -493,9 +493,13 @@ export class HumidApi {
   /**
    * The server's stamp keys (this epoch's and the next, plus `archive`: retired keys whose stamps
    * still count), and its pass key ids (the app refuses a stamp key that is also a pass key).
-   * since (ms): only retired keys whose epoch ended after it.
+   * since (ms): only retired keys whose epoch ended after it. all: every retired key from `since`
+   * on (a page of up to 1,000, oldest first), for checking stamped media and evidence releases.
    */
-  msgKeys({ since = 0 } = {}) { return this.#json("GET", since > 0 ? `/msg/keys?since=${Math.floor(since)}` : "/msg/keys"); }
+  msgKeys({ since = 0, all = false } = {}) {
+    const q = [since > 0 ? `since=${Math.floor(since)}` : "", all ? "all=1" : ""].filter(Boolean).join("&");
+    return this.#json("GET", q ? `/msg/keys?${q}` : "/msg/keys");
+  }
   /** Network-wide daily totals of live-approved messages. */
   msgStats() { return this.#json("GET", "/msg/stats").then((r) => r.days); }
   /**

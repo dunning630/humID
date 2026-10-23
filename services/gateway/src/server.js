@@ -707,9 +707,12 @@ export function createGateway({
     // stamps with its pass key (a blind signer signs whatever it's handed).
     // ?since=ms: only retired stamp keys whose epoch ended after it (a phone that has the rest).
     async msgKeys(s, body, stepUp, m, route, meta) {
-      const since = Number(new URL(String(meta?.p || "/"), "http://inner").searchParams.get("since") || 0);
-      const q = Number.isSafeInteger(since) && since > 0 ? `?since=${since}` : "";
-      const [st, pk] = await Promise.all([internalJson("access", "GET", `/internal/stamp/keys${q}`), internalJson("access", "GET", "/internal/keys")]);
+      const sp = new URL(String(meta?.p || "/"), "http://inner").searchParams;
+      const since = Number(sp.get("since") || 0);
+      // all=1: every retired key (a page of them, from `since`), for stamped media and evidence (MSG-10)
+      const q = [Number.isSafeInteger(since) && since > 0 ? `since=${since}` : "", sp.get("all") === "1" ? "all=1" : ""].filter(Boolean).join("&");
+      const qs = q ? `?${q}` : "";
+      const [st, pk] = await Promise.all([internalJson("access", "GET", `/internal/stamp/keys${qs}`), internalJson("access", "GET", "/internal/keys")]);
       if (st.status !== 200) fail(st);
       if (pk.status !== 200) fail(pk);
       return { status: 200, json: { stamp: st.data, passKeyIds: (pk.data.keys || []).map((k) => k.id) } };

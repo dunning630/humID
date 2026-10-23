@@ -59,6 +59,12 @@ test("hourly stamp keys: current and next published, each signs only in its own 
     assert.ok(M.verifyStamp(later, stamp, c, { at: T0 + 10 * MIN }), "a stamp from last hour still checks, by its own time");
     const since = (await call(svc, "GET", `/internal/stamp/keys?since=${T0 + HOUR}`)).data;
     assert.equal(since.archive.length, 0, "?since leaves out what the phone already has");
+    // MSG-10: long after a key's message stamps stop counting, its public half is still there
+    t = T0 + 40 * 24 * HOUR;
+    await svc.tick();
+    assert.ok(!(await call(svc, "GET", "/internal/stamp/keys")).data.archive.some((k) => k.id === k0.keys[0].id), "not in the messaging archive");
+    const all = (await call(svc, "GET", "/internal/stamp/keys?all=1")).data;
+    assert.ok(all.archive.some((k) => k.id === k0.keys[0].id && k.notBefore === T0), "kept for checking stamped media and releases by their own time");
     const db = new DatabaseSync(join(root, "a", "access.db"), { readOnly: true });
     try {
       assert.equal(db.prepare("SELECT pem FROM stamp_keys WHERE id = ?").get(k0.keys[0].id).pem, "", "the retired private key is erased");
