@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { X509Certificate } from "node:crypto";
-import { newInternalKeys } from "@humid/svc";
+import { newInternalKeys, newStatementKeys } from "@humid/svc";
 import { HumidApi } from "@humid/api";
 import { serialKey, fetchStatusToFile } from "@humid/attest";
 import { createIdentity } from "../../services/identity/src/server.js";
@@ -28,13 +28,13 @@ const ATTEST = {
 const code = (c) => (e) => { assert.equal(e.code, c, `expected ${c}, got ${e.code}: ${e.message}`); return true; };
 const HOUR = 3600_000;
 
-let root, ik, others, identity, gateway, statusFile, clock;
+let root, ik, core, keys, others, identity, gateway, statusFile, clock;
 const url = (s) => `http://127.0.0.1:${s.server.address().port}`;
 const writeStatus = (entries, fetchedAt) => writeFileSync(statusFile, JSON.stringify({ fetchedAt: new Date(fetchedAt).toISOString(), status: { entries } }));
 
 async function startIdentity(opts = {}) {
   await identity?.stop();
-  identity = createIdentity({ port: 0, dataDir: join(root, "identity"), internalPk: ik.pk, statusFile, statusUrl: "", attest: ATTEST, devicePolicy: "attested", ...opts });
+  identity = createIdentity({ port: 0, dataDir: join(root, "identity"), internalPk: ik.pk, statementSk: core.sk, statusFile, statusUrl: "", attest: ATTEST, devicePolicy: "attested", ...opts });
   await identity.start();
   await identity.revocation.refresh();
   if (gateway) await gateway.stop();
@@ -46,12 +46,13 @@ before(async () => {
   root = mkdtempSync(join(tmpdir(), "humid-status-"));
   statusFile = join(root, "status", "attestation-status.json");
   ik = newInternalKeys();
+  core = newStatementKeys(); keys = newStatementKeys();
   const svcs = {
-    vault: createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk }),
-    ledger: createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk }),
+    vault: createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, corePk: core.pk, keysPk: keys.pk }),
+    ledger: createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, statementSk: core.sk }),
     recovery: createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk }),
     access: createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: 2048, stampKeyBits: 2048 }),
-    keyshare: createKeyshare({ port: 0, dataDir: join(root, "keyshare"), internalPk: ik.pk }),
+    keyshare: createKeyshare({ port: 0, dataDir: join(root, "keyshare"), internalPk: ik.pk, statementSk: keys.sk, corePk: core.pk }),
   };
   await Promise.all(Object.values(svcs).map((s) => s.start()));
   others = Object.fromEntries(Object.entries(svcs).map(([k, s]) => [k, url(s)]));

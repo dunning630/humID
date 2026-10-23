@@ -88,7 +88,7 @@ export function createLedger({
    * and the vault releases an envelope only against the receipt for opening it. Without the key
    * no receipts are given, and a vault that needs them refuses (fail closed).
    */
-  statementSk = seal.openText("humid.env/HUMID_CORE_STATEMENT_SK", env("HUMID_CORE_STATEMENT_SK", "")),
+  statementSk = seal ? seal.openText("humid.env/HUMID_CORE_STATEMENT_SK", env("HUMID_CORE_STATEMENT_SK", "")) : env("HUMID_CORE_STATEMENT_SK", ""),
 } = {}) {
   const log = logger("ledger");
   if (!statementSk) log.warn("no core statement key (HUMID_CORE_STATEMENT_SK): entries get no receipts, so the vault can't release documents");
