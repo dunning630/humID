@@ -100,3 +100,19 @@ test("round 2: an entry from before v2 is re-sealed as v2 on the next refresh, s
   assert.equal(patched.length, 1);
   S.decoy.value = false;
 });
+
+test("documented limit (SECURITY.md): with the rev store gone, an older v2 entry for the same item is accepted once", async () => {
+  const id = "9c1c2b9a-1d2e-4f00-8a00-0123456789aa";
+  const old = await Suite.sealIndex(key, { name: "x", decoy: true }, { id, rev: 10 });
+  R.api = { list: async () => ({ items: [{ id, size: 1, index: b64(old) }], usage: {} }), rename: async () => {} };
+  R.store = await openStore(); // a fresh store: nothing remembered
+  R.indexKey = key; R.epoch++;
+  S.identity.value = { server: { id: "hid_fresh" }, schema: 4 };
+  S.offline.value = null; S.decoy.value = false;
+  await refresh();
+  assert.equal(S.items.value[0].decoy, true, "a fresh phone can't know a newer entry existed");
+  // …and from then on nothing older than rev 10 is
+  R.api.list = async () => ({ items: [{ id, size: 1, index: b64(await Suite.sealIndex(key, { name: "x" }, { id, rev: 5 })) }], usage: {} });
+  await refresh();
+  assert.equal(S.items.value[0].rolledBack, true);
+});
