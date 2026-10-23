@@ -73,15 +73,17 @@ test("SRV-24: unknown account, unknown device and wrong key get one answer, in s
   const cases = { unknown: [`hid_${"0".repeat(40)}`, `dev_${"0".repeat(24)}`], unknownDevice: [holder.id, `dev_${"0".repeat(24)}`], wrongKey: [holder.id, holder.deviceId] };
   const times = { unknown: [], unknownDevice: [], wrongKey: [] };
   const answers = new Set();
-  for (let round = 0; round < 3; round++) {
+  for (let round = 0; round < 5; round++) {
     for (const [k, [id, dev]] of Object.entries(cases)) { const r = await attempt(id, dev); answers.add(r.out); times[k].push(r.ms); }
   }
   assert.deepEqual([...answers], ["401/bad_proof/Sign-in proof was rejected."], "one answer, whatever was wrong");
   // Same work on every path (the signature is always checked, the ledger note comes after the
   // reply). A loose bound: this box is shared, so it only catches a large, systematic gap.
-  const med = (a) => [...a].sort((x, y) => x - y)[1];
+  const med = (a) => [...a].sort((x, y) => x - y)[2];
   const m = Object.values(times).map(med);
-  assert.ok(Math.max(...m) - Math.min(...m) < Math.max(40, 0.5 * Math.min(...m)), `medians differ too much: ${m.map((x) => x.toFixed(1)).join(" / ")} ms`);
+  // before the fix an unknown account skipped every signature check (two ML-DSA verifies and a
+  // ledger write): a gap of the order of the whole sign-in. Allow scheduling noise, not that.
+  assert.ok(Math.max(...m) < 2 * Math.min(...m) + 25, `medians differ too much: ${m.map((x) => x.toFixed(1)).join(" / ")} ms`);
 });
 
 test("handshake flood from one IP: at most 30 succeed per minute, the rest are 429 rate_limited", async () => {
