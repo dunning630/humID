@@ -250,7 +250,7 @@ export function Item() {
               {validStamp(item.place) && <Fact k="Location stamp" v={<><span class="mono small">{formatCoords(item.place)}</span><br /><span class="muted small">{formatAccuracy(item.place.accuracy)} · as the phone reported · <button class="link" style={{ minHeight: 0 }} type="button" onClick={() => openExternal(mapLink(item.place))}>Map</button></span></>} />}
               {item.placeNote && !validStamp(item.place) && <Fact k="Location stamp" v={<span class="muted">None: {item.placeNote}</span>} />}
               {(id?.expiry || card?.expiry || pi?.expires) && <Fact k="Expires" v={id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)} />}
-              <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} />} />
+              <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} mine={false} />} />
             </div>
             <p class="fine" style={{ marginTop: 12 }}>Opening, saving a copy and deleting each need a fresh check. Every one is recorded in Activity.</p>
           </>

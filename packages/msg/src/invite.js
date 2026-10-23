@@ -151,7 +151,7 @@ const REQ_OVERHEAD = REQ_PREFIX + 16;
 
 /**
  * @param invite   result of openInvite
- * @param opts.stamper  (commitment) → stamp: one live check proves a live human made this request
+ * @param opts.stamper  (commitment) → stamp: one live check (a biometric match on a proven phone) approved this request
  * @param opts.intro    optional short note shown with the request ("Parker, from the workshop")
  * @returns {{ box, wire, session, persona }}  post wire to box; keep the session (status "requested") and persona salt
  */

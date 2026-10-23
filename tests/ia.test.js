@@ -45,6 +45,48 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
   for (const f of faces) assert.doesNotMatch(noComments(read(f)), /safe mode/i, `${f} calls the duress unlock "safe mode"`);
 });
 
+// The honest promise (overnight review, Oct 2026): what the app and the documents an assessor
+// reads first must not claim. Any enrolled face or finger opens a phone, two-proof recovery
+// opens a vault, a computer's checks aren't chip-proven, and HumID does no liveness detection
+// of its own: it relies on the phone's matcher.
+const OVERCLAIM = [
+  [/only your (live )?face or fingerprint/i, "any face or finger enrolled on the phone, and two-proof recovery, open it too"],
+  [/living you|a live you\b/i, "a biometric match proves an enrolled face or finger, not a living person"],
+  [/proven by your phone's (secure )?chip/i, "not on a computer or in the web app: say it only where the device's own assurance is hardware (ui/labels.js)"],
+  [/zero[- ]knowledge/i, "the vault is end-to-end encrypted storage, not a zero-knowledge proof system"],
+  [/verified human|liveness detection(?! of its own)(?!;)|live human ✓/i, "HumID performs no liveness detection; it proves a biometric match on a proven phone"],
+  [/for your eyes only/i, "anyone the phone's owner enrolled can open it"],
+];
+const userText = (f) => noComments(read(f));
+const DOCS = ["README.md", "docs/SECURITY.md", "docs/ARCHITECTURE.md"];
+const docText = (f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf8");
+
+test("no screen, toast or first-read document overclaims the promise", () => {
+  const hits = [];
+  const core = all.filter((x) => x.startsWith("core/") && x.endsWith(".js"));
+  for (const f of [...faces, ...core, "ui/labels.js"]) userText(f).split("\n").forEach((line, i) => {
+    for (const [re, why] of OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  for (const f of DOCS) docText(f).split("\n").forEach((line, i) => {
+    // a doc may name a claim in order to deny it ("not a zero-knowledge proof system", "no additional liveness detection")
+    if (/\bnot\b|\bno\b|n't|never/i.test(line)) return;
+    for (const [re, why] of OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  assert.deepEqual(hits, []);
+});
+
+test("a past proof is described by the device that made it, not by this one (APP-09)", () => {
+  const a = noComments(read("screens/activity.jsx"));
+  assert.doesNotMatch(a, /S\.session\.value\?\.assurance/, "Activity reads the viewing device's assurance for past events");
+  assert.match(a, /eventProof\(e\)/);
+  // the chip claim is made only where the device's assurance is known to be hardware
+  for (const f of faces) {
+    for (const [i, line] of noComments(read(f)).split("\n").entries()) {
+      if (/this phone's (secure )?chip/i.test(line)) assert.match(line, /hardware|mine/, `${f}:${i + 1} claims this phone's chip unconditionally`);
+    }
+  }
+});
+
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
   const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
     // 4.0: the Messages screens load the messaging kernel with their own chunk, so the

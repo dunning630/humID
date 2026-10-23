@@ -2,7 +2,7 @@
 // left to make this HumID survive a lost phone. This screen owns progress; the Recovery
 // screen only shows which proofs exist.
 import { Icon } from "../../brand/icons.jsx";
-import { Pushed, Row, Banner, PROTECTION } from "../../ui/kit.jsx";
+import { Pushed, Row, Banner, protection } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
 import { protectionItems } from "../../core/index.js";
 import { go, back } from "./common.jsx";
@@ -24,7 +24,7 @@ export function Protect() {
       <div class="eyebrow">Safe. Secure. Simple.</div>
       <h2 style={{ marginTop: 6 }}>How HumID protects you</h2>
       <div class="rows" style={{ marginTop: 12 }}>
-        {PROTECTION.map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
+        {protection().map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
       </div>
       {alone && <div style={{ marginTop: 16 }}><Banner tone="danger" icon="alert" role="alert" title="This is your only device" text="You chose Only my own devices, so if this phone is lost, your vault is gone for good. Add another device now." action="Add a device" onAction={() => go("devices", { open: "add" })} /></div>}
 

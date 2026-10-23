@@ -20,7 +20,7 @@ export function Devices() {
   useEffect(() => { loadDevices(); }, []);
   return (
     <Pushed title="Devices" onBack={back} trailing={!off && <button class="btn quiet sm" onClick={() => setAdding(true)}><Icon name="plus" />Add</button>}>
-      <p class="t2 small">Your other phones go here. Each one proves its checks with its own secure chip; remove a lost one and it can never reach your vault again.</p>
+      <p class="t2 small">Your other phones and computers go here. Each one makes its own live checks (on a phone, its secure chip signs them); remove a lost one and it can never reach your vault again.</p>
       <div class="rows" style={{ marginTop: 14 }}>
         {!devices && <Row chevron={false} title="Loading…" />}
         {devices?.length === 0 && <Row chevron={false} title="Nothing here yet" sub="Add a second device so a lost phone isn't an emergency." />}

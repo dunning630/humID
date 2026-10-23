@@ -299,7 +299,7 @@ async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], ext
     mark("seal-refreshed");
     await sleep(650);
     S.sealing.value = null;
-    toast(`${finalName} sealed. Only your face or fingerprint can open it.`);
+    toast(`${finalName} sealed. It opens only after a live check on one of your devices.`);
     return true;
   } catch (e) {
     wipe(bytes, share);

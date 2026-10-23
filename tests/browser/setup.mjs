@@ -160,7 +160,7 @@ try {
   assert.equal(await protect.locator(".row", { hasText: "Recovery card" }).first().evaluate((el) => el.tagName), "DIV", "the recovery card is done: not a button");
   await protect.getByText("Optional: duress gesture").waitFor();
   // the plain-English security facts, first on this screen; the first point is the no-password one
-  assert.match(await protect.locator(".rows").first().innerText(), /^Only a living you opens it/);
+  assert.match(await protect.locator(".rows").first().innerText(), /^A live check, every time/);
   await targets(page, "Protection"); await shot(page, "small-protection");
   await protect.locator(".row", { hasText: "A second device" }).click();
   await page.getByText("Enter the code from your new device").waitFor();

@@ -207,7 +207,7 @@ browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=d
   bundle of their own under it and pose as the inviter. A request is bound to
   the same secret, so someone without the code can't produce one that opens.
 - **Approval takes a live check** on A's side, and a live stamp shows A that a
-  live human made the request. A sees the requester's persona ID, the short
+  live check on a proven phone made the request. A sees the requester's persona ID, the short
   note they chose to write, and the safety code. Nothing else exists to see.
 - **The safety code** (20 characters, 100 bits) commits to both personas' full
   key sets. Comparing it in person, or scanning each other's screens, proves no
@@ -245,7 +245,7 @@ then the whole thing, header included, is sealed again under the direction's wir
 | Confidentiality, now and against quantum computers | Each step needs ML-KEM-1024 **and** X25519 broken. |
 | Forward secrecy | Used keys are erased; a phone seized tomorrow can't read today's messages. `tests/msg.test.js` steals a copy of the state and shows it can't reopen a message it already read. |
 | Healing | After one exchange in each direction, a stolen copy of the state can't read the conversation any more. Tested. It can still recognise the conversation's mailboxes and outer layer, whose keys are fixed at the handshake: a thief keeps the metadata, not the content. (Rotating those keys with the root key is on the list below.) |
-| Deniability | Messages are authenticated by shared keys, not signatures. Your contact knows you sent it; they can't prove it to anyone else. (A stamp proves *a* live human, not you.) |
+| Deniability | Messages are authenticated by shared keys, not signatures. Your contact knows you sent it; they can't prove it to anyone else. (A stamp proves *a* live check on a proven phone, not you.) |
 | Order, loss, replay | Messages open out of order (up to 1,000 skipped); a replay or old message is refused; a tampered message changes nothing. A gap that stays open is reported as a missing message, so a relay that drops traffic is noticed. |
 | Duress | A message sent from a duress unlock carries an encrypted duress flag that only the contact's app sees. Every payload carries the flag at a fixed width and reserves room for a stamp, so duress, stamped and ordinary messages of the same length are the same size on the wire. Tested. |
 | Saved before sent | `persist` runs before a message is handed out; if saving fails, the step is undone. A per-message random salt in each header means even a device restored from an old backup never repeats an AES key and nonce. Tested. |
@@ -399,8 +399,8 @@ doesn't try to recognise the fake. It lets the real you answer, live.
 
 | Piece | What it does | What it proves |
 |---|---|---|
-| **"Is this really you?"** | The person on the call asks your phone, over the conversation they pinned when you connected. You answer yes or no with a live check. On a yes, both phones show the same spoken code; you read it aloud on the call. | The answer came from your device (the ratchet), a live human approved this answer to this question (the stamp), and the voice on the call knows a code that exists only on your phone after that check. |
-| **Stamped media** | A voice note, photo or clip sent in a conversation carries a live stamp over its exact bytes. For media you publish outside HumID, a sidecar credential is signed by your **public persona** (ML-DSA-87 + SLH-DSA) and stamped. | These exact bytes were approved by a live human on a proven phone; with the credential, by the holder of the persona ID you publish. Anything that claims to be you without a stamp is unverified. |
+| **"Is this really you?"** | The person on the call asks your phone, over the conversation they pinned when you connected. You answer yes or no with a live check. On a yes, both phones show the same spoken code; you read it aloud on the call. | The answer came from your device (the ratchet), a live check on a proven phone approved this answer to this question (the stamp), and the voice on the call knows a code that exists only on your phone after that check. |
+| **Stamped media** | A voice note, photo or clip sent in a conversation carries a live stamp over its exact bytes. For media you publish outside HumID, a sidecar credential is signed by your **public persona** (ML-DSA-87 + SLH-DSA) and stamped. | These exact bytes were approved by a live check on a proven phone; with the credential, by the holder of the persona ID you publish. Anything that claims to be you without a stamp is unverified. |
 | **Evidence locker** | Your real voice and photo, sealed on the device under a key from your account seed. Opened only after a live check. Released as a packet with a signed, stamped release statement naming who it went to, why, and until when. | "This is the real me, recorded on this date", for a platform's impersonation team, a lawyer or the police. A copy that travels further carries its own paper trail. |
 
 ### "Is this really you?"

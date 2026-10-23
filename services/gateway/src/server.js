@@ -370,6 +370,14 @@ export function createGateway({
     if (r.status !== 201) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
     return r.data;
   }
+  /**
+   * What a ledger entry says about the live check behind it: the proof, how strongly the device
+   * that made it proves its checks, and which device that was, so Activity on another device
+   * never describes it by its own (APP-09). `withMethod`: the gate method too (opens, deletes).
+   */
+  const proved = (s, stepUp, withMethod = false) => (stepUp
+    ? { proof: stepUp.proof, assurance: stepUp.assurance, by: s.deviceId, ...(withMethod ? { method: stepUp.method } : {}) }
+    : {});
   const recordQuietly = (sub, type, detail) => record(sub, type, detail).catch((e) => log.warn("ledger write failed", { type, err: e.message }));
 
   const claimsFor = (s, extra = {}) => {
@@ -479,7 +487,7 @@ export function createGateway({
           throw new HttpError(503, "keyshare_unavailable", "Your document's key couldn't be stored, so it wasn't saved. Try again.");
         }
       }
-      await recordQuietly(s.subject, "object.sealed", { id: out.id, size: body.length, split: !!share, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      await recordQuietly(s.subject, "object.sealed", { id: out.id, size: body.length, split: !!share, ...proved(s, stepUp, true) });
       return res;
     },
 
@@ -513,7 +521,7 @@ export function createGateway({
         if (pre.status !== 200) await keyshareRefused(pre);
         split = !!pre.data.split;
       }
-      const opened = await record(s.subject, "object.opened", { id, split, proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance });
+      const opened = await record(s.subject, "object.opened", { id, split, ...proved(s, stepUp, true) });
       if (!opened?.receipt) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
       const claims = claimsFor(s, { stepUp, receipt: opened.receipt });
       const res = await internal("vault", "GET", `/objects/${id}`, { claims });
@@ -538,7 +546,7 @@ export function createGateway({
         if (res.status === 403) await denied(s, path, res);
         return res;
       }
-      await record(s.subject, "object.deleted", { id, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
+      await record(s.subject, "object.deleted", { id, ...proved(s, stepUp, true) });
       const ks = await internalJson("keyshare", "DELETE", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
       if (ks.status !== 200 && ks.status !== 404) log.warn("keyshare delete failed; the key is useless without its envelope", { status: ks.status });
       return res;
@@ -601,7 +609,7 @@ export function createGateway({
         const stepUp = { at: Date.now(), proof: proofHash(unb64u(r.sig)), method: s.gateMethod, assurance: s.assurance, live: !!s.livePub };
         const c = await internalJson("recovery", "PUT", "/card", { claims: claimsFor(s, { stepUp }), json: r.card }).catch(() => ({ status: 503 }));
         cardSet = c.status === 200;
-        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { proof: stepUp.proof, at: "setup", scheme: c.data?.scheme });
+        if (cardSet) await recordQuietly(s.subject, "recovery.card_set", { ...proved(s, stepUp), at: "setup", scheme: c.data?.scheme });
       }
       return { status: reg.status, json: sessionView(s, { created: reg.status === 201, cardSet }) };
     },
@@ -752,7 +760,7 @@ export function createGateway({
       const r = await internalJson("identity", "DELETE", `/devices/${id}`, { claims: claimsFor(s, { stepUp }) });
       if (r.status !== 200) fail(r);
       dropWhere((x) => x.subject === s.subject && x.deviceId === id); // its open sessions end now
-      await recordQuietly(s.subject, "device.removed", { device: id, platform: r.data.device?.platform, proof: stepUp.proof });
+      await recordQuietly(s.subject, "device.removed", { device: id, platform: r.data.device?.platform, ...proved(s, stepUp) });
       return { status: 200, json: r.data };
     },
 
@@ -761,14 +769,14 @@ export function createGateway({
       const claims = claimsFor(s, { stepUp });
       const wiped = await internalJson("vault", "DELETE", "/objects", { claims });
       if (wiped.status !== 200) return { status: wiped.status, json: wiped.data };
-      await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, proof: stepUp.proof });
+      await recordQuietly(s.subject, "vault.erased", { count: wiped.data.deleted, ...proved(s, stepUp) });
       await internalJson("keyshare", "DELETE", "/shares", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/card", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/contacts", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/anchor", { claims }).catch(() => {});
       await internalJson("recovery", "DELETE", "/keys", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
-      if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { proof: stepUp.proof });
+      if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { ...proved(s, stepUp) });
       const subject = s.subject;
       s.closeAfterReply = true;
       dropWhere((x) => x !== s && x.subject === subject);
@@ -798,7 +806,7 @@ export function createGateway({
       const probe = await steps[0]();
       if (probe.status !== 200) fail(probe);
       const from = cur.data.recoveryMode || { mode: "hardened", epoch: 1 };
-      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), proof: stepUp.proof });
+      await record(s.subject, "recovery.mode_set", { mode: r.mode, version: r.version, epoch: r.epoch, from: from.mode, ...(r.epoch !== from.epoch ? { newPieces: true } : {}), ...proved(s, stepUp) });
       const done = await steps[1]();
       if (done.status !== 200) fail(done);
       return { status: 200, json: { mode: r.mode, version: r.version, epoch: r.epoch } };
@@ -853,7 +861,7 @@ export function createGateway({
       const d = r.data;
       if (d.first) await recordQuietly(d.account, "recovery.requested", { method: "quorum", ref: d.ref, platform: d.platform, kinds: d.kinds });
       await recordQuietly(d.account, "recovery.station_verified", { ref: d.ref, station: s.subject, country: d.country, kinds: d.kinds, releaseAt: d.releaseAt, chipProof: !!d.chipProof });
-      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, proof: stepUp.proof, chipProof: !!d.chipProof });
+      await recordQuietly(s.subject, "station.verified", { ref: d.ref, country: d.country, ...proved(s, stepUp), chipProof: !!d.chipProof });
       return { status: 200, json: { verified: true, kinds: d.kinds, releaseAt: d.releaseAt, platform: d.platform, country: d.country, chipProof: !!d.chipProof } };
     },
 
@@ -984,7 +992,7 @@ export function createGateway({
         claims: claimsFor(s, { stepUp: withoutBody(stepUp) }), json: { objects: list.data.items.map((i) => i.id), holderBody: stepUp.holder.body },
       }).catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be turned on right now. Try again." } }));
       if (out.status !== 200) return { status: out.status, json: out.data }; // e.g. unsplit_items, with which ones
-      await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, proof: stepUp.proof });
+      await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, ...proved(s, stepUp) });
       return { status: 200, json: out.data };
     },
 
@@ -1026,7 +1034,7 @@ export function createGateway({
       const out = await internalJson("keyshare", "POST", "/internal/checkin/disarm", { claims: claimsFor(s, { stepUp }) })
         .catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be reached right now. Try again." } }));
       if (out.status !== 200) fail(out);
-      await recordQuietly(s.subject, "checkin.disarmed", { proof: stepUp.proof });
+      await recordQuietly(s.subject, "checkin.disarmed", { ...proved(s, stepUp) });
       return { status: 200, json: out.data };
     },
 
@@ -1042,7 +1050,7 @@ export function createGateway({
       if (s.duress) throw busy();
       const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`, { claims: claimsFor(s, { stepUp }) });
       if (r.status !== 200) fail(r);
-      if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, proof: stepUp.proof });
+      if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, ...proved(s, stepUp) });
       return { status: 200, json: r.data };
     },
 
@@ -1073,7 +1081,7 @@ export function createGateway({
       const r = await adminLookup(s, code);
       const b = parseJson(body) || {};
       if (typeof b.digest !== "string" || b.digest !== r.digest) throw new HttpError(409, "admin_request_changed", "This request changed on the server. Look it up again.");
-      await record(s.subject, "admin.approved", { kind: r.kind, title: String(r.title || "").slice(0, 80), digest: r.digest.slice(0, 16), device: s.deviceId, proof: stepUp.proof });
+      await record(s.subject, "admin.approved", { kind: r.kind, title: String(r.title || "").slice(0, 80), digest: r.digest.slice(0, 16), device: s.deviceId, ...proved(s, stepUp) });
       const raw = stepUp.raw;
       await adminCall(() => admin.approved(code, {
         code, account: s.subject, device: s.deviceId, platform: s.platform, proofLevel: s.proof, assurance: s.assurance,
@@ -1093,7 +1101,7 @@ export function createGateway({
       const d = r.data;
       if (d.first) await recordQuietly(d.owner, "recovery.requested", { method: d.method, ref: d.ref, platform: d.platform });
       await recordQuietly(d.owner, "recovery.approved", { ref: d.ref, contact: s.subject, approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt, kinds: d.kinds });
-      await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, proof: stepUp.proof });
+      await recordQuietly(s.subject, "recovery.helped", { owner: d.owner, ref: d.ref, ...proved(s, stepUp) });
       return { status: 200, json: { approvals: d.approvals, threshold: d.threshold, releaseAt: d.releaseAt } };
     },
   };
@@ -1188,8 +1196,8 @@ export function createGateway({
       if (res.status >= 200 && res.status < 300) {
         const out = safeJson(res.body);
         const detail = route.detail
-          ? route.detail(out, stepUp)
-          : { id: objectId || out?.id, size: route.event === "object.sealed" ? body.length : undefined, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) };
+          ? { ...route.detail(out, stepUp), ...proved(s, stepUp) }
+          : { id: objectId || out?.id, size: route.event === "object.sealed" ? body.length : undefined, ...proved(s, stepUp, true) };
         if (route.audited) await record(s.subject, route.event, detail); // fail closed: no record, no release
         else await recordQuietly(s.subject, route.event, detail);
       } else if (res.status === 403) {
