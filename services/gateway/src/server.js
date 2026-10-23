@@ -233,6 +233,8 @@ export function createGateway({
    * Default: HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY files, if set.
    */
   internalTls = tlsFromEnv(),
+  /** Signed-in sessions one account may hold at once (CRYPTO-04): its own oldest makes room. */
+  sessionsPerAccount = Number(env("HUMID_SESSIONS_PER_ACCOUNT", "16")),
 } = {}) {
   const log = logger("gateway");
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
@@ -246,7 +248,7 @@ export function createGateway({
   // Sealed under the server's seal key when it has one; a plain file from before 3.0 is sealed in place (same keys, same kid).
   const keyFile = `${dataDir}/htp-keys.json`;
   const statics = importStatics(JSON.parse(secretFile(keyFile, { seal, name: "gateway/htp-keys", make: () => JSON.stringify(exportStatics(createStatics())), log }).toString("utf8")));
-  const htp = new HtpServer(statics);
+  const htp = new HtpServer(statics, { perSubject: sessionsPerAccount });
   log.info("server identity", { kid: htp.kid, fingerprint: htp.fingerprint, devicePolicy, registration });
   setInterval(() => htp.sweep(), 60_000).unref();
 
@@ -329,6 +331,7 @@ export function createGateway({
   /** Bind a session to an account and the device that proved itself. */
   function bindSession(s, view, interrupt) {
     s.subject = view.id;
+    htp.signedIn(s); // at most sessionsPerAccount signed-in sessions per account: its own oldest makes room
     s.deviceId = view.device.id;
     s.dsaPk = unb64u(view.deviceDsaPk); // device key: verifies step-up proofs
     s.dsaFp = view.dsaFp;               // account key: signs envelopes

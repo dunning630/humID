@@ -383,3 +383,25 @@ test("CRYPTO-07 round 2: an older signed policy, replayed within its 7 days, nev
   assert.equal((await n.serverKeys()).policy.passBuyUrl, "https://humidsecure.com/new");
   assert.equal(n.policySeen.at, next.policySig.at);
 });
+
+test("CRYPTO-04 round 2: one account can't fill the table with signed-in sessions; its own oldest makes room", () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics, { maxSessions: 40, perSubject: 4 });
+  const signIn = (subject, t) => {
+    const w = srv.hello(clientHello(serverOf(statics)).wire, t, { group: `v4:198.51.100.${t % 200}` });
+    const s = srv.sessions.get(w.sid);
+    s.subject = subject; s.touchedAt = t;
+    srv.signedIn(s);
+    return w.sid;
+  };
+  const t = Date.now();
+  const holder = signIn("hid_holder", t);
+  const mallory = Array.from({ length: 60 }, (_, i) => signIn("hid_mallory", t + 1 + i));
+  const of = (who) => [...srv.sessions.values()].filter((s) => s.subject === who);
+  assert.equal(of("hid_mallory").length, 4, "one account holds at most its cap");
+  assert.deepEqual(of("hid_mallory").map((s) => s.sidText).sort(), mallory.slice(-4).sort(), "the newest four: its own oldest were dropped");
+  assert.ok(srv.sessions.has(holder), "another account's session is untouched");
+  // the holder signing in again always gets in, even at the cap
+  for (let i = 0; i < 6; i++) signIn("hid_holder", t + 100 + i);
+  assert.equal(of("hid_holder").length, 4);
+});
