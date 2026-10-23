@@ -40,7 +40,7 @@ export async function loadRecovery() {
     S.recovery.value = S.decoy.value
       ? (copy ? calmRecovery({ anchorAvailable: copy.anchor?.available, keysAvailable: copy.keys?.available, keysMax: copy.keys?.max }) : null)
       : copy;
-    S.recoveryMode.value = R.offline?.recoveryMode || S.recoveryMode.value;
+    S.recoveryMode.value = (S.decoy.value ? null : R.offline?.recoveryMode) || S.recoveryMode.value;
     return;
   }
   const [card, contacts, anchor, settings, keyList] = await Promise.all([

@@ -461,10 +461,7 @@ async function keepChipKey(chipKey, r) {
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     next = packQuorum({ ...quorumSlots(both, p), chip: chipKey });
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasChip: true, layout: QUORUM_LAYOUT, account: r.account } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: 4 };
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasChip: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
     await endInterrupt(true, "Your ID chip's key is locked to this device.", 500);
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1800);
