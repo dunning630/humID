@@ -104,7 +104,7 @@ try {
   const practice = page.getByRole("button", { name: /The HumID mark \(tap it three times\)/ });
   for (let i = 0; i < 3; i++) { if (i) await page.waitForTimeout(500); await practice.click(); }
   await page.locator('[data-practice="decoy"]').waitFor({ timeout: 5000 });
-  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*0\.5 s, 0\.5 s apart/);
+  assert.match(await page.locator('[data-practice="decoy"]').innerText(), /decoy view.*Your taps were 0\.5\d? s, 0\.5\d? s apart/);
   await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
   await toast(page, /Duress protection is on/);
   await tab(page, "Vault");
@@ -208,6 +208,31 @@ try {
   await youScreen(page, "Duress gesture");
   await page.locator(".pushed .checklist label", { hasText: "Library card" }).waitFor();
   assert.equal(await page.getByText("Nothing in your vault yet").count(), 0, "the decoy documents are listed like any account's");
+  // verify-71 #2: like an account that never set duress up: off, nothing picked (not "off,
+  // yet every document is a decoy")
+  const duressSwitch = page.getByRole("switch", { name: "Duress gesture" });
+  assert.equal(await duressSwitch.getAttribute("aria-checked"), "false");
+  assert.equal(await page.locator(".pushed .checklist input:checked").count(), 0, "no document shows as a chosen decoy");
+  assert.equal((await page.locator(".pushed .card .pill").first().innerText()).trim(), "None");
+  // and what the coercer saves there is echoed back until the lock, as on any account
+  await duressSwitch.click();
+  await page.locator(".pushed .checklist label", { hasText: "Library card" }).click();
+  await page.locator(".pushed").getByRole("button", { name: "Save", exact: true }).click();
+  await hold(page); // the same check a real account's decoy change takes
+  await toast(page, /Duress protection is on/);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  assert.match(await page.locator("main .row", { hasText: "Duress gesture" }).innerText(), /On/);
+  await page.locator("main .row", { hasText: "Duress gesture" }).click();
+  assert.equal(await page.getByRole("switch", { name: "Duress gesture" }).getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator(".pushed .checklist input:checked").count(), 1);
+  await backOut(page);
+  await page.locator(".pushed").waitFor({ state: "detached" });
+  // verify-71 #3: Protection has the same shape as a real account's: a count on the hub, a checklist inside
+  const protectRow = page.locator("main .row", { hasText: "Protection" }).first();
+  await protectRow.getByText(/\d of 3 done/).waitFor({ timeout: 10_000 });
+  await protectRow.click();
+  await page.locator(".pushed").getByRole("heading", { name: "Finish protecting your HumID" }).waitFor();
+  assert.equal(await page.locator(".pushed [role=progressbar][aria-label=Protection]").count(), 1);
   await backOut(page);
   await page.locator(".pushed").waitFor({ state: "detached" });
   await youScreen(page, "Recovery");

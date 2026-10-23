@@ -11,6 +11,7 @@ import { parseAccessCode } from "@humid/pass";
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, wipe, concat, utf8 } from "./runtime.js";
+import { createIdentity } from "./identity.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { showInterrupt, endInterrupt, waitForHold, holdMessage, sessionKeys } from "./interrupt.js";
 import { connectServer, serverPinned, chooseGate, gateClaim, serverRecord, wallet, markPicking } from "./session.js";
@@ -164,10 +165,9 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
       modePin: { mode: recoveryMode, version: 1, epoch: 1, prev: mode.prev },
       server: serverRecord(srv, { id: sess.id, registeredAt: new Date().toISOString() }),
     };
-    await R.store.putIdentity(record);
+    await createIdentity(record);
     sessionKeys(Suite, seed);
     batch(() => {
-      S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.items.value = [];
       S.cardCode.value = sess.cardSet && card ? card.code : null;
