@@ -5,7 +5,7 @@
 // stamp that proves a live human sent them without saying which one.
 // See docs/MESSAGING.md.
 
-export { VERSION, MsgError } from "./util.js";
+export { VERSION, MsgError, toPlain, fromPlain } from "./util.js";
 export { backend, useBackend, checkBackend, resetBackend, SIZES, isValidKemPk } from "./backend.js";
 export {
   newPersona, personaFromSalt, personaId, personaFingerprint, safetyCode, publicOf, wipePersona,
@@ -13,13 +13,15 @@ export {
 } from "./persona.js";
 export {
   createInvite, openInvite, requestContact, readRequest, acceptRequest, declineRequest, closeInvite, cancelInvite,
-  formatInviteCode, parseInviteCode, inviteBoxOf, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
+  formatInviteCode, parseInviteCode, inviteBoxOf, inviteQrPayload, parseInviteQr, DEFAULT_INVITE_TTL, MAX_INVITE_TTL, INVITE_SECRET_BYTES, INVITE_PIN_BYTES,
 } from "./invite.js";
 export {
-  Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS,
+  Session, openSession, conversationKeys, MAX_SKIP, KINDS, SKIPPED_TTL_MS, STAMP_MAX_AGE_MS, MAX_STAMPS_SEEN,
   MIN_TTL_MS, MAX_TTL_MS, MAX_DELETE, deleteBody, parseDelete, isTtl,
 } from "./session.js";
 export { MessageStore, TOMBSTONE_TTL_MS, MAX_TOMBSTONES } from "./history.js";
+// The human-to-human rule: nobody interacts without a live check (live.js).
+export { liveState, peerLiveAt, canRead, LIVE_WINDOW_MS, MIN_LIVE_WINDOW_MS, MAX_LIVE_WINDOW_MS, LIVE_SKEW_MS } from "./live.js";
 export { Conversation } from "./conversation.js";
 export {
   importStampKeys, blindStamp, finalizeStamp, verifyStamp, makeStamper, messageCommitment, requestCommitment,

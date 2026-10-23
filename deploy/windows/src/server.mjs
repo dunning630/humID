@@ -46,6 +46,7 @@ import { createRecovery } from "../../../services/recovery/src/server.js";
 import { createGateway } from "../../../services/gateway/src/server.js";
 import { createAccess } from "../../../services/access/src/server.js";
 import { createKeyshare } from "../../../services/keyshare/src/server.js";
+import { createRelay } from "../../../services/relay/src/server.js";
 import { readEnvFile, updateEnvFile, initialEnvText, validate, DEFAULTS } from "./config.mjs";
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
@@ -137,7 +138,9 @@ function show() {
 /* ---------------- roles ---------------- */
 
 /** Each service, the role it belongs to, and its fixed internal port offset when another machine calls it. */
-const SERVICES = [["identity", "core", 1], ["vault", "core", 2], ["ledger", "core", 3], ["recovery", "core", 4], ["access", "core", 5], ["keyshare", "keys", 6]];
+const SERVICES = [["identity", "core", 1], ["vault", "core", 2], ["ledger", "core", 3], ["recovery", "core", 4], ["access", "core", 5], ["keyshare", "keys", 6], ["relay", "core", 7]];
+/** Services that run only when a setting turns them on: the messaging relay (HUMID_MESSAGING=on). */
+const OPTIONAL = new Set(["relay"]);
 
 export function parseRoles(text = "front,core,keys") {
   const roles = [...new Set(String(text).split(",").map((r) => r.trim().toLowerCase()).filter(Boolean))];
@@ -216,6 +219,8 @@ async function run({ service }) {
     // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
     svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
     svcs.access = createAccess({ ...opts("access", "core", 5), seal });
+    // Person to person (4.1 preview): mailboxes of fixed-size ciphertext, no accounts, no addresses.
+    if (S("HUMID_MESSAGING", "off") === "on") svcs.relay = createRelay(opts("relay", "core", 7));
   }
   // Split keys. On one PC the keyshare data sits beside the vault's, sealed under the same
   // machine key; on VMs the keys role runs on its own machine and storage (docs/DEPLOY-VMS.md).
@@ -230,7 +235,9 @@ async function run({ service }) {
   if (here3("front")) {
     const where = { core: S("HUMID_CORE_HOST", ""), keys: S("HUMID_KEYS_HOST", "") };
     const upstreams = {};
+    const messaging = S("HUMID_MESSAGING", "off") === "on";
     for (const [name, role, offset] of SERVICES) {
+      if (OPTIONAL.has(name) && !messaging) continue; // off: no relay upstream, so the gateway offers no messaging
       if (svcs[name]) upstreams[name] = local(svcs[name]);
       else if (where[role]) upstreams[name] = `https://${where[role].includes(":") && !where[role].startsWith("[") ? `[${where[role]}]` : where[role]}:${base + offset}`;
       else fail(`HUMID_ROLES=${roles.join(",")} leaves out ${role}, so set HUMID_${role.toUpperCase()}_HOST to the machine that runs it.`);
@@ -269,6 +276,7 @@ async function run({ service }) {
     fingerprint: gateway?.htp.fingerprint ?? null,
     devicePolicy: S("HUMID_DEVICE_POLICY", "attested"),
     registration: S("HUMID_REGISTRATION", "pass"),
+    messaging: S("HUMID_MESSAGING", "off") === "on",
     iphones: Boolean(S("HUMID_IOS_APP_ID", "")),
     internal: remote ? Object.fromEntries(Object.entries(svcs).map(([n, x]) => [n, `${internalBind}:${x.server.address().port}`])) : undefined,
     startedAt: new Date().toISOString(),

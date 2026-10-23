@@ -1,0 +1,75 @@
+/* HumID 4.0 person to person: the Messages tab and a conversation. Loaded with its chunk. */
+
+/* the live state: a dot and a few words, never a colour alone */
+.live-state { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
+.live-state .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.live-state[data-live="true"] { color: var(--mint); }
+.live-state[data-live="true"] .dot { background: var(--mint); box-shadow: 0 0 0 4px var(--mint-wash); }
+.live-state[data-needs="own"], .live-state[data-needs="both"] { color: var(--amber); }
+.live-state[data-needs="own"] .dot, .live-state[data-needs="both"] .dot { background: var(--amber); }
+
+/* the thread */
+.thread { display: flex; flex-direction: column; gap: 6px; padding: var(--s-3) 0 var(--s-4); }
+.day-sep { align-self: center; font-size: var(--t-xs); color: var(--muted); padding: var(--s-2) 0; }
+.bubble { max-width: 82%; padding: 9px 13px; border-radius: 18px; font-size: var(--t-md); line-height: 1.38; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble.in { align-self: flex-start; background: var(--surface-2, var(--surface)); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
+.bubble.out { align-self: flex-end; background: var(--mint-wash); border: 1px solid var(--mint-deep); border-bottom-right-radius: 6px; }
+.bubble .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: var(--t-xs); color: var(--muted); }
+.bubble.out .meta { justify-content: flex-end; }
+.bubble .meta .ico { width: 13px; height: 13px; }
+.bubble .meta .lv { color: var(--mint); display: inline-flex; align-items: center; gap: 3px; }
+.bubble.duress { border-color: var(--danger); }
+.notice { align-self: center; max-width: 90%; text-align: center; font-size: var(--t-xs); color: var(--text-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 5px 12px; }
+
+/* the composer is pinned to the bottom, like every messaging app; the thread scrolls above it */
+.composer { position: fixed; z-index: 45; left: 50%; transform: translateX(-50%); bottom: 0; width: min(100%, var(--col)); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: var(--s-3) var(--s-4) calc(var(--safe-b) + var(--s-3)); background: var(--ground); border-top: 1px solid var(--line); }
+.pushed.chat .thread { padding-bottom: 150px; }
+.composer textarea { width: 100%; min-height: var(--tap); max-height: 140px; resize: none; padding: 11px 14px; border-radius: 22px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-md); line-height: 1.35; }
+.composer textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+.composer .send { min-width: var(--tap); height: var(--tap); padding: 0 14px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 6px; font-weight: 700; background: var(--amber-hi, var(--amber)); color: var(--amber-ink); }
+.composer .send:disabled { background: var(--surface-3); color: var(--muted); }
+.composer .send .ico { width: 22px; height: 22px; }
+.composer .hint { grid-column: 1 / -1; font-size: var(--t-xs); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.composer .hint.soon { color: var(--amber); }
+.composer .hint .ico { width: 14px; height: 14px; flex: none; }
+
+/* you, live: one personal pill with its countdown; amber in the last 30 seconds */
+.you-live { display: inline-flex; align-items: center; gap: 8px; min-height: var(--tap); padding: 0 14px; border-radius: var(--r-pill); background: var(--mint-wash); color: var(--mint); font-size: var(--t-sm); font-weight: 600; }
+.you-live .dot, .waiting-line .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
+.you-live .ico { width: 16px; height: 16px; opacity: 0.8; }
+.you-live[data-soon="true"] { background: var(--amber-wash); color: var(--amber); }
+
+/* presence in a conversation: You ● Sam ●, and what it adds up to */
+.presence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: 100%; min-height: var(--tap); padding: 6px 12px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); text-align: left; }
+.presence[data-live="true"] { border-color: var(--mint-deep); background: var(--mint-wash); }
+.presence .pip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); font-weight: 600; color: var(--muted); }
+.presence .pip .dot { width: 9px; height: 9px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; }
+.presence .pip[data-on="true"] { color: var(--mint); }
+.presence .pip[data-on="true"] .dot { background: currentColor; }
+.presence .what { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--text-2); }
+.presence .what .ico { width: 15px; height: 15px; }
+.presence[data-live="true"] .what { color: var(--mint); font-weight: 600; }
+
+/* waiting on the other phone */
+.waiting-line { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; font-size: var(--t-sm); color: var(--text-2); }
+.waiting-line .dot { color: var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .waiting-line .dot { animation: none; } }
+
+/* a sealed thread keeps its shape: placeholders where messages are, never their content */
+.sealed-thread .ghost { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 18px; background: var(--surface-2, var(--surface)); border: 1px solid var(--line); color: var(--muted); font-size: var(--t-sm); }
+.sealed-thread .ghost .ico { width: 14px; height: 14px; }
+.sealed-thread .ghost.in { align-self: flex-start; }
+.sealed-thread .ghost.out { align-self: flex-end; background: var(--mint-wash); }
+
+/* a locked thread: content stays sealed until a fresh check */
+.sealed { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-8) var(--s-4); }
+.sealed > .ico { width: 40px; height: 40px; color: var(--amber); }
+
+/* the safety code: five groups of four, big enough to compare across a table */
+.safety { font-family: var(--f-mono); font-size: var(--t-xl); letter-spacing: 0.08em; display: flex; flex-wrap: wrap; gap: 10px 14px; justify-content: center; padding: var(--s-4); border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line); }
+.persona { font-family: var(--f-mono); font-size: var(--t-sm); color: var(--text-2); letter-spacing: 0.02em; }
+
+/* invite code: long, so it wraps in groups */
+.invite-code { font-family: var(--f-mono); font-size: var(--t-md); letter-spacing: 0.06em; display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: center; padding: var(--s-3); border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); }
+.unread { min-width: 22px; height: 22px; padding: 0 7px; border-radius: var(--r-pill); background: var(--amber-hi, var(--amber)); color: var(--amber-ink); font-size: var(--t-xs); font-weight: 700; line-height: 22px; text-align: center; }

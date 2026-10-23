@@ -61,9 +61,14 @@ export function importStampKeys(list, { passKeys = [] } = {}) {
 
 const today = (now) => new Date(now).toISOString().slice(0, 10);
 
-/** What a message's stamp commits to. Recomputed by the recipient from what it decrypted. */
-export function messageCommitment({ convId, senderFp, nonce, kind, body }) {
-  return H(label("stamp message"), lp(convId, senderFp, nonce, utf8(kind), body));
+/**
+ * What a message's stamp commits to. Recomputed by the recipient from what it decrypted.
+ * Besides the conversation, sender, message id, kind and body, it covers WHEN (at), its
+ * disappearing time (x) and, for a timer change, the change's time (ta): a stamp can't be
+ * moved onto a later copy of the same message to look live again (security review H1).
+ */
+export function messageCommitment({ convId, senderFp, nonce, kind, body, at = 0, x = 0, ta = 0 }) {
+  return H(label("stamp message"), lp(convId, senderFp, nonce, utf8(kind), body, utf8(`${at}|${x}|${ta}`)));
 }
 
 /** What a contact request's stamp commits to: this handshake and this requester. */

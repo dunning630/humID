@@ -44,6 +44,7 @@ const STEP_UP = {
   armCheckin: () => ["POST", "/checkin/arm"],
   checkIn: () => ["POST", "/checkin/check"],
   disarmCheckin: () => ["POST", "/checkin/disarm"],
+  stamp: () => ["POST", "/msg/stamp"],
 };
 
 /** Chip data for the wire: { dg1, sod, dg15? } bytes → base64url. */
@@ -487,9 +488,61 @@ export class HumidApi {
   /** A contact releases their share, re-sealed to the requesting device. */
   help(code, { owner, envelope }, stepUp) { return this.#json("POST", `/recovery/help/${codeOf(code)}`, { body: { owner, envelope: b64u(envelope) }, stepUp }); }
 
+  /* ---------------- person to person (4.0, docs/MESSAGING.md) ---------------- */
+
+  /** The server's stamp keys, and its pass key ids (the app refuses a stamp key that is also a pass key). */
+  msgKeys() { return this.#json("GET", "/msg/keys"); }
+  /** Network-wide daily totals of live-approved messages. */
+  msgStats() { return this.#json("GET", "/msg/stats").then((r) => r.days); }
+  /**
+   * Blind-signed stamps for the blinded values ONE live check approved (1 to 4).
+   * stepUp: from api.ticket("stamp") signed during the check. Returns blind signatures, in order.
+   */
+  async stamp({ kid, blinded }, stepUp) {
+    const r = await this.#json("POST", "/msg/stamp", { body: { kid, blinded: blinded.map((b) => b64u(b)) }, stepUp });
+    if (!Array.isArray(r.blindSigs) || r.blindSigs.length !== blinded.length) throw new ApiError(502, "stamp_failed", "The server's stamps didn't come back whole.");
+    return r.blindSigs.map((x) => unb64u(x));
+  }
+
+  /**
+   * The relay, reached ONLY from a session of its own that never signs in, so the server never
+   * links this account to a mailbox. One per app; close() when locking.
+   */
+  relay() { return new RelayClient(this.htp); }
+
   /** Recoveries in progress for this account (shown on every signed-in device). */
   alerts() { return this.#json("GET", "/recovery/alerts").then((r) => r.alerts); }
   cancelAlert(ref, stepUp) { return this.#json("POST", `/recovery/alerts/${ref}/cancel`, { stepUp }); }
+}
+
+/**
+ * The messaging relay over an anonymous HTP/1 session (it never signs in). The relay sees
+ * mailbox ids and fixed-size ciphertext; the gateway refuses relay calls from a signed-in session.
+ */
+export class RelayClient {
+  constructor(htp) {
+    this.htp = new HtpClient({ baseUrl: htp.base, pinnedKid: htp.pinnedKid, fetch: htp.fetch, timeoutMs: htp.timeoutMs });
+  }
+  async #call(method, path, opts) {
+    const res = await this.htp.call(method, path, opts);
+    const j = res.json() || {};
+    if (!res.ok) throw new ApiError(res.status, j.error || "error", j.message || `Request failed (${res.status})`);
+    return j;
+  }
+  /** Deposit one wire object. tag: its unsend tag (hex), or null. */
+  put(box, wire, tag = null) {
+    return this.#call("POST", "/msg/relay/put", { body: wire, headers: { "content-type": "application/octet-stream", "x-humid-box": box, ...(tag ? { "x-humid-tag": tag } : {}) } });
+  }
+  /** Empty up to 64 mailboxes (keep: read without removing). Returns { got: { box: [bytes] }, more }. */
+  async take(boxes, { keep = false } = {}) {
+    const r = await this.#call("POST", "/msg/relay/take", { body: { boxes, keep } });
+    const got = {};
+    for (const [b, list] of Object.entries(r.got || {})) got[b] = list.map((x) => unb64u(x));
+    return { got, more: !!r.more };
+  }
+  /** Unsend: true if the object was still there and is now gone. */
+  async retract(box, token) { return !!(await this.#call("POST", "/msg/relay/retract", { body: { box, token: b64u(token) } })).removed; }
+  close() { this.htp.close?.(); }
 }
 
 function deviceBody(device, sigs) {

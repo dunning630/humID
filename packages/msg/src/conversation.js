@@ -21,6 +21,8 @@
 import { MsgError, utf8, random, concat, u32, readU32, label, encodeJSON, decodeJSON, aeadSeal, aeadOpen, equal, guard, toPlain, fromPlain } from "./util.js";
 import { MessageStore } from "./history.js";
 import { Session, deleteBody, MAX_DELETE } from "./session.js";
+import { messageCommitment } from "./stamp.js";
+import { peerLiveAt } from "./live.js";
 
 const SHOWN = new Set(["text", "file-key", "media"]); // kept and shown; every other kind is protocol
 
@@ -32,17 +34,45 @@ export class Conversation {
    *   before anything is handed back to post. Store the blob, and put the key in the phone's secure
    *   storage in place of the previous one. If it throws, the operation fails with persist_failed
    *   and nothing is handed back.
+   * @param opts.requireLive the human-to-human rule (live.js): every message out must carry a live
+   *   stamp (a stamper is required), and anything in without a valid one is discarded unread.
+   * @param opts.live  { peerAt } restored from a save (Conversation.open does this)
    */
-  constructor(session, store = null, { persist = null } = {}) {
+  constructor(session, store = null, { persist = null, requireLive = false, live = null } = {}) {
     this.session = session;
     this.store = store ?? new MessageStore(session.convId);
     this.persist = persist;
+    this.requireLive = !!requireLive;
     this.dead = session.status === "erased";
     this.queue = Promise.resolve();
+    // When the contact was last proven live (live.js peerLiveAt): sealed with the conversation.
+    this.live = { peerAt: Number.isFinite(live?.peerAt) ? live.peerAt : null };
   }
 
   get status() { return this.session.status; }
   get timer() { return this.session.timer; }
+  /** When the contact was last proven live on this phone, or null. Feed it to liveState(). */
+  get peerLiveAt() { return this.live.peerAt; }
+
+  /**
+   * Stamp several messages with ONE live check, when the stamper offers it
+   * (stamper.many(commitments) → stamps, in order; servers sign at most 2 per check): one action the holder approves once,
+   * such as deleting a whole conversation for both, is one check, not one per message.
+   * Returns [{ kind, body, nonce, stamper }] to encrypt in order.
+   */
+  async #plan(items, stamper, now) {
+    const nonces = items.map(() => random(16));
+    if (!stamper) return items.map((it, i) => ({ ...it, nonce: nonces[i], stamper: null }));
+    if (typeof stamper.many !== "function") return items.map((it, i) => ({ ...it, nonce: nonces[i], stamper }));
+    const me = this.session.s.me.fp, convId = this.session.convId;
+    // what Session.encrypt will commit to for these (protocol messages: no disappearing time, no timer change)
+    const commits = items.map((it, i) => messageCommitment({ convId, senderFp: me, nonce: nonces[i], kind: it.kind, body: typeof it.body === "string" ? utf8(it.body) : it.body, at: now, x: 0, ta: 0 }));
+    const stamps = await stamper.many(commits);
+    if (!Array.isArray(stamps) || stamps.length !== items.length || (this.requireLive && stamps.some((x) => !x))) {
+      throw new MsgError("stamp_required", "The live check didn't complete, so nothing was sent");
+    }
+    return items.map((it, i) => ({ ...it, nonce: nonces[i], stamper: async (c) => (equal(c, commits[i]) ? stamps[i] : null) }));
+  }
 
   #serial(fn) {
     const run = this.queue.then(() => {
@@ -76,7 +106,7 @@ export class Conversation {
 
   #sendShown(kind, content, stored, { now = Date.now(), stamper = null, duress = false, ttlMs } = {}) {
     return this.#serial(async () => {
-      const r = await this.session.encrypt(kind, content, { now, stamper, duress, ttlMs });
+      const r = await this.session.encrypt(kind, content, { now, stamper, duress, ttlMs, requireLive: this.requireLive });
       this.store.add({
         id: r.id, dir: "out", kind, body: stored, at: now, expiresAt: r.ttlMs ? now + r.ttlMs : null,
         stamped: !!stamper, duress, pos: r.pos, box: r.box, retract: r.retract,
@@ -92,10 +122,14 @@ export class Conversation {
    *     how many it named that were yours (refused: a contact can't delete what you sent)
    * Disappearing messages count down from when they arrive (the shorter of the sender's timer and yours).
    */
-  receive(wire, { now = Date.now(), stampKeys = null } = {}) {
+  receive(wire, { now = Date.now(), stampKeys = null, receivedAt = now } = {}) {
     return this.#serial(async () => {
-      const m = await this.session.decrypt(wire, { now, stampKeys });
+      // receivedAt: when the wire came off the relay (the app may read it later)
+      const m = await this.session.decrypt(wire, { now, stampKeys, requireLive: this.requireLive, receivedAt });
       let out = m;
+      if (m.refused) return this.#saved(m, now); // not approved live: nothing kept, nothing applied
+      const pAt = peerLiveAt({ live: m.live, sentAt: m.at, receivedAt });
+      if (pAt !== null && !(this.live.peerAt >= pAt)) this.live.peerAt = pAt;
       if (SHOWN.has(m.kind)) {
         const added = this.store.add({
           id: m.id, dir: "in", kind: m.kind, body: m.body, at: m.at, expiresAt: m.ttlMs ? now + m.ttlMs : null,
@@ -123,7 +157,7 @@ export class Conversation {
    * If the conversation has ended, delete for both fails and nothing is deleted, so you can
    * choose to delete it for yourself instead (or unsend it: see forget).
    */
-  delete(id, { forBoth = false, now = Date.now() } = {}) {
+  delete(id, { forBoth = false, now = Date.now(), stamper = null } = {}) {
     return this.#serial(async () => {
       if (!forBoth) return this.#saved({ deleted: !!this.store.delete(id, now) }, now);
       const entry = this.store.outgoing(now).find((m) => m.id === id);
@@ -131,15 +165,34 @@ export class Conversation {
         if (this.store.get(id, now)) throw new MsgError("not_yours", "Only messages you sent can be deleted for both of you");
         throw new MsgError("not_found", "That message isn't here");
       }
-      const c = await this.session.encrypt("delete", deleteBody([entry]), { now, ttlMs: 0 });
+      const c = await this.session.encrypt("delete", deleteBody([entry]), { now, ttlMs: 0, stamper, requireLive: this.requireLive });
       const gone = this.store.delete(id, now);
       return this.#saved({ deleted: true, unsend: unsendOf(gone), send: post(c) }, now);
     });
   }
 
+  /**
+   * The approver's first message: "accept". Under the human-to-human rule it carries the
+   * approver's live stamp, so the requester knows a live human accepted. Returns what to post.
+   */
+  accept({ now = Date.now(), stamper = null } = {}) {
+    return this.#serial(async () => this.#saved(post(await this.session.encrypt("accept", "", { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
+  }
+
+  /**
+   * "I'm here": a stamped receipt with no content, sent when the holder opens the conversation
+   * with a live check. It makes the human-to-human state mutual for READING too: without it,
+   * someone who only reads is live on their own phone but invisible to the contact until they
+   * send something. The contact's phone counts it like any live message (peerLiveAt) and shows
+   * nothing else. Returns what to post.
+   */
+  here({ now = Date.now(), stamper = null } = {}) {
+    return this.#serial(async () => this.#saved(post(await this.session.encrypt("receipt", '{"here":1}', { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
+  }
+
   /** Turn disappearing messages on (ms) or off (0) for both of you. Returns what to post. */
-  setTimer(ms, { now = Date.now() } = {}) {
-    return this.#serial(async () => this.#saved(post(await this.session.encrypt("timer", String(ms), { now, ttlMs: 0 })), now));
+  setTimer(ms, { now = Date.now(), stamper = null } = {}) {
+    return this.#serial(async () => this.#saved(post(await this.session.encrypt("timer", String(ms), { now, ttlMs: 0, stamper, requireLive: this.requireLive })), now));
   }
 
   /**
@@ -152,8 +205,12 @@ export class Conversation {
    * deletes the stored conversation and its key, and the persona's salt from the contact list,
    * which forgets this persona for good.
    */
-  forget({ forBoth = false, notify = forBoth, now = Date.now() } = {}) {
+  forget({ forBoth = false, notify = forBoth, now = Date.now(), stamper = null } = {}) {
     return this.#serial(async () => {
+      const sends = this.session.status === "connected" && (forBoth || notify);
+      // Under the human-to-human rule, telling the contact anything needs a live check; check that
+      // first, so a missing stamper refuses before anything is erased.
+      if (sends && this.requireLive && typeof stamper !== "function") throw new MsgError("stamp_required", "Deleting for both of you needs a live check");
       this.dead = true; // anything queued after this is refused
       const send = [], unsend = [];
       try {
@@ -161,10 +218,14 @@ export class Conversation {
         for (const m of mine) { const u = unsendOf(m); if (u) unsend.push(u); }
         if (this.session.status === "connected") {
           const recallable = mine.filter((m) => m.pos);
-          for (let i = 0; i < recallable.length; i += MAX_DELETE) {
-            send.push(post(await this.session.encrypt("delete", deleteBody(recallable.slice(i, i + MAX_DELETE)), { now, ttlMs: 0 })));
+          const items = [];
+          for (let i = 0; i < recallable.length; i += MAX_DELETE) items.push({ kind: "delete", body: deleteBody(recallable.slice(i, i + MAX_DELETE)) });
+          if (notify) items.push({ kind: "close", body: "" });
+          if (items.length) {
+            for (const it of await this.#plan(items, stamper, now)) {
+              send.push(post(await this.session.encrypt(it.kind, it.body, { now, ttlMs: 0, nonce: it.nonce, stamper: it.stamper, requireLive: this.requireLive })));
+            }
           }
-          if (notify) send.push(post(await this.session.encrypt("close", "", { now, ttlMs: 0 })));
         }
       } finally {
         this.store.deleteAll();
@@ -172,6 +233,17 @@ export class Conversation {
       }
       return { send, unsend };
     });
+  }
+
+  /**
+   * Lock: forget everything this object holds in memory (message bodies and every ratchet
+   * key), leaving the saved copy as it is. Anything queued finishes first; nothing runs after.
+   */
+  unload() {
+    const run = this.queue.then(async () => { this.store.deleteAll(); await this.session.unload(); });
+    this.dead = true;
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   /**
@@ -188,12 +260,12 @@ export class Conversation {
     const version = this.session.version;
     const head = concat(this.session.convId, u32(Math.floor(version / 2 ** 32)), u32(version >>> 0));
     const key = random(32), nonce = random(12);
-    const ct = await aeadSeal(key, nonce, encodeJSON({ v: 1, session: st, history: toPlain(this.store.toState(now)) }), concat(label("conversation"), head));
+    const ct = await aeadSeal(key, nonce, encodeJSON({ v: 1, session: st, history: toPlain(this.store.toState(now)), live: { peerAt: this.live.peerAt } }), concat(label("conversation"), head));
     return { blob: concat(head, nonce, ct), key };
   }
 
   /** Load a saved conversation. convId: which conversation it must be. */
-  static async open(key, blob, { convId, persist = null } = {}) {
+  static async open(key, blob, { convId, persist = null, requireLive = false } = {}) {
     return guard(async () => {
       if (!(convId instanceof Uint8Array) || convId.length !== 16) throw new MsgError("bad_request", "Say which conversation this is (convId)");
       if (!(blob instanceof Uint8Array) || blob.length < 24 + 12 + 16) throw new MsgError("malformed", "Not a saved conversation");
@@ -204,7 +276,7 @@ export class Conversation {
       const session = Session.fromJSON(o.session);
       const version = readU32(head, 16) * 2 ** 32 + readU32(head, 20);
       if (session.version !== version || !equal(session.convId, convId)) throw new MsgError("malformed", "Saved conversation is inconsistent");
-      return new Conversation(session, MessageStore.fromState(convId.slice(), fromPlain(o.history)), { persist });
+      return new Conversation(session, MessageStore.fromState(convId.slice(), fromPlain(o.history)), { persist, requireLive, live: o.live });
     });
   }
 }

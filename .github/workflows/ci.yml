@@ -308,13 +308,13 @@ jobs:
         working-directory: deploy
         run: |
           for t in /tmp/images/*.tar; do docker load -i "$t"; done
-          for s in gateway identity vault ledger recovery access keyshare edge; do
+          for s in gateway identity vault ledger recovery access keyshare relay edge; do
             if docker image inspect "humid-$s:ci" >/dev/null 2>&1; then docker tag "humid-$s:ci" "local/humid-$s:ci"; fi
           done
           node ../services/gateway/src/server.js keygen 2>/dev/null > .env || true
           echo "HUMID_DOMAIN=localhost" >> .env
           export HUMID_REGISTRY=local HUMID_VERSION=ci
-          missing=$(for s in gateway identity vault ledger recovery access keyshare edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
+          missing=$(for s in gateway identity vault ledger recovery access keyshare relay edge; do docker image inspect "local/humid-$s:ci" >/dev/null 2>&1 || echo $s; done)
           if [ -n "$missing" ]; then docker compose build --pull $missing; fi
       - name: Boot the stack (docker compose)
         working-directory: deploy

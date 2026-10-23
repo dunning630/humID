@@ -256,6 +256,11 @@ textarea.input { min-height: 96px; resize: vertical; }
   gap: var(--s-4); padding: var(--s-8) var(--s-6); text-align: center; background: var(--ground); animation: fade var(--d-base) both;
 }
 .interrupt h2 { font-size: var(--t-2xl); }
+/* a check inside a conversation: a card at the bottom, over the composer; the thread stays in view */
+.interrupt[data-compact] { inset: auto 0 0 0; margin: 0 auto; max-width: var(--col); gap: var(--s-2); padding: var(--s-4) var(--s-6) calc(var(--safe-b) + var(--s-4)); border-radius: var(--r-xl) var(--r-xl) 0 0; border-top: 1px solid var(--line-strong); background: var(--surface); animation: card-rise var(--d-fast) var(--ease-out) both; }
+.interrupt[data-compact] h2 { font-size: var(--t-lg); }
+.interrupt[data-compact] p { min-height: 0; font-size: var(--t-sm); }
+@keyframes card-rise { from { transform: translateY(24px); opacity: 0; } }
 .interrupt p { color: var(--text-2); max-width: 32ch; min-height: 2.9em; }
 .interrupt .hold { width: 100%; max-width: 280px; min-height: 60px; border-radius: var(--r-lg); background: var(--amber); color: var(--amber-ink); font-weight: 700; font-size: var(--t-lg); position: relative; overflow: hidden; }
 .interrupt .hold.holding::after { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,0.28); transform-origin: left; animation: hold-fill 1.2s linear forwards; }
@@ -265,12 +270,14 @@ textarea.input { min-height: 96px; resize: vertical; }
 .tabbar {
   position: fixed; z-index: 30; left: 50%; bottom: 0; transform: translateX(-50%); width: 100%; max-width: var(--col);
   height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
-  display: grid; grid-template-columns: repeat(3, 1fr); background: var(--ground); border-top: 1px solid var(--line);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--ground); border-top: 1px solid var(--line);
 }
 @media (min-width: 600px) { .tabbar { bottom: 24px; border-radius: 0 0 32px 32px; } }
 .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--muted); font-size: var(--t-xs); font-weight: 600; min-height: var(--tabbar-h); }
 .tabbar button[aria-selected="true"] { color: var(--mint); }
 .tabbar .ico { width: 24px; height: 24px; }
+.tabbar .tab-ico { position: relative; display: inline-flex; }
+.tabbar .badge { position: absolute; top: -4px; left: 16px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--amber-hi, var(--amber)); color: var(--amber-ink); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
 
 /* ---------- toasts ---------- */
 /* Toasts drop in at the top, under the status bar: the bottom of every screen is where the
