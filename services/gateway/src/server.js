@@ -224,6 +224,8 @@ export function createGateway({
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
   /** Largest frame accepted from a session that has not signed in (recovery requests carry up to three ID-chip reads). */
   maxAnonCallBytes = Number(env("GATEWAY_MAX_ANON_CALL_BYTES", String(512 * 1024))),
+  /** New recovery requests per source network (IPv4 address or IPv6 /64) per hour (SRV-34). */
+  recoveryStartsPerHour = Number(env("HUMID_RECOVERY_STARTS_PER_HOUR", "20")),
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
   registration = env("HUMID_REGISTRATION", "pass"),
   passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
@@ -275,6 +277,10 @@ export function createGateway({
   const loginNote = new Buckets(1, 300_000);        // one "sign-in throttled" ledger note per identity per window
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
+  // SRV-34: new recovery requests per source network (IPv4 address or IPv6 /64). Anonymous and
+  // kept by the recovery service, so a session's own limit isn't enough: one person recovering
+  // starts one or two. The recovery service also caps how many unproven requests exist at all.
+  const recoveryStartLimit = new Buckets(recoveryStartsPerHour, 3_600_000);
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
   const inflight = new Map();
@@ -659,6 +665,7 @@ export function createGateway({
 
     // A new device asks to recover. For a card the account is known now, so its devices are alerted now.
     async startRecovery(s, body) {
+      if (!recoveryStartLimit.take(rateKey(s.clientIp || ""))) throw new HttpError(429, "rate_limited", "Too many recoveries started from this network. Wait an hour and try again.");
       const r = await internalJson("recovery", "POST", "/requests", { body });
       if (r.status >= 300) fail(r);
       if (r.data.account) {
