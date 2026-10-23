@@ -36,7 +36,8 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
     },
   });
   const vault = createVault({ port: 0, dataDir: join(root, "vault"), internalPk: ik.pk, quotaBytes: 5 * 1024 * 1024, maxObjectBytes: 2 * 1024 * 1024 });
-  const ledger = createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, cosigners });
+  // checkpointEveryMs 0: a new checkpoint whenever the log has grown, so tests see their entries at once.
+  const ledger = createLedger({ port: 0, dataDir: join(root, "ledger"), internalPk: ik.pk, cosigners, checkpointEveryMs: 0 });
   const recovery = createRecovery({ port: 0, dataDir: join(root, "recovery"), internalPk: ik.pk, delayMs: recoveryDelayMs, cscas, stations });
   const access = createAccess({ port: 0, dataDir: join(root, "access"), internalPk: ik.pk, keyBits: passKeyBits, stampKeyBits: passKeyBits });
   // 4.0 messaging: the relay (no accounts) beside the other services; messaging=false runs a server without one.

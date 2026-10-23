@@ -4,7 +4,7 @@
 
 import { HtpClient, HtpError } from "@humid/htp/client";
 import { registerMessage, deviceMessage, loginMessage, loginPresenceMessage, identityId, b64u, unb64u, utf8 } from "@humid/htp";
-import { verifyLedger, verifyCheckpoint, parseCosigners } from "@humid/audit";
+import { verifyLedger, verifyBridge, verifyCheckpoint, parseCosigners } from "@humid/audit";
 import { keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL } from "@humid/recovery";
 import { importKeySet, blind, finalize, parseAccessCode, PassError } from "@humid/pass";
 
@@ -72,6 +72,9 @@ const codeOf = (input) => {
   if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 or 16 letters and numbers.");
   return c;
 };
+
+/** At most this many entries are fetched to link a page back to the head a device saw last. */
+const BRIDGE_MAX = 20_000;
 
 export class HumidApi {
   constructor({ baseUrl = "", pinnedKid = null, fetch } = {}) {
@@ -275,8 +278,9 @@ export class HumidApi {
 
   /** Upload an envelope sealed on this device, plus its encrypted index entry. */
   /** Upload a sealed envelope. `share`: a split document's key (32 bytes), stored by the keyshare service, never the vault. */
-  upload(envelope, indexBlob, share) {
-    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob), ...(share ? { "x-humid-share": b64u(share) } : {}) } });
+  /** `id`: the item id the app chose and sealed its index entry to (CRYPTO-05). An older vault ignores it and picks its own. */
+  upload(envelope, indexBlob, share, id) {
+    return this.#json("POST", "/vault/objects", { body: envelope, headers: { "content-type": ENVELOPE_TYPE, "x-humid-index": b64u(indexBlob), ...(share ? { "x-humid-share": b64u(share) } : {}), ...(id ? { "x-humid-object-id": id } : {}) } });
   }
 
   rename(id, indexBlob) { return this.#json("PATCH", `/vault/objects/${id}`, { headers: { "x-humid-index": b64u(indexBlob) } }); }
@@ -297,24 +301,53 @@ export class HumidApi {
    * Check this account's place in the public transparency log: the latest ledger
    * entry is in the published tree, and the tree extends `previous` ({ size, root }),
    * the checkpoint this device verified last time. Returns verifyCheckpoint's result.
-   * `trustedKeyFp`: the ledger key this device saw first (a different key is refused).
+   * `trustedKeyFp`: the ledger key this device trusts (built in, or the one it saw first).
    * `cosigners`: the cosigners built into the app (parseCosigners); only they count.
+   *
+   * `head` ({ seq, hash }): the head of the ledger page this device just verified
+   * (CRYPTO-01). The log is asked about exactly that entry, and an answer for any other
+   * seq or hash fails with `mismatch: true`: the history shown on this phone isn't the
+   * one the public log holds, so "Verified" and "Published" can never describe two
+   * different histories.
    */
-  async continuity({ previous, trustedKeyFp, cosigners } = {}) {
-    const inc = await this.#json("GET", "/ledger/tlog/inclusion");
+  async continuity({ previous, trustedKeyFp, cosigners, head } = {}) {
+    const want = head?.seq > 0 ? head : null;
+    const inc = await this.#json("GET", `/ledger/tlog/inclusion${want ? `?seq=${Number(want.seq)}` : ""}`);
     let consistency = null;
     if (previous?.size > 0 && previous.size <= inc.checkpoint.size) {
       consistency = (await this.#json("GET", `/ledger/tlog/consistency?from=${previous.size}&to=${inc.checkpoint.size}`)).proof;
     }
     const r = verifyCheckpoint(inc, { trustedKeyFp, cosigners, previous, consistency, inclusion: { owner: inc.owner, seq: inc.seq, hash: inc.hash, index: inc.index, proof: inc.proof } });
     if (r.ok && this.session?.id && inc.owner !== this.session.id) return { ok: false, reason: "The log answered for someone else" };
-    return { ...r, seq: inc.seq };
+    if (r.ok && want && (inc.seq !== want.seq || inc.hash !== want.hash)) {
+      return { ok: false, mismatch: true, reason: `Your history doesn't match the public log at entry ${want.seq}` };
+    }
+    return { ...r, seq: inc.seq, hash: inc.hash };
   }
 
-  /** Read and VERIFY the access ledger. Returns the verification result with parsed entries. */
-  async ledger({ limit = 200, trustedKeyFp } = {}) {
+  /**
+   * Read and VERIFY the access ledger. Returns the verification result with parsed entries.
+   * `previousHead` ({ seq, hash }): the head this device verified last time. The history
+   * must still contain it, unchanged (CRYPTO-01): on the page, or, when more has happened
+   * since than one page holds, in the entries in between, fetched and checked link by link.
+   */
+  async ledger({ limit = 200, trustedKeyFp, previousHead } = {}) {
     const page = await this.#json("GET", `/ledger/events?limit=${limit}`);
-    return { ...verifyLedger(page, { expectedOwner: this.session?.id, trustedKeyFp }), count: page.entries.length };
+    const l = verifyLedger(page, { expectedOwner: this.session?.id, trustedKeyFp, previousHead });
+    if (l.ok && l.previousHeadOnPage === false) {
+      const first = page.entries[0];
+      const bridge = [];
+      for (let from = previousHead.seq; from < first.seq && bridge.length <= BRIDGE_MAX;) {
+        const r = await this.#json("GET", `/ledger/events?from=${from}&to=${first.seq - 1}`);
+        if (!r.entries?.length) break;
+        bridge.push(...r.entries);
+        from = r.entries[r.entries.length - 1].seq + 1;
+      }
+      if (!verifyBridge(page.owner, bridge, previousHead, first)) {
+        return { ok: false, reason: `Your history no longer contains entry ${previousHead.seq} as this phone saw it`, entries: [], count: 0 };
+      }
+    }
+    return { ...l, count: page.entries.length };
   }
 
   /* ---------------- device links ---------------- */

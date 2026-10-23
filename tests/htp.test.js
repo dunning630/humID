@@ -7,7 +7,9 @@ import { HtpClient } from "@humid/htp/client";
 import { HtpServer, createStatics } from "@humid/htp/server";
 import {
   ml_dsa87, stepUpMessage, actionBytes, loginMessage, verify, ReplayWindow, MEDIA_TYPE,
+  clientHello, sealFrame, header, DIR, MAX_META_BYTES,
 } from "@humid/htp";
+import { Buckets } from "../services/gateway/src/server.js";
 
 const ISSUED = { nonce: new Uint8Array(16).fill(5), exp: Date.now() + 60_000, device: "dev_test" };
 function wire(server, { tamper } = {}) {
@@ -190,3 +192,156 @@ test("every request carries a timeout: a server that never answers ends the call
   await c2.request("http://x/", { signal: own.signal });
   assert.equal(seen.at(-1), own.signal);
 });
+
+test("CRYPTO-06: a step-up ticket sends exactly one frame, so its seq (the GCM nonce) is never reused", async () => {
+  const server = new HtpServer(createStatics());
+  const { fetch, log } = wire(server);
+  const client = new HtpClient({ fetch });
+  const ticket = await client.ticket("PUT", "/recovery/card");
+  const stepUp = { ticket, sign: async () => ({ sig: new Uint8Array(4627), interrupt: {} }) };
+  await client.call("PUT", "/recovery/card", { body: { blob: "first" }, stepUp });
+  const sent = log.length;
+  // a retry wrapper or a refactor passing the same ticket again
+  await assert.rejects(client.call("PUT", "/recovery/card", { body: { blob: "second" }, stepUp }), (e) => e.code === "ticket_used");
+  assert.equal(log.length, sent, "nothing went on the wire under the used seq");
+  // a ticket from an earlier session is refused too, and a fresh one still works
+  const old = await client.ticket("PUT", "/recovery/card");
+  await client.connect();
+  await assert.rejects(client.call("PUT", "/recovery/card", { body: {}, stepUp: { ticket: old, sign: stepUp.sign } }), (e) => e.code === "session_changed");
+  const fresh = await client.ticket("PUT", "/recovery/card");
+  assert.equal((await client.call("PUT", "/recovery/card", { body: {}, stepUp: { ticket: fresh, sign: stepUp.sign } })).status, 200);
+});
+
+/* ---------------- the signed policy hint (CRYPTO-07, PC-13) ---------------- */
+
+const keysWith = (server, extra) => async () => Response.json({ ...server.publicKeys(), ...extra });
+const POLICY = { devicePolicy: "attested", registration: "pass", splitKeys: true, passBuyUrl: "https://humidsecure.com/access", messaging: { stampsPerCheck: 2 } };
+
+test("CRYPTO-07: the policy hint is believed only with the pinned server's signature", async () => {
+  const server = new HtpServer(createStatics());
+  const signed = server.signedPolicy(POLICY);
+  const good = await new HtpClient({ fetch: keysWith(server, signed), pinnedKid: server.kid }).serverKeys();
+  assert.equal(good.policySigned, true);
+  assert.equal(good.policy.splitKeys, true);
+  assert.equal(good.policy.passBuyUrl, POLICY.passBuyUrl);
+  assert.deepEqual(good.policy.messaging, { stampsPerCheck: 2 });
+
+  // The PoC: a TLS-ending proxy rewrites the policy and leaves the keys alone.
+  const rewritten = { ...signed, policy: { ...POLICY, splitKeys: false, passBuyUrl: "https://humid-access.example/buy" } };
+  const bad = await new HtpClient({ fetch: keysWith(server, rewritten), pinnedKid: server.kid }).serverKeys();
+  assert.equal(bad.policySigned, false);
+  assert.equal(bad.policy.passBuyUrl, null, "a rewritten buy link is never shown");
+  assert.equal(bad.policy.splitKeys, false);
+  assert.equal(bad.policy.devicePolicy, "attested", "strict defaults");
+  assert.equal(bad.policy.messaging, null);
+
+  // Stripped signature, a signature from another server's key, or a very old one: all ignored.
+  for (const extra of [
+    { policy: POLICY },
+    new HtpServer(createStatics()).signedPolicy(POLICY),
+    { policy: POLICY, policySig: { at: Date.now() - 8 * 24 * 3600_000, sig: signed.policySig.sig } },
+  ]) {
+    const s = await new HtpClient({ fetch: keysWith(server, extra), pinnedKid: server.kid }).serverKeys();
+    assert.equal(s.policySigned, false);
+    assert.equal(s.policy.passBuyUrl, null);
+  }
+});
+
+test("the server signs its policy once, not once per request, and re-signs when it changes", () => {
+  const server = new HtpServer(createStatics());
+  const a = server.signedPolicy(POLICY, 1_000);
+  assert.equal(server.signedPolicy({ ...POLICY }, 2_000).policySig.sig, a.policySig.sig);
+  assert.notEqual(server.signedPolicy({ ...POLICY, splitKeys: false }, 3_000).policySig.sig, a.policySig.sig);
+});
+
+/* ---------------- handshake cost and the session table (CRYPTO-04, SRV-25) ---------------- */
+
+const serverOf = (statics) => ({ kemPk: statics.kemPk, xPk: statics.xPk, dsaPk: statics.dsaPk });
+
+test("CRYPTO-04: a captured hello can't be replayed: the server does the handshake work once", () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics, { maxSessions: 200 });
+  const { wire } = clientHello(serverOf(statics));
+  srv.hello(wire);
+  for (let i = 0; i < 5; i++) assert.throws(() => srv.hello(wire), (e) => e.code === "replay" && e.status === 409);
+  assert.equal(srv.sessions.size, 1);
+});
+
+test("CRYPTO-04: a table full of sessions that never signed in makes room instead of refusing everyone", () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics, { maxSessions: 50, pendingPerGroup: 1000 });
+  for (let i = 0; i < 50; i++) srv.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: `v4:10.0.${i}.1` });
+  const before = [...srv.sessions.keys()];
+  // a holder who must sign in now (a Check-in deadline) still gets a session
+  const holder = srv.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: "v4:192.0.2.7" });
+  assert.ok(srv.sessions.has(holder.sid));
+  assert.equal(srv.sessions.size, 50);
+  assert.ok(!srv.sessions.has(before[0]), "the least recently used unsigned session made room");
+});
+
+test("CRYPTO-04: one network holds at most its share of unsigned sessions; signed-in sessions are never evicted", () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics, { maxSessions: 30, pendingPerGroup: 5 });
+  const signedIn = srv.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: "v6:2001:db8:0:1::/64" });
+  srv.sessions.get(signedIn.sid).subject = "hid_x";
+  for (let i = 0; i < 40; i++) srv.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: "v6:2001:db8:0:1::/64" });
+  const pending = [...srv.sessions.values()].filter((s) => !s.subject);
+  assert.equal(pending.length, 5, "the /64 recycles its own five slots");
+  assert.ok(srv.sessions.has(signedIn.sid), "its signed-in session is untouched");
+  // only a table of signed-in sessions is ever "busy"
+  const full = new HtpServer(statics, { maxSessions: 3 });
+  for (let i = 0; i < 3; i++) { const w = full.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: `g${i}` }); full.sessions.get(w.sid).subject = `hid_${i}`; }
+  assert.throws(() => full.hello(clientHello(serverOf(statics)).wire, Date.now(), { group: "g9" }), (e) => e.code === "busy");
+});
+
+test("CRYPTO-04: a session that never signs in is dropped after two idle minutes", async () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics);
+  const t = Date.now();
+  const w = srv.hello(clientHello(serverOf(statics)).wire, t);
+  srv.sweep(t + 2 * 60_000 + 1);
+  assert.equal(srv.sessions.size, 0);
+  const w2 = srv.hello(clientHello(serverOf(statics)).wire, t);
+  srv.sessions.get(w2.sid).subject = "hid_x";
+  srv.sweep(t + 2 * 60_000 + 1);
+  assert.equal(srv.sessions.size, 1, "a signed-in session keeps the ordinary 15-minute idle limit");
+  assert.ok(w);
+});
+
+test("CRYPTO-04: rate limits forget the least recently used key, never everyone's", () => {
+  const b = new Buckets(2, 60_000, { max: 100 });
+  const t = 1_000_000;
+  assert.ok(b.take("victim-account", t)); assert.ok(b.take("victim-account", t));
+  assert.equal(b.take("victim-account", t), false, "out of attempts");
+  for (let i = 0; i < 99; i++) b.take(`addr-${i}`, t); // fills the table (the old code cleared it all here)
+  assert.equal(b.take("victim-account", t), false, "still out of attempts");
+  for (let i = 99; i < 400; i++) b.take(`addr-${i}`, t);
+  assert.ok(b.m.size <= 100);
+});
+
+test("SRV-25: a frame whose meta JSON is over 64 KiB is refused before it's parsed", async () => {
+  const statics = createStatics();
+  const srv = new HtpServer(statics);
+  const client = new HtpClient({ fetch: wire(srv).fetch });
+  const s = await client.connect();
+  const ok = await sealFrame(s.c2s, DIR.request, s.sid, 1, { m: "GET", p: "/x", h: { pad: "a".repeat(MAX_META_BYTES - 100) } });
+  assert.equal((await srv.open(ok)).meta.p, "/x");
+  // a forged frame (the session's own key, so it authenticates) with 1 MiB of meta: refused, unparsed
+  const big = utf8JSON({ m: "GET", p: "/x", h: { pad: "a".repeat(1 << 20) } });
+  const plain = new Uint8Array(4 + big.length);
+  new DataView(plain.buffer).setUint32(0, big.length); plain.set(big, 4);
+  const frame = await rawSeal(s, 2, plain);
+  await assert.rejects(srv.open(frame), (e) => e.code === "too_large" && e.status === 413);
+  // and the client won't build one
+  await assert.rejects(client.call("GET", "/x", { headers: { pad: "a".repeat(1 << 20) } }), /meta too large/);
+});
+
+const utf8JSON = (v) => new TextEncoder().encode(JSON.stringify(v));
+async function rawSeal(s, seq, plain) {
+  const h = header(DIR.request, s.sid, seq, Date.now());
+  const k = await crypto.subtle.importKey("raw", s.c2s, "AES-GCM", false, ["encrypt"]);
+  const iv = new Uint8Array(12); new DataView(iv.buffer).setBigUint64(4, BigInt(seq));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: h }, k, plain));
+  const out = new Uint8Array(h.length + ct.length); out.set(h); out.set(ct, h.length);
+  return out;
+}

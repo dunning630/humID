@@ -7,10 +7,19 @@ import { isNetworkFailure } from "./link.js";
 import { keepOffline } from "./session.js";
 import { updateIdentity } from "./identity.js";
 import { parseCosigners } from "@humid/api";
-import { TLOG_COSIGNERS } from "./config.js";
+import { TLOG_COSIGNERS, LEDGER_KEY_FP } from "./config.js";
 
 /** Cosigners of the public log this build trusts. The server's own list is never used (PC-04). */
 const COSIGNERS = parseCosigners(TLOG_COSIGNERS);
+
+/**
+ * The ledger key this device trusts: built into a release build (HUMID_LEDGER_KEY_FP), so a
+ * new install never has to take the server's word for it; otherwise the one it saw first.
+ */
+const trustedLedgerKey = () => LEDGER_KEY_FP || S.identity.value?.ledgerKeyFp || undefined;
+
+/** The head of the page Activity shows, as this phone verified it: the public log must hold exactly this entry. */
+let shownHead = null;
 
 /**
  * The ledger's signing key, pinned on this device the first time it verifies (PC-04).
@@ -40,8 +49,10 @@ export async function loadLedger() {
   S.ledgerLoading.value = true;
   const ep = epoch();
   try {
-    const l = S.offline.value ? (R.offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await R.api.ledger({ limit: 300, trustedKeyFp: S.identity.value?.ledgerKeyFp || undefined });
+    // previousHead: the page must still hold the head this phone verified last time (CRYPTO-01).
+    const l = S.offline.value ? (R.offline?.ledger || { ok: true, reason: "Empty", entries: [] }) : await R.api.ledger({ limit: 300, trustedKeyFp: trustedLedgerKey(), previousHead: S.identity.value?.ledgerHead || undefined });
     if (stale(ep)) return;
+    shownHead = !S.offline.value && l.ok && l.head ? { seq: l.head.seq, hash: l.head.hash } : null;
     if (!S.offline.value && l.ok) await rememberLedgerKey(l.keyFp);
     keepOffline({ ledger: l });
     for (const it of S.items.value) R.knownNames.set(it.id, it.name);
@@ -52,22 +63,31 @@ export async function loadLedger() {
 }
 
 /**
- * The public transparency log: prove this account's latest entry is in it, and that it
- * extends the log this device saw last time. The checkpoint is remembered on success.
+ * The public transparency log: prove the entry at the head of the page Activity shows is
+ * in it, the same seq and the same hash (CRYPTO-01), and that the log extends the one this
+ * device saw last time. A history that doesn't match the log is a loud failure: the page
+ * stops counting as verified. The checkpoint and that head are remembered on success.
  */
 export async function checkContinuity() {
   const id = S.identity.value;
   if (S.offline.value) { S.continuity.value = { ok: false, pending: true, reason: "Checked when you're back online" }; return; }
+  const head = shownHead;
   try {
-    const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: id?.ledgerKeyFp || undefined, cosigners: COSIGNERS });
+    const r = await R.api.continuity({ previous: id?.tlog || null, trustedKeyFp: trustedLedgerKey(), cosigners: COSIGNERS, head: head || undefined });
+    if (r.mismatch) {
+      if (S.ledger.value) S.ledger.value = { ...S.ledger.value, ok: false, reason: r.reason };
+      keepOffline({ ledger: { ok: false, reason: r.reason, entries: [] } }); // never "Verified when last online"
+    }
     S.continuity.value = r;
-    // The record as it is now, not as it was before the round trip (APP-11): only the
-    // checkpoint changes, so a duress setting saved meanwhile stays saved.
     if (r.ok) {
+      // The record as it is now, not as it was before the round trip (APP-11): only the
+      // checkpoint (and the confirmed head, CRYPTO-01) changes, so a duress setting saved
+      // meanwhile stays saved.
       await updateIdentity((cur) => {
         if (cur.tlog && r.size < cur.tlog.size) return null;
         cur.ledgerKeyFp = cur.ledgerKeyFp || r.keyFp;
         cur.tlog = { size: r.size, root: r.root, at: r.at };
+        if (head && r.seq === head.seq && r.hash === head.hash) cur.ledgerHead = head;
       });
     }
   } catch (e) {
