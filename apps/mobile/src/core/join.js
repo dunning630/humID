@@ -13,6 +13,7 @@ import { parseCard, cardTag, formatCode, combine, decodeShare, openCard, openCar
 import * as S from "./state.js";
 import { PLATFORM } from "./config.js";
 import { R, SEED, CARD, wipe, concat, localChallenge } from "./runtime.js";
+import { createIdentity, updateIdentity, clearIdentity } from "./identity.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { showInterrupt, endInterrupt, waitForHold, holdMessage, gateLabel, sessionKeys } from "./interrupt.js";
 import { connectServer, serverPinned, chooseGate, serverRecord } from "./session.js";
@@ -111,8 +112,8 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
       pending: { ...pending, devicePub: toB64(dkeys.dsaPk), startedAt: Date.now(), soleBiometric }, device: null, pub: null, commit: null,
       server: serverRecord(srv),
     };
-    await R.store.putIdentity(record);
-    batch(() => { S.identity.value = { ...record, schema: 4 }; S.joinMethod.value = method; S.joinStep.value = 3; S.joinStatus.value = null; });
+    await createIdentity(record);
+    batch(() => { S.joinMethod.value = method; S.joinStep.value = 3; S.joinStatus.value = null; });
     R.api.htp.pinnedKid = srv.kid;
     await endInterrupt(true, "This device is bound. Keys wiped from memory.", 650);
     pollJoin();
@@ -150,10 +151,8 @@ export async function renewLink() {
     Suite.wipeKeys(lk);
     next = concat(both.subarray(0, SEED), x);
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now() } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    batch(() => { S.identity.value = { ...record, schema: 4 }; S.joinStatus.value = null; });
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now() }; }))) throw cancelledJoin();
+    S.joinStatus.value = null;
     await endInterrupt(true, "New code ready.", 500);
     pollJoin();
     return true;
@@ -260,20 +259,17 @@ async function finishJoin(st) {
     const wrapped = await Suite.wrapSeed(secret, rewrapped, fromB64(id.bindingId));
     wipe(rewrapped);
     const pub = Suite.publicOf(keys);
-    const record = {
-      ...id, wrapped, pending: null,
+    const done = {
+      wrapped, pending: null,
       commit: toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk))),
       assurance: sess.assurance, proof: sess.proof,
       mode: sess.assurance === ASSURANCE.NONE ? "demo" : "hardware",
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: p.devicePub },
-      server: { ...id.server, id: account, registeredAt: new Date().toISOString() },
     };
-    delete record.schema;
-    await R.store.putIdentity(record);
+    if (!(await updateIdentity((cur) => { Object.assign(cur, done); cur.server = { ...cur.server, id: account, registeredAt: new Date().toISOString() }; }))) throw cancelledJoin();
     sessionKeys(Suite, seed);
     batch(() => {
-      S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.joinStatus.value = null;
       S.view.value = "app";
@@ -316,10 +312,7 @@ export async function addCardToJoin(cardInput) {
     showInterrupt({ needsHold: false, progress: 0.6, message: "Telling your vault you have your recovery card…" });
     const r = await R.api.recoveryAddCard(p.requestId, cardTag(cardSecret));
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasCard: true, layout: QUORUM_LAYOUT, account: r.account } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: 4 };
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasCard: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...r };
     await endInterrupt(true, "Recovery card added.", 600);
     pollJoin();
@@ -365,10 +358,7 @@ export async function addKeyToJoin(pin) {
     if (!match) throw new Error("Your vault matched a key this phone didn't read. Nothing was kept; try again.");
     next = packQuorum({ ...quorumSlots(both, p), key: match.secret });
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, hasKey: true, layout: QUORUM_LAYOUT, account: r.account } };
-    delete record.schema;
-    await R.store.putIdentity(record);
-    S.identity.value = { ...record, schema: 4 };
+    if (!(await updateIdentity((cur) => { cur.wrapped = wrapped; cur.pending = { ...cur.pending, hasKey: true, layout: QUORUM_LAYOUT, account: r.account }; }))) throw cancelledJoin();
     const { tag: _t, ...status } = r;
     S.joinStatus.value = { ...(S.joinStatus.value || {}), ...status };
     await endInterrupt(true, "Security key added.", 600);
@@ -435,8 +425,10 @@ export async function cancelJoin() {
   clearTimeout(joinTimer);
   const id = S.identity.value;
   try { if (id?.gate) await gateAdapter(id.gate.adapter).forget(id.gate.handle); } catch {}
-  await R.store.clearIdentity();
+  await clearIdentity();
   batch(() => { S.identity.value = null; S.joinStatus.value = null; S.joinStep.value = 1; S.joinMethod.value = null; });
 }
 
 export const prettyCode = formatCode;
+/** The join was given up (cancelJoin cleared the record) while this step ran. */
+const cancelledJoin = () => new Error("This device's setup was cancelled. Start again.");
