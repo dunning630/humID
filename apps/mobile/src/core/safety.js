@@ -12,7 +12,7 @@
 import { suite } from "@humid/crypto";
 import * as S from "./state.js";
 import { sealDuress, openDuress, DEFAULT as DURESS_OFF } from "./duress.js";
-import { R } from "./runtime.js";
+import { R, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, buzz } from "./notify.js";
 import { withStepUp, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
@@ -69,7 +69,9 @@ export async function saveDuress({ enabled, gesture }) {
 export async function loadDuress() {
   if (S.decoy.value) { S.duressInfo.value = { lockdown: false, setting: currentDuress() }; return; }
   if (S.offline.value) { S.duressInfo.value = { ...(R.offline?.duress || { lockdown: false }), setting: currentDuress() }; return; }
+  const ep = epoch();
   const [st, settings] = await Promise.all([R.api.duressStatus().catch(() => null), R.api.settings().catch(() => null)]);
+  if (stale(ep)) return;
   const info = { ...(st || {}), alert: !!settings?.duressAlert };
   S.duressInfo.value = { ...info, setting: currentDuress() };
   if (st && settings) keepOffline({ duress: info });
@@ -118,8 +120,11 @@ export const clockOffset = () => R.api?.htp?.clockOffsetMs?.() ?? 0;
 
 export async function loadCheckin() {
   if (!checkinOffered() || S.offline.value || !S.session.value) { S.checkin.value = null; return; }
+  const ep = epoch();
   try {
-    S.checkin.value = { ...(await R.api.checkin()), offsetMs: clockOffset() };
+    const st = await R.api.checkin();
+    if (stale(ep)) return;
+    S.checkin.value = { ...st, offsetMs: clockOffset() };
     if (checkinArmed()) dropOfflineCopy();
   } catch { /* keep what's shown; the next look tries again */ }
   watchCheckin();

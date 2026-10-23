@@ -1,15 +1,16 @@
 // This account's devices: list, add (approve a link), remove.
 import { accountCheck } from "@humid/recovery";
 import * as S from "./state.js";
-import { R, KEY_TYPE } from "./runtime.js";
+import { R, KEY_TYPE, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
 
 export async function loadDevices() {
   if (S.offline.value) { S.devices.value = R.offline?.devices || null; return; }
+  const ep = epoch();
   const me = await quietly(R.api.me());
-  if (me) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
+  if (me && !stale(ep)) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
 }
 
 /** This account's match code, shown when adding a device. */
