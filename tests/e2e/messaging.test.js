@@ -207,3 +207,27 @@ test("one network can't fill the relay for everyone (PC-27): a daily byte quota 
   assert.ok(refused, "stopped before 40 × 256 KiB");
   assert.equal(refused.code, "quota");
 });
+
+test("MSG-03: a desktop under the biometric policy can sign in but gets no stamps (no bot farm)", async () => {
+  const lax = await startStack({ devicePolicy: "biometric" });
+  try {
+    const bot = makeHolder("bot-desktop", { kind: "desktop" }); // no hardware liveness key
+    const api = new HumidApi({ baseUrl: lax.baseUrl, pinnedKid: lax.gateway.htp.kid });
+    await api.register({ pub: bot.pub, commit: bot.commit, device: bot.device, sign: bot.registerSign });
+    assert.equal((await api.server()).policy.messaging.stampNeeds, "hardware");
+    const k = await api.msgKeys();
+    const ks = M.importStampKeys(k.stamp.keys, { passKeys: k.passKeyIds.map((id) => ({ id })) });
+    const d = M.blindStamp(ks, new Uint8Array(32).fill(9));
+    const t = await api.ticket("stamp");
+    await assert.rejects(api.stamp({ kid: ks.issuing.id, blinded: [d.blinded] }, { ticket: t, sign: (message) => bot.stepUp({ message, live: t.live }) }),
+      (e) => e.status === 403 && e.code === "stamp_needs_proven_phone");
+    assert.equal((await api.msgStats()).length, 0, "nothing was counted");
+    // A phone on the same server still stamps.
+    const phone = makeHolder("phone-lax");
+    const pApi = new HumidApi({ baseUrl: lax.baseUrl, pinnedKid: lax.gateway.htp.kid });
+    await pApi.register({ pub: phone.pub, commit: phone.commit, device: phone.device, sign: phone.registerSign });
+    const t2 = await pApi.ticket("stamp");
+    const [sig] = await pApi.stamp({ kid: ks.issuing.id, blinded: [d.blinded] }, { ticket: t2, sign: (message) => phone.stepUp({ message, live: t2.live }) });
+    assert.ok(M.verifyStamp(ks, M.finalizeStamp(ks, d.draft, sig), new Uint8Array(32).fill(9)));
+  } finally { await lax.stop(); }
+});

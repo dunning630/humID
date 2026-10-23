@@ -226,8 +226,15 @@ export function createGateway({
    * Default: HUMID_TLS_CA / HUMID_TLS_CERT / HUMID_TLS_KEY files, if set.
    */
   internalTls = tlsFromEnv(),
+  /**
+   * Development only: let a `demo` server stamp without a hardware liveness key, so the dev
+   * server's messaging can be tried in a browser. Not read from the environment, and ignored
+   * under any other policy, so no deployed server can turn it on.
+   */
+  demoStamps = false,
 } = {}) {
   const log = logger("gateway");
+  const DEMO_STAMPS = demoStamps === true && devicePolicy === "demo";
   if (!["on", "off"].includes(checkin)) throw new Error("HUMID_CHECKIN must be on or off");
   const CHECKIN = checkin === "on";
   if (!POLICIES.includes(devicePolicy)) throw new Error(`HUMID_DEVICE_POLICY must be one of ${POLICIES.join(", ")}`);
@@ -714,8 +721,14 @@ export function createGateway({
     // One live check → the stamps it approved. The step-up's signature covers this request's
     // body, so the device's secure chip approved exactly these blinded values. The issuer is
     // told nothing about the account; it signs blind and counts.
+    // A stamp says "a live face or fingerprint check on a proven phone", so it needs exactly that,
+    // whatever the device policy lets sign in: a desktop under `biometric` (or anything under
+    // `demo`) has no hardware liveness key, and a script could stamp in a loop (MSG-03).
     async msgStamp(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "A live stamp needs a fresh live check.");
+      if (!(stepUp.live === true && stepUp.assurance === "hardware") && !DEMO_STAMPS) {
+        throw new HttpError(403, "stamp_needs_proven_phone", "Sending needs a phone whose secure chip proves a live face or fingerprint check. This device can't.");
+      }
       const r = parseJson(body) || {};
       if (!Array.isArray(r.blinded) || r.blinded.length < 1 || r.blinded.length > 2) throw new HttpError(400, "bad_request", "One check approves 1 or 2 stamps");
       const out = await internalJson("access", "POST", "/internal/stamp/sign", { json: { kid: r.kid, blinded: r.blinded } });
@@ -1119,7 +1132,7 @@ export function createGateway({
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
     // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2, stampNeeds: DEMO_STAMPS ? "any" : "hardware" } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }

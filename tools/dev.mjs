@@ -62,6 +62,9 @@ const stack = await startStack({
   registration: process.env.HUMID_REGISTRATION || "pass",
   // Check-in is on here so you can try it (off by default on real servers until push reminders exist).
   checkin: process.env.HUMID_CHECKIN || "on",
+  // Demo devices have no hardware liveness key; on the dev server only, let them stamp so
+  // Messages can be tried in a browser (ignored unless the policy is "demo").
+  demoStamps: true,
 });
 const gw = new URL(stack.baseUrl);
 

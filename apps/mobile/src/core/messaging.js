@@ -173,9 +173,17 @@ function stampWith(proof) {
   };
   return Object.assign(async (c) => (await many([c]))[0], { many });
 }
+/**
+ * Can this device get live stamps? Only a phone whose secure chip proves the check: the server
+ * refuses anything else (stamp_needs_proven_phone, MSG-03), whatever lets it sign in.
+ */
+export const canStamp = () => S.server.value?.policy?.messaging?.stampNeeds === "any" || S.session.value?.assurance === "hardware";
+const NEEDS_PHONE = "Connecting and sending need a phone whose secure chip proves a live face or fingerprint check. This device can't, so it can only read what's here.";
+
 /** Run fn inside one live check that also produces stamps. fn gets { seed, stamper }. */
 function live(purpose, label, fn) {
   needVault();
+  if (!canStamp()) throw Object.assign(new Error(NEEDS_PHONE), { code: "stamp_needs_proven_phone" });
   return withStepUp("stamp", [], purpose, label, ({ seed, proof }) => fn({ seed, stamper: stampWith(proof) }));
 }
 
@@ -203,7 +211,7 @@ function publish() {
   }).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   const invites = list.invites.filter((i) => !i.closed).map((i) => ({ id: i.id, code: i.code, expires: i.expires, label: i.label, created: i.createdAt, waiting: requestsFor(i.id) }));
   S.msg.value = {
-    ready: true, error: null, contacts, invites,
+    ready: true, error: null, contacts, invites, canStamp: canStamp(),
     requests: [...requests.values()].map((r) => ({ id: r.id, invite: r.invite, label: list.invites.find((i) => i.id === r.invite)?.label || "", at: r.at })),
     newCount: contacts.reduce((n, c) => n + c.waiting + c.unread, 0) + requests.size,
   };
@@ -423,7 +431,7 @@ export async function verifyToRead() {
     decoyBusy();
     const id = openThread, c = id && convs.get(id), ct = id && contactOf(id);
     let sent = null;
-    if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value) {
+    if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value && canStamp()) {
       await live("read", `Open ${ct.label}`, async ({ stamper }) => { sent = await c.here({ stamper, now: now() }); });
     } else {
       await withKeys("read", "Open your messages", async () => {});
@@ -441,6 +449,8 @@ export async function makeInvite({ label = "" } = {}) {
   needVault();
   try {
     decoyBusy();
+    // approving whoever uses it takes a stamp, so don't hand out an invite this device can't finish
+    if (!canStamp()) throw Object.assign(new Error(NEEDS_PHONE), { code: "stamp_needs_proven_phone" });
     let made = null;
     await withKeys("invite", "Make an invite", async ({ seed }) => {
       const inv = await M.createInvite(seed, { now: now() });

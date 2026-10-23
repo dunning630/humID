@@ -26,6 +26,14 @@ and the app turns it on for every conversation.
 | Every message (text, media, delete, timer, end, "I'm here") | a live check; a stamp over its exact bytes | discarded unread; nothing it says is applied; its key is still used up |
 | Read | the reader's own live check within the freshness window | what arrived stays ciphertext on the phone, counted, never opened |
 
+**Only a proven phone gets stamps.** The gateway signs stamps only for a step-up made with a
+hardware liveness key (a phone whose secure chip proves the face or fingerprint check), whatever
+the server's device policy lets sign in. A desktop admitted under `HUMID_DEVICE_POLICY=biometric`,
+or anything under `demo`, is refused (`stamp_needs_proven_phone`), so a script with a desktop
+account can't mint stamps. Such a device can read what's already on it; the app says it can't
+send and hides inviting, asking and sending. (The development server alone lets demo devices
+stamp, so the flow can be tried in a browser; no deployed server can turn that on.)
+
 One action is one check: deleting a whole conversation for both sends a delete and an end,
 and both are stamped in the same check (`stamper.many`; the gateway signs 1 or 2 blinded
 values per step-up, and its signature covers exactly those values).
