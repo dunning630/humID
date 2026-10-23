@@ -70,7 +70,10 @@ export class HtpClient {
     const ints = (a, max) => (Array.isArray(a) && a.length > 0 && a.length <= 12 && a.every((n) => Number.isInteger(n) && n >= 0 && n <= max) ? [...a] : null);
     const ck = j.policy?.checkin;
     const checkin = ck && ints(ck.windowsH, 168) && ints(ck.graceMin, 1440) ? { windowsH: ints(ck.windowsH, 168), graceMin: ints(ck.graceMin, 1440) } : null;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin } };
+    // 4.0: whether this server runs a messaging relay and stamp issuer (shows the Messages tab).
+    const spc = Number(j.policy?.messaging?.stampsPerCheck);
+    const messaging = j.policy?.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging } };
     return this.server;
   }
 

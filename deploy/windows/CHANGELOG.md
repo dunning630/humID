@@ -1,5 +1,13 @@
 # HumID Server for Windows
 
+## 3.2.0 (preview, non-production)
+
+Paired with **HumID 4.1 preview**. Installing over 3.1.0 keeps all data, settings and the server's identity, and changes nothing until you turn messaging on.
+
+- **Person to person, off by default.** `humid set HUMID_MESSAGING=on` starts the messaging relay beside the other services (data in `data\relay`, internal port base+7 on split roles) and the app shows Messages. Every contact request, approval and message needs a live check, and messages open only within 5 minutes of the reader's own check (docs/MESSAGING.md). Keep it off on anything holding real data until the independent review.
+- The relay keeps fixed-size ciphertext in random, daily-rotating mailboxes for at most 14 days. It stores no account and no address, and is reached only from app sessions that never sign in. Each network (an IPv4 address or an IPv6 /48) may deposit 48 MiB a day.
+- The access service gains a separate key for live stamps (never the pass key) and keeps only per-day totals.
+
 ## 3.1.0
 
 Server 3.0 (sealed secrets, split roles, test instances, `humid selftest`) with the pre-certification audit's Windows fixes on top. 3.0.0 was never released on its own; both are in this release. Installing over 2.1.0 keeps all data, settings and the server's identity.

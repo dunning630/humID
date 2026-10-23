@@ -26,6 +26,9 @@
 //   7. Arbitrary payloads: a message is a sealed envelope like any document (text, a file,
 //      a voice note, a key). Formats not yet invented fit without a new contract.
 //
+// 4.0: person-to-person messaging is built on @humid/msg instead (core/messaging.js,
+// docs/MESSAGING.md), with per-contact personas, a ratchet and live stamps; this 3.0 contract
+// stays as the boundary for other transports.
 // Status: contract and in-memory stub only. No transport ships in 3.0.0; the screens
 // show nothing until one is registered (`comms.transport`).
 

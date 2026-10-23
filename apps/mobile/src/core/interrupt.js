@@ -8,6 +8,8 @@ import { fromB64, toB64 } from "@humid/codec";
 import { suite } from "@humid/crypto";
 import { adapter as gateAdapter, CANCELLED } from "@humid/gate";
 import { ml_dsa87 } from "@humid/htp";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha3_256 } from "@noble/hashes/sha3.js";
 import * as S from "./state.js";
 import { R, SEED, wipe, sleep, localChallenge } from "./runtime.js";
 import { toast, friendly, cancelled, haptic } from "./notify.js";
@@ -22,6 +24,12 @@ export function gateLabel(method) {
   })[method] || "your face or fingerprint";
 }
 
+/**
+ * Checks that are part of a conversation's rhythm (sending, opening a conversation) show as a
+ * compact card over the composer and get out of the way quickly. It is the same live check;
+ * only less of the screen is taken while the sensor does its work.
+ */
+export const COMPACT = new Set(["send", "read"]);
 export function showInterrupt(patch) { S.interrupt.value = { ...(S.interrupt.value || {}), ...patch }; }
 export const holdMessage = "Demo mode has no sensor. Press and hold to stand in for it.";
 
@@ -40,14 +48,18 @@ export async function endInterrupt(ok, message, ms) {
 
 /** The keys a session holds while unlocked, all derived from the account seed inside the check. */
 export function sessionKeys(Suite, seed) {
-  wipe(R.indexKey, R.offlineKey, R.settingsKey);
+  wipe(R.indexKey, R.offlineKey, R.settingsKey, R.msgKey);
   R.indexKey = Suite.indexKey(seed);
   R.offlineKey = Suite.offlineKey ? Suite.offlineKey(seed) : null;
   R.settingsKey = Suite.settingsKey ? Suite.settingsKey(seed) : null;
+  // 4.0 messaging: seals this device's contact list and wraps each conversation's newest key.
+  R.msgKey = hkdf(sha3_256, seed, undefined, new TextEncoder().encode("HUMID-MSG-v1 local store"), 32);
 }
 export function clearKeys() {
-  wipe(R.indexKey, R.offlineKey, R.settingsKey);
-  R.indexKey = null; R.offlineKey = null; R.settingsKey = null; R.duressSetting = null; R.duressUnreadable = false;
+  wipe(R.indexKey, R.offlineKey, R.settingsKey, R.msgKey);
+  R.indexKey = null; R.offlineKey = null; R.settingsKey = null; R.msgKey = null; R.duressSetting = null; R.duressUnreadable = false;
+  S.liveAt.value = 0;
+  R.hooks.stopMessaging?.(); // whatever messaging decrypted goes with the keys
 }
 
 /** Throws when the app is showing the offline copy: anything that needs the vault waits for a connection. */
@@ -74,6 +86,8 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     await waitForHold(gate);
     const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
     secret = rel.secret;
+    // The human-to-human rule (@humid/msg live.js): when this phone's holder was last proven live.
+    S.liveAt.value = Date.now();
     showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the check. Unlocking your keys…" : "Unlocking your keys on this device…" });
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     const seed = both.subarray(0, SEED);
@@ -83,7 +97,7 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     const interrupt = { method: rel.interrupt.method, assurance: rel.interrupt.assurance };
     const out = await fn({ keys, dkeys, seed, interrupt, rec: rel.interrupt, live: rel.live, Suite });
     if (keepOpen) showInterrupt({ progress: 0.85, message: "Keys wiped from memory. Waiting for your vault to confirm…" });
-    else await endInterrupt(true, "Verified. Keys wiped from memory.", 620);
+    else await endInterrupt(true, "Verified. Keys wiped from memory.", COMPACT.has(purpose) ? 180 : 620);
     return out;
   } catch (e) {
     await endInterrupt(false, friendly(e), cancelled(e) ? 700 : 1600);
