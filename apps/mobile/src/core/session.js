@@ -21,14 +21,18 @@ import { showInterrupt, endInterrupt, withKeys, sessionKeys, clearKeys, holdCanc
 import { refresh, closeViewer } from "./vault.js";
 import { loadLedger } from "./ledger.js";
 import { loadDevices } from "./devices.js";
-import { loadRecovery, loadAlerts } from "./recovery.js";
+import { loadAlerts } from "./alerts.js";
 import { loadDuressSetting, loadDuress, loadCheckin, checkinArmed } from "./safety.js";
-import { pollJoin } from "./join.js";
-import { resumePass } from "./enroll.js";
 import { keepDraft, dropDrafts } from "./drafts.js";
 import { leave, initialLeave } from "./leave.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
+
+// Setting up, joining and recovery load with their own screens (core/setup.js). The few calls
+// boot, reconnect and reloadTab make into them fetch that code when they're first needed.
+const resumePass = () => import("./enroll.js").then((m) => m.resumePass());
+const pollJoin = () => import("./join.js").then((m) => m.pollJoin());
+const loadRecovery = () => import("./recovery.js").then((m) => m.loadRecovery());
 
 const idleMs = () => S.prefs.value.idleMs; // 1, 2 or 5 minutes (prefs.js caps it at 5)
 let link = null;                // the connection monitor (core/link.js)
@@ -81,11 +85,16 @@ export async function boot() {
   R.store = await openStore();
   watchMessaging();
   R.hooks.keyGone = keyGone;
-  S.hwGate.value = await bestHardwareGate();
   probeNfc().then((n) => { S.nfc.value = n; });
-  try { S.identity.value = await R.store.getIdentity(); } catch { S.identity.value = null; }
-  try { S.pass.value = await wallet().get(); } catch { S.pass.value = null; }
-  try { S.offlineReady.value = !!(await R.store.getOffline()); } catch { S.offlineReady.value = false; }
+  // Independent of each other once the store is open: the native gate probe (an IPC round
+  // trip), the identity record, the wallet and the offline copy, at the same time.
+  const [hw, identity, pass, offline] = await Promise.all([
+    bestHardwareGate(),
+    R.store.getIdentity().catch(() => null),
+    wallet().get().catch(() => null),
+    R.store.getOffline().then((o) => !!o, () => false),
+  ]);
+  batch(() => { S.hwGate.value = hw; S.identity.value = identity; S.pass.value = pass; S.offlineReady.value = offline; });
   const id = S.identity.value;
   const raw = (typeof __HUMID_SIM__ !== "undefined" && __HUMID_SIM__ === true) ? (await startSim()).fetch : globalThis.fetch.bind(globalThis);
   // A pin compiled into the app always wins over one the record remembers (a record is

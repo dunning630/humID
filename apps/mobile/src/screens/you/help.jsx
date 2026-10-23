@@ -7,7 +7,8 @@ import { CodeBox, CodeInput, QrCode, ChipAccess } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
-import { offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, stationLookup, stationReadChip, stationVerify, chipReader } from "../../core/index.js";
+import { chipReader } from "../../core/index.js";
+import { offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, stationLookup, stationReadChip, stationVerify } from "../../core/setup.js";
 import { back, twelve, Countdown, Check } from "./common.jsx";
 
 export function Help() {

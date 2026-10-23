@@ -8,7 +8,8 @@ import { VIA } from "../../ui/labels.js";
 import { CodeBox, CodeInput } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { loadDevices, myAccountCheck, findLink, approveLink, removeDevice } from "../../core/index.js";
+import { loadDevices, findLink, approveLink, removeDevice } from "../../core/index.js";
+import { myAccountCheck } from "../../core/setup.js";
 import { back, twelve } from "./common.jsx";
 
 

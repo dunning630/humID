@@ -9,7 +9,8 @@ import { CodeBox, CodeInput } from "../../ui/codes.jsx";
 import { fmtDate, groupKey } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { serverHost, VERSION, PLATFORM, SIM, MODULES } from "../../core/config.js";
-import { eraseEverything, loadAdminSummary, findAdminRequest, approveAdminRequest, resetSimulation } from "../../core/index.js";
+import { eraseEverything, resetSimulation } from "../../core/index.js";
+import { loadAdminSummary, findAdminRequest, approveAdminRequest } from "../../core/setup.js";
 import { back, twelve, Countdown, Fact, Disclosure } from "./common.jsx";
 
 const HEALTH = { ok: ["mint", "Running normally"], warn: ["amber", "Needs a look"], bad: ["danger", "Needs attention"] };

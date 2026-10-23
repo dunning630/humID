@@ -1,7 +1,7 @@
 // Activity: the holder's own access ledger, verified on this phone. One line says it was
 // verified and when; the details (how many events, who signed, the public log) open from
 // it. Rows carry no hashes: tapping one shows the event's proof in words.
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { Icon } from "../brand/icons.jsx";
 import { Sheet, Banner, Empty, Row } from "../ui/kit.jsx";
 import { TabBanners } from "./vault.jsx";
@@ -87,13 +87,19 @@ export function Activity() {
   const l = S.ledger.value;
   const [details, setDetails] = useState(false);
   const [picked, setPicked] = useState(null);
-  const entries = l?.entries ? [...l.entries].reverse() : [];
-  const groups = [];
-  for (const e of entries) {
-    const k = dayLabel(e.at);
-    if (!groups.length || groups[groups.length - 1].k !== k) groups.push({ k, items: [] });
-    groups[groups.length - 1].items.push(e);
-  }
+  // Described and grouped once per ledger page, not on every render (opening an event's sheet,
+  // a details toggle): up to 300 entries.
+  const groups = useMemo(() => {
+    const out = [];
+    for (const e of l?.entries ? [...l.entries].reverse() : []) {
+      const k = dayLabel(e.at);
+      if (!out.length || out[out.length - 1].k !== k) out.push({ k, items: [] });
+      const x = describe(e, l.names);
+      out[out.length - 1].items.push({ e, x, where: [...x.meta.filter(Boolean), x.proof ? eventProof(e).short : null].filter(Boolean).join(" · ") });
+    }
+    return out;
+  }, [l]);
+  const entries = l?.entries || [];
   const c = S.continuity.value;
   return (
     <main class="screen tabs">
@@ -135,14 +141,13 @@ export function Activity() {
         <section key={g.k}>
           <div class="day">{g.k}</div>
           <div class="rows">
-            {g.items.map((e) => {
-              const x = describe(e, l.names);
+            {g.items.map(({ e, x, where }) => {
               return (
                 <button class="event" data-kind={KINDS[x.tone]} key={e.seq} onClick={() => setPicked({ e, x })} style={{ width: "100%", textAlign: "left" }}>
                   <Icon name={x.icon} />
                   <span style={{ minWidth: 0 }}>
                     <span class="what" style={{ display: "block" }}>{x.title}</span>
-                    <span class="where" style={{ display: "block" }}>{[...x.meta.filter(Boolean), x.proof ? eventProof(e).short : null].filter(Boolean).join(" · ")}</span>
+                    <span class="where" style={{ display: "block" }}>{where}</span>
                   </span>
                   <time dateTime={new Date(e.at).toISOString()}>{fmtTime(e.at)}</time>
                 </button>
