@@ -49,6 +49,7 @@ Android apps.
 |---|---|---|
 | `HUMID_DOMAIN` | (required) | The server's domain. |
 | `HUMID_INTERNAL_SK`, `HUMID_INTERNAL_PK` | (generated) | Key pair the gateway uses to sign calls to the other services. |
+| `HUMID_CORE_STATEMENT_SK`/`_PK`, `HUMID_KEYS_STATEMENT_SK`/`_PK` | (generated) | Statement keys (SRV-30): identity and the ledger (core) and keyshare (keys) sign what the gateway can't make up, so its key alone releases and deletes nothing. The private halves go only to those services, never the gateway. `./setup.sh` adds them to an existing `.env`. |
 | `HUMID_DEVICE_POLICY` | `attested` | Which devices may join and sign in. `attested`: phones whose secure chip proves every live face or fingerprint check. `biometric`: also biometric-only desktops (Touch ID, fingerprint readers), which can't prove it. `demo`: local testing only. No policy accepts a PIN or password. |
 | `HUMID_IOS_APP_ID` | (empty) | `<Apple Team ID>.app.humid.vault`. Needed to accept iPhones (App Attest). `setup.sh` asks for the Team ID. |
 | `HUMID_APP_ATTEST_ENV` | `production` | `development` only for Xcode debug builds. |

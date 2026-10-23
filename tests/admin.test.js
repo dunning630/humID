@@ -234,7 +234,7 @@ test("updates: the download must be signed by a pinned release key and match Git
 });
 
 test("settings: the console's port can't be the one the tunnel forwards", () => {
-  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b" };
+  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b", HUMID_CORE_STATEMENT_SK: "c", HUMID_CORE_STATEMENT_PK: "d", HUMID_KEYS_STATEMENT_SK: "e", HUMID_KEYS_STATEMENT_PK: "f" };
   validate({ ...ok, HUMID_ADMIN_PORT: "8490" });
   assert.throws(() => validate({ ...ok, HUMID_PORT: "8480", HUMID_ADMIN_PORT: "8480" }), /tunnel/);
   assert.throws(() => validate({ ...ok, HUMID_ADMIN_PORT: "0" }), /HUMID_ADMIN_PORT/);
