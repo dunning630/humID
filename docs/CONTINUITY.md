@@ -79,7 +79,9 @@ account's recovery-mode statement. New parts then come from a new line, the
 epoch is bound into the card and key encryption and the witness piece, the
 server deletes every older piece and cancels recoveries under way, and parts
 of different epochs never combine. So a lost card or a removed witness's
-piece, wherever it is (including old server backups), opens nothing.
+piece, wherever it is (including old server backups), can't be combined with
+anything new. Two old pieces still fit each other, because the seed `A`
+doesn't change; destroy old cards. Rotating `A` (VAULT-03) is the follow-up.
 
 ### The identity anchor (ICAO 9303)
 

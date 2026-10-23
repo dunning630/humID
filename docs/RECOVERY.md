@@ -67,10 +67,18 @@ You → Recovery.
   witnesses, ID chip, security keys), each with its own live check. Only then
   is the new statement signed and sent. The recovery service refuses the
   switch (`escrow_remains`) while anything is left, and cancels any recovery
-  under way when it happens. Pieces already in other people's hands (a printed
-  card, a witness's phone) can't be deleted from here. The switch also starts
-  a new set of pieces (a new epoch, below), so those pieces can never be
-  combined with anything again.
+  under way when it happens. The switch also starts a new set of pieces (a
+  new epoch, below).
+
+  **What switching doesn't undo.** It stops the server keeping or using any
+  recovery piece. It doesn't change the account key `A`. So pieces made before
+  the switch (a printed recovery card, a former witness's piece, card or key
+  blobs in an old server backup) still fit **each other**, and any two of them
+  could rebuild `A` offline. The epoch only stops them fitting new pieces. The
+  app tells the holder to destroy old cards. A holder who was holder-only from
+  setup never made any pieces, so this doesn't apply to them. Closing the gap
+  for switched accounts needs a new account key (seed rotation, VAULT-03, not
+  built yet). Once it exists, switching to holder-only should rotate the key.
 
 ### Recovery epochs: making old pieces useless
 
@@ -87,8 +95,11 @@ One live check signs a new epoch into the mode statement. Then:
 - `combineQuorum` refuses to mix parts from two epochs.
 
 A removed witness's piece, an old card, or its blob in an old server backup
-then opens nothing, anywhere. You set up your proofs again. Every mode switch
-also starts a new epoch.
+then can't be combined with anything new. You set up your proofs again. Every
+mode switch also starts a new epoch. Two **old** pieces still fit each other,
+because `A` itself doesn't change. So destroy old cards, and don't count on a
+new epoch against someone who could gather two old pieces (seed rotation,
+VAULT-03, is the follow-up).
 
 ### What the operator can and can't do
 
@@ -266,10 +277,12 @@ longer than any check-in window.
 
 - Holder-only means what it says. Lose every device and every holder-held
   backup, and the vault is gone. HumID can't help, and setup says so plainly.
-- Making new recovery pieces makes old pieces useless for **recovery**. It
-  doesn't change the account seed. Someone who already rebuilt the seed (from
-  two old pieces, before the change) keeps it. Rotating the seed itself is the
-  follow-up below.
+- Making new recovery pieces (and switching modes) stops old pieces fitting
+  new ones. It doesn't change the account seed, so two old pieces still
+  rebuild it, and someone who already rebuilt it keeps it. That includes an
+  account that switched from hardened to holder-only: it's protected against
+  everything new, not against old pieces brought together. Rotating the seed
+  itself is the follow-up below.
 
 - Alerts appear when the owner (or a witness) opens HumID. There are no push or email alerts yet.
 - Removing a device does not rotate `A`. A thief who defeated a lost phone's
