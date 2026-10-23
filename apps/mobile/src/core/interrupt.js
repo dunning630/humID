@@ -14,15 +14,8 @@ import * as S from "./state.js";
 import { R, SEED, wipe, sleep, localChallenge } from "./runtime.js";
 import { toast, friendly, cancelled, haptic } from "./notify.js";
 
-export function gateLabel(method) {
-  return ({
-    "ios-keychain-biometry": "Face ID or Touch ID",
-    "android-keystore-biometric": "your face or fingerprint",
-    "macos-keychain-biometry": "Touch ID",
-    "windows-winbio-fingerprint": "your fingerprint",
-    "linux-fprintd-keyring": "your fingerprint",
-  })[method] || "your face or fingerprint";
-}
+// The gate methods' names live with the app's other labels (ui/labels.js: pure words, no kernel).
+export { gateLabel } from "../ui/labels.js";
 
 /**
  * Checks that are part of a conversation's rhythm (sending, opening a conversation) show as a
@@ -40,7 +33,7 @@ export function holdCancel() { holdWaiter?.reject(new Error(CANCELLED)); holdWai
 export const waitForHold = (gate) => gate.needsHold ? new Promise((resolve, reject) => { holdWaiter = { resolve, reject }; }) : null;
 
 export async function endInterrupt(ok, message, ms) {
-  if (ok || message !== "The check was cancelled.") haptic(ok);
+  if (ok || message !== "The live check was cancelled.") haptic(ok);
   showInterrupt({ state: ok ? "verified" : "failed", needsHold: false, progress: 1, message });
   await sleep(ms);
   S.interrupt.value = null;
@@ -118,7 +111,7 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
     if (rel.handle) await keepGateHandle(id, rel.handle);
     // The human-to-human rule (@humid/msg live.js): when this phone's holder was last proven live.
     S.liveAt.value = Date.now();
-    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the check. Unlocking your keys…" : "Unlocking your keys on this device…" });
+    showInterrupt({ needsHold: false, progress: 0.45, message: rel.live ? "Your phone's secure chip confirmed the live check. Unlocking your keys…" : "Unlocking your keys on this device…" });
     both = await Suite.unwrapSeed(secret, id.wrapped, fromB64(id.bindingId));
     const seed = both.subarray(0, SEED);
     keys = Suite.deriveKeys(seed);

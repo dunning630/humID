@@ -59,7 +59,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::probe,
             commands::enroll,
             commands::release,
-            commands::forget
+            commands::forget,
+            commands::enabled_accessibility_services
         ])
         .setup(|app, api| {
             #[cfg(mobile)]

@@ -45,8 +45,131 @@ test("one vocabulary: 'check' is the biometric; the timer is Heartbeat, the comp
   for (const f of faces) assert.doesNotMatch(noComments(read(f)), /safe mode/i, `${f} calls the duress unlock "safe mode"`);
 });
 
+/** The quoted strings and JSX text on each line of the screens, the kit and the kernel. */
+function strings() {
+  const out = [];
+  const files = [...faces, ...all.filter((x) => x.startsWith("core/") && x.endsWith(".js")), "ui/labels.js"];
+  for (const f of files) noComments(read(f)).split("\n").forEach((line, i) => {
+    const s = [...line.matchAll(/"((?:[^"\\]|\\.)*)"|`([^`]*)`|>([^<>{}]+)</g)].map((m) => m[1] ?? m[2] ?? m[3]).join(" | ");
+    if (s) out.push([`${f}:${i + 1}`, s]);
+  });
+  return out;
+}
+
+test("one vocabulary: the act is a 'live check'; helpers are witnesses; the duress unlock is the duress gesture", () => {
+  const RULES = [
+    // "a check", "one check", "a fresh check", "a face or fingerprint check" → "a live check" (app.md 3b)
+    [/\b(?:a|one|its own|another|fresh|biometric) (?:face or fingerprint )?check\b(?![- ]?(?:in|box|list|ed|s)\b)/i, 'say "live check"'],
+    [/(?<!live )face or fingerprint check/i, 'say "live check" (or "face or fingerprint match")'],
+    [/biometric check/i, 'say "live check"'],
+    [/\b(?:recovery |older )contacts\b/i, 'the people are "witnesses"'],
+    [/duress unlock/i, 'say "the duress gesture"'],
+    [/one of (?:the )?two (?:things|proofs)/i, "use RECOVERY_RULE / CARD_IS_ONE (ui/labels.js)"],
+  ];
+  const hits = [];
+  for (const [where, s] of strings()) for (const [re, why] of RULES) if (re.test(s)) hits.push(`${where}: ${why}: ${s.slice(0, 110)}`);
+  assert.deepEqual(hits, []);
+});
+
+test("label maps live once, in ui/labels.js (gate methods, how a device joined, recovery proofs)", () => {
+  for (const f of [...faces, ...all.filter((x) => x.startsWith("core/") && x.endsWith(".js"))]) {
+    const t = noComments(read(f));
+    assert.doesNotMatch(t, /"ios-keychain-biometry":/, `${f} has its own gate-method names`);
+    assert.doesNotMatch(t, /\{ register: "/, `${f} has its own "via" names`);
+    assert.doesNotMatch(t, /\bquorum: "(?:t|T)wo proofs"/, `${f} has its own recovery-method names`);
+    assert.doesNotMatch(t, /\{ witness: "witnesses"/, `${f} has its own proof-kind names`);
+  }
+  const labels = read("ui/labels.js");
+  for (const k of ["gateName", "gateLabel", "gateDetail", "VIA", "RECOVERY_METHOD", "PROOF_KIND", "RECOVERY_RULE", "CARD_IS_ONE", "proofsSetUp"]) assert.match(labels, new RegExp(`export (?:const|function) ${k}\\b`));
+  // ui/labels.js is words only: the kernel may import it, it imports nothing of the kernel's but state
+  assert.doesNotMatch(noComments(labels), /from "\.\.\/core\/(?!state\.js)/);
+  // the recovery proof count: the same sentence on create, Protection and Recovery
+  for (const f of ["screens/create.jsx", "screens/you/protect.jsx", "screens/you/recovery.jsx"]) assert.match(read(f), /RECOVERY_RULE|RECOVERY_IF_LOST|CARD_IS_ONE/, `${f} says the recovery rule in its own words`);
+});
+
+// The honest promise (overnight review, Oct 2026): what the app and the documents an assessor
+// reads first must not claim. Any enrolled face or finger opens a phone, two-proof recovery
+// opens a vault, a computer's checks aren't chip-proven, and HumID does no liveness detection
+// of its own: it relies on the phone's matcher.
+const OVERCLAIM = [
+  [/only your (live )?face or fingerprint/i, "any face or finger enrolled on the phone, and two-proof recovery, open it too"],
+  [/living you|a live you\b/i, "a biometric match proves an enrolled face or finger, not a living person"],
+  [/proven by your phone's (secure )?chip/i, "not on a computer or in the web app: say it only where the device's own assurance is hardware (ui/labels.js)"],
+  [/zero[- ]knowledge/i, "the vault is end-to-end encrypted storage, not a zero-knowledge proof system"],
+  [/verified human|liveness detection(?! of its own)(?!;)|live human ✓/i, "HumID performs no liveness detection; it proves a biometric match on a proven phone"],
+  [/for your eyes only/i, "anyone the phone's owner enrolled can open it"],
+];
+const userText = (f) => noComments(read(f));
+const DOCS = ["README.md", "docs/SECURITY.md", "docs/ARCHITECTURE.md"];
+const docText = (f) => readFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), "utf8");
+
+test("no screen, toast or first-read document overclaims the promise", () => {
+  const hits = [];
+  const core = all.filter((x) => x.startsWith("core/") && x.endsWith(".js"));
+  for (const f of [...faces, ...core, "ui/labels.js"]) userText(f).split("\n").forEach((line, i) => {
+    for (const [re, why] of OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  for (const f of DOCS) docText(f).split("\n").forEach((line, i) => {
+    // a doc may name a claim in order to deny it ("not a zero-knowledge proof system", "no additional liveness detection")
+    if (/\bnot\b|\bno\b|n't|never/i.test(line)) return;
+    for (const [re, why] of OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
+  });
+  assert.deepEqual(hits, []);
+});
+
+test("a past proof is described by the device that made it, not by this one (APP-09)", () => {
+  const a = noComments(read("screens/activity.jsx"));
+  assert.doesNotMatch(a, /S\.session\.value\?\.assurance/, "Activity reads the viewing device's assurance for past events");
+  assert.match(a, /eventProof\(e\)/);
+  // the chip claim is made only where the device's assurance is known to be hardware
+  for (const f of faces) {
+    for (const [i, line] of noComments(read(f)).split("\n").entries()) {
+      if (/this phone's (secure )?chip/i.test(line)) assert.match(line, /hardware|mine/, `${f}:${i + 1} claims this phone's chip unconditionally`);
+    }
+  }
+});
+
+test("the first paint's kernel never imports setting up, joining or recovery (R12: they load with their screens)", () => {
+  const LAZY = ["enroll.js", "join.js", "recovery.js", "recmode.js", "seckey.js", "operators.js"];
+  // what core/index.js reaches statically, module by module
+  const seen = new Set(), stack = ["core/index.js"];
+  while (stack.length) {
+    const f = stack.pop();
+    if (seen.has(f)) continue;
+    seen.add(f);
+    for (const m of noComments(read(f)).matchAll(/(?:^|\n)\s*(?:import|export)\b[^;]*?from "(\.{1,2}\/[^"]+)"/g)) {
+      const p = new URL(m[1], `file:///${f}`).pathname.slice(1);
+      if (all.includes(p)) stack.push(p);
+    }
+  }
+  assert.deepEqual(LAZY.filter((x) => seen.has(`core/${x}`)), [], "reached from core/index.js");
+  assert.ok(seen.has("core/session.js") && seen.has("core/alerts.js"), "the walk found the kernel");
+  // and the first-paint screens use only core/index.js
+  for (const f of ["main.jsx", "screens/welcome.jsx", "screens/lock.jsx", "screens/vault.jsx", "ui/kit.jsx", "ui/shell.jsx"]) assert.doesNotMatch(read(f), /core\/setup\.js/, `${f} pulls core/setup.js into the first paint`);
+});
+
+test("small things the first paint and every second don't pay for (R12)", () => {
+  // the web icon is a vector of the mark, not a 55 KB trace
+  const fav = readFileSync(`${src}favicon/favicon.svg`, "utf8");
+  assert.ok(fav.length < 3072, `favicon.svg is ${fav.length} bytes`);
+  assert.doesNotMatch(fav, /<image|base64/, "no embedded raster");
+  for (const c of ["#0B1410", "#F5A623", "#6FE3B4"]) assert.match(fav, new RegExp(c), `the mark's ${c}`);
+  // the viewer's "Open for N s" ticks in its own leaf, not the whole document every second
+  const v = noComments(read("screens/vault.jsx"));
+  const shell = v.slice(v.indexOf("function ViewerShell("), v.indexOf("\n}\n", v.indexOf("function ViewerShell(")));
+  assert.doesNotMatch(shell, /useNow\(/, "ViewerShell re-renders every second");
+  assert.match(v, /function OpenFor\(/);
+  // Activity describes its entries once per ledger page
+  const a = noComments(read("screens/activity.jsx"));
+  assert.match(a, /useMemo\(\(\) => \{[\s\S]*describe\(e, l\.names\)[\s\S]*\}, \[l\]\)/);
+  // boot: the independent reads run together once the store is open
+  const sess = noComments(read("core/session.js"));
+  const boot = sess.slice(sess.indexOf("export async function boot()"), sess.indexOf("\n}\n", sess.indexOf("export async function boot()")));
+  assert.match(boot, /Promise\.all\(\[\s*bestHardwareGate\(\)/);
+});
+
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
-  const LEAVES = new Set(["index.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
+  const LEAVES = new Set(["index.js", "setup.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
     // 4.0: the Messages screens load the messaging kernel with their own chunk, so the
     // protocol code never reaches the first paint (core/index.js says so)
     "messaging.js"]);
@@ -113,6 +236,68 @@ test("the check overlay names itself plainly and takes focus; steppers say the t
   assert.match(kit, /class="interrupt"[^\n]*tabIndex=\{-1\}/);
   assert.match(kit, /SEAL_STEPS = \["Sealing on this phone", "Sending", "Stored"\]/);
   for (const f of screens) assert.doesNotMatch(read(f), /steps=\{\[/, `${f} has its own stepper labels`);
+});
+
+test("every layer that takes the screen is modal: focus in, the rest inert, focus back (APP-12)", () => {
+  const kit = noComments(read("ui/kit.jsx"));
+  assert.match(kit, /export function useModal\(/);
+  assert.match(kit, /\.inert = true/);
+  for (const fn of ["Interrupt", "ChipReadOverlay", "Sheet", "Pushed"]) {
+    const body = kit.slice(kit.indexOf(`export function ${fn}(`), kit.indexOf("\n}\n", kit.indexOf(`export function ${fn}(`)));
+    assert.match(body, /useModal\(root/, `${fn} uses useModal`);
+  }
+  const v = noComments(read("screens/vault.jsx"));
+  const shell = v.slice(v.indexOf("function ViewerShell("), v.indexOf("\n}\n", v.indexOf("function ViewerShell(")));
+  assert.match(shell, /useModal\(root\)/, "the viewer uses useModal");
+  assert.match(shell, /<section class="viewer"/, "the viewer is a section, so its header isn't a second page banner");
+  // Welcome and Lock name the page
+  for (const f of ["screens/welcome.jsx", "screens/lock.jsx"]) assert.match(read(f), /<h1 class="brand"><Wordmark/, `${f} has an h1`);
+});
+
+test("controls are the product's own 44 px: segmented controls, the search field, no inline min-height under it", () => {
+  const css = noComments(read("brand/base.css"));
+  assert.match(css, /\.seg button \{ min-height: var\(--tap\)/, ".seg buttons are 44 px");
+  assert.doesNotMatch(css, /\.search input \{[^}]*min-height: 40px/);
+  // (a link inside a sentence, like the location stamp's "Map", is exempt, as in WCAG 2.5.8)
+  for (const f of faces) assert.doesNotMatch(noComments(read(f)).replace(/<button class="link" style=\{\{ minHeight: 0 \}\} type="button"/g, ""), /<button[^>]*minHeight: (?:[0-3]?\d|4[0-3])\b/, `${f} shrinks a button below 44 px`);
+});
+
+test("spacing is on the token grid: screens use the mt-/mb- utilities, never an off-grid inline margin", () => {
+  const GRID = new Set([0, 4, 8, 12, 16, 20, 24, 32]);
+  const bad = [], sole = [];
+  for (const f of screens) noComments(read(f)).split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(/\bmargin(?:Top|Bottom|Left|Right): (\d+)\b/g)) if (!GRID.has(Number(m[1]))) bad.push(`${f}:${i + 1}: ${m[0]}`);
+    // a margin alone in an element's style is what the utilities are for
+    for (const m of line.matchAll(/<[a-z][a-z0-9]*\b[^<>]*\sstyle=\{\{ ?margin(?:Top|Bottom): ?\d+ ?\}\}/g)) sole.push(`${f}:${i + 1}: ${m[0].slice(0, 80)}`);
+  });
+  assert.deepEqual(bad, [], "off-grid margins");
+  assert.deepEqual(sole, [], "use class mt-N / mb-N");
+  const css = read("brand/base.css");
+  for (const [k, v] of [["mt-1", "s-1"], ["mt-2", "s-2"], ["mt-3", "s-3"], ["mt-4", "s-4"], ["mt-5", "s-5"], ["mt-6", "s-6"], ["mb-2", "s-2"], ["mb-3", "s-3"]]) assert.match(css, new RegExp(`\\.${k} \\{ margin-(?:top|bottom): var\\(--${v}\\)`), `.${k} is --${v}`);
+});
+
+/** WCAG relative luminance contrast of two #rrggbb colours. */
+function contrast(a, b) {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+/** `fg` at `alpha` over `bg`, as #rrggbb. */
+const over = (fg, alpha, bg) => "#" + [1, 3, 5].map((i) => Math.round(parseInt(fg.slice(i, i + 2), 16) * alpha + parseInt(bg.slice(i, i + 2), 16) * (1 - alpha)).toString(16).padStart(2, "0")).join("");
+
+test("light theme: mint text meets 4.5:1 on paper and on its own wash over every surface (axe, app review)", () => {
+  const t = read("brand/tokens.css");
+  const light = t.slice(t.indexOf(':root[data-theme="light"]'), t.indexOf("}", t.indexOf(':root[data-theme="light"]')));
+  const v = (k) => new RegExp(`--${k}:\\s*(#[0-9A-Fa-f]{6})`).exec(light)[1];
+  const mint = v("mint");
+  const [, r, g, b, a] = /--mint-wash:\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(light);
+  const washRgb = "#" + [r, g, b].map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+  assert.equal(washRgb.toLowerCase(), mint.toLowerCase(), "the wash is the mint itself, thinned");
+  for (const s of ["ground", "surface", "surface-2", "surface-3"]) {
+    assert.ok(contrast(mint, v(s)) >= 4.5, `mint on --${s}: ${contrast(mint, v(s)).toFixed(2)}`);
+    const wash = over(mint, Number(a), v(s));
+    assert.ok(contrast(mint, wash) >= 4.5, `mint on its wash over --${s}: ${contrast(mint, wash).toFixed(2)}`);
+  }
 });
 
 test("the brand is one token file; no font files; nothing filters or blurs what scrolls", () => {

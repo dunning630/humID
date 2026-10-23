@@ -10,7 +10,8 @@ import { fmtLeft } from "../ui/format.js";
 import { CodeBox, QrCode, ProofMeter, tierText, WAITS, ChipAccess, PROOFS } from "../ui/codes.jsx";
 import { TopBar, ConnectStep, SoleBiometric, BindButtons } from "./create.jsx";
 import * as S from "../core/state.js";
-import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, serverPinned, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/index.js";
+import { serverPinned } from "../core/index.js";
+import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/setup.js";
 import { parseCard } from "@humid/recovery";
 import { serverHost, DEMO_BUILD } from "../core/config.js";
 
@@ -43,11 +44,11 @@ export function Join() {
       {step === 1 && (
         <>
           <div class="eyebrow">{n(1)} · Bring your HumID here</div>
-          <h1 style={{ marginTop: 8 }}>How do you want to get in?</h1>
-          <p class="lede" style={{ marginTop: 10 }}>{holderOnly
+          <h1 class="mt-2">How do you want to get in?</h1>
+          <p class="lede mt-3">{holderOnly
             ? "Your HumID opens only on your own devices, so this one joins from a device you already use. There's no other way in, by your choice."
             : "Your vault key never passes through the server in a form it can read, whichever you choose."}</p>
-          <div class="options" style={{ marginTop: 20 }}>
+          <div class="options mt-5">
             {(old ? [...ROUTES, ...OLD_ROUTES] : ROUTES).filter((r) => allowed.includes(r.id)).map((r) => (
               <button class="option" onClick={() => { S.joinMethod.value = r.id; S.joinStep.value = 2; setPrelude(true); }}>
                 <span class="lead"><Icon name={r.icon} /></span>
@@ -56,21 +57,21 @@ export function Join() {
               </button>
             ))}
           </div>
-          {!old && !holderOnly && <button class="link" style={{ marginTop: 14 }} onClick={() => setOld(true)}>I have an older recovery card or witnesses</button>}
+          {!old && !holderOnly && <button class="link mt-3" onClick={() => setOld(true)}>I have an older recovery card or witnesses</button>}
           {!holderOnly
-            ? <button class="link muted" style={{ marginTop: 6 }} onClick={() => setJoinMode(HOLDER_ONLY)}>I chose Only my own devices</button>
-            : <p class="fine" style={{ marginTop: 14 }}>Lost every device? Then no one can bring this HumID back: that's what Only my own devices means. You can create a new HumID instead.</p>}
-          {holderOnly && <button class="link muted" style={{ marginTop: 6 }} onClick={() => setJoinMode(null)}>I'm not sure: show every way in</button>}
+            ? <button class="link muted mt-2" onClick={() => setJoinMode(HOLDER_ONLY)}>I chose Only my own devices</button>
+            : <p class="fine mt-3">Lost every device? Then no one can bring this HumID back: that's what Only my own devices means. You can create a new HumID instead.</p>}
+          {holderOnly && <button class="link muted mt-2" onClick={() => setJoinMode(null)}>I'm not sure: show every way in</button>}
         </>
       )}
       {step === 2 && method === "link" && (
-        <JoinDetails eyebrow={n(2)} title="Approve from your other device" lede="First, lock this device to you with one check. Then it shows a code and a QR code. On your other device: You → Devices → Add a device."
+        <JoinDetails eyebrow={n(2)} title="Approve from your other device" lede="First, lock this device to you with one live check. Then it shows a code and a QR code. On your other device: You → Devices → Add a device."
           bindLabel="Continue" onBind={(demo, sole) => beginJoin("link", { useDemo: demo, soleBiometric: sole })} />
       )}
       {step === 2 && method === "quorum" && (prelude ? <Prelude eyebrow={n(2)} onNext={() => setPrelude(false)} /> : <QuorumEntry eyebrow={n(2)} />)}
       {step === 2 && method === "card" && <CardEntry eyebrow={n(2)} />}
       {step === 2 && method === "contacts" && (
-        <JoinDetails eyebrow={n(2)} title="Ask your witnesses" lede="Lock this device to you with one check, then send the code it shows to your witnesses. When enough of them approve, your vault opens here after 72 hours, unless you cancel from a device you still have."
+        <JoinDetails eyebrow={n(2)} title="Ask your witnesses" lede="Lock this device to you with one live check, then send the code it shows to your witnesses. When enough of them approve, your vault opens here after 72 hours, unless you cancel from a device you still have."
           bindLabel="Continue" onBind={(demo, sole) => beginJoin("contacts", { useDemo: demo, soleBiometric: sole })} />
       )}
       {step === 3 && <JoinWait eyebrow={n(3)} />}
@@ -90,9 +91,9 @@ function Prelude({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow} · What you'll need</div>
-      <h1 style={{ marginTop: 8 }}>Any two of these four</h1>
-      <p class="lede" style={{ marginTop: 10 }}>Recovery proves it's you with two different things. Then it waits, while every device that still has your HumID can veto.</p>
-      <div class="rows" style={{ marginTop: 18 }}>
+      <h1 class="mt-2">Any two of these four</h1>
+      <p class="lede mt-3">Recovery proves it's you with two different things. Then it waits, while every device that still has your HumID can veto.</p>
+      <div class="rows mt-4">
         {PROOFS.map((p) => <Row icon={p.icon} tone="mint" chevron={false} title={p.title} sub={PRELUDE_SUB[p.id]} />)}
       </div>
       <div class="section">
@@ -112,8 +113,8 @@ function JoinDetails({ eyebrow, title, lede, bindLabel, onBind, disabled, childr
   return (
     <>
       <div class="eyebrow">{eyebrow} · Lock this device to you</div>
-      <h1 style={{ marginTop: 8 }}>{title}</h1>
-      <p class="lede" style={{ marginTop: 10 }}>{lede}</p>
+      <h1 class="mt-2">{title}</h1>
+      <p class="lede mt-3">{lede}</p>
       {children}
       <div class="foot">
         <SoleBiometric checked={sole} onChange={setSole} id="sole-join" />
@@ -132,9 +133,9 @@ function QuorumEntry({ eyebrow }) {
   const [text, setText] = useState("");
   const state = cardState(text);
   return (
-    <JoinDetails eyebrow={eyebrow} title="Prove it's you" lede="One check locks this device to you first. Then you show your proofs, one at a time."
+    <JoinDetails eyebrow={eyebrow} title="Prove it's you" lede="One live check locks this device to you first. Then you show your proofs, one at a time."
       bindLabel="Continue" disabled={!!text.trim() && state !== "ok"} onBind={(demo, sole) => beginJoin("quorum", { useDemo: demo, cardInput: state === "ok" ? text : "", soleBiometric: sole })}>
-      <div class="field" style={{ marginTop: 16 }}>
+      <div class="field mt-4">
         <label for="qcard">Recovery card (if you have it handy)</label>
         <input autocorrect="off" id="qcard" class="input code" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
           value={text} onInput={(e) => setText(e.currentTarget.value)} />
@@ -150,9 +151,9 @@ function CardEntry({ eyebrow }) {
   const [text, setText] = useState("");
   const state = cardState(text);
   return (
-    <JoinDetails eyebrow={eyebrow} title="Use your recovery card" lede="Type the code from your card, then one check locks this device to you. Your vault opens here after 72 hours, and every device you still have is alerted and can cancel."
+    <JoinDetails eyebrow={eyebrow} title="Use your recovery card" lede="Type the code from your card, then one live check locks this device to you. Your vault opens here after 72 hours, and every device you still have is alerted and can cancel."
       bindLabel="Continue" disabled={state !== "ok"} onBind={(demo, sole) => beginJoin("card", { useDemo: demo, cardInput: text, soleBiometric: sole })}>
-      <div class="field" style={{ marginTop: 16 }}>
+      <div class="field mt-4">
         <label for="card">Recovery card</label>
         <input autocorrect="off" id="card" class="input code" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HUMID-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
           value={text} onInput={(e) => setText(e.currentTarget.value)} />
@@ -177,8 +178,8 @@ function JoinWait({ eyebrow }) {
       <div class="eyebrow">{eyebrow} · {p.method === "link" ? "Approve on your other device" : "Waiting for your vault"}</div>
       {p.method === "link" && (st?.check ? (
         <>
-          <h1 style={{ marginTop: 8 }}>Does your other device show this?</h1>
-          <p class="lede" style={{ marginTop: 10 }}>Your other device approved. Before this one joins, make sure it's your account: your other device shows a match code after approving.</p>
+          <h1 class="mt-2">Does your other device show this?</h1>
+          <p class="lede mt-3">Your other device approved. Before this one joins, make sure it's your account: your other device shows a match code after approving.</p>
           <CodeBox code={st.check} label="Match code" />
           <div class="actions">
             <button class="btn primary block" onClick={confirmJoin}><Icon name="fingerprint" />It matches: finish</button>
@@ -187,8 +188,8 @@ function JoinWait({ eyebrow }) {
         </>
       ) : (
         <>
-          <h1 style={{ marginTop: 8 }}>Enter this code on your other device</h1>
-          <p class="lede" style={{ marginTop: 10 }}>On the device that has your HumID: <b>You → Devices → Add a device</b>. It checks that this code matches this device's keys, then runs one check.</p>
+          <h1 class="mt-2">Enter this code on your other device</h1>
+          <p class="lede mt-3">On the device that has your HumID: <b>You → Devices → Add a device</b>. It checks that this code matches this device's keys, then runs one live check.</p>
           <CodeBox code={p.code} label="Device code" />
           <QrCode kind="link" code={p.code} expiresAt={p.expiresAt} />
           {!expired && <p class="fine center">Scan it from your other device, or type it. Expires in {fmtLeft(p.expiresAt - now)}</p>}
@@ -196,23 +197,23 @@ function JoinWait({ eyebrow }) {
       ))}
       {p.method === "card" && (
         <>
-          <h1 style={{ marginTop: 8 }}>Your vault opens here in {fmtLeft((releaseAt || 0) - now)}</h1>
-          <p class="lede" style={{ marginTop: 10 }}>Every device that still has your HumID was alerted and can cancel. This wait is what stops someone who found your card. You can close the app; it picks up where it left off.</p>
+          <h1 class="mt-2">Your vault opens here in {fmtLeft((releaseAt || 0) - now)}</h1>
+          <p class="lede mt-3">Every device that still has your HumID was alerted and can cancel. This wait is what stops someone who found your card. You can close the app; it picks up where it left off.</p>
           <div class="hero" style={{ flex: "0 0 auto", margin: "18px 0" }}><Mark state="scanning" size={120} /></div>
         </>
       )}
       {p.method === "quorum" && <QuorumWait p={p} st={st} now={now} />}
       {p.method === "contacts" && (
         <>
-          <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : "Send this code to your witnesses"}</h1>
-          <p class="lede" style={{ marginTop: 10 }}>{releaseAt
+          <h1 class="mt-2">{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : "Send this code to your witnesses"}</h1>
+          <p class="lede mt-3">{releaseAt
             ? "Enough witnesses approved. Every device that still has your HumID was alerted and can cancel during the wait."
             : <>Ask each witness to open HumID → <b>You → Help others → Help recover</b> and enter this code. Call them, so they know it's really you.</>}</p>
           {!releaseAt && <CodeBox code={p.code} label="Recovery code" />}
-          <div class="rows" style={{ marginTop: 14 }}><Row chevron={false} title="Witnesses who helped" trail={`${st?.approvals ?? 0}${st?.threshold ? ` of ${st.threshold} needed` : ""}`} /></div>
+          <div class="rows mt-3"><Row chevron={false} title="Witnesses who helped" trail={`${st?.approvals ?? 0}${st?.threshold ? ` of ${st.threshold} needed` : ""}`} /></div>
         </>
       )}
-      <div style={{ marginTop: 16 }}>
+      <div class="mt-4">
         {expired && p.method === "link" && <Banner tone="amber" icon="clock" title="That code expired" text="Get a fresh one: this phone stays locked to you, no need to start over." action="New code" onAction={renewLink} />}
         {st?.status === "expired" && p.method !== "link" && <Banner tone="amber" icon="clock" title="This expired" text="Start again to get a fresh code." />}
         {st?.status === "cancelled" && (st.reason === "holder_only"
@@ -253,15 +254,15 @@ function QuorumWait({ p, st, now }) {
   const keyHere = has("key") && !!p.hasKey;
   return (
     <>
-      <h1 style={{ marginTop: 8 }}>{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
-      <p class="lede" style={{ marginTop: 10 }}>{releaseAt
+      <h1 class="mt-2">{releaseAt ? `Your vault opens here in ${fmtLeft(releaseAt - now)}` : kinds.length ? "One proof in. Add a second" : "Show your proofs"}</h1>
+      <p class="lede mt-3">{releaseAt
         ? <>Two proofs matched ({st.evidence}). Every device that still has your HumID was alerted and can veto. {st.duress && <b>The wait is doubled because of a recent duress signal.</b>}</>
         : "Any two different proofs. Open one below to add it."}</p>
-      <div style={{ marginTop: 12 }}><ProofMeter have={kinds} /></div>
-      {tier && <p class="small t2" style={{ marginTop: 8 }}><Icon name="clock" /> Wait with these proofs: {tier}</p>}
-      {releaseAt && has("key") && !p.hasKey && !ended && <div style={{ marginTop: 12 }}><Banner tone="amber" icon="seckey" title="One more tap with your security key" text="Your vault counted your key, but this phone didn't keep its secret (the app closed in between). Hold the key here again, or this phone can't open your vault when the wait ends." /></div>}
+      <div class="mt-3"><ProofMeter have={kinds} /></div>
+      {tier && <p class="small t2 mt-2"><Icon name="clock" /> Wait with these proofs: {tier}</p>}
+      {releaseAt && has("key") && !p.hasKey && !ended && <div class="mt-3"><Banner tone="amber" icon="seckey" title="One more tap with your security key" text="Your vault counted your key, but this phone didn't keep its secret (the app closed in between). Hold the key here again, or this phone can't open your vault when the wait ends." /></div>}
       {(!releaseAt || (has("key") && !p.hasKey)) && !ended && (
-        <div class="stack" style={{ marginTop: 14 }}>
+        <div class="stack mt-3">
           <div class="rows">
             <Row icon="users" tone={has("witness") ? "mint" : ""} title="Witnesses" sub={has("witness") ? "Approved" : st?.threshold ? `${st.approvals ?? 0} of ${st.threshold} have approved` : "A majority of your witnesses approve"} trail={has("witness") && <Icon name="check" />} onClick={() => setOpen(open === "witness" ? null : "witness")} />
             {open === "witness" && !has("witness") && (
@@ -299,7 +300,7 @@ function QuorumWait({ p, st, now }) {
               <div style={{ padding: "0 16px 16px" }} class="stack">
                 {nfc?.available ? (
                   <>
-                    <div class="field" style={{ marginTop: 0 }}>
+                    <div class="field mt-0">
                       <label for="join-key-pin">Your security key's PIN</label>
                       <input id="join-key-pin" class="input code" type="password" autocomplete="off" autocorrect="off" spellcheck={false} maxLength={63} value={pin} onInput={(e) => { setPin(e.currentTarget.value); setPinProblem(null); }} aria-describedby="join-key-hint" />
                       {pinProblem ? <span id="join-key-hint" class="hint danger" role="alert">{pinProblem.message}</span> : <span id="join-key-hint" class="hint">Only the key checks it. Eight wrong tries lock the key for good.</span>}
@@ -329,9 +330,9 @@ function Mismatch() {
   return (
     <main class="screen">
       <div class="hero" style={{ flex: "0 0 auto", marginTop: "8vh" }}><Mark state="failed" size={140} /></div>
-      <h1 class="center" style={{ marginTop: 18 }}>Something is wrong</h1>
+      <h1 class="center mt-4">Something is wrong</h1>
       <p class="lede center" style={{ margin: "10px auto 0" }}>The account offered to this device wasn't yours. Nothing was added, and nothing is unlocked.</p>
-      <div style={{ marginTop: 18 }}>
+      <div class="mt-4">
         <Banner tone="danger" icon="alert" title="Don't try again on this server yet" text="Either a device was added to the wrong HumID, or the server handed you someone else's account. Tell whoever runs it what you saw." />
       </div>
       <div class="foot">

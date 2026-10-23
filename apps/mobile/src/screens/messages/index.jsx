@@ -58,19 +58,19 @@ function List() {
         <>
           {m.contacts.length > 0 && <YouLive waiting={waiting} />}
           {m.requests.length > 0 && (
-            <section style={{ marginTop: 14 }}>
+            <section class="mt-3">
               <div class="eyebrow">Asking to connect</div>
               <div class="rows">
                 {m.requests.map((r) => (
                   <Row key={r.id} icon="users" tone="amber" title={r.label ? `${r.label} is asking to connect` : "Someone is asking to connect"}
-                    sub={<>{r.count > 1 ? `${r.count} requests used your invite; one check opens them all` : "Used your invite"} · {fmtAgo(r.at)}</>}
+                    sub={<>{r.count > 1 ? `${r.count} requests used your invite; one live check opens them all` : "Used your invite"} · {fmtAgo(r.at)}</>}
                     onClick={() => go("request", { id: r.id })} />
                 ))}
               </div>
             </section>
           )}
           {m.contacts.length > 0 && (
-            <section style={{ marginTop: 14 }}>
+            <section class="mt-3">
               {(m.requests.length > 0 || m.invites.length > 0) && <div class="eyebrow">Conversations</div>}
               <div class="rows">
                 {m.contacts.map((c) => <ContactRow key={c.id} c={c} />)}
@@ -78,7 +78,7 @@ function List() {
             </section>
           )}
           {m.invites.length > 0 && (
-            <section style={{ marginTop: 14 }}>
+            <section class="mt-3">
               <div class="eyebrow">Invites out</div>
               <div class="rows">
                 {m.invites.map((i) => (
@@ -99,7 +99,7 @@ function List() {
               </div>}
             </Empty>
           )}
-          {today > 0 && <p class="fine center" style={{ marginTop: 18 }}>Today on this HumID server, about {today.toLocaleString()} messages, requests and approvals were made with a live check.</p>}
+          {today > 0 && <p class="fine center mt-4">Today on this HumID server, about {today.toLocaleString()} messages, requests and approvals were made with a live check.</p>}
         </>
       )}
       {choosing && (
@@ -155,7 +155,7 @@ function WhatLive({ onClose, name }) {
   return (
     <Sheet onClose={onClose} title="Here, away, and live checks">
       <div class="rows">
-        <Row icon="fingerprint" tone="mint" chevron={false} title="A live check" sub="Your face or fingerprint on your phone, proven by its secure chip. Opening, sending and approving each take one." />
+        <Row icon="fingerprint" tone="mint" chevron={false} title="A live check" sub="A face or fingerprint match on your phone, signed by its secure chip. It proves a face or finger enrolled on that phone was matched, not whose. Opening, sending and approving each take one." />
         <Row icon="person" tone="mint" chevron={false} title="Here" sub="You've had a live check in the last 5 minutes. Then you're away, and your messages lock on this phone until your next one." />
         <Row icon="users" tone="mint" chevron={false} title="Both here" sub={`You and ${name || "they"} have both had a live check in the last few minutes, each confirmed by their own phone. It doesn't prove who wrote the words.`} />
       </div>
@@ -216,13 +216,13 @@ function Chat() {
       )}
       {c.status === "closed" && <Banner icon="info" title="This conversation has ended" text="You can still read and delete what's here." />}
       {c.safetyMismatch > 0 && <SafetyAlert id={id} name={c.label} />}
-      {c.duressAt > 0 && <Banner tone="danger" icon="siren" role="alert" title={`${c.label} may be under duress`} text={`Their message ${fmtAgo(c.duressAt)} came from a duress unlock. Check on them in a safe way.`} />}
+      {c.duressAt > 0 && <Banner tone="danger" icon="siren" role="alert" title={`${c.label} may be under duress`} text={`Their message ${fmtAgo(c.duressAt)} came after an unlock with their duress gesture. Check on them in a safe way.`} />}
       {sealed ? (
         <div class="thread sealed-thread">
           {Array.from({ length: t?.count || 0 }, (_, i) => <span class={`ghost ${i % 3 === 1 ? "out" : "in"}`}><Icon name="lock" />Message · locked</span>)}
           <div class="sealed">
             <Icon name="lock" />
-            <h3>{c.waiting ? `${c.waiting} new · locked` : "Locked"}</h3>
+            <h2 class="h3">{c.waiting ? `${c.waiting} new · locked` : "Locked"}</h2>
             <p class="small muted">You've been away for a few minutes, so this conversation locked itself on your phone. Nothing in it opens until your next live check.</p>
             <button class="btn primary" onClick={() => Msg.verifyToRead()}><Icon name="fingerprint" />Open with a live check</button>
           </div>
@@ -266,7 +266,7 @@ function MessageActions({ id, m, connected, onClose }) {
   return (
     <Sheet onClose={onClose} title={m.dir === "out" ? "Your message" : "Their message"}>
       <p class="small muted">{fmtTime(m.at)} · confirmed by {m.dir === "out" ? "your" : "their"} live check{m.expiresAt ? ` · disappears in ${fmtLeft(m.expiresAt - Date.now())}` : ""}</p>
-      <div class="rows" style={{ marginTop: 12 }}>
+      <div class="rows mt-3">
         <Row icon="trash" title="Delete for me" sub="Gone from this phone. Their copy stays." onClick={() => { onClose(); Msg.deleteMessage(id, m.id); }} />
         {m.dir === "out" && connected && <Row icon="trash" danger title="Delete for both of you" sub="Erased from their phone too; if it hasn't arrived, it never will. Takes a live check." onClick={() => { onClose(); Msg.deleteMessage(id, m.id, { forBoth: true }); }} />}
       </div>
@@ -298,7 +298,7 @@ function Invite() {
       {!made ? (
         <>
           <p class="t2">You'll get a code for one person. They scan it and ask to connect with a live check; you see their note and approve with yours.</p>
-          <div class="field" style={{ marginTop: 16 }}>
+          <div class="field mt-4">
             <label for="inv-label">Who is it for? <span class="muted">(only you see this)</span></label>
             <input id="inv-label" class="input" maxLength={40} autocomplete="off" placeholder="e.g. Sam" value={label} onInput={(e) => setLabel(e.currentTarget.value)} />
           </div>
@@ -311,13 +311,13 @@ function Invite() {
       ) : (
         <>
           <p class="t2 center">{made.label ? `Let ${made.label} scan this` : "Let them scan this"}, in person if you can.</p>
-          <div class="center" style={{ marginTop: 12 }}><QrCode payload={Msg.inviteQr(made.code, made.expires)} size={220} /></div>
+          <div class="center mt-3"><QrCode payload={Msg.inviteQr(made.code, made.expires)} size={220} /></div>
           <p class="waiting-line" role="status"><span class="dot" />Waiting for {made.label || "them"} to scan it…</p>
-          <details style={{ marginTop: 6 }}>
+          <details class="mt-2">
             <summary class="small">Not together? Use the code</summary>
-            <div class="invite-code" style={{ marginTop: 10 }} aria-label="Invite code">{made.code.slice(3).split("-").map((g) => <span>{g}</span>)}</div>
-            <p class="small muted" style={{ marginTop: 8 }}>Anyone who sees this code can use it, once, for {fmtLeft(made.expires - Date.now())}. Send it only somewhere private, and read it on a call only if you're sure of the voice: voices can be faked. Compare safety codes when you next meet.</p>
-            {typeof navigator !== "undefined" && navigator.share && <button class="btn quiet block" style={{ marginTop: 8 }} onClick={share}>Share code…</button>}
+            <div class="invite-code mt-3" aria-label="Invite code">{made.code.slice(3).split("-").map((g) => <span>{g}</span>)}</div>
+            <p class="small muted mt-2">Anyone who sees this code can use it, once, for {fmtLeft(made.expires - Date.now())}. Send it only somewhere private, and read it on a call only if you're sure of the voice: voices can be faked. Compare safety codes when you next meet.</p>
+            {typeof navigator !== "undefined" && navigator.share && <button class="btn quiet block mt-2" onClick={share}>Share code…</button>}
           </details>
           <div class="actions">
             <button class="btn ghost block" onClick={back}>Close · the invite stays open</button>
@@ -360,7 +360,7 @@ function EnterCode() {
     <Pushed title={sent ? `Waiting for ${label || "them"}` : "Someone invited me"} onBack={back}>
       {sent ? (
         <>
-          <p class="waiting-line" role="status" style={{ marginTop: 4 }}><span class="dot" />Asked {label || "them"} to connect. This opens by itself when they approve.</p>
+          <p class="waiting-line mt-1" role="status"><span class="dot" />Asked {label || "them"} to connect. This opens by itself when they approve.</p>
           <SafetyCompare code={sent.safetyCode} when={`${label || "They"} will see this code once they open your request.`} onMatch={(how) => Msg.updateContact(sent.id, { safetyVerified: how })}
             onDifferent={() => { setDifferent(true); Msg.updateContact(sent.id, { safetyMismatch: true }); }} />
           {different && (
@@ -375,7 +375,7 @@ function EnterCode() {
         <>
           <p class="t2">Scan the code they're showing you, or type it.</p>
           <div class="actions" style={{ paddingTop: 8 }}><button class="btn primary block" onClick={() => setScan(true)}><Icon name="scan" />Scan their code</button></div>
-          <div class="field" style={{ marginTop: 12 }}>
+          <div class="field mt-3">
             <label for="inv-code">Or type it</label>
             <textarea id="inv-code" class="input code" rows={2} autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HI-XXXX-XXXX-…" value={code} onInput={(e) => setCode(e.currentTarget.value)} />
           </div>
@@ -384,11 +384,11 @@ function EnterCode() {
       ) : (
         <>
           <Banner tone="mint" icon="check" title="Invite found" text="This code matches a real invite. Make sure it came from the person you expect." />
-          <div class="field" style={{ marginTop: 14 }}>
+          <div class="field mt-3">
             <label for="ct-label">What do you call them? <span class="muted">(only you see this)</span></label>
             <input id="ct-label" class="input" maxLength={40} autocomplete="off" placeholder="e.g. Sam" value={label} onInput={(e) => setLabel(e.currentTarget.value)} />
           </div>
-          <div class="field" style={{ marginTop: 12 }}>
+          <div class="field mt-3">
             <label for="ct-intro">A note so they know it's you <span class="muted">(optional)</span></label>
             <textarea id="ct-intro" class="input" rows={2} maxLength={280} placeholder="e.g. From the workshop on Tuesday" value={intro} onInput={(e) => setIntro(e.currentTarget.value)} />
           </div>
@@ -411,14 +411,14 @@ function SafetyCompare({ code, onMatch, onDifferent, matched: initial = false, w
   const [how, setHow] = useState("in person");
   const groups = String(code || "").split("-");
   return (
-    <div class="card" style={{ marginTop: 14 }}>
+    <div class="card mt-3">
       <div class="eyebrow">Safety code</div>
-      <div class="safety" aria-label="Safety code" style={{ marginTop: 8 }}>{groups.map((g) => <span>{g}</span>)}</div>
-      {when && <p class="small muted" style={{ marginTop: 8 }}>{when}</p>}
+      <div class="safety mt-2" aria-label="Safety code">{groups.map((g) => <span>{g}</span>)}</div>
+      {when && <p class="small muted mt-2">{when}</p>}
       {matched ? <p class="small mint row-x" style={{ gap: 6, marginTop: 8 }}><Icon name="check" />You marked this the same{typeof matched === "string" ? ` (${matched})` : ""}</p> : (
         <>
-          <p class="small" style={{ marginTop: 8 }}>Read it to each other. Is it the same on both phones?</p>
-          <div class="seg" role="radiogroup" aria-label="How you compared" style={{ marginTop: 8 }}>
+          <p class="small mt-2">Read it to each other. Is it the same on both phones?</p>
+          <div class="seg mt-2" role="radiogroup" aria-label="How you compared">
             {["in person", "on a video call"].map((h) => <button type="button" role="radio" aria-checked={how === h} onClick={() => setHow(h)} style={how === h ? { background: "var(--surface-3)", color: "var(--text)" } : undefined}>{h === "in person" ? "In person" : "Video call"}</button>)}
           </div>
           <div class="actions row" style={{ paddingTop: 8 }}>
@@ -495,9 +495,9 @@ function Review({ reqId, defaultLabel = "" }) {
       <Banner tone="mint" icon="fingerprint" title="Asked with a live check"
         text="It was confirmed by a face or fingerprint on a proven phone. Anyone who saw your code could have made it, so check their note, and compare safety codes if you can." />
       {(shown.others > 0 || shown.discarded > 0) && <Banner tone="amber" icon="info" title={shown.others > 0 ? `${shown.others + 1} people asked with this invite` : "Some requests were discarded"} text={crowdNote(shown)} />}
-      {shown.intro ? <div class="card" style={{ marginTop: 10 }}><div class="eyebrow">Their note</div><p>{shown.intro}</p></div>
-        : <p class="small muted" style={{ marginTop: 10 }}>They didn't add a note.</p>}
-      <div class="field" style={{ marginTop: 14 }}>
+      {shown.intro ? <div class="card mt-3"><div class="eyebrow">Their note</div><p>{shown.intro}</p></div>
+        : <p class="small muted mt-3">They didn't add a note.</p>}
+      <div class="field mt-3">
         <label for="rq-label">What do you call them? <span class="muted">(only you see this)</span></label>
         <input id="rq-label" class="input" maxLength={40} autocomplete="off" value={label} onInput={(e) => setLabel(e.currentTarget.value)} />
       </div>
@@ -528,7 +528,7 @@ function Contact() {
         <Row icon="shield" tone={c.safetyMismatch ? "danger" : c.safetyVerified ? "mint" : ""} title="Safety code" sub={c.safetyMismatch ? "You marked this DIFFERENT: someone may be in between" : c.safetyVerified ? `You marked this compared${typeof c.safetyVerified === "string" ? ` (${c.safetyVerified})` : ""}` : "Not compared yet"} onClick={() => setSafety(true)} />
       </div>
       {c.status === "connected" && (
-        <div class="rows" style={{ marginTop: 14 }}>
+        <div class="rows mt-3">
           <div style={{ padding: "4px 16px" }}>
             <div class="small" style={{ fontWeight: 600, padding: "8px 0 4px" }}>Disappearing messages</div>
             <div class="seg" role="radiogroup" aria-label="Disappearing messages">
@@ -540,13 +540,13 @@ function Contact() {
             <p class="hint small muted" style={{ padding: "6px 0 10px" }}>For both of you. Changing it takes a live check.</p>
           </div>
           <div style={{ padding: "0 16px" }}><Toggle checked={c.showHere} onChange={(v) => Msg.updateContact(id, { showHere: v })} label={`Show ${c.label} when you're here`} hint="When you open this conversation with a live check, they see you're here, even if you don't write. Nothing else is sent." /></div>
-          <div style={{ padding: "0 16px 6px" }}><Toggle checked={c.duressAlert} onChange={(v) => Msg.updateContact(id, { duressAlert: v })} label="Tell me if they may be under duress" hint="Their app marks messages sent after a duress unlock. Only you see it." /></div>
+          <div style={{ padding: "0 16px 6px" }}><Toggle checked={c.duressAlert} onChange={(v) => Msg.updateContact(id, { duressAlert: v })} label="Tell me if they may be under duress" hint="Their app marks messages sent after an unlock with their duress gesture. Only you see it." /></div>
         </div>
       )}
-      <div class="rows" style={{ marginTop: 14 }}>
+      <div class="rows mt-3">
         <Row icon="trash" danger title="Delete conversation" onClick={() => setDel(true)} />
       </div>
-      {s && <p class="fine" style={{ marginTop: 12 }}>To {c.label} you're <span class="persona">{s.mine}</span>. To you they're <span class="persona">{s.theirs}</span>. These IDs are used only between you two; HumID's relay never sees them.</p>}
+      {s && <p class="fine mt-3">To {c.label} you're <span class="persona">{s.mine}</span>. To you they're <span class="persona">{s.theirs}</span>. These IDs are used only between you two; HumID's relay never sees them.</p>}
       {rename !== null && (
         <Sheet onClose={() => setRename(null)} title="Name">
           <input class="input" maxLength={40} value={rename} onInput={(e) => setRename(e.currentTarget.value)} aria-label="Name" />
@@ -564,7 +564,7 @@ function Contact() {
       {del && (
         <Sheet onClose={() => setDel(false)} title="Delete this conversation?">
           <p class="small muted">Every message and every key for it is erased from this phone, for good.</p>
-          <div class="rows" style={{ marginTop: 12 }}>
+          <div class="rows mt-3">
             <Row icon="trash" title="Delete for me" sub="They aren't told and keep their copy, and their messages to you will no longer arrive." onClick={async () => { setDel(false); if (await Msg.deleteConversation(id)) back(); }} />
             {c.status === "connected" && <Row icon="trash" danger title="Delete for both of you"
               sub={Msg.deleteSteps(id) > 1

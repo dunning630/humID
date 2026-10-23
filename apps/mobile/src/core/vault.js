@@ -19,6 +19,7 @@ import { mark } from "./perf.js";
 import { updateIdentity } from "./identity.js";
 import { PINNED_KID, SIM } from "./config.js";
 import { knownRevs, nextRev, noteRevs } from "./indexrev.js";
+import { screenReadersOk } from "./readers.js";
 
 /** A build pinned to its server's key id (every published build; never the simulation). */
 const pinnedRelease = () => !!PINNED_KID && !SIM;
@@ -299,7 +300,7 @@ async function sealAndStore({ bytes, type, name: finalName, kind, tags = [], ext
     mark("seal-refreshed");
     await sleep(650);
     S.sealing.value = null;
-    toast(`${finalName} sealed. Only your face or fingerprint can open it.`);
+    toast(`${finalName} sealed. It opens only after a live check on one of your devices.`);
     return true;
   } catch (e) {
     wipe(bytes, share);
@@ -342,6 +343,7 @@ export async function openItem(item) {
   const ep = epoch();
   try {
     needVault();
+    if (!(await screenReadersOk(item.type === CARD_TYPE ? "this card" : "this document"))) return;
     const { bytes, meta } = await fetchPlain(item, "decrypt", `Open ${item.name}`);
     if (stale(ep)) { wipe(bytes); return; } // locked while the check ran: the document is wiped, not shown
     const type = meta.type || item.type || "application/octet-stream";
@@ -382,7 +384,7 @@ export function closeViewer() {
 
 /**
  * Save an unsealed copy to this device. Always its own live check, even from an open
- * viewer, so "every open, save and delete needs a fresh check" is true, and the save is
+ * viewer, so "every open, save and delete needs a live check" is true, and the save is
  * in Activity like any other release.
  */
 export async function saveCopy(item) {

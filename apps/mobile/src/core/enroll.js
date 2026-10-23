@@ -18,6 +18,7 @@ import { connectServer, serverPinned, chooseGate, gateClaim, serverRecord, walle
 import { refresh } from "./vault.js";
 import { loadAlerts } from "./recovery.js";
 import { signMode, HOLDER_ONLY, HARDENED } from "./recmode.js";
+import { screenReadersOk } from "./readers.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 
@@ -107,6 +108,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
   if (S.passNeeded.value && S.pass.value?.state !== "ready") { S.enrollStep.value = "access"; toast("Add an access pass first.", "warn"); return false; }
   const gate = chooseGate(useDemo);
   if (!gate) return false;
+  if (!holderOnly && !(await screenReadersOk("your recovery card"))) return false;
   const Suite = suite();
   R.busy = true;
   showInterrupt({ purpose: "enroll", label: "Create your HumID", state: "scanning", progress: 0.06, needsHold: false, message: "Generating your post-quantum keys…" });
@@ -141,7 +143,7 @@ export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.
         await waitForHold(gate);
         enrolled = await gate.enroll({ prompt: "Lock HumID to your face or fingerprint", challenge: device, attest: th });
         secret = enrolled.secret;
-        showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the check. Registering…" : "Registering your public keys with the vault…" });
+        showInterrupt({ needsHold: false, progress: 0.6, message: enrolled.live?.attestation ? "Your phone's secure chip vouched for the live check. Registering…" : "Registering your public keys with the vault…" });
         return {
           registerSig: ml_dsa87.sign(register, keys.dsaSk),
           // the setup recovery card, approved by the account key in this same check
@@ -204,8 +206,8 @@ export function finishEnroll() { S.cardCode.value = null; S.view.value = "app"; 
 const cardText = (code) => [
   "HumID recovery card", "",
   code, "",
-  "One of the two proofs that bring your HumID back on a new phone if you lose all your devices.",
-  "On its own it opens nothing: recovery also needs your witnesses or your ID, then waits and alerts your devices.",
+  "Your card is one proof. Recovery needs two, for example this card and your witnesses.",
+  "On its own it opens nothing. Recovery needs any two of your four kinds of proof (witnesses, your ID chip, a recovery card or a security key), then waits and alerts your devices.",
   "Keep it somewhere safe and offline, away from your ID.",
   "", `Created ${new Date().toLocaleDateString()}`,
 ].join("\n");

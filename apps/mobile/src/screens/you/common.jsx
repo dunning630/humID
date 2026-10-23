@@ -9,7 +9,7 @@ import * as S from "../../core/state.js";
 export function Choice({ id, label, hint, value, options, onPick }) {
   return (
     <div class="stack" style={{ gap: 6, paddingBlock: 10 }}>
-      <div id={`${id}-label`}><strong style={{ fontSize: "var(--t-sm)" }}>{label}</strong>{hint && <span class="hint small muted" style={{ display: "block", marginTop: 2 }}>{hint}</span>}</div>
+      <div id={`${id}-label`}><strong style={{ fontSize: "var(--t-sm)" }}>{label}</strong>{hint && <span class="hint small muted" style={{ display: "block", marginTop: 4 }}>{hint}</span>}</div>
       <div class="seg" role="radiogroup" aria-labelledby={`${id}-label`}>
         {options.map(([v, text]) => (
           <button type="button" role="radio" aria-checked={value === v} data-pref={`${id}:${v}`} onClick={() => onPick(v)}
@@ -24,7 +24,7 @@ export function Choice({ id, label, hint, value, options, onPick }) {
 export function Check({ checked, onChange, children, id }) {
   return (
     <label class="row-x" style={{ minHeight: "var(--tap)", alignItems: "flex-start", gap: 12, cursor: "pointer" }}>
-      <input id={id} type="checkbox" checked={!!checked} onChange={(e) => onChange(e.currentTarget.checked)} style={{ width: 22, height: 22, marginTop: 2, flex: "none", accentColor: "var(--mint-deep)" }} />
+      <input id={id} type="checkbox" checked={!!checked} onChange={(e) => onChange(e.currentTarget.checked)} style={{ width: 22, height: 22, marginTop: 4, flex: "none", accentColor: "var(--mint-deep)" }} />
       <span class="small">{children}</span>
     </label>
   );
@@ -58,7 +58,7 @@ export function Disclosure({ title, sub, children, open: initial = false }) {
         <span class="grow"><strong>{title}</strong>{sub && <span class="small muted" style={{ display: "block" }}>{sub}</span>}</span>
         <Icon name="chevron" style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform var(--d-fast)" }} />
       </button>
-      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+      {open && <div class="mt-3">{children}</div>}
     </div>
   );
 }

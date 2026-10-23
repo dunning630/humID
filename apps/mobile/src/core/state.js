@@ -24,7 +24,7 @@ export const enrollStep = signal("connect"); // connect · access (when the serv
 export const pass = signal(null);
 export const passBusy = signal(false);
 
-// A new device joining an existing account (another device, a recovery card, or recovery contacts).
+// A new device joining an existing account (another device, two recovery proofs, or an older card or witnesses).
 export const joinStep = signal(0);           // 0 connect · 1 choose · 2 details · 3 waiting
 export const joinMethod = signal(null);      // link | quorum | card | contacts
 export const joinStatus = signal(null);      // last polled status from the server
@@ -92,6 +92,10 @@ export const sheet = perSession(null);           // { type, ... } one bottom she
 export const push = perSession(null);            // { type, ... } one pushed (full-screen) step over the tabs
 export const sealing = perSession(null);         // "seal" | "upload" | "done" while a document is being sealed
 export const viewer = perSession(null);          // decrypted preview
+// Another app that can read the screen (core/readers.js): the question on screen
+// ({ what, services }), and the set of services this session already said yes to.
+export const readerWarning = perSession(null);
+export const readersAccepted = perSession(null);
 export const toasts = signal([]);
 export const idleDeadline = perSession(0);       // when the app auto-locks
 export const online = signal(typeof navigator === "undefined" ? true : navigator.onLine);

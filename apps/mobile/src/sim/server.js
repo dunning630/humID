@@ -295,7 +295,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     record(id, "device.added", { device: device.id, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true, checks: checks.filter((c) => c.ok).length });
     record(id, "session.opened", { device: device.id, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
     let cardSet = false;
-    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup" });
+    if (mode) record(id, "recovery.mode_set", { mode: mode.mode, version: mode.version, epoch: mode.epoch, at: "setup", proof: proofHash(unb64u(r.sig)), assurance: s.assurance, by: device.id });
     if (created && r.card?.tag && mode?.mode !== "holder-only") { st.cards[id] = { tag: r.card.tag, blob: r.card.blob, createdAt: iso(), scheme: unb64u(r.card.blob).length === 12 + 65 + 16 ? "quorum" : "full" }; cardSet = true; record(id, "recovery.card_set", { at: "setup", scheme: st.cards[id].scheme }); }
     report("Your HumID was registered", checks, { kind: "enrol" });
     return [created ? 201 : 200, sessionView(s, { created, cardSet })];
@@ -387,7 +387,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!a.lockdownAt) return [200, { cleared: false, lockdown: false }];
     if (now() < Date.parse(a.lastDuressAt) + LOCKDOWN_COOLOFF_MS) throw fail(409, "too_soon", "Lockdown can be lifted once it has been calm for a while.");
     const since = a.lockdownAt; a.lockdownAt = null;
-    record(a.id, "duress.cleared", { device: s.deviceId, since, proof: su.proof });
+    record(a.id, "duress.cleared", { device: s.deviceId, since, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { cleared: true, lockdown: false, since }];
   }, { auth: true });
 
@@ -399,7 +399,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (!d || d.account !== s.subject || d.revokedAt) throw fail(404, "unknown_device", "No such device on your HumID.");
     if (d.id === s.deviceId) throw fail(400, "current_device", "You can't remove the device you're using. Remove it from another device.");
     d.revokedAt = iso();
-    record(s.subject, "device.removed", { device: d.id, platform: d.platform, proof: su.proof });
+    record(s.subject, "device.removed", { device: d.id, platform: d.platform, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { removed: true, device: deviceView(d, s.deviceId) }];
   }, { auth: true, guard: true });
 
@@ -408,11 +408,11 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     const a = account(s);
     let n = 0;
     for (const o of Object.values(st.objects)) if (o.owner === a.id) { delete st.objects[o.id]; delete st.keyshare[o.id]; tx(db, "blobs", "readwrite", (b) => b.delete(o.id)); n++; }
-    record(a.id, "vault.erased", { count: n, proof: su.proof });
+    record(a.id, "vault.erased", { count: n, proof: su.proof, assurance: su.assurance, by: su.by });
     delete st.cards[a.id];
     a.status = "closed";
     for (const d of Object.values(st.devices)) if (d.account === a.id) d.revokedAt ||= iso();
-    record(a.id, "identity.closed", { proof: su.proof });
+    record(a.id, "identity.closed", { proof: su.proof, assurance: su.assurance, by: su.by });
     s.closeAfterReply = true;
     return [200, { closed: true, erasedItems: n }];
   }, { auth: true, guard: true });
@@ -474,7 +474,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       if (!to || to.kemPk.length !== 1568 || to.xPk.length !== 32) throw fail(426, "update_required", "Update HumID to open this document: its key now travels sealed to your phone.");
       sealed = b64u(await sealShare(unb64u(k.share), to, { account: s.subject, object: o.id }));
     }
-    record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance });
+    record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance, by: su.by });
     report("Document released", [...su.checks, ...(k ? [pass("Its second key released for this document only", "inside this same live check")] : [])], { kind: "open", quiet: true });
     return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(sealed ? { "x-humid-share": sealed } : {}) }];
   }, { auth: true });
@@ -492,7 +492,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     delete st.objects[o.id];
     delete st.keyshare[o.id];
     await tx(db, "blobs", "readwrite", (b) => b.delete(o.id));
-    record(s.subject, "object.deleted", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance });
+    record(s.subject, "object.deleted", { id: o.id, proof: su.proof, method: su.method, assurance: su.assurance, by: su.by });
     return [200, { deleted: o.id }];
   }, { auth: true });
 
@@ -536,13 +536,13 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     if (st.accounts[s.subject]?.recoveryMode?.mode === "holder-only") throw fail(409, "holder_only", "This HumID opens only on its own devices. It has no recovery to set up or use.");
     const scheme = unb64u(String(r.blob || "")).length === 12 + 65 + 16 ? "quorum" : "full";
     st.cards[s.subject] = { tag: r.tag, blob: r.blob, createdAt: iso(), scheme };
-    record(s.subject, "recovery.card_set", { scheme, proof: su.proof });
+    record(s.subject, "recovery.card_set", { scheme, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { createdAt: st.cards[s.subject].createdAt, replaced: true, scheme }];
   }, { auth: true, guard: true });
   route("DELETE", "/recovery/card", (s, r, su) => {
     needStepUp(su, "Removing your seal card");
     const had = !!st.cards[s.subject]; delete st.cards[s.subject];
-    record(s.subject, "recovery.card_removed", { proof: su.proof });
+    record(s.subject, "recovery.card_removed", { proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { removed: had }];
   }, { auth: true, guard: true });
   route("GET", "/recovery/contacts", () => [200, { n: 0, guardians: [] }], { auth: true });
@@ -551,7 +551,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   route("PUT", "/recovery/settings", (s, r, su) => {
     needStepUp(su, "Changing settings");
     st.settings[s.subject] = { duressAlert: !!r.duressAlert };
-    record(s.subject, "settings.changed", { duressAlert: !!r.duressAlert, proof: su.proof });
+    record(s.subject, "settings.changed", { duressAlert: !!r.duressAlert, proof: su.proof, assurance: su.assurance, by: su.by });
     return [200, { duressAlert: !!r.duressAlert }];
   }, { auth: true, guard: true });
   route("GET", "/recovery/alerts", () => [200, { alerts: [] }], { auth: true });
@@ -600,7 +600,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       }
       checks.push(pass("Signed by the secure chip during a live match", "this request slot was signed inside the biometric check"));
     }
-    return { at, proof: proofHash(sig), method: String(p.interrupt?.method || s.gateMethod).slice(0, 64), assurance: s.assurance, checks };
+    return { at, proof: proofHash(sig), method: String(p.interrupt?.method || s.gateMethod).slice(0, 64), assurance: s.assurance, by: s.deviceId, checks };
   }
 
   async function dispatch(s, seq, meta, body) {

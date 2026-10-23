@@ -259,7 +259,7 @@ export function IdFlow({ start, onExit, onDraft }) {
             error={missing.length > 0 ? `Add the ${missing.map((k) => (k === "number" ? "document number" : "surname")).join(" and ")} before sealing.` : null}
             onSeal={seal}
             secondary={next ? { label: `Scan the ${next.side}`, onClick: () => retake(next) } : done.length ? { label: "Retake", onClick: () => retake(plan[0]) } : null}
-            fine={`One check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
+            fine={`One live check seals the details, photos${r.raw.chip ? " and the chip's signed data" : ""} together on this phone.`} />
         )}
       </Step>
       {cam && (
@@ -393,7 +393,7 @@ export function IdView({ record: rec, item }) {
       <div class="id-card-hero">
         {rec.images[side] && <img src={imageUrl(rec.images[side])} alt={side === "portrait" ? "Photo from the chip" : `${side} of the document`} data-side={side} />}
         {sides.length > 1 && (
-          <div class="seg" role="tablist" aria-label="Which side" style={{ marginTop: 10 }}>
+          <div class="seg mt-3" role="tablist" aria-label="Which side">
             {sides.map((s) => <button role="tab" aria-selected={side === s} aria-pressed={side === s} onClick={() => setSide(s)}>{sideName(s)}</button>)}
           </div>
         )}

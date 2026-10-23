@@ -17,7 +17,7 @@ it until that review and the items under *Before real data* are done.
 | **Spyware on the phone copies the keys** (a Pegasus-class kernel exploit reading memory during a biometric check) | Split keys: every document sealed since split keys also needs its own 256-bit key, held by the separate keyshare service and released one document at a time inside a live, chip-signed check, capped per hour. The stolen account keys, even with a full copy of the vault, open nothing. See [*A compromised phone*](#a-compromised-phone). |
 | **A stolen or lost phone** | Keys are released only by a live biometric check in the Secure Enclave or Android Keystore. Remove the device from any other device: its sessions end and the server refuses it. |
 | **A stolen session or a replayed request** | Opening, deleting, exporting, adding or removing devices, changing recovery, and closing the account each need a fresh biometric signature over that exact request, bound to the session, at most 60 seconds old. The app reserves the request slot first (a *ticket*), so the liveness key signs that exact request during the check; a signature captured for one request can't approve another. Frames carry sequence numbers checked against a replay window. |
-| **A stolen seal card** | Two-proof recovery: the card is one of three parts, and any recovery needs a second, different proof (witnesses or the ID chip). Then a wait of 24 h to 7 days, set by the evidence, during which any surviving device can veto. See [CONTINUITY.md](CONTINUITY.md). |
+| **A stolen recovery card** | Two-proof recovery: the card is one of four kinds of proof, and any recovery needs a second, different one (witnesses, the ID chip or a security key). A holder-only account has no card at all. Then a wait of 24 h to 7 days, set by the evidence, during which any surviving device can veto. See [CONTINUITY.md](CONTINUITY.md). |
 | **Rogue or coerced witnesses** | A majority must approve, each with their own live biometric, and that counts as one proof only. Fewer pieces reveal nothing. |
 | **A copied passport chip** | Remote ID proofs need Active Authentication: the chip signs a fresh server nonce with its private key. Copied files can't. Otherwise only an in-person station check counts. |
 | **A forged or altered ID** | ICAO passive authentication: data-group hashes, the Document Signer's signature, and a chain to a trusted country CSCA. |
@@ -381,6 +381,14 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
 - **Every request times out** (45 s), so a silent server can't hold a live check open.
 - **Chip photos are bounded** before decoding (2 MB, 4 Mpixel), and never decoded from
   a chip that fails its own hash list.
+- **An app that can read the screen is named first (Android, APP-09).** An enabled
+  accessibility service can read everything in HumID's WebView and tap its buttons;
+  `FLAG_SECURE`, hidden overlays and filtered touches don't stop it, and HumID can't. Before
+  a document, a card, a recovery card or messages are shown, the app asks the phone which
+  services are on (`enabledAccessibilityServices` in the gate plugin) and, if one can read
+  the screen, names it and lets the holder decide (`apps/mobile/src/core/readers.js`). A
+  warning, not a guard: a holder who says yes, or malware that hides as a trusted service,
+  still reads. iOS gives apps no such list. Needs a device to confirm.
 - **iOS backups exclude the WebView's data store.**
 
 ## The Android document scanner (apps 2.1.1, narrowed in 2.1.2)

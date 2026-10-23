@@ -22,7 +22,7 @@ const ISSUES = {
     warn: true,
   }),
   unknown_identity: (host) => ({ title: "Your vault doesn't know this HumID", text: `The server at ${host} has no record of this identity. It may have been reset or replaced, or this HumID came from an earlier test version.` }),
-  device_not_proven: () => ({ title: "Your vault needs a chip-proven check", text: "This vault server now accepts only devices whose secure chip proves every face or fingerprint check. Open HumID on your phone, or add this device again once it qualifies." }),
+  device_not_proven: () => ({ title: "Your vault needs a chip-proven check", text: "This vault server now accepts only devices whose secure chip proves every live check. Open HumID on your phone, or add this device again once it qualifies." }),
   key_invalidated: () => ({
     title: "This phone's HumID key is gone",
     text: "Android and iOS delete HumID's key when the phone's fingerprints or face change, or when HumID is reinstalled, and nothing can bring it back. Your vault and documents are safe. Set HumID up again on this phone, then use I already have HumID to get back in with another device or your recovery proofs.",
@@ -82,9 +82,9 @@ export function Lock() {
     return (
       <main class="screen">
         <div class="hero" style={{ flex: "0 0 auto", marginTop: "8vh" }}><Mark state="failed" size={140} /></div>
-        <h1 class="center" style={{ marginTop: 18 }}>{x.title}</h1>
+        <h1 class="center mt-4">{x.title}</h1>
         <p class="lede center" style={{ margin: "10px auto 0" }}>{x.text}</p>
-        {x.warn && <div style={{ marginTop: 18 }}><Banner tone="amber" icon="alert" title="Don't continue unless you expected this" text="Check with whoever runs your vault server before setting up again." /></div>}
+        {x.warn && <div class="mt-4"><Banner tone="amber" icon="alert" title="Don't continue unless you expected this" text="Check with whoever runs your vault server before setting up again." /></div>}
         <div class="foot">
           {impersonation && !checked && <button class="btn quiet block" onClick={() => setChecked(true)}>I checked with my server operator</button>}
           {(!impersonation || checked) && !confirm && <button class={`btn ${terminal ? "primary" : "quiet"} block`} onClick={() => setConfirm(true)}>Set up HumID again</button>}
@@ -100,7 +100,7 @@ export function Lock() {
     <main class="screen">
       <div class="hero" style={{ flex: "1 0 auto", justifyContent: "center" }}>
         <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999, transform: g.pressed ? "scale(0.97)" : undefined, transition: "transform var(--d-fast)" }} aria-label="Unlock HumID" onClick={g.onMark}><Mark size={220} /></button>
-        <Wordmark height={30} />
+        <h1 class="brand"><Wordmark height={30} /></h1>
         <p class="lede">Safe. Secure. Simple.</p>
       </div>
       <div class="foot stack">
@@ -109,7 +109,7 @@ export function Lock() {
             the same choice, spoken, drawn only when focused, never on the straight Tab path. */}
         <MoreWays />
         {down && S.offlineReady.value && <p class="fine center" role="status">No connection. You can still unlock to see your vault, read only.</p>}
-        <p class="fine center">No password exists. Only your live face or fingerprint opens it.{id?.mode === "demo" ? " (Demo identity · no hardware sensor.)" : ""}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
+        <p class="fine center">No password exists. It opens only after a live face or fingerprint check.{id?.mode === "demo" ? " (Demo identity · no hardware sensor.)" : ""}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>
     </main>
   );

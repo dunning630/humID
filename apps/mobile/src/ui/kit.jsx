@@ -1,11 +1,12 @@
 // HumID 3.0 UI kit: the handful of pieces every screen is built from. Each is one
 // element with one job; layout and meaning come from brand/base.css. Nothing here
 // talks to the server or holds a key: the kit renders what core/ tells it to.
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "../brand/icons.jsx";
 import { Mark } from "../brand/mark.jsx";
 import * as S from "../core/state.js";
 import { holdComplete, holdCancel, dismissChipRead } from "../core/index.js";
+import { checkPromise } from "./labels.js";
 
 /* ---------- time ---------- */
 /** Re-render every `ms`; returns now. Stops while the page is hidden (battery). */
@@ -22,6 +23,71 @@ export function useNow(ms = 1000) {
   return now;
 }
 
+/* ---------- modal layers: focus in, everything else inert, focus back (APP-12) ---------- */
+// A sheet, a pushed screen, the viewer, the check and the chip reader each take the screen. While
+// one is open, everything outside it is `inert` (no Tab stop, no screen-reader cursor, no taps),
+// focus moves into it, and when it closes focus goes back where it was. Layers stack: the check
+// can open over a sheet, and the viewer can open while the check is still fading out.
+const modals = [];                  // open layers, oldest first: { el, self }
+const held = new Map();             // element → how many open layers hold it inert
+// Never made inert: the scrim (a tap on it closes its sheet), toasts (they must still be heard),
+// and the check overlay, which is always on top.
+const NEVER_INERT = ".scrim, .toasts, .interrupt";
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const usable = (el) => !!el && el.isConnected && !el.closest("[inert]");
+function focusInto(m) {
+  const target = (!m.self && [...m.el.querySelectorAll(FOCUSABLE)].find((x) => !x.closest("[inert]"))) || m.el;
+  if (target === m.el && !m.el.hasAttribute("tabindex")) m.el.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+/** Tab and Shift+Tab go round the top layer's controls instead of out past its last one. */
+function wrapTab(e) {
+  if (e.key !== "Tab" || !modals.length) return;
+  const top = modals[modals.length - 1].el;
+  const list = [...top.querySelectorAll(FOCUSABLE)].filter((x) => !x.closest("[inert]") && x.getClientRects().length);
+  if (!list.length) { e.preventDefault(); top.focus(); return; }
+  const first = list[0], last = list[list.length - 1], at = document.activeElement;
+  if (e.shiftKey && (at === first || !top.contains(at))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (at === last || !top.contains(at))) { e.preventDefault(); first.focus(); }
+}
+/** Everything outside `el`, up to the body: its siblings, its parent's siblings, and so on. */
+function outside(el) {
+  const out = [];
+  for (let n = el; n.parentElement && n !== document.body; n = n.parentElement) {
+    for (const sib of n.parentElement.children) if (sib !== n && !sib.matches(NEVER_INERT)) out.push(sib);
+  }
+  return out;
+}
+/**
+ * Make the element in `ref` a modal layer while `active`. `self`: focus the layer itself rather
+ * than its first control (the check overlay, so a screen reader reads what's happening).
+ */
+export function useModal(ref, active = true, { self = false } = {}) {
+  // before the layer is painted, so focus never shows behind it for a frame
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!active || !el) return;
+    const before = document.activeElement;
+    const m = { el, self };
+    const inerted = outside(el);
+    for (const x of inerted) { held.set(x, (held.get(x) || 0) + 1); x.inert = true; }
+    if (!modals.length) document.addEventListener("keydown", wrapTab);
+    modals.push(m);
+    // Under an open check, a new layer waits (focus comes to it when the check closes); a layer
+    // whose own sheet opened with it (they mount together, the sheet first) leaves focus there.
+    if (!modals.some((o) => o !== m && (o.self || el.contains(o.el)))) focusInto(m);
+    return () => {
+      for (const x of inerted) { const n = (held.get(x) || 1) - 1; if (n > 0) held.set(x, n); else { held.delete(x); x.inert = false; } }
+      modals.splice(modals.indexOf(m), 1);
+      if (!modals.length) document.removeEventListener("keydown", wrapTab);
+      const lost = !document.activeElement || document.activeElement === document.body || el.contains(document.activeElement);
+      if (!lost) return;
+      if (usable(before)) before.focus({ preventScroll: true });
+      else if (modals.length) focusInto(modals[modals.length - 1]);
+    };
+  }, [active]);
+}
+
 /* ---------- the check (the biological interrupt) ---------- */
 // Sending and opening a conversation: the same check, shown as a compact card (core/interrupt.js COMPACT).
 const COMPACT_CHECKS = new Set(["send", "read"]);
@@ -32,7 +98,7 @@ export function Interrupt() {
   const root = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);
   // The check takes the screen: focus moves to it, so a screen reader says what's happening.
-  useEffect(() => { const el = root.current; if (it && el && !el.contains(document.activeElement)) el.focus(); }, [!!it]);
+  useModal(root, !!it, { self: true });
   if (!it) return null;
   const start = () => { setHolding(true); timer.current = setTimeout(() => { setHolding(false); holdComplete(); }, 1200); };
   const stop = () => { clearTimeout(timer.current); setHolding(false); };
@@ -64,11 +130,13 @@ const READ_TITLES = {
 /** Progress while an ID chip, a card or a security key is read over NFC. */
 export function ChipReadOverlay() {
   const r = S.chipRead.value;
+  const root = useRef(null);
+  useModal(root, !!r);
   if (!r) return null;
   const pct = Math.round((r.fraction || 0) * 100);
   const words = READ_TITLES[r.subject === "key" ? "key" : "chip"];
   return (
-    <div class="interrupt" data-state={r.stage === "error" ? "failed" : r.stage === "done" ? "verified" : "scanning"} role="dialog" aria-modal="true" aria-labelledby="chip-title" aria-live="polite">
+    <div class="interrupt" data-state={r.stage === "error" ? "failed" : r.stage === "done" ? "verified" : "scanning"} role="dialog" aria-modal="true" aria-labelledby="chip-title" aria-live="polite" ref={root}>
       <div class="eyebrow">{r.kind === "reader" ? "Card reader" : r.subject === "key" ? "Security key" : "Chip reader"}</div>
       <span class="icon-btn" style={{ width: 72, height: 72, background: "var(--surface-2)", color: r.stage === "error" ? "var(--danger)" : "var(--amber)" }}><Icon name={r.subject === "key" ? "seckey" : "nfc"} /></span>
       <h2 id="chip-title">{words[r.stage] || words.reading}</h2>
@@ -95,6 +163,8 @@ export function Toasts() {
 
 /* ---------- sheets, pushed screens, menus ---------- */
 export function Sheet({ children, onClose, label, title, eyebrow }) {
+  const root = useRef(null);
+  useModal(root);
   useEffect(() => {
     const k = (e) => { if (e.key === "Escape") onClose?.(); };
     document.addEventListener("keydown", k);
@@ -103,7 +173,7 @@ export function Sheet({ children, onClose, label, title, eyebrow }) {
   return (
     <>
       <div class="scrim" onClick={onClose} />
-      <section class="sheet" role="dialog" aria-modal="true" aria-label={label || title}>
+      <section class="sheet" role="dialog" aria-modal="true" aria-label={label || title} ref={root}>
         <div class="grab" />
         {(title || eyebrow) && (
           <header class="row-x" style={{ marginBottom: 12 }}>
@@ -119,8 +189,10 @@ export function Sheet({ children, onClose, label, title, eyebrow }) {
 
 /** A full-screen step pushed over the tabs, with a back control the Android Back key also reaches. */
 export function Pushed({ children, title, onBack, trailing, class: cls = "" }) {
+  const root = useRef(null);
+  useModal(root);
   return (
-    <section class={`pushed ${cls}`} role="dialog" aria-modal="true" aria-label={title}>
+    <section class={`pushed ${cls}`} role="dialog" aria-modal="true" aria-label={title} ref={root}>
       <div class="screen">
         <header class="top">
           <button class="icon-btn" aria-label="Back" data-back onClick={onBack}><Icon name="back" /></button>
@@ -219,7 +291,7 @@ export function Empty({ icon = "folder", title, text, children }) {
   return (
     <div class="empty">
       <Icon name={icon} />
-      <h3>{title}</h3>
+      <h2 class="h3">{title}</h2>
       {text && <p class="small">{text}</p>}
       {children}
     </div>
@@ -257,32 +329,29 @@ export function Stepper({ step, steps, label = "Progress" }) {
 }
 
 /* ---------- assurance ---------- */
-const PROOF = {
-  "android-strongbox": "Each check is proven by this phone's StrongBox chip",
-  "android-tee": "Each check is proven by this phone's secure chip",
-  "apple-secure-enclave": "Each check is proven by the Secure Enclave",
-};
-export const proofLabel = (proof, assurance) =>
-  PROOF[proof] || (assurance === "os" ? "Checks are software-protected, not chip-proven" : assurance === "none" ? "No sensor (development only)" : "Not proven");
-export function AssurancePill({ assurance }) {
-  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />Proven by this phone's secure chip</span>;
-  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />Software-protected on this computer</span>;
+export { proofLabel } from "./labels.js";
+/** How a check was proven. `mine`: it was this device's (otherwise "a phone's", "a computer"). */
+export function AssurancePill({ assurance, mine = true }) {
+  if (assurance === "hardware") return <span class="pill mint"><Icon name="shield" />{mine ? "Proven by this phone's secure chip" : "Proven by a phone's secure chip"}</span>;
+  if (assurance === "os") return <span class="pill amber"><Icon name="fingerprint" />{mine ? "Software-protected on this computer" : "Software-protected, on a computer"}</span>;
   return <span class="pill amber"><Icon name="info" />Demo · no sensor</span>;
 }
 
 /* ---------- how HumID protects you ---------- */
-export const PROTECTION = [
-  { icon: "fingerprint", title: "Only a living you opens it", text: "Every open, save and delete needs your face or fingerprint right then, proven by your phone's secure chip. A PIN or password is never accepted." },
+// The first promise is said only as strongly as this device can keep it (ui/labels.js): a
+// computer's checks aren't chip-proven, and the web app can't check at all.
+export const protection = () => [
+  { icon: "fingerprint", title: "A live check, every time", text: checkPromise() },
   { icon: "lock", title: "Sealed on this phone first", text: "Every document is encrypted here before it goes anywhere." },
-  { icon: "server", title: "Your vault can't read it", text: "Not your documents, not even their names. It stores sealed copies, and half of each key lives elsewhere." },
-  { icon: "shield", title: "Post-quantum encryption", text: "Built to stay sealed against the computers of the future." },
+  { icon: "server", title: "Your vault can't read it", text: "Not your documents, not even their names. It stores sealed copies, and each new document's second key lives on a separate service." },
+  { icon: "shield", title: "Post-quantum encryption", text: "Sealed with a new and a proven kind of encryption together, so a copy taken today stays sealed even against the quantum computers of the future." },
   { icon: "chain", title: "Every access on the record", text: "Activity is a tamper-evident log your phone checks for itself." },
 ];
 export function HowProtected({ onClose }) {
   return (
     <Sheet onClose={onClose} eyebrow="Safe. Secure. Simple." title="How HumID protects you">
       <div class="rows">
-        {PROTECTION.map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
+        {protection().map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
       </div>
       <div class="actions"><button class="btn primary mint block" onClick={onClose}>Got it</button></div>
     </Sheet>

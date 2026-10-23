@@ -47,10 +47,10 @@ export function Duress() {
     <Pushed title="Duress gesture" onBack={back}>
       <p class="t2 small">Unlock with your duress gesture and HumID opens normally, but shows only the documents you chose. Meanwhile your vault locks devices, recovery and closing your account for 24 hours, and any recovery waits twice as long for 14 days. <b>Nothing on screen will say so</b>, to you or to anyone watching.</p>
 
-      <div class="card" style={{ marginTop: 14 }}>
+      <div class="card mt-3">
         <Toggle label="Duress gesture" hint="Set on this device. Each device has its own." checked={enabled} onChange={setEnabled} />
         {enabled && (
-          <div class="options" style={{ marginTop: 10 }} role="radiogroup" aria-label="Gesture">
+          <div class="options mt-3" role="radiogroup" aria-label="Gesture">
             {GESTURES.map((g) => (
               <button class="option" role="radio" aria-checked={gesture === g.id} onClick={() => setGesture(g.id)}>
                 <span class="lead"><Icon name={g.icon} /></span>
@@ -65,20 +65,20 @@ export function Duress() {
 
       {enabled && <Practice gesture={gesture} />}
 
-      <div class="card" style={{ marginTop: 12 }}>
-        <div class="row-x" style={{ justifyContent: "space-between" }}><h3>Decoy documents</h3><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
-        <p class="small muted" style={{ marginTop: 4 }}>What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
-        {items.length === 0 ? <p class="small muted" style={{ marginTop: 8 }}>Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
+      <div class="card mt-3">
+        <div class="row-x" style={{ justifyContent: "space-between" }}><h2 class="h3">Decoy documents</h2><span class="pill">{decoys.size ? `${decoys.size} shown` : "None"}</span></div>
+        <p class="small muted mt-1">What someone sees if you unlock with the gesture. Choose things that look ordinary.</p>
+        {items.length === 0 ? <p class="small muted mt-2">Nothing in your vault yet. Seal a document first, then choose it here.</p> : (
           <div class="checklist">
             {items.map((it) => (
               <Check key={it.id} checked={decoys.has(it.id)} onChange={(v) => { const s = new Set(decoys); v ? s.add(it.id) : s.delete(it.id); setDecoys(s); }}>{it.name}</Check>
             ))}
           </div>
         )}
-        {items.length > 0 && <button class="link" style={{ marginTop: 8 }} onClick={() => setPreview(true)}><Icon name="eye" />Preview the decoy view</button>}
+        {items.length > 0 && <button class="link mt-2" onClick={() => setPreview(true)}><Icon name="eye" />Preview the decoy view</button>}
       </div>
 
-      <p class="small muted" style={{ marginTop: 10 }}>Your face or fingerprint still unlocks either way, so no one can tell from watching. HumID records the signal in your ledger, where only a normal unlock shows it.</p>
+      <p class="small muted mt-3">Your face or fingerprint still unlocks either way, so no one can tell from watching. HumID records the signal in your ledger, where only a normal unlock shows it.</p>
       <div class="actions">
         <button class="btn primary block" disabled={busy || (off && changedAlert)} onClick={save}>{changedAlert && <Icon name="fingerprint" />}Save</button>
         <button class="btn ghost block" data-back onClick={back}>Cancel</button>
@@ -89,7 +89,7 @@ export function Duress() {
           {decoys.size === 0 ? <Empty icon="vault" title="An empty vault" text="With no decoys chosen, a forced unlock shows nothing at all, which may itself look suspicious." /> : (
             <div class="rows">{items.filter((i) => decoys.has(i.id)).map((i) => <Row key={i.id} icon="lock" chevron={false} title={i.name} />)}</div>
           )}
-          <p class="fine" style={{ marginTop: 12 }}>Activity, devices and recovery look calm and ordinary in that session.</p>
+          <p class="fine mt-3">Activity, devices and recovery look calm and ordinary in that session.</p>
           <div class="actions"><button class="btn primary mint block" onClick={() => setPreview(false)}>Got it</button></div>
         </Sheet>
       )}
@@ -125,9 +125,9 @@ function Practice({ gesture }) {
   const leave = () => { press.current.cancel(); setHolding(false); clearTimeout(timer.current); };
   const hint = gesture === "taps" ? `Tap the mark three times, each within ${seconds(TAP_WINDOW_MS)} of the last.` : `Press and hold for ${HOLD_S} seconds, then let go.`;
   return (
-    <div class="card" style={{ marginTop: 12 }}>
-      <h3>Practice</h3>
-      <p class="small muted" style={{ marginTop: 4 }}>Try it here as many times as you like. This sends nothing to your vault and locks nothing.</p>
+    <div class="card mt-3">
+      <h2 class="h3">Practice</h2>
+      <p class="small muted mt-1">Try it here as many times as you like. This sends nothing to your vault and locks nothing.</p>
       <div class="hero" style={{ padding: "12px 0" }}>
         {gesture === "taps"
           ? <button class="icon-btn" style={{ width: "auto", height: "auto", borderRadius: 999 }} aria-label="The HumID mark (tap it three times)" onClick={onMark}><Mark size={120} /></button>

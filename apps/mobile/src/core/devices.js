@@ -1,5 +1,4 @@
 // This account's devices: list, add (approve a link), remove.
-import { accountCheck } from "@humid/recovery";
 import * as S from "./state.js";
 import { R, KEY_TYPE, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
@@ -13,8 +12,6 @@ export async function loadDevices() {
   if (me && !stale(ep)) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
 }
 
-/** This account's match code for adding the device behind `req` (a looked-up link): it commits to that link's keys too. */
-export const myAccountCheck = (req) => { const a = S.identity.value?.server?.id; return a && req?.kemPk ? accountCheck(a, req.kemPk, req.xPk) : null; };
 
 /** Look up the code a new device is showing. The API checks the code against the keys. */
 export async function findLink(code) {

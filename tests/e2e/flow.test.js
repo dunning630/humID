@@ -113,6 +113,24 @@ test("the access ledger verifies on the device and records every access", async 
   const opened = l.entries.find((e) => e.type === "object.opened");
   assert.equal(opened.detail.id, docId);
   assert.match(opened.detail.proof, /^[0-9a-f]{32}$/);
+  // APP-09: each proof says which device made it and how strongly that device proves its
+  // checks, so Activity on another device never describes it by its own
+  assert.equal(opened.detail.assurance, "hardware");
+  assert.equal(opened.detail.by, aliceApi.session.device);
+});
+
+test("every step-up event records the assurance and the device that proved it (APP-09)", async () => {
+  await aliceApi.setSettings({ duressAlert: false }, alice.stepUp); // a routed event with its own detail()
+  const { envelope, index } = await sealFor(alice, "proof.txt", "who proved this");
+  const item = await aliceApi.upload(envelope, index);
+  await aliceApi.remove(item.id, alice.stepUp);
+  const l = await aliceApi.ledger();
+  const proved = l.entries.filter((e) => e.detail?.proof && e.type !== "session.opened");
+  for (const t of ["object.deleted", "settings.changed"]) assert.ok(proved.some((e) => e.type === t), `${t} with a proof is in the ledger`);
+  for (const e of proved) {
+    assert.equal(e.detail.assurance, "hardware", `${e.type} records the assurance`);
+    assert.equal(e.detail.by, aliceApi.session.device, `${e.type} records the device that proved it`);
+  }
 });
 
 test("a tampered ledger page fails verification on the device", async () => {

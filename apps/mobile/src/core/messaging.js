@@ -35,6 +35,7 @@ import * as S from "./state.js";
 import { R, wipe } from "./runtime.js";
 import { toast, friendly, cancelled } from "./notify.js";
 import { withKeys, withStepUp, needVault } from "./interrupt.js";
+import { screenReadersOk } from "./readers.js";
 
 const POLL_MS = 12_000;
 const FAST_POLL_MS = 2_500;   // while a screen is waiting on the other phone (an invite on show, a request out)
@@ -531,7 +532,7 @@ async function readWaiting() {
           m = await c.receive(r.wire, { stampKeys: keyset, now: now(), receivedAt: r.at });
         }
         if (m.refused) note(ct, "A message couldn't be confirmed as sent with a live check, so it was discarded unread.");
-        else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent from a duress unlock."); }
+        else if (m.duress && ct.duressAlert) { ct.duressAt = now(); note(ct, "They may be under duress: their last message was sent after an unlock with their duress gesture."); }
         if (m.kind === "close" && !m.refused) note(ct, "They ended this conversation.");
         if (m.kind === "delete" && !m.refused && m.deleted) note(ct, `They deleted ${m.deleted === 1 ? "a message" : `${m.deleted} messages`} for both of you.`);
         if (m.kind === "accept" && !m.refused) note(ct, "They approved you with a live check. You're connected.");
@@ -586,6 +587,7 @@ export function waitingOnOther(on) {
 export async function verifyToRead() {
   try {
     decoyBusy();
+    if (!(await screenReadersOk("your messages"))) return false;
     const id = openThread, c = id && convs.get(id), ct = id && contactOf(id);
     let sent = null;
     if (c && ct && c.status === "connected" && ct.showHere !== false && !S.offline.value && canStamp()) {

@@ -1,9 +1,9 @@
 // Vault: the list, search, kinds and tags; the item screen; the viewer.
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { KINDS, TAGS, kindOf, tagOf } from "../core/categories.js";
 import { Print } from "../brand/mark.jsx";
 import { Icon, kindIcon } from "../brand/icons.jsx";
-import { Pushed, Sheet, Menu, Confirm, Banner, Empty, Row, AssurancePill, useNow } from "../ui/kit.jsx";
+import { Pushed, Sheet, Menu, Confirm, Banner, Empty, Row, AssurancePill, useNow, useModal } from "../ui/kit.jsx";
 import { fmtSize, fmtDate, fmtTime, fmtAgo, fmtLeft } from "../ui/format.js";
 import { sealTime } from "../core/sealtime.js";
 import { openExternal } from "../core/external.js";
@@ -100,7 +100,7 @@ export function Vault() {
         </div>
       )}
 
-      {S.loading.value && all.length === 0 && <p class="muted small" style={{ marginTop: 20 }}>Loading your vault…</p>}
+      {S.loading.value && all.length === 0 && <p class="muted small mt-5">Loading your vault…</p>}
       {!S.loading.value && all.length === 0 && (
         <Empty icon="vault" title="Nothing here yet" text="Your IDs, cards and documents, sealed on this phone before they go anywhere.">
           <Print size={56} />
@@ -108,9 +108,9 @@ export function Vault() {
           {off && <p class="fine">Adding needs a connection.</p>}
         </Empty>
       )}
-      {all.length > 0 && list.length === 0 && <p class="muted center" style={{ marginTop: 24 }}>{S.query.value ? `Nothing matches “${S.query.value}”.` : S.tagFilter.value ? "Nothing with this tag." : "Nothing of this kind."}</p>}
+      {all.length > 0 && list.length === 0 && <p class="muted center mt-6">{S.query.value ? `Nothing matches “${S.query.value}”.` : S.tagFilter.value ? "Nothing with this tag." : "Nothing of this kind."}</p>}
 
-      {list.length > 0 && <div class="rows" style={{ marginTop: 14 }}>{list.map((it) => <ItemRow item={it} key={it.id} />)}</div>}
+      {list.length > 0 && <div class="rows mt-3">{list.map((it) => <ItemRow item={it} key={it.id} />)}</div>}
 
       {all.length > 0 && (
         <button class="btn primary" style={{ position: "fixed", right: "max(16px, calc(50% - var(--col) / 2 + 16px))", bottom: "calc(var(--safe-b) + var(--tabbar-h) + 16px)", zIndex: 31, width: 56, height: 56, padding: 0, borderRadius: 999, opacity: off ? 0.5 : 1 }}
@@ -129,7 +129,7 @@ function TagFilters() {
   const used = TAGS.filter((t) => tc[t.id]);
   if (!used.length) { if (S.tagFilter.value) S.tagFilter.value = null; return null; }
   const on = S.tagFilter.value;
-  if (!open && !on) return <button class="link muted" style={{ minHeight: 32 }} onClick={() => setOpen(true)}>More filters</button>;
+  if (!open && !on) return <button class="link muted" onClick={() => setOpen(true)}>More filters</button>;
   return (
     <div class="chips" role="group" aria-label="Filter by tag">
       <button class="chip" aria-pressed={!on} onClick={() => { S.tagFilter.value = null; setOpen(false); }}>Any tag</button>
@@ -226,7 +226,7 @@ export function Item() {
       <Pushed title={item.name} onBack={mode === "view" ? close : () => setMode("view")} trailing={!off && mode === "view" && <button class="icon-btn" aria-label="More" aria-haspopup="menu" onClick={() => setMode("menu")}><Icon name="more" /></button>}>
         {(mode === "view" || mode === "menu") && (
           <>
-            <div class="eyebrow" style={{ marginBottom: 8 }}>{k.one}</div>
+            <div class="eyebrow mb-2">{k.one}</div>
             <div class="card center stack" style={{ alignItems: "center" }}>
               {card ? (
                 <div class={`pay-card brand-${card.brand}`} aria-label={`${brandName(card.brand)} card`} style={{ width: "100%" }}>
@@ -237,11 +237,11 @@ export function Item() {
               ) : (
                 <span class="icon-btn" style={{ width: 72, height: 72, background: "var(--surface-3)", color: "var(--text-2)" }}><Icon name={pi ? "ticket" : itemIcon(item)} /></span>
               )}
-              <div class="small muted">{card ? "The number and code open only after a check, for 30 seconds." : pi ? `${PASS_STYLES[pi.style] || "Pass"} · ${pi.issuer || pi.organization} · checked against its issuer when it was added` : id ? `${ID_KINDS[id.kind] || "ID"} · sealed with its photos` : "Sealed. Nothing here can show it until a check opens it."}</div>
+              <div class="small muted">{card ? "The number and code open only after a live check, for 30 seconds." : pi ? `${PASS_STYLES[pi.style] || "Pass"} · ${pi.issuer || pi.organization} · checked against its issuer when it was added` : id ? `${ID_KINDS[id.kind] || "ID"} · sealed with its photos` : "Sealed. Nothing here can show it until a live check opens it."}</div>
               <button class="btn primary block" disabled={off} onClick={open}><Icon name="fingerprint" />{card ? "Show the number" : "Open"}</button>
             </div>
-            {off && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="signal" title="Opening needs a connection" text="The document and its key are only in your vault. Nothing here can open it offline." /></div>}
-            <div class="rows" style={{ marginTop: 14 }}>
+            {off && <div class="mt-3"><Banner tone="amber" icon="signal" title="Opening needs a connection" text="The document and its key are only in your vault. Nothing here can open it offline." /></div>}
+            <div class="rows mt-3">
               <Fact k="Kind" v={k.one} />
               {item.tags?.length > 0 && <Fact k="Tags" v={<TagLabels tags={item.tags} />} />}
               <Fact k="Size" v={fmtSize(item.size)} />
@@ -250,9 +250,9 @@ export function Item() {
               {validStamp(item.place) && <Fact k="Location stamp" v={<><span class="mono small">{formatCoords(item.place)}</span><br /><span class="muted small">{formatAccuracy(item.place.accuracy)} · as the phone reported · <button class="link" style={{ minHeight: 0 }} type="button" onClick={() => openExternal(mapLink(item.place))}>Map</button></span></>} />}
               {item.placeNote && !validStamp(item.place) && <Fact k="Location stamp" v={<span class="muted">None: {item.placeNote}</span>} />}
               {(id?.expiry || card?.expiry || pi?.expires) && <Fact k="Expires" v={id ? fmtDate(`${id.expiry}T12:00:00`) : card ? showExpiry(card.expiry) : fmtDate(pi.expires)} />}
-              <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} />} />
+              <Fact k="Sealed with" v={<AssurancePill assurance={item.assurance} mine={false} />} />
             </div>
-            <p class="fine" style={{ marginTop: 12 }}>Opening, saving a copy and deleting each need a fresh check. Every one is recorded in Activity.</p>
+            <p class="fine mt-3">Opening, saving a copy and deleting each need a live check. Every one is recorded in Activity.</p>
           </>
         )}
         {mode === "edit" && (
@@ -267,7 +267,7 @@ export function Item() {
         )}
         {mode === "delete" && (
           <>
-            <div style={{ marginTop: 8 }}><Banner tone="danger" icon="trash" title={`Delete ${item.name}?`} text="It's gone from your vault for good. Copies you saved elsewhere stay." /></div>
+            <div class="mt-2"><Banner tone="danger" icon="trash" title={`Delete ${item.name}?`} text="It's gone from your vault for good. Copies you saved elsewhere stay." /></div>
             <div class="actions">
               <button class="btn danger solid block" onClick={async () => { if (await deleteItem(item)) close(); }}><Icon name="fingerprint" />Delete</button>
               <button class="btn ghost block" data-back onClick={() => setMode("view")}>Keep it</button>
@@ -292,19 +292,26 @@ export function Item() {
 
 /* ---------------- the viewer ---------------- */
 
-function ViewerShell({ v, children, trailing }) {
+/** "Open for N s": its own component, so only this line re-renders each second, not the document. */
+function OpenFor({ since }) {
   const now = useNow(1000);
-  const open = Math.round((now - (v.openedAt || now)) / 1000);
+  const open = Math.round((now - (since || now)) / 1000);
+  return <div class="timer">Open for {open < 60 ? `${open} s` : fmtLeft(open * 1000)}. Close it when you're done.</div>;
+}
+
+function ViewerShell({ v, children, trailing }) {
+  const root = useRef(null);
+  useModal(root);
   return (
-    <div class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()}>
+    <section class="viewer" role="dialog" aria-modal="true" aria-label={v.name} onCopy={(e) => e.preventDefault()} ref={root}>
       <header>
         <button class="icon-btn" aria-label="Close and wipe" data-back onClick={closeViewer}><Icon name="x" /></button>
         <div class="grow"><div class="title ellipsis">{v.name}</div><div class="muted small">Open only on this phone · wiped when you close it</div></div>
         {trailing}
       </header>
       <div class="body">{children}</div>
-      <div class="timer">Open for {open < 60 ? `${open} s` : fmtLeft(open * 1000)}. Close it when you're done.</div>
-    </div>
+      <OpenFor since={v.openedAt} />
+    </section>
   );
 }
 
@@ -337,7 +344,7 @@ function FileViewer({ v }) {
           <button class="btn primary" onClick={() => setConfirm(true)}><Icon name="download" />Save a copy</button>
         </Empty>
       )}
-      {confirm && <Confirm title="Save an unsealed copy?" text="The copy on this device won't be sealed: any app, backup or person with the phone can read it. Saving needs its own check and is recorded in Activity." action="Save a copy" danger={false} onClose={() => setConfirm(false)} onConfirm={() => saveCopy(v.item)} />}
+      {confirm && <Confirm title="Save an unsealed copy?" text="The copy on this device won't be sealed: any app, backup or person with the phone can read it. Saving needs its own live check and is recorded in Activity." action="Save a copy" danger={false} onClose={() => setConfirm(false)} onConfirm={() => saveCopy(v.item)} />}
     </ViewerShell>
   );
 }

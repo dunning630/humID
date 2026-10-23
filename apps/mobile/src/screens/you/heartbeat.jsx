@@ -47,18 +47,18 @@ export function Heartbeat() {
       {st.state === "erased" && <Banner tone="danger" icon="trash" title="Your vault was erased by Heartbeat" text={`${fmtAgo(st.erasedAt)}. Its documents can't be opened again. Your HumID still works, and anything sealed since is here.`} />}
 
       <div class="eyebrow">{on ? (st.state === "locked" ? "Missed" : "On") : "Off"}</div>
-      <h2 style={{ marginTop: 6 }}>{on ? (st.state === "locked" ? "You missed a heartbeat" : `Next heartbeat by ${fmtTime(st.deadline)}`) : "If you can't send a heartbeat, erase your vault"}</h2>
-      <p class="t2 small" style={{ marginTop: 10 }}>
+      <h2 class="mt-2">{on ? (st.state === "locked" ? "You missed a heartbeat" : `Next heartbeat by ${fmtTime(st.deadline)}`) : "If you can't send a heartbeat, erase your vault"}</h2>
+      <p class="t2 small mt-3">
         {on
           ? st.state === "locked"
             ? <>Your vault opens nothing until you send one. If you don't, it's erased for good in <Countdown until={st.erasesAt} offsetMs={offsetMs} />.</>
             : <><Countdown until={st.deadline} offsetMs={offsetMs} /> left. Miss it and your vault locks; {st.graceMs ? `${st.graceMs / MIN} minutes later` : "at once"} it's erased for good.</>
-          : "Turn this on before you go somewhere you could be detained or lose your phone. Send a heartbeat (one face or fingerprint check) before each deadline. Miss one and your vault locks; when the grace time runs out, your vault server destroys the keys to your documents, and they're gone for good."}
+          : "Turn this on before you go somewhere you could be detained or lose your phone. Send a heartbeat (one live check) before each deadline. Miss one and your vault locks; when the grace time runs out, your vault server destroys the keys to your documents, and they're gone for good."}
       </p>
-      {on && skew && <p class="small amber" style={{ marginTop: 6 }}>Your phone's clock is {Math.round(Math.abs(offsetMs) / 60_000)} min off. Times here are your vault's, which is what counts.</p>}
+      {on && skew && <p class="small amber mt-2">Your phone's clock is {Math.round(Math.abs(offsetMs) / 60_000)} min off. Times here are your vault's, which is what counts.</p>}
 
       {on && !off && (
-        <div class="card" style={{ marginTop: 14 }}>
+        <div class="card mt-3">
           <Choice id="hb-next" label="Next window" hint="Need longer, like overnight? Pick it as you send this one." value={next}
             options={windows.filter((v) => v <= st.maxWindowMs).map((v) => [v, hours(v)])} onPick={setNext} />
           <div class="actions" style={{ marginTop: 4, paddingTop: 8 }}>
@@ -67,7 +67,7 @@ export function Heartbeat() {
         </div>
       )}
 
-      <div class="card" style={{ marginTop: 14 }}>
+      <div class="card mt-3">
         <Head title="Settings" />
         <Choice id="hb-win" label="A heartbeat every" value={win} options={windows.map((v) => [v, hours(v)])} onPick={(v) => { setWin(v); if (max < v) setMax(v); }} />
         <Choice id="hb-max" label="Longest single window" hint="For the night: when you send a heartbeat, you can choose a longer window up to this." value={Math.max(max, win)}
@@ -76,7 +76,7 @@ export function Heartbeat() {
           options={graces.map((v) => [v, graceLabel(v)])} onPick={setGrace} />
       </div>
 
-      <div style={{ marginTop: 12 }}>
+      <div class="mt-3">
         <Banner tone="amber" icon="alert" title="Nobody can undo an erase" text="Not you, not your witnesses, not HumID. HumID can't remind you while it's closed, so set an alarm for each heartbeat. No signal means you can't send one, and HumID won't show the timer." />
       </div>
       <p class="small muted">
@@ -85,13 +85,13 @@ export function Heartbeat() {
       </p>
 
       {older.length > 0 && (
-        <div style={{ marginTop: 12 }}>
+        <div class="mt-3">
           <Banner tone="danger" icon="info" title={older.length === 1 ? "One document needs sealing again first" : `${older.length} documents need sealing again first`}
             text={`${older.slice(0, 4).map((o) => o.name).join(", ")}${older.length > 4 ? ` and ${older.length - 4} more` : ""}: sealed before split keys, so Heartbeat couldn't erase ${older.length === 1 ? "it" : "them"} for good. Save a copy, add it again, then delete the old one, or just delete it.`} />
         </div>
       )}
 
-      {!on && <div class="card" style={{ marginTop: 12 }}><Toggle label="I understand my documents can be erased for good" checked={understood} onChange={setUnderstood} /></div>}
+      {!on && <div class="card mt-3"><Toggle label="I understand my documents can be erased for good" checked={understood} onChange={setUnderstood} /></div>}
       <div class="actions">
         {(!on || changed) && (
           <button class={`btn ${on ? "quiet" : "primary"} block`} disabled={off || !understood || busy || older.length > 0} onClick={arm}>
