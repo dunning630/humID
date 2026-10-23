@@ -9,6 +9,7 @@ export const DEFAULTS = [
   ["HUMID_PORT", "8480", "Local port the tunnel (Tailscale Funnel or Cloudflare Tunnel) forwards to."],
   ["HUMID_BIND_HOST", "127.0.0.1", "Keep 127.0.0.1: nothing on your network can reach the server directly; only the tunnel can."],
   ["HUMID_PUBLIC_URL", "", "The https address phones use. Set by `humid.ps1 expose`."],
+  ["HUMID_TRUST_FORWARDED", "off", "Which tunnel header names a visitor's address, for rate limits. Set by `humid expose`. off = none (everyone through the tunnel shares one address: limits apply to all together) · cloudflare = CF-Connecting-IP (Cloudflare Tunnel only) · xff = the last X-Forwarded-For entry (only if your tunnel appends it). A wrong setting lets anyone pick their own address and dodge every limit."],
   ["HUMID_DEVICE_POLICY", "attested", "attested = phones whose secure chip proves every live face or fingerprint check · biometric = also biometric-only desktops · demo = testing only."],
   ["HUMID_REGISTRATION", "pass", "pass = a new HumID needs an access pass, bought with an access code and signed blind so the payment can't be linked to the account (mint codes with `mint`) · open = anyone can create one."],
   ["HUMID_PASS_BUY_URL", "", "https address where people buy access codes; the app links to it. Empty = no link."],
@@ -98,6 +99,7 @@ export function validate(cfg) {
   if (!Number.isInteger(ib) || ib < 1024 || ib > 65000) problems.push("HUMID_INTERNAL_PORT_BASE must be a port number from 1024 to 65000.");
   if (cfg.HUMID_DEVICE_POLICY && !VALID_POLICIES.includes(cfg.HUMID_DEVICE_POLICY)) problems.push(`HUMID_DEVICE_POLICY must be one of ${VALID_POLICIES.join(", ")}.`);
   if (cfg.HUMID_REGISTRATION && !["pass", "open"].includes(cfg.HUMID_REGISTRATION)) problems.push("HUMID_REGISTRATION must be pass or open.");
+  if (cfg.HUMID_TRUST_FORWARDED && !["off", "cloudflare", "xff"].includes(cfg.HUMID_TRUST_FORWARDED)) problems.push("HUMID_TRUST_FORWARDED must be off, cloudflare or xff.");
   if (cfg.HUMID_CHECKIN && !["on", "off"].includes(cfg.HUMID_CHECKIN)) problems.push("HUMID_CHECKIN must be on or off.");
   if (cfg.HUMID_MESSAGING && !["on", "off"].includes(cfg.HUMID_MESSAGING)) problems.push("HUMID_MESSAGING must be on or off.");
   if (cfg.HUMID_UPDATE_PRERELEASES && !["on", "off"].includes(cfg.HUMID_UPDATE_PRERELEASES)) problems.push("HUMID_UPDATE_PRERELEASES must be on or off.");

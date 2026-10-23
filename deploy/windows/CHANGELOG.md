@@ -1,5 +1,9 @@
 # HumID Server for Windows
 
+## Unreleased
+
+- **Rate limits can't be dodged with a made-up address** (SRV-31). The edge used to believe `CF-Connecting-IP` or `X-Forwarded-For` from whatever came through the tunnel; behind Tailscale Funnel nothing overwrites them, so a visitor could name a new address on every request and reset every per-address limit. A new setting, `HUMID_TRUST_FORWARDED`, says which header to believe: `humid expose cloudflare` sets `cloudflare` (Cloudflare's edge overwrites `CF-Connecting-IP`), `humid expose tailscale` and `none` set `off`. With `off`, the default, all visitors through the tunnel share one address for the limits. An install that already uses Cloudflare Tunnel: run `humid set HUMID_TRUST_FORWARDED=cloudflare` (or `humid expose cloudflare` again).
+
 ## 3.2.0 (preview, non-production)
 
 Paired with **HumID 4.1 preview**. Installing over 3.1.0 keeps all data, settings and the server's identity, and changes nothing until you turn messaging on.

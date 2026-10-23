@@ -253,6 +253,7 @@ async function run({ service }) {
     await gateway.start();
     edge = createEdge({
       port, host, appDir: join(here, "app"), gatewayUrl: local(gateway),
+      trustForwarded: S("HUMID_TRUST_FORWARDED", "off"), // SRV-31: which tunnel header names the visitor, if any
       log: { error: (msg, extra) => log("error", msg, extra) },
     });
   } else {

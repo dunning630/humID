@@ -21,6 +21,7 @@ test("settings: a new file holds the key pair and every default; edits keep comm
   assert.equal(cfg.HUMID_DEVICE_POLICY, "attested");
   assert.equal(cfg.HUMID_BIND_HOST, "127.0.0.1");
   assert.equal(cfg.HUMID_PORT, "8480");
+  assert.equal(cfg.HUMID_TRUST_FORWARDED, "off", "no tunnel header is trusted until `humid expose` says which tunnel");
   updateEnvFile(f, { HUMID_DEVICE_POLICY: "biometric", NEW_SETTING: "x" });
   const text = readFileSync(f, "utf8");
   assert.ok(text.includes("# attested = phones whose secure chip"), "comments survive");
@@ -40,12 +41,24 @@ test("settings: validation explains what's wrong", () => {
   assert.throws(() => validate({}), /init/);
 });
 
-test("client address: trust the tunnel's last hop, never the visitor's own claims", () => {
+test("client address: no tunnel header is believed unless HUMID_TRUST_FORWARDED says which (SRV-31)", () => {
   const req = (peer, headers = {}) => ({ socket: { remoteAddress: peer }, headers });
-  assert.equal(clientIp(req("127.0.0.1", { "x-forwarded-for": "6.6.6.6, 203.0.113.9" })), "203.0.113.9");
-  assert.equal(clientIp(req("::1", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "6.6.6.6" })), "198.51.100.4");
-  assert.equal(clientIp(req("192.168.1.20", { "x-forwarded-for": "6.6.6.6" })), "192.168.1.20", "headers count only from the local tunnel");
+  // off (the default): a visitor through the tunnel can't name an address of their choosing
+  assert.equal(clientIp(req("127.0.0.1", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "6.6.6.6" })), "127.0.0.1");
+  assert.equal(clientIp(req("::1", { "x-forwarded-for": "6.6.6.6, 203.0.113.9" }), "off"), "::1");
+  // cloudflare: only CF-Connecting-IP, which Cloudflare's edge overwrites; X-Forwarded-For never
+  assert.equal(clientIp(req("::1", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "6.6.6.6" }), "cloudflare"), "198.51.100.4");
+  assert.equal(clientIp(req("127.0.0.1", { "x-forwarded-for": "6.6.6.6" }), "cloudflare"), "127.0.0.1");
+  // xff: the last entry, the one the tunnel appended
+  assert.equal(clientIp(req("127.0.0.1", { "x-forwarded-for": "6.6.6.6, 203.0.113.9" }), "xff"), "203.0.113.9");
+  assert.equal(clientIp(req("127.0.0.1", { "cf-connecting-ip": "198.51.100.4" }), "xff"), "127.0.0.1");
+  // headers count only from the local tunnel, whatever the setting
+  for (const t of ["off", "cloudflare", "xff"]) assert.equal(clientIp(req("192.168.1.20", { "x-forwarded-for": "6.6.6.6", "cf-connecting-ip": "6.6.6.7" }), t), "192.168.1.20");
   assert.equal(clientIp(req("127.0.0.1")), "127.0.0.1");
+  assert.throws(() => createEdge({ port: 0, appDir: tmp(), gatewayUrl: "http://127.0.0.1:1", trustForwarded: "yes" }), /off, cloudflare, xff/);
+  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b" };
+  validate({ ...ok, HUMID_TRUST_FORWARDED: "cloudflare" });
+  assert.throws(() => validate({ ...ok, HUMID_TRUST_FORWARDED: "1" }), /HUMID_TRUST_FORWARDED/);
 });
 
 test("edge: proxies /htp with a clean X-Forwarded-For, serves the app, caps bodies, blocks traversal", async () => {
@@ -67,7 +80,7 @@ test("edge: proxies /htp with a clean X-Forwarded-For, serves the app, caps bodi
     });
   });
   await new Promise((r) => gw.listen(0, "127.0.0.1", r));
-  const edge = createEdge({ port: 0, appDir: app, gatewayUrl: `http://127.0.0.1:${gw.address().port}`, maxBodyBytes: 1000, log: { error() {} } });
+  const edge = createEdge({ port: 0, appDir: app, gatewayUrl: `http://127.0.0.1:${gw.address().port}`, maxBodyBytes: 1000, trustForwarded: "xff", log: { error() {} } });
   await edge.start();
   const base = `http://127.0.0.1:${edge.server.address().port}`;
   try {
