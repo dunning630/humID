@@ -12,8 +12,8 @@ export async function loadDevices() {
   if (me) { S.devices.value = me.devices; keepOffline({ devices: me.devices }); }
 }
 
-/** This account's match code, shown when adding a device. */
-export const myAccountCheck = () => { const a = S.identity.value?.server?.id; return a ? accountCheck(a) : null; };
+/** This account's match code for adding the device behind `req` (a looked-up link): it commits to that link's keys too. */
+export const myAccountCheck = (req) => { const a = S.identity.value?.server?.id; return a && req?.kemPk ? accountCheck(a, req.kemPk, req.xPk) : null; };
 
 /** Look up the code a new device is showing. The API checks the code against the keys. */
 export async function findLink(code) {

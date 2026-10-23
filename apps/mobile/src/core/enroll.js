@@ -16,11 +16,13 @@ import { showInterrupt, endInterrupt, waitForHold, holdMessage, sessionKeys } fr
 import { connectServer, serverPinned, chooseGate, gateClaim, serverRecord, wallet, markPicking } from "./session.js";
 import { refresh } from "./vault.js";
 import { loadAlerts } from "./recovery.js";
+import { signMode, HOLDER_ONLY, HARDENED } from "./recmode.js";
 
 /* global __HUMID_SIM__, __HUMID_ALLOW_DEMO__ */
 
 export function startEnroll() {
-  S.enrollStep.value = serverPinned() ? (S.passNeeded.value ? "access" : "bind") : "connect";
+  S.enrollStep.value = serverPinned() ? (S.passNeeded.value ? "access" : "mode") : "connect";
+  S.setupMode.value = "hardened"; // the recommended choice is selected; the holder can pick holder-only
   S.view.value = "enroll";
   if (!S.server.value) connectServer();
 }
@@ -92,7 +94,14 @@ export async function demoAccessCode() {
 
 /* ---------------- the first device ---------------- */
 
-export async function enroll(useDemo, { soleBiometric = false } = {}) {
+/**
+ * Create the account. recoveryMode: "hardened" (the default: a recovery card is made under
+ * this same check) or "holder-only" (no card, no recovery part leaves this phone, ever).
+ * Either way the choice is signed by the new account key and sent with the registration.
+ */
+export async function enroll(useDemo, { soleBiometric = false, recoveryMode = S.setupMode.value } = {}) {
+  const holderOnly = recoveryMode === HOLDER_ONLY;
+  if (!holderOnly && recoveryMode !== HARDENED) { toast("Choose how you want to be able to get back in.", "warn"); return false; }
   const pass = S.passNeeded.value ? S.pass.value?.pass : undefined;
   if (S.passNeeded.value && S.pass.value?.state !== "ready") { S.enrollStep.value = "access"; toast("Add an access pass first.", "warn"); return false; }
   const gate = chooseGate(useDemo);
@@ -109,15 +118,20 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
     const pub = Suite.publicOf(keys);
     const accountId = identityId(pub.dsaPk);
     const commit = toHex(Suite.identityCommit(pub, Suite.sha3_256(dkeys.dsaPk)));
-    // The recovery card holds one of the three recovery parts; recovery always needs a second proof.
-    card = newCard();
-    const parts = quorumParts(seed);
-    const cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
-    for (const p of Object.values(parts)) wipe(p.y);
+    // Hardened: the recovery card holds one of the recovery parts; recovery always needs a
+    // second proof. Holder-only: no part is made at all.
+    let cardBody;
+    if (!holderOnly) {
+      card = newCard();
+      const parts = quorumParts(seed);
+      cardBody = { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, parts.card, accountId) };
+      for (const p of Object.values(parts)) wipe(p.y);
+    }
+    const mode = signMode(accountId, keys.dsaSk, recoveryMode);
     showInterrupt({ progress: 0.2, message: "Connecting to your vault…" });
 
     const sess = await R.api.register({
-      pub, commit, card: cardBody, soleBiometric, pass,
+      pub, commit, card: cardBody, soleBiometric, pass, recoveryMode: mode,
       device: { dsaPk: dkeys.dsaPk, platform: PLATFORM, ...gateClaim(gate) },
       // One live check: the secure chip makes a liveness key for this session (th),
       // proves it, and signs the device statement with it.
@@ -145,7 +159,7 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       gate: { adapter: gate.id, handle: enrolled.handle }, bindingId: enrolled.bindingId, wrapped, commit,
       pub: { kemPk: toB64(pub.kemPk), dsaPk: toB64(pub.dsaPk), xPk: toB64(pub.xPk) },
       device: { id: sess.device, dsaPk: toB64(dkeys.dsaPk) },
-      enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null,
+      enrolledAt: new Date().toISOString(), suite: Suite.ID, pending: null, recoveryMode,
       server: serverRecord(srv, { id: sess.id, registeredAt: new Date().toISOString() }),
     };
     await R.store.putIdentity(record);
@@ -154,7 +168,8 @@ export async function enroll(useDemo, { soleBiometric = false } = {}) {
       S.identity.value = { ...record, schema: 4 };
       S.session.value = sess;
       S.items.value = [];
-      S.cardCode.value = sess.cardSet ? card.code : null;
+      S.cardCode.value = sess.cardSet && card ? card.code : null;
+      S.recoveryMode.value = { mode: recoveryMode, version: 1, epoch: 1, escrow: sess.cardSet ? ["card"] : [], trusted: true };
       S.enrollStep.value = "done";
     });
     R.api.htp.pinnedKid = srv.kid;

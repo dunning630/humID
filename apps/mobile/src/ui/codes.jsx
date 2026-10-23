@@ -11,7 +11,7 @@ import { setDemoHolder, demoChipHint } from "../core/nfc.js";
 import { watchPlace, formatCoords, formatAccuracy, REASONS } from "../core/place.js";
 import { Toggle } from "./kit.jsx";
 
-/** A 12-character code to read from one screen and type on another. */
+/** A 12- or 16-character code to read from one screen and type on another. */
 export function CodeBox({ code, label }) {
   const groups = (code || "").replace(/-/g, "").match(/.{1,4}/g) || [];
   return (

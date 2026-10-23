@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  base32, unbase32, keyCode, formatCode, parseCode, LINK_LABEL,
+  base32, unbase32, keyCode, formatCode, parseCode, LINK_LABEL, REQUEST_LABEL,
   newCard, parseCard, formatCard, cardTag, sealCard, openCard,
   split, combine, thresholdFor, encodeShare, decodeShare,
   qrPayload, parseQr, QR_MAX, accountCheck,
@@ -143,10 +143,34 @@ test("QR: anything that isn't exactly the current format is refused", () => {
   ]) assert.equal(parseQr(bad), null, String(bad));
 });
 
-test("account check: the same on both devices for one account, different for another", () => {
-  const a = accountCheck("hid_abc"), b = accountCheck("hid_abd");
+test("account check: the same on both devices for one account and link, different for another", () => {
+  const kem = rnd(1568), x = rnd(32);
+  const a = accountCheck("hid_abc", kem, x), b = accountCheck("hid_abd", kem, x);
   assert.match(a, /^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
-  assert.equal(a, accountCheck("hid_abc"));
+  assert.equal(a, accountCheck("hid_abc", kem.slice(), x.slice()));
   assert.notEqual(a, b);
   assert.throws(() => accountCheck(""));
+});
+
+test("CRYPTO-08: the match code commits to this link's keys, so it can't be ground ahead of time", () => {
+  // v1 was a function of the (public) account id alone: a server could search, in advance, for an
+  // account of its own with the same 40-bit check as the victim's. Now the code also depends on
+  // the new device's link keys, which exist only once the link starts and live 10 minutes.
+  assert.throws(() => accountCheck("hid_abc"), /link's keys/, "no code without the link's keys");
+  const acct = "hid_" + "ab".repeat(20);
+  const codes = new Set(Array.from({ length: 32 }, () => accountCheck(acct, rnd(1568), rnd(32))));
+  assert.ok(codes.size >= 31, "the same account shows a different code for every link");
+  const kem = rnd(1568), x = rnd(32);
+  assert.notEqual(accountCheck(acct, kem, x), accountCheck(acct, kem, rnd(32)), "and both link keys count");
+});
+
+test("CRYPTO-08: recovery-request codes have 80 bits; short-lived codes keep 60", () => {
+  const req = keyCode(REQUEST_LABEL, rnd(1568), rnd(32));
+  assert.match(req, /^[0-9A-HJKMNP-TV-Z]{16}$/);
+  assert.equal(parseCode(formatCode(req)), req);
+  assert.match(keyCode(LINK_LABEL, rnd(1568), rnd(32)), /^[0-9A-HJKMNP-TV-Z]{12}$/, "links live 10 minutes");
+  const t = qrPayload("recover", req, Date.UTC(2030, 0, 1));
+  assert.ok(t.length <= QR_MAX);
+  assert.equal(parseQr(t).code, req);
+  assert.equal(parseCode("A".repeat(14)), null, "only 12 or 16");
 });

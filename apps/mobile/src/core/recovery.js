@@ -6,7 +6,7 @@ import { suite } from "@humid/crypto";
 import { readFile } from "@humid/io";
 import {
   newCard, cardTag, sealCardPart, split, thresholdFor, encodeShare, decodeShare, MIN_CONTACTS, MAX_CONTACTS,
-  quorumParts, encodeQuorumPart,
+  quorumParts, anchorPartKey, sealAnchorPart,
 } from "@humid/recovery";
 import * as S from "./state.js";
 import { SERVER_URL } from "./config.js";
@@ -15,14 +15,16 @@ import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
 import { setDraft, clearDraft, current as draftNow, CARD_DRAFT } from "./drafts.js";
+import { loadRecoveryMode, isHolderOnly, currentEpoch } from "./recmode.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
 export async function loadRecovery() {
-  if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; return; }
+  if (S.offline.value) { S.recovery.value = R.offline?.recovery || null; S.recoveryMode.value = R.offline?.recoveryMode || S.recoveryMode.value; return; }
   const [card, contacts, anchor, settings, keyList] = await Promise.all([
     quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings()),
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
+    loadRecoveryMode(),
   ]);
   if (!card || !contacts) return;
   if (S.decoy.value) {
@@ -62,17 +64,21 @@ export async function loadRecovery() {
     contacts: { n: contacts.n, threshold: contacts.threshold, createdAt: contacts.createdAt, names, scheme: contacts.scheme },
     keys: { available: !!keyList, max: keyList?.max || 4, list: keys },
     proofs, ready: Object.values(proofs).filter(Boolean).length >= 2, legacy,
+    holderOnly: isHolderOnly(),
   };
-  keepOffline({ recovery: S.recovery.value });
+  keepOffline({ recovery: S.recovery.value, recoveryMode: S.recoveryMode.value });
   if (!S.decoy.value) {
     R.api.protectingAlerts().then((a) => { S.protecting.value = a; }).catch(() => {});
     R.api.station().then((st) => { S.station.value = st; }).catch(() => {});
   }
 }
 
-/** The part of two-proof recovery this flow needs, made from the seed inside a live check. */
+/**
+ * The part of two-proof recovery this flow needs, made from the seed inside a live check, for
+ * the account's current set of pieces (its epoch, from the signed recovery-mode statement).
+ */
 export const partOf = (seed, kind) => {
-  const parts = quorumParts(seed);
+  const parts = quorumParts(seed, currentEpoch());
   const p = parts[kind];
   for (const k of Object.keys(parts)) if (k !== kind) wipe(parts[k].y);
   return p;
@@ -93,7 +99,7 @@ export async function makeNewCard() {
     await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();
       const part = partOf(seed, "card");
-      try { await R.api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
+      try { await R.api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId), epoch: part.epoch }, proof); }
       finally { wipe(part.y); }
     });
     S.cardCode.value = card.code;
@@ -123,7 +129,7 @@ export function resumeNewCard(d) {
 export async function removeCard() {
   try {
     await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => R.api.removeCard(proof));
-    toast("Recovery card removed. The old card no longer works.");
+    toast("Recovery card removed. It no longer counts on your vault server. To make it useless everywhere, make new recovery pieces.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -156,12 +162,12 @@ export async function saveContacts(contacts, ownerName) {
       const guardians = [];
       for (let i = 0; i < n; i++) {
         const c = contacts[i];
-        const piece = encodeShare({ owner: id.server.id, label: ownerName, ...shares[i], t, n });
+        const piece = encodeShare({ owner: id.server.id, label: ownerName, ...shares[i], t, n, epoch: part.epoch });
         const { envelope } = await Suite.seal({ bytes: piece, name: "HumID recovery piece", type: KEY_TYPE }, keys, { kemPk: c.offer.kemPk, xPk: c.offer.xPk }, { identityCommit: id.commit, interrupt: rec });
         guardians.push({ contact: c.offer.account, offer: c.code, envelope, label: await Suite.sealIndex(R.indexKey, { name: c.name.trim().slice(0, 40) || "Contact" }) });
         wipe(piece, shares[i].y);
       }
-      await R.api.setContacts({ threshold: t, guardians, scheme: "quorum" }, proof);
+      await R.api.setContacts({ threshold: t, guardians, scheme: "quorum", epoch: part.epoch }, proof);
     });
     toast(`Saved. Any ${t} of your ${n} witnesses count as one proof.`);
     loadRecovery();
@@ -172,7 +178,7 @@ export async function saveContacts(contacts, ownerName) {
 export async function removeContacts() {
   try {
     await withStepUp("removeContacts", [], "contacts", "Remove your witnesses", async ({ proof }) => R.api.removeContacts(proof));
-    toast("Witnesses removed. Their pieces no longer work.");
+    toast("Witnesses removed. Their pieces no longer count on your vault server. To make them useless everywhere, make new recovery pieces.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -299,14 +305,25 @@ export async function demoPassport(name = "Demo Person") {
   } catch (e) { toast(friendly(e), "error"); return null; }
 }
 
-/** Bind your passport or ID to your HumID: the anchor part, stored under the chip's identity. */
-export async function setAnchor(chip) {
+/**
+ * Link your passport or ID to your HumID. The chip must be read live: `read(nonce)` reads it
+ * and has it answer the server's fresh challenge, so copied chip files can't link someone's
+ * identity (CREDS-02). The anchor part is sealed here, under a key from that chip's own
+ * authentication key (DG15), before it leaves the phone: the server never sees it openable
+ * and never keeps DG15 (VAULT-01, CREDS-03). A chip with no authentication key can't hold it.
+ */
+export async function setAnchor(read) {
   try {
+    const nonce = await R.api.anchorChallenge();
+    const chip = await read(nonce);
+    if (!chip) return false;
+    if (!chip.dg15 || !chip.aaSignature) throw new Error("This ID's chip can't prove it's present, so it can't be one of your proofs. Use witnesses, a recovery card or a security key.");
     const r = await withStepUp("setAnchor", [], "anchor", "Link your HumID to your ID chip", async ({ seed, proof }) => {
-      showInterrupt({ progress: 0.6, message: "Checking your ID chip's signature with its issuing country…" });
+      showInterrupt({ progress: 0.6, message: "Sealing your recovery piece to your ID chip…" });
       const part = partOf(seed, "anchor");
-      try { return await R.api.setAnchor({ chip, part: encodeQuorumPart(part) }, proof); }
-      finally { wipe(part.y); }
+      const key = anchorPartKey(chip.dg15);
+      try { return await R.api.setAnchor({ chip, sealedPart: await sealAnchorPart(key, part, S.identity.value.server.id), signature: chip.aaSignature, epoch: part.epoch }, proof); }
+      finally { wipe(part.y, key); }
     });
     toast(`Linked to your ${r.document}'s chip${r.country ? ` (${r.country})` : ""}.`);
     loadRecovery();

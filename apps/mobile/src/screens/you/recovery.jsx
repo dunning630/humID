@@ -1,10 +1,11 @@
-// Recovery: the four proofs (witnesses · ID chip · recovery card · security key); any two bring the
-// vault back on a new phone. This screen shows which exist and opens each; progress
-// lives on the Protection screen.
+// Recovery: first the recovery mode (holder-only or hardened, docs/RECOVERY.md) and the switch;
+// then, for hardened, the four proofs (witnesses · ID chip · recovery card · security key); any
+// two bring the vault back on a new phone. This screen shows which exist and opens each;
+// progress lives on the Protection screen.
 //
 // Witnesses are gathered one at a time: each code is checked the moment it's complete,
 // the list is kept as a draft across a lock, and one check saves the set.
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Icon } from "../../brand/icons.jsx";
 import { Pushed, Sheet, Banner, Row, Toggle } from "../../ui/kit.jsx";
 import { CodeInput, ChipAccess, ProofMeter, PROOFS, WAITS } from "../../ui/codes.jsx";
@@ -12,9 +13,10 @@ import { fmtDate } from "../../ui/format.js";
 import * as S from "../../core/state.js";
 import { DEMO_BUILD } from "../../core/config.js";
 import {
-  loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, readChipFiles, demoPassport, setAnchor, removeAnchor,
-  readChip, chipReader, markPicking, setDraft, clearDraft, draft, toast,
+  loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor,
+  readChip, chipReader, setDraft, clearDraft, draft, toast,
   keyReader, addSecurityKey, removeSecurityKey,
+  switchToHardened, switchToHolderOnly, newRecoveryPieces, escrowWords, HOLDER_ONLY,
 } from "../../core/index.js";
 import { back, twelve, Countdown } from "./common.jsx";
 
@@ -23,12 +25,17 @@ const threshold = (n) => Math.floor(n / 2) + 1;
 
 export function Recovery() {
   const rec = S.recovery.value;
-  const [open, setOpen] = useState(S.push.value?.open || null); // witnesses | anchor | card | key
+  const mode = S.recoveryMode.value;
+  const [open, setOpen] = useState(S.push.value?.open || null); // witnesses | anchor | card | key | mode
   useEffect(() => { loadRecovery(); chipReader(); }, []);
   const off = !!S.offline.value;
+  const holderOnly = mode?.mode === HOLDER_ONLY;
   return (
     <Pushed title="Recovery" onBack={back}>
-      <p class="t2 small">If you lose every device, any <b>two</b> of these four prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
+      <ModeCard mode={mode} off={off} onSwitch={() => setOpen("mode")} />
+      {open === "mode" && <ModeSheet mode={mode} onClose={() => setOpen(null)} />}
+      {holderOnly ? null : <>
+      <p class="t2 small" style={{ marginTop: 16 }}>If you lose every device, any <b>two</b> of these four prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
       {rec && <ProofMeter have={PROOFS.map((p) => p.id).filter((k) => rec.proofs[k])} />}
       <div class="rows" style={{ marginTop: 14 }}>
         <Row icon="users" tone={rec?.proofs.witness ? "mint" : ""} title="Witnesses"
@@ -45,17 +52,84 @@ export function Recovery() {
           onClick={off ? undefined : () => setOpen("key")} />
       </div>
       {rec?.legacy && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="info" title="Upgrade to two-proof recovery" text="You have an older card or witnesses that work on their own. Make a new recovery card and save your witnesses again to switch." /></div>}
+      {!off && <NewPieces />}
       <section style={{ marginTop: 20 }}>
         <div class="eyebrow" style={{ marginBottom: 8 }}>How long a recovery waits</div>
         <div class="rows">{WAITS.map((w) => <Row chevron={false} title={w.pair} trail={w.wait} />)}</div>
         <p class="fine" style={{ marginTop: 8 }}>Every device that still has your HumID is alerted and can veto during the wait.</p>
       </section>
-      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
       {open === "witnesses" && <WitnessesSheet onClose={() => setOpen(null)} />}
       {open === "anchor" && <AnchorSheet onClose={() => setOpen(null)} />}
       {open === "card" && <CardInfoSheet onClose={() => setOpen(null)} />}
       {open === "key" && <SecurityKeySheet onClose={() => setOpen(null)} />}
+      </>}
+      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
     </Pushed>
+  );
+}
+
+/**
+ * Removing a witness or replacing a card only stops it counting on this server: the old piece
+ * still fits with the others. New pieces (a new epoch) make every old one useless everywhere.
+ */
+function NewPieces() {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!open) return <button class="link muted" style={{ marginTop: 12 }} onClick={() => setOpen(true)}>Lost a card, or dropped a witness you don't trust? Make new recovery pieces</button>;
+  return (
+    <div class="card" style={{ marginTop: 12 }}>
+      <h3>Make new recovery pieces</h3>
+      <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces make every old one useless, everywhere: a lost card, a removed witness's piece, copies in old backups.</p>
+      <p class="small t2" style={{ marginTop: 6 }}>Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
+      <div class="actions row" style={{ paddingTop: 8 }}>
+        <button class="btn ghost" data-back onClick={() => setOpen(false)}>Not now</button>
+        <button class="btn danger" disabled={busy} onClick={async () => { setBusy(true); try { if (await newRecoveryPieces()) { setOpen(false); loadRecovery(); } } finally { setBusy(false); } }}><Icon name="fingerprint" />Make new pieces</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- the recovery mode ---------------- */
+
+function ModeCard({ mode, off, onSwitch }) {
+  if (!mode) return <div class="card"><span class="muted small">Checking how you can get back in…</span></div>;
+  const holderOnly = mode.mode === HOLDER_ONLY;
+  return (
+    <div class="card">
+      <div class="eyebrow">How you get back in</div>
+      <h2 style={{ marginTop: 6 }}>{holderOnly ? "Only my own devices" : "A safe way back in"}</h2>
+      <p class="small t2" style={{ marginTop: 6 }}>{holderOnly
+        ? "Your vault opens only on devices you've already set up. HumID keeps no recovery for you, so if you lose every one of them, no one can bring it back, not even HumID."
+        : "If you lose every device, any two of your proofs bring your vault back after a wait that any device you still have can cancel."}</p>
+      {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" title="Your vault's record of this choice doesn't check out" text="It isn't signed by your HumID's own key, so this phone won't trust it. HumID treats your account as Only my own devices until you choose again here. Tell whoever runs your vault server." /></div>}
+      {!off && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
+    </div>
+  );
+}
+
+function ModeSheet({ mode, onClose }) {
+  const holderOnly = mode?.mode === HOLDER_ONLY;
+  const left = escrowWords(mode?.escrow);
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (fn) => { setBusy(true); try { if (await fn()) onClose(); } finally { setBusy(false); } };
+  return holderOnly ? (
+    <Sheet onClose={onClose} eyebrow="Recovery mode" title="Turn on a safe way back in">
+      <p class="t2 small">You'll then set up two proofs: people you trust, your passport or ID card, a recovery card or a security key. Getting back in takes any two of them and a wait that any of your devices can cancel. Some of that proof is kept on HumID's servers, locked so they can't open it on their own.</p>
+      <p class="fine" style={{ marginTop: 8 }}>One live check signs this change with your HumID's key, and it's recorded in your activity.</p>
+      <div class="actions"><button class="btn primary block" disabled={busy} onClick={() => run(switchToHardened)}><Icon name="fingerprint" />Turn on recovery</button></div>
+    </Sheet>
+  ) : (
+    <Sheet onClose={onClose} eyebrow="Recovery mode" title="Only my own devices">
+      <p class="t2 small">Your vault will open only on devices you've already set up. If you lose every one of them, <b>no one can get your documents back</b>: not your witnesses, not your ID, not HumID.</p>
+      {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own check. Only then does the switch happen.`} />}
+      <p class="fine" style={{ marginTop: 8 }}>Pieces already in other hands (a printed card, a witness's phone) stop counting on this server, and a new set of pieces is started, so old ones can't be combined with new ones.</p>
+      <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 10 }}>
+        <span><span class="title">I understand: lose every device, lose my vault</span></span>
+        <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
+      </button>
+      <div class="actions"><button class="btn danger block" disabled={busy || !sure} onClick={() => run(switchToHolderOnly)}><Icon name="fingerprint" />{left.length ? "Delete my proofs and switch" : "Switch"}</button></div>
+    </Sheet>
   );
 }
 
@@ -244,61 +318,56 @@ function WitnessesSheet({ onClose }) {
 
 /* ---------------- ID chip (the identity anchor) ---------------- */
 
+/**
+ * Linking the ID chip needs the chip itself, live: it answers a fresh challenge from the vault
+ * server in the same read, so copied chip files can't link anyone's identity. Your recovery
+ * piece is sealed on this phone to that one chip before it's sent (core/recovery.js setAnchor).
+ */
 function AnchorSheet({ onClose }) {
   const a = S.recovery.value?.anchor;
-  const [chip, setChip] = useState(null);
   const [name, setName] = useState("Demo Person");
   const [nfcOpen, setNfcOpen] = useState(false);
   const [access, setAccess] = useState(null);
+  const [busy, setBusy] = useState(false);
   const nfc = S.nfc.value;
-  const read = async () => { const r = await readChip(access, { purpose: "anchor" }); if (r) { setChip(r); setNfcOpen(false); } };
-  const files = useRef(null);
-  const pick = () => { markPicking(); files.current.click(); };
-  const onFiles = async (e) => { const c = await readChipFiles(e.currentTarget.files); e.currentTarget.value = ""; if (c) setChip(c); };
+  const link = async (read) => { setBusy(true); try { if (await setAnchor(read)) onClose(); } finally { setBusy(false); } };
+  const fromNfc = (nonce) => readChip(access, { nonce, purpose: "anchor" });
+  const fromDemo = async (nonce) => { const c = await demoPassport(name); return c ? { ...c, aaSignature: await c.answer(nonce) } : null; };
+  const older = a?.exists && a.version === 1;
   return (
     <Sheet onClose={onClose} eyebrow="ID chip · one of four proofs" title={a?.exists ? `Linked to your ${a.document}'s chip` : "Link HumID to your passport or ID chip"}>
-      <p class="t2 small">The chip in your passport or ID card is signed by the country that issued it. HumID checks that signature and keeps only a keyed fingerprint of the details that stay the same when you renew. Later, your chip proves it's you: in person at a HumID station, or live on your phone.</p>
-      {!a?.exists && <Banner tone="amber" icon="info" title="The one proof that isn't anonymous" text="Someone holding this vault's secret and your passport details could confirm you have a HumID. Witnesses and your recovery card don't reveal who you are. Skip this if anonymity matters more than convenience." />}
+      <p class="t2 small">The chip in your passport or ID card is signed by the country that issued it, and has a key of its own it never gives out. Your recovery piece is sealed on this phone to that one chip, so only that chip can unlock it: not another passport, not an old one, not someone with the same name. Later your chip proves it's you, live on your phone or in person at a HumID station.</p>
+      <Banner tone="amber" icon="info" title="What HumID's server holds" text="Your recovery piece, sealed to your chip, which the server can't open; a fingerprint of your chip's key, to find it; your document type and country. Your name and birth date pass through when you link or recover, and aren't kept. Someone who runs the server and also has your chip could match it to your HumID: it's the one proof that isn't anonymous." />
+      {older && <Banner tone="amber" icon="alert" title="Read your chip again" text="This link was made before recovery pieces were sealed to the chip, so the server could open it. Read your passport or ID once more and HumID replaces it with one only your chip unlocks." />}
+      <p class="fine" style={{ marginTop: 8 }}>Renewed your passport? Link the new one here: the old one stops counting. Chips that can't prove they're present (some older ID cards) can't be a proof.</p>
       {!a?.available && <Banner tone="amber" icon="globe" title="Not available on this server yet" text="Its operator hasn't added the countries' signing certificates. Use witnesses and a recovery card for now." />}
       {a?.exists && <div class="rows" style={{ marginTop: 12 }}><Row chevron={false} title="Document" trail={`${a.document}${a.country ? ` · ${a.country}` : ""}`} /><Row chevron={false} title="Linked" trail={fmtDate(a.createdAt)} /></div>}
       {a?.available && (
         <>
-          <input ref={files} type="file" multiple hidden accept=".json,.bin,.dat,application/json,application/octet-stream" onChange={onFiles} />
-          {!chip && nfcOpen && (
+          {nfcOpen ? (
             <>
               <ChipAccess onChange={setAccess} />
               <div class="actions">
-                <button class="btn primary block" disabled={!access} onClick={read}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
+                <button class="btn primary block" disabled={!access || busy} onClick={() => link(fromNfc)}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
                 <button class="btn ghost block" data-back onClick={() => setNfcOpen(false)}>Back</button>
               </div>
             </>
-          )}
-          {!chip && !nfcOpen && (
+          ) : (
             <div class="actions">
-              <button class="btn primary block" disabled={!nfc?.available} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
-              {!nfc?.available && nfc?.reason && <p class="small muted">{nfc.reason}</p>}
-              <button class="btn ghost block" onClick={pick}><Icon name="file" />Load chip data from a file</button>
+              <button class="btn primary block" disabled={!nfc?.available || busy} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{a?.exists ? (older ? "Read my chip again" : "Link a different ID") : nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
+              {!nfc?.available && <p class="small muted">{nfc?.reason || "Linking needs the chip itself, read live by a phone with NFC or a card reader."}</p>}
               {DEMO_BUILD && (
                 <div class="field" style={{ marginTop: 0 }}>
                   <label for="demo-holder">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-holder" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-                  <button class="btn ghost block" style={{ marginTop: 8 }} onClick={async () => setChip(await demoPassport(name))}><Icon name="passport" />Use a demo passport</button>
+                  <button class="btn ghost block" style={{ marginTop: 8 }} disabled={busy} onClick={() => link(fromDemo)}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
             </div>
           )}
-          {chip && (
-            <>
-              <Banner tone="mint" icon="check" title={chip.access ? `Chip read · ${chip.access}` : `Chip data loaded${chip.demo ? " (demo)" : ""}`} text={`Your vault server checks its country signature next. ${chip.dg15 ? "This chip can also prove it's present, live." : "This chip can't prove it's present live, so recovering with it will need a HumID station."}`} />
-              <div class="actions">
-                <button class="btn primary block" onClick={async () => { if (await setAnchor(chip)) onClose(); }}><Icon name="fingerprint" />{a?.exists ? "Replace with this ID" : "Link this ID chip"}</button>
-                <button class="btn ghost block" data-back onClick={() => setChip(null)}>Choose another</button>
-              </div>
-            </>
-          )}
         </>
       )}
-      {a?.exists && !chip && <div class="actions" style={{ paddingTop: 8 }}><button class="btn danger block" onClick={async () => { if (await removeAnchor()) onClose(); }}><Icon name="fingerprint" />Unlink this ID chip</button></div>}
+      {a?.exists && !nfcOpen && <div class="actions" style={{ paddingTop: 8 }}><button class="btn danger block" onClick={async () => { if (await removeAnchor()) onClose(); }}><Icon name="fingerprint" />Unlink this ID chip</button></div>}
     </Sheet>
   );
 }

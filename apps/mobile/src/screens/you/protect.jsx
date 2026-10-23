@@ -2,19 +2,13 @@
 // left to make this HumID survive a lost phone. This screen owns progress; the Recovery
 // screen only shows which proofs exist.
 import { Icon } from "../../brand/icons.jsx";
-import { Pushed, Row, PROTECTION } from "../../ui/kit.jsx";
+import { Pushed, Row, Banner, PROTECTION } from "../../ui/kit.jsx";
 import * as S from "../../core/state.js";
+import { protectionItems } from "../../core/index.js";
 import { go, back } from "./common.jsx";
 
-/** The checklist, so the hub can count it too. Empty until recovery and devices are known. */
-export function protectionItems(rec, devices) {
-  if (!rec || !devices) return [];
-  return [
-    { done: !!rec.proofs?.card, icon: "idcard", label: "Recovery card", todo: "Make the card that's one of your proofs", target: "recovery", extra: { open: "card" } },
-    { done: !!(rec.proofs?.witness || rec.proofs?.anchor || rec.proofs?.key), icon: "users", label: "A second proof", todo: "Witnesses who vouch for you, your ID chip, or a security key", target: "recovery" },
-    { done: devices.length >= 2, icon: "key", label: "A second device", todo: "Another phone, so a lost phone isn't an emergency", target: "devices", extra: { open: "add" } },
-  ];
-}
+// The checklist lives in the kernel (core/recmode.js) so the hub can count it too.
+export { protectionItems };
 
 export function Protect() {
   const decoy = S.decoy.value;
@@ -22,6 +16,8 @@ export function Protect() {
   const items = decoy || S.offline.value ? [] : protectionItems(rec, devices);
   const n = items.filter((i) => i.done).length;
   const duressOn = !decoy && !!S.duressInfo.value?.setting?.enabled;
+  const holderOnly = S.recoveryMode.value?.mode === "holder-only";
+  const alone = !decoy && holderOnly && devices && devices.length <= 1;
   return (
     <Pushed title="Protection" onBack={back}>
       <div class="eyebrow">Safe. Secure. Simple.</div>
@@ -29,6 +25,7 @@ export function Protect() {
       <div class="rows" style={{ marginTop: 12 }}>
         {PROTECTION.map((p) => <Row icon={p.icon} tone="mint" title={p.title} sub={p.text} chevron={false} />)}
       </div>
+      {alone && <div style={{ marginTop: 16 }}><Banner tone="danger" icon="alert" role="alert" title="This is your only device" text="You chose Only my own devices, so if this phone is lost, your vault is gone for good. Add another device now." action="Add a device" onAction={() => go("devices", { open: "add" })} /></div>}
 
       {items.length > 0 && (
         <section class="section" style={{ marginTop: 24 }} aria-labelledby="protect-h">
@@ -46,7 +43,9 @@ export function Protect() {
             ))}
             {!duressOn && <Row icon="siren" title="Optional: duress gesture" sub="If you're ever forced to unlock, show only chosen documents" onClick={() => go("duress")} />}
           </div>
-          <p class="fine" style={{ marginTop: 12 }}>If you lose every device, any two of four proofs bring your vault back. HumID never holds a key that opens it, and one proof alone never does.</p>
+          <p class="fine" style={{ marginTop: 12 }}>{holderOnly
+            ? "You chose Only my own devices: HumID keeps no way back in for you. Your devices are your recovery."
+            : "If you lose every device, any two of four proofs bring your vault back. HumID never holds a key that opens it, and one proof alone never does."}</p>
         </section>
       )}
       {S.offline.value && <p class="fine" style={{ marginTop: 16 }}>Offline: nothing here can be set up until you reconnect.</p>}

@@ -15,7 +15,8 @@
   "dependencies": {
     "@humid/svc": "^1.2.0",
     "@humid/htp": "^1.3.0",
-    "@humid/attest": "^1.2.0"
+    "@humid/attest": "^1.2.0",
+    "@humid/recovery": "^1.3.0"
   },
   "license": "UNLICENSED"
 }

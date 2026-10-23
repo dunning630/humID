@@ -36,6 +36,8 @@ const STEP_UP = {
   setAnchor: () => ["PUT", "/recovery/anchor"],
   addKey: () => ["POST", "/recovery/keys"],
   removeKey: (id) => ["DELETE", `/recovery/keys/${keyIdOf(id)}`],
+  removeAllKeys: () => ["DELETE", "/recovery/keys"],
+  setRecoveryMode: () => ["POST", "/recovery/mode"],
   removeAnchor: () => ["DELETE", "/recovery/anchor"],
   setSettings: () => ["PUT", "/recovery/settings"],
   stationVerify: (code) => ["POST", `/recovery/station/requests/${codeOf(code)}/verify`],
@@ -67,7 +69,7 @@ const keyIdOf = (id) => {
 };
 const codeOf = (input) => {
   const c = parseCode(input);
-  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 letters and numbers.");
+  if (!c) throw new ApiError(400, "bad_code", "That code isn't valid. It has 12 or 16 letters and numbers.");
   return c;
 };
 
@@ -124,7 +126,7 @@ export class HumidApi {
    * @param pub     account public keys { kemPk, dsaPk, xPk }
    * @param device  { dsaPk, platform, gateMethod, assurance }
    */
-  async register({ pub, commit, device, sign, card, soleBiometric, pass }) {
+  async register({ pub, commit, device, sign, card, soleBiometric, pass, recoveryMode }) {
     await this.htp.connect();
     const th = this.htp.transcript;
     const sigs = await sign({ register: registerMessage(th, pub, commit), device: deviceMessage(th, identityId(pub.dsaPk), device.dsaPk), th });
@@ -134,6 +136,8 @@ export class HumidApi {
         device: deviceBody(device, sigs),
         // optional recovery card { tag, blob }, stored under this same live check
         ...(card ? { card: { tag: card.tag, blob: b64u(card.blob) } } : {}),
+        // the recovery mode chosen at setup { mode, version, sig }, signed by the account key
+        ...(recoveryMode ? { recoveryMode: { mode: recoveryMode.mode, version: recoveryMode.version, epoch: recoveryMode.epoch, sig: b64u(recoveryMode.sig) } } : {}),
         ...(soleBiometric ? { soleBiometric: true } : {}),
         // an access pass (docs/ANONYMITY.md) when the server requires one
         ...(pass ? { pass } : {}),
@@ -346,7 +350,8 @@ export class HumidApi {
   /* ---------------- recovery card ---------------- */
 
   card() { return this.#json("GET", "/recovery/card"); }
-  setCard({ tag, blob }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob) }, stepUp }); }
+  /** epoch: which set of recovery pieces the card's part is from (the account's current one). */
+  setCard({ tag, blob, epoch }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob), ...(epoch ? { epoch } : {}) }, stepUp }); }
   removeCard(stepUp) { return this.#json("DELETE", "/recovery/card", { stepUp }); }
 
   /* ---------------- recovery contacts ---------------- */
@@ -370,9 +375,9 @@ export class HumidApi {
     return { ...r, guardians: (r.guardians || []).map((g) => ({ ...g, label: g.label ? unb64u(g.label) : null })) };
   }
   /** guardians: [{ contact, offer (code), envelope (bytes), label (bytes) }] */
-  setContacts({ threshold, guardians, scheme }, stepUp) {
+  setContacts({ threshold, guardians, scheme, epoch }, stepUp) {
     return this.#json("PUT", "/recovery/contacts", {
-      body: { threshold, scheme, guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
+      body: { threshold, scheme, ...(epoch ? { epoch } : {}), guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
       stepUp,
     });
   }
@@ -387,8 +392,16 @@ export class HumidApi {
 
   /** { available, exists, document?, country?, createdAt? } */
   anchor() { return this.#json("GET", "/recovery/anchor"); }
-  /** Bind a passport or ID chip ({ dg1, sod, dg15? }) and store the anchor part under it. */
-  setAnchor({ chip, part }, stepUp) { return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), part: b64u(part) }, stepUp }); }
+  /** A fresh challenge (bytes) for the chip being linked to answer: copied chip files can't. */
+  async anchorChallenge() { return unb64u((await this.#json("POST", "/recovery/anchor/challenge")).nonce); }
+  /**
+   * Link a passport or ID chip ({ dg1, sod, dg15 }). sealedPart: the anchor part already sealed on
+   * this phone under anchorPartKey(dg15) (sealAnchorPart), so the server never sees it openable.
+   * signature: the chip's answer to anchorChallenge(). epoch: which set of recovery pieces it belongs to.
+   */
+  setAnchor({ chip, sealedPart, signature, hash, epoch }, stepUp) {
+    return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), sealedPart: b64u(sealedPart), signature: b64u(signature || new Uint8Array(0)), ...(hash ? { hash } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
+  }
   removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
   settings() { return this.#json("GET", "/recovery/settings"); }
   setSettings(settings, stepUp) { return this.#json("PUT", "/recovery/settings", { body: settings, stepUp }); }
@@ -408,10 +421,25 @@ export class HumidApi {
     return { challenge: unb64u(r.challenge), exclude: (r.exclude || []).map(unb64u) };
   }
   /** Store the key part under a key: { tag, blob, pub, credentialId, authData, signature, label? } (bytes, except tag). */
-  addKey({ tag, blob, pub, credentialId, authData, signature, label }, stepUp) {
-    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}) }, stepUp });
+  addKey({ tag, blob, pub, credentialId, authData, signature, label, epoch }, stepUp) {
+    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
   }
   removeKey(id, stepUp) { return this.#json("DELETE", `/recovery/keys/${keyIdOf(id)}`, { stepUp }); }
+  removeAllKeys(stepUp) { return this.#json("DELETE", "/recovery/keys", { stepUp }); }
+
+  /* ---------------- recovery mode (docs/RECOVERY.md#two-recovery-modes) ---------------- */
+
+  /**
+   * { mode: "holder-only" | "hardened", version, epoch, sig, escrow: [recovery material still stored] }.
+   * sig is the account key's signature (bytes, or null for an account from before modes):
+   * check it with recoveryModeMessage before believing the mode.
+   */
+  async recoveryMode() {
+    const r = await this.#json("GET", "/recovery/mode");
+    return { ...r, sig: r.sig ? unb64u(r.sig) : null };
+  }
+  /** Switch modes (or start a new set of recovery pieces): { mode, version, epoch, sig } signed by the account key, with a step-up. */
+  setRecoveryMode({ mode, version, epoch, sig }, stepUp) { return this.#json("POST", "/recovery/mode", { body: { mode, version, epoch, sig: b64u(sig) }, stepUp }); }
 
   /** Recoveries and duress signals of the people this account protects: [{ kind, owner, … }] */
   protectingAlerts() { return this.#json("GET", "/recovery/protecting/alerts").then((r) => r.alerts); }
@@ -428,12 +456,21 @@ export class HumidApi {
   /* ---------------- verification stations ---------------- */
 
   station() { return this.#json("GET", "/recovery/station"); }
-  stationRequest(code) { return this.#json("GET", `/recovery/station/requests/${codeOf(code)}`); }
+  /** What's waiting under a recovery code, with the recovering device's keys, checked against the code. */
+  async stationRequest(input) {
+    const code = codeOf(input);
+    const r = await this.#json("GET", `/recovery/station/requests/${code}`);
+    if (!r.kemPk) return r;
+    const out = { ...r, kemPk: unb64u(r.kemPk), xPk: unb64u(r.xPk) };
+    checkCode(code, REQUEST_LABEL, out.kemPk, out.xPk);
+    return out;
+  }
   /** checks: { document, face, present } — what the operator confirmed in person. */
   /** A fresh challenge for the chip in front of the station (bytes). */
   async stationChallenge(code) { return unb64u((await this.#json("POST", `/recovery/station/requests/${codeOf(code)}/challenge`)).nonce); }
-  stationVerify(code, { chip, checks, signature, hash }, stepUp) {
-    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}) };
+  /** chipKey: the chip's DG15, sealed to the recovering device's keys and signed by the station's account (an envelope). */
+  stationVerify(code, { chip, checks, signature, hash, chipKey }, stepUp) {
+    const body = { chip: chipBody(chip), checks, ...(signature ? { signature: b64u(signature) } : {}), ...(hash ? { hash } : {}), ...(chipKey ? { chipKey: b64u(chipKey) } : {}) };
     return this.#json("POST", `/recovery/station/requests/${codeOf(code)}/verify`, { body, stepUp });
   }
 
@@ -475,6 +512,9 @@ export class HumidApi {
     return {
       ...r, blob: r.blob ? unb64u(r.blob) : undefined, shares: r.shares ? r.shares.map(unb64u) : undefined,
       anchorPart: r.anchorPart ? unb64u(r.anchorPart) : undefined, keyBlob: r.keyBlob ? unb64u(r.keyBlob) : undefined,
+      // v2 anchor: the part as the holder's phone sealed it (open with anchorPartKey(dg15)), and,
+      // after a station, the chip's DG15 sealed to this device's recovery keys
+      anchorSealed: r.anchorSealed ? unb64u(r.anchorSealed) : undefined, anchorKey: r.anchorKey ? unb64u(r.anchorKey) : undefined,
     };
   }
   /** A contact looks up the recovery code someone sent them. */

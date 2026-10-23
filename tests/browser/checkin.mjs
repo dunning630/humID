@@ -79,6 +79,7 @@ try {
   await page.goto(BASE);
   await page.getByRole("button", { name: "Create my HumID" }).click();
   await page.getByRole("button", { name: "Trust this server" }).click();
+  await page.getByRole("button", { name: "Next: lock it to you" }).click({ timeout: 30_000 }); // recommended mode
   await page.getByText("Your body becomes the key").waitFor({ timeout: 30_000 });
   await page.getByRole("checkbox").first().click();
   await page.getByRole("button", { name: /Use demo mode/ }).click();
