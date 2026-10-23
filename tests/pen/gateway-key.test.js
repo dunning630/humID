@@ -5,24 +5,35 @@
 // the holder's own step-up proof against the device keys identity vouches for, the vault releases
 // an envelope only against the ledger's receipt for the open, and the Check-in sweep needs
 // keyshare's erase token. The gateway's key releases nothing and deletes nothing.
+//
+// The recovery service too: every route that changes or releases recovery material (seal card,
+// contacts, anchor, security keys, settings, link approval, help, cancelling an alert, station
+// verification, closing) checks the holder's own proof against the body it received, so the
+// gateway's key alone changes nothing there and can't alter what the holder approved.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { startStack } from "../e2e/stack.js";
 import { makeHolder, sealSplitFor, anotherDevice } from "../e2e/holder.js";
+import { newCard, cardTag, sealCardPart, quorumParts } from "@humid/recovery";
 import { HumidApi } from "@humid/api";
 import { signRequest, internalRequest, newStatementKeys, signStatement } from "@humid/svc";
 import { ml_dsa87, stepUpMessage, actionBytes, liveMessage, b64u, random } from "@humid/htp";
 
-let stack, alice, api, id;
+let stack, alice, api, id, bob, bobApi;
 before(async () => {
-  stack = await startStack({ messaging: false, checkin: "on", checkinSweepMs: 0 });
+  bob = makeHolder("bob-gw"); // a hardened account with a setup card, and a verification station
+  stack = await startStack({ messaging: false, checkin: "on", checkinSweepMs: 0, stations: [bob.id] });
   alice = makeHolder("alice-gw");
   api = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
   await api.register({ pub: alice.pub, commit: alice.commit, device: alice.device, sign: alice.registerSign });
   const s = await sealSplitFor(alice, "will.txt", "secret");
   id = (await api.upload(s.envelope, s.index, s.share)).id;
+  bobApi = new HumidApi({ baseUrl: stack.baseUrl, pinnedKid: stack.gateway.htp.kid });
+  const card = newCard();
+  const sess = await bobApi.register({ pub: bob.pub, commit: bob.commit, device: bob.device, sign: bob.registerSign, card: { tag: cardTag(card.secret), blob: await sealCardPart(card.secret, quorumParts(bob.seed).card, bob.id) } });
+  assert.equal(sess.cardSet, true, "the setup card, approved by the account key in the registration's check");
 });
 after(async () => { await stack?.stop(); });
 
@@ -139,4 +150,83 @@ test("the gateway's key alone deletes nothing", async () => {
   assert.equal((await api.list()).items.length, n, "every document is still there");
   const me = await api.me();
   assert.equal(me.devices.length, 1);
+});
+
+/* ---------------- the recovery service ---------------- */
+
+const recoveryRows = () => {
+  const db = new DatabaseSync(join(stack.root, "recovery", "recovery.db"), { readOnly: true });
+  try {
+    return {
+      cards: db.prepare("SELECT account, tag FROM cards ORDER BY account").all().map((r) => ({ ...r })),
+      settings: db.prepare("SELECT account, duress_alert FROM settings ORDER BY account").all().map((r) => ({ ...r })),
+      guardians: db.prepare("SELECT COUNT(*) n FROM guardian_sets").get().n,
+      keys: db.prepare("SELECT COUNT(*) n FROM seckeys").get().n,
+    };
+  } finally { db.close(); }
+};
+const vouchFor = async (h) => JSON.parse(Buffer.from((await forged("identity", "POST", "/internal/vouch", Buffer.from(JSON.stringify({ account: h.id, device: h.deviceId })), {})).body).toString()).vouch;
+
+test("the gateway's key alone changes no recovery material, approves no link and vouches for no recovery", async () => {
+  const before = recoveryRows();
+  const tag = cardTag(newCard().secret);
+  const j = (o) => Buffer.from(JSON.stringify(o));
+  const routes = [
+    ["PUT", "/card", j({ tag, blob: b64u(random(12 + 65 + 16)), epoch: 1 })],
+    ["DELETE", "/card"],
+    ["PUT", "/contacts", j({ threshold: 2, guardians: [], scheme: "quorum", epoch: 1 })],
+    ["DELETE", "/contacts"],
+    ["PUT", "/anchor", j({ sealedPart: b64u(random(64)), epoch: 1 })],
+    ["DELETE", "/anchor"],
+    ["POST", "/keys", j({ tag, blob: b64u(random(16)), epoch: 1 })],
+    ["DELETE", `/keys/${"a".repeat(32)}`],
+    ["DELETE", "/keys"],
+    ["PUT", "/settings", j({ duressAlert: true })],
+    ["POST", `/links/${"A".repeat(12)}/approve`, j({})],
+    ["POST", `/help/${"A".repeat(16)}`, j({ owner: alice.id, envelope: "" })],
+    ["POST", `/alerts/${"a".repeat(16)}/cancel`],
+    ["POST", `/station/requests/${"A".repeat(16)}/verify`, j({ checks: { document: true, face: true, present: true } })],
+    ["DELETE", "/escrow"],
+  ];
+  const vouch = await vouchFor(bob);
+  for (const [m, p, body] of routes) {
+    const claims = { sub: bob.id, dsaFp: "x", kemFp: "x", stepUp: { at: Date.now(), proof: "forged", live: true } };
+    // no holder proof at all
+    assert.equal(await status("recovery", m, p, body, claims), 403, `${m} ${p}: no proof`);
+    // a proof made with another key, under identity's real vouch for bob's device
+    const fake = attackerProof(m, `/recovery${p}`, { device: bob.deviceId, vouch });
+    const st = await status("recovery", m, p, body, { ...claims, holder: fake });
+    assert.ok(st === 401 || st === 403, `${m} ${p}: forged proof got ${st}`);
+  }
+  assert.deepEqual(recoveryRows(), before, "nothing changed");
+});
+
+test("a real approval from the holder can't be turned into a different change", async () => {
+  // bob's own device signs PUT /recovery/settings { duressAlert: false }; the gateway sends { duressAlert: true }
+  const p = "/recovery/settings", signed = Buffer.from(JSON.stringify({ duressAlert: false })), sent = Buffer.from(JSON.stringify({ duressAlert: true }));
+  const th = random(32), nonce = random(16), at = Date.now(), exp = at + 30_000, seq = 3;
+  const action = actionBytes({ method: "PUT", path: p, device: bob.deviceId, nonce, exp });
+  const holder = { th: b64u(th), seq, at, m: "PUT", p, nonce: b64u(nonce), exp, device: bob.deviceId,
+    sig: b64u(ml_dsa87.sign(stepUpMessage(th, seq, "PUT", p, signed, at, action), bob.dkeys.dsaSk)),
+    live: b64u(bob.liveKey.sign(liveMessage(th, seq, "PUT", p, at, action))), vouch: await vouchFor(bob) };
+  const claims = { sub: bob.id, stepUp: { at }, holder };
+  assert.equal(await status("recovery", "PUT", "/settings", sent, claims), 401, "the body it signed, or nothing");
+  assert.equal(recoveryRows().settings.length, 0);
+  // the body it did sign goes through, once
+  assert.equal(await status("recovery", "PUT", "/settings", signed, claims), 200);
+  assert.equal(await status("recovery", "PUT", "/settings", signed, claims), 403, "used once");
+});
+
+test("a setup card needs the account key's own signature in the registration and identity's word that the account is new", async () => {
+  const before = recoveryRows();
+  const tag = cardTag(newCard().secret), blob = random(12 + 65 + 16);
+  const body = Buffer.from(JSON.stringify({ tag, blob: b64u(blob) }));
+  const notCore = newStatementKeys();
+  for (const setupCard of [
+    { created: "x.y", dsaPk: b64u(alice.pub.dsaPk), th: b64u(random(32)), sig: b64u(random(4627)) },
+    { created: signStatement(notCore.sk, "created", { account: alice.id, th: "t" }), dsaPk: b64u(alice.pub.dsaPk), th: "t", sig: b64u(random(4627)) },
+  ]) {
+    assert.equal(await status("recovery", "PUT", "/card", body, { sub: alice.id, stepUp: { at: Date.now() }, setupCard }), 403);
+  }
+  assert.deepEqual(recoveryRows(), before);
 });

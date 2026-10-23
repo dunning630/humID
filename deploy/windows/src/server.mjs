@@ -238,7 +238,7 @@ async function run({ service }) {
     svcs.vault = createVault({ ...opts("vault", "core", 2), corePk: st.corePk, keysPk: st.keysPk });
     svcs.ledger = createLedger({ ...opts("ledger", "core", 3), seal, statementSk: st.coreSk });
     // Country signing certificates for ID chips: drop PEM or DER files in <root>\csca (or point HUMID_CSCA_DIR elsewhere).
-    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
+    svcs.recovery = createRecovery({ ...opts("recovery", "core", 4), seal, corePk: st.corePk, cscaDir: S("HUMID_CSCA_DIR", join(root, "csca")) });
     svcs.access = createAccess({ ...opts("access", "core", 5), seal });
     // Person to person (4.1 preview): mailboxes of fixed-size ciphertext, no accounts, no addresses.
     if (S("HUMID_MESSAGING", "off") === "on") svcs.relay = createRelay(opts("relay", "core", 7));
@@ -270,6 +270,7 @@ async function run({ service }) {
       trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
       admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
       checkin: S("HUMID_CHECKIN", "off"), // docs/CHECKIN.md
+      sharedHelloPerMin: Number(S("HUMID_SHARED_HELLO_PER_MIN", "600")), // V76-03: the tunnel's visitors can't be told apart
     });
     await gateway.start();
     edge = createEdge({

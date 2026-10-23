@@ -12,7 +12,7 @@ import { createRecovery } from "../services/recovery/src/server.js";
 const keys = newInternalKeys();
 const make = (opts) => {
   const dir = mkdtempSync(join(tmpdir(), "humid-station-"));
-  try { return createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, tls: null, ...opts }); }
+  try { return createRecovery({ port: 0, dataDir: dir, internalPk: keys.pk, corePk: keys.pk, tls: null, ...opts }); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 };
 

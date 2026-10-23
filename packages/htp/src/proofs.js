@@ -69,6 +69,14 @@ export const liveMessage = (th, seq, method, path, at, action) =>
 /** What the liveness key signs when a document is sealed: the ciphertext's SHA3-512 (hex in the manifest). */
 export const sealLiveMessage = (ciphertextSha3Hex) => concat(utf8("HUMID-SEAL-v1"), fromHex(ciphertextSha3Hex));
 
+/**
+ * The recovery card made with a new account, signed by the account key inside the registration's
+ * live check: there is no step-up yet to approve it, so this is the holder's own approval of
+ * exactly this card (tag and the SHA3-256 of its sealed blob), in this session.
+ */
+export const setupCardMessage = (th, accountId, tag, blob) =>
+  concat(utf8("HTP/1 setup-card"), lp(th, utf8(accountId), utf8(tag), sha3_256(blob)));
+
 export const sign = (msg, dsaSk) => ml_dsa87.sign(msg, dsaSk);
 
 export function verify(sig, msg, dsaPk) {
