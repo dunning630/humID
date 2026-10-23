@@ -40,6 +40,8 @@
                                                   (-KeysharePath and -Key alone: keyshare's half only, for a keys machine;
                                                    -Path <backup.zip>: a backup from HumID 2.x)
     humid pki init | status | issue core|keys -Path <dir> | import -Path <dir>   roles on separate machines
+    humid cells check | enable | image -Path <humid-cell.vhdx> | status | disable   holder cells: one small
+                                                  Hyper-V VM per HumID (preview, docs/CELLS.md)
     humid selftest                                run the end-to-end self-test against this server
     humid console                                 open the admin console (a sign-in link that works once)
     humid admin token <github-token>              let the console check the private repository for HumID updates
@@ -132,6 +134,7 @@ $AdminLog    = Join-Path $DataRoot 'admin\logs\humid-admin.log'   # beside the c
 $PrevDir     = "$InstallDir.previous"             # the version before the last update, for rollback
 $AdminTask   = "HumID Admin$Suffix"
 $JobTask     = "HumID Admin Job$Suffix"
+$CellsTask   = "HumID Cells$Suffix"
 # How to run this install's commands in messages: "humid" (on the PATH) is the default install's;
 # an instance is run through its own humid.cmd.
 $HumidCmd    = 'humid'
@@ -797,7 +800,7 @@ function Do-Uninstall {
   Confirm-ArmedErase 'uninstalling'
   Stop-Server
   Stop-Admin
-  foreach ($n in @($TaskName, $AdminTask, $JobTask)) {
+  foreach ($n in @($TaskName, $AdminTask, $JobTask, $CellsTask)) {
     if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) {
       Unregister-ScheduledTask -TaskName $n -Confirm:$false
       Good "Background task '$n' removed."
@@ -1709,6 +1712,71 @@ function Job-Reboot {
   return @{ at = (Get-Date).AddSeconds(60).ToUniversalTime().ToString('o') }
 }
 
+# Holder cells (docs/CELLS.md): one small Hyper-V VM per HumID holder, holding that holder's
+# sealed documents. The cell controller runs as SYSTEM in its own task; the server's account
+# only reads the pool it writes and can't create or remove a VM.
+function Do-Cells {
+  Require-Admin; Require-Installed
+  $sub = ''; if ($Rest -and $Rest.Count -gt 0) { $sub = $Rest[0].ToLower() }
+  $cellsDir = Join-Path $DataRoot 'cells'
+  $base = Join-Path $cellsDir 'base\humid-cell.vhdx'
+  switch ($sub) {
+    'check' { Invoke-Server @('cells', 'check', '--root', $DataRoot) }
+    'image' {
+      if (-not $PathText) { Die 'Usage: humid cells image -Path <humid-cell.vhdx>   (the base image from Actions > Cell image)' }
+      $src = Get-FullPath $PathText
+      if (-not (Test-Path -LiteralPath $src -PathType Leaf) -or $src -notlike '*.vhdx') { Die "No .vhdx at $src" }
+      # Every cell's OS disk is a differencing disk on this file: replacing it under running cells breaks them.
+      $vms = @(Get-VM -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'humid-cell-*' })
+      if ((Test-Path -LiteralPath $base) -and $vms.Count) { Die "$($vms.Count) cell(s) run on the current image. Updating the image under them isn't supported yet (docs/CELLS.md, Not done yet)." }
+      Set-PrivateAcl (Split-Path $base)
+      Step "Copying the cell image (Get-FileHash below: compare it with the one on the Actions run)"
+      Copy-Item -LiteralPath $src -Destination $base -Force
+      Set-ItemProperty -LiteralPath $base -Name IsReadOnly -Value $true
+      Say ("SHA-256 " + (Get-FileHash -LiteralPath $base -Algorithm SHA256).Hash.ToLower())
+      Good "Cell image in place: $base"
+    }
+    'enable' {
+      Step 'Checking that this PC can run Hyper-V cells'
+      $r = Invoke-ServerCapture @('cells', 'check', '--root', $DataRoot)
+      $chk = Get-JsonLine $r.Out
+      if (-not $chk) { Die "Couldn't check Hyper-V: $(($r.Err + $r.Out) -join ' ')" }
+      if (-not $chk.ready) { foreach ($p in $chk.problems) { Warn $p }; Die "This PC can't run cells yet ($($chk.edition))." }
+      Good "$($chk.edition), Hyper-V on, $($chk.memoryMb) MB memory ($($chk.freeMb) MB free)"
+      if (-not (Test-Path -LiteralPath (Join-Path $DataRoot 'pki\ca.key'))) { Die "Cells need this server's own CA: run  $HumidCmd pki init  first." }
+      if (-not (Test-Path -LiteralPath $base) -and -not (Get-Setting 'HUMID_CELLS_IMAGE')) { Die "No cell image yet: $HumidCmd cells image -Path <humid-cell.vhdx>" }
+      Step 'The internal switch HumID-Cells (host 10.77.0.1, no route out)'
+      Invoke-Server @('cells', 'switch', '--root', $DataRoot)
+      # The controller's state and the seeds (each holds a new cell's private key until it boots): SYSTEM and Administrators only.
+      Set-PrivateAcl (Join-Path $cellsDir 'private')
+      Set-PrivateAcl (Join-Path $cellsDir 'vm')
+      $system = New-ScheduledTaskPrincipal -UserId (Account-Of $SidSystem) -LogonType ServiceAccount -RunLevel Highest
+      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+      $action = New-ScheduledTaskAction -Execute $NodeExe -Argument "--no-warnings `"$ServerJs`" cells run --root `"$DataRoot`"" -WorkingDirectory $InstallDir
+      Register-ScheduledTask -TaskName $CellsTask -Description "HumID holder cells ($Version): keeps the pool of cell VMs (docs/CELLS.md). Listens on nothing." `
+        -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal $system -Settings $settings -Force | Out-Null
+      Start-ScheduledTask -TaskName $CellsTask
+      Good "Background task '$CellsTask' started. It does nothing until cells are on:"
+      Say "   $HumidCmd set HUMID_CELLS=hyperv"
+      Warn 'Preview: cell data disks are not in humid backup yet. Keep real data out of cells until they are.'
+    }
+    'status' {
+      $t = Get-ScheduledTask -TaskName $CellsTask -ErrorAction SilentlyContinue
+      if ($t) { Say "Task '$CellsTask': $($t.State)" } else { Say "Task '$CellsTask': not set up (humid cells enable)" }
+      Say "HUMID_CELLS=$(Get-Setting 'HUMID_CELLS')"
+      Invoke-Server @('cells', 'status', '--root', $DataRoot)
+      Get-VM -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'humid-cell-*' } | Format-Table Name, State, MemoryAssigned, Uptime -AutoSize | Out-Host
+    }
+    'disable' {
+      if (Get-ScheduledTask -TaskName $CellsTask -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $CellsTask -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName $CellsTask -Confirm:$false; Good "Task '$CellsTask' removed." }
+      Warn 'Cells already handed out keep running and keep their holders'' documents. New HumIDs use the shared vault once you also run:'
+      Say "   $HumidCmd set HUMID_CELLS=off"
+    }
+    default { Die 'Usage: humid cells check | enable | image -Path <humid-cell.vhdx> | status | disable' }
+  }
+}
+
 switch ($Command) {
   'install'   { Do-Install }
   'uninstall' { Do-Uninstall }
@@ -1724,6 +1792,7 @@ switch ($Command) {
   'restore'   { Do-Restore }
   'backup-key' { Do-BackupKey }
   'pki'       { Do-Pki }
+  'cells'     { Do-Cells }
   'selftest'  { Do-Selftest }
   'expose'    { Do-Expose }
   'console'   { Do-Console }

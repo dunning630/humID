@@ -38,6 +38,12 @@ export const DEFAULTS = [
   ["HUMID_CORE_HOST", "", "When this machine runs front but not core: the address of the machine that runs core."],
   ["HUMID_KEYS_HOST", "", "When this machine runs front but not keys: the address of the machine that runs keys."],
   ["HUMID_INTERNAL_BIND", "127.0.0.1", "When this machine runs core or keys for a gateway elsewhere: the address it listens on for that gateway (mutual TLS only)."],
+  ["HUMID_CELLS", "off", "Holder cells (preview, docs/CELLS.md): hyperv = each new HumID gets its own small Hyper-V VM holding its documents (needs `humid cells enable` first) · off = everyone uses the shared vault. Not for real data until cell backups exist."],
+  ["HUMID_CELLS_WARM", "2", "Holder cells kept booted and unbound, ready for the next sign-ups."],
+  ["HUMID_CELLS_MAX", "25", "Holder cells in all, bound and warm. The cell controller never starts more."],
+  ["HUMID_CELLS_RESERVE_MB", "4096", "Free memory this computer keeps for itself: no new cell starts below it."],
+  ["HUMID_CELLS_DISK_MB", "1024", "Each cell's data disk, in MB: the vault quota plus room for its database."],
+  ["HUMID_CELLS_IMAGE", "", "The cells' base disk image (.vhdx). Empty = cells\\base\\humid-cell.vhdx under the data root (set by `humid cells image`)."],
   ["HUMID_INTERNAL_PORT_BASE", "8500", "Internal ports for a gateway on another machine: base+1 identity, +2 vault, +3 ledger, +4 recovery, +5 access, +6 keyshare, +7 relay."],
 ];
 
@@ -132,5 +138,10 @@ export function validate(cfg) {
   else if (adminPort === port) problems.push("HUMID_ADMIN_PORT must differ from HUMID_PORT: the tunnel forwards HUMID_PORT, and the console must never be reachable through it.");
   if (cfg.HUMID_IOS_APP_ID && !/^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/.test(cfg.HUMID_IOS_APP_ID)) problems.push("HUMID_IOS_APP_ID must look like ABCDE12345.app.humid.vault (10-character Team ID, a dot, the bundle id).");
   if (cfg.HUMID_PUBLIC_URL && !/^https:\/\/[^/\s]+$/.test(cfg.HUMID_PUBLIC_URL)) problems.push("HUMID_PUBLIC_URL must be https://host with no path.");
+  if (cfg.HUMID_CELLS && !["off", "hyperv"].includes(cfg.HUMID_CELLS)) problems.push("HUMID_CELLS must be off or hyperv.");
+  const whole = (k, min, max) => { if (cfg[k] === undefined || cfg[k] === "") return; const n = Number(cfg[k]); if (!Number.isInteger(n) || n < min || n > max) problems.push(`${k} must be a whole number from ${min} to ${max}.`); };
+  whole("HUMID_CELLS_WARM", 0, 50); whole("HUMID_CELLS_MAX", 0, 240); whole("HUMID_CELLS_RESERVE_MB", 1024, 1 << 20); whole("HUMID_CELLS_DISK_MB", 512, 65536);
+  if (Number(cfg.HUMID_CELLS_WARM || 2) > Number(cfg.HUMID_CELLS_MAX || 25)) problems.push("HUMID_CELLS_WARM can't be more than HUMID_CELLS_MAX.");
+  if (cfg.HUMID_CELLS === "hyperv" && !roles.includes("front")) problems.push("HUMID_CELLS=hyperv goes on the machine that runs the front role (the gateway hands out cells).");
   if (problems.length) throw Object.assign(new Error(problems.join("\n")), { code: "bad_config" });
 }

@@ -1,0 +1,39 @@
+name: Cell image
+
+# The base disk image for HumID holder cells (docs/CELLS.md): humid-cell.vhdx, attached to
+# the run. On the server:  humid cells image -Path <humid-cell.vhdx>
+# Compare the SHA-256 it prints with humid-cell.vhdx.sha256 here.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["tools/cells/**", "services/vault/**", "packages/**"]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils libguestfs-tools
+          sudo chmod 0644 /boot/vmlinuz-*   # libguestfs reads the host kernel
+      - run: bash tools/cells/build-image.sh out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: humid-cell-image
+          path: out/
+          retention-days: 30

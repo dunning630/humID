@@ -12,7 +12,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { roleOf, serverTls } from "./pki.js";
 import { sealerFromEnv } from "./seal.js";
 
-export { makeCa, issueRoleCert, serverTls, clientTls, roleOf, roleName, daysLeft, ROLES, INTERNAL_TLS_GROUPS } from "./pki.js";
+export { makeCa, issueRoleCert, issueCellCert, cellOf, cellName, CELL_ID, serverTls, clientTls, roleOf, roleName, daysLeft, ROLES, INTERNAL_TLS_GROUPS } from "./pki.js";
 export { sealer, sealerFromEnv, secretFile, writeAtomic, isSealedFile, isSealedText, parseKeyText } from "./seal.js";
 
 /* ---------------- config & logging ---------------- */

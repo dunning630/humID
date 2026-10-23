@@ -1,0 +1,14 @@
+[Unit]
+Description=HumID holder cell: data disk, settings, network, firewall
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=network-pre.target humid-cell.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/humid-cell-init
+
+[Install]
+WantedBy=multi-user.target

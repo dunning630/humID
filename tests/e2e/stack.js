@@ -12,6 +12,8 @@ import { createGateway } from "../../services/gateway/src/server.js";
 import { createAccess } from "../../services/access/src/server.js";
 import { createKeyshare } from "../../services/keyshare/src/server.js";
 import { createRelay } from "../../services/relay/src/server.js";
+import { createCells } from "../../services/gateway/src/cells.js";
+import { writeFileSync } from "node:fs";
 import { ROOTS, IOS_APP_ID } from "./holder.js";
 
 /**
@@ -24,7 +26,9 @@ import { ROOTS, IOS_APP_ID } from "./holder.js";
  * runs demo mode and mints access codes for anyone who can reach it. HUMID_BIND_HOST set by
  * the caller wins.
  */
-export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], allowAnyStation = false, cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {}, demoStamps = false, recoveryStartsPerHour = 10_000 } = {}) {
+export async function startStack({ messaging = true, relayOpts = {}, port = 0, recoveryDelayMs = 1500, devicePolicy = "attested", cscas = [], stations = [], allowAnyStation = false, cosigners = new Map(), duressCoolOffMs = 24 * 3600_000, registration = "open", passKeyBits = 2048, passBuyUrl = "", shareReleasesPerHour = 120, dataDir = "", admin = null, checkin = "off", checkinSweepMs = 10_000, keyshareClock = {}, demoStamps = false, recoveryStartsPerHour = 10_000, cells = 0 } = {}) {
+  // cells: how many holder cells (docs/CELLS.md) to start as a warm pool: vaults in cell mode on
+  // loopback HTTP, standing in for the VMs the controller would boot. stack.addCell() adds one.
   // recoveryStartsPerHour: every test shares one address, so the per-network recovery cap is lifted unless a test sets it.
   // checkin: HUMID_CHECKIN. keyshareClock: { now, mono, tickMs } for Check-in tests that move time.
   // dataDir: keep the stack's data (and so the server's key) between runs; otherwise a fresh temp dir, removed on stop.
@@ -56,15 +60,31 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
   let keyshare = createKeyshare({ port: 0, dataDir: join(root, "keyshare"), internalPk: ik.pk, corePk: coreKeys.pk, statementSk: keysKeys.sk, releasesPerHour: shareReleasesPerHour, ...keyshareClock });
   await Promise.all([identity.start(), vault.start(), ledger.start(), recovery.start(), access.start(), keyshare.start(), relay?.start()]);
   const upstreams = { identity: url(identity), vault: url(vault), ledger: url(ledger), recovery: url(recovery), access: url(access), keyshare: url(keyshare), ...(relay ? { relay: url(relay) } : {}) };
+  const cellVaults = [];
+  const poolFile = join(root, "cells-pool.json");
+  const writePool = () => writeFileSync(poolFile, JSON.stringify({ cells: cellVaults.map((v) => ({ id: v.cell, url: url(v), state: "ready" })) }));
+  const addCell = async () => {
+    const id = `cell${String(cellVaults.length + 1).padStart(4, "0")}${Math.random().toString(36).slice(2, 8)}`;
+    const v = createVault({ port: 0, dataDir: join(root, "cells", id), internalPk: ik.pk, corePk: coreKeys.pk, keysPk: keysKeys.pk, quotaBytes: 5 * 1024 * 1024, maxObjectBytes: 2 * 1024 * 1024, cell: id });
+    if (!bind) process.env.HUMID_BIND_HOST = "127.0.0.1";
+    try { await v.start(); } finally { if (!bind && stack) delete process.env.HUMID_BIND_HOST; }
+    cellVaults.push(v);
+    writePool();
+    return v;
+  };
+  let stack = null;
+  for (let i = 0; i < cells; i++) await addCell();
+  if (cells) mkdirSync(join(root, "gateway"), { recursive: true });
+  const cellRouter = cells ? createCells({ poolFile, dataDir: join(root, "gateway"), allowPlain: true, log: { warn: () => {} } }) : null;
   const gateway = createGateway({
-    port, dataDir: join(root, "gateway"), internalSk: ik.sk,
+    port, dataDir: join(root, "gateway"), internalSk: ik.sk, cells: cellRouter,
     upstreams,
     allowedOrigins: ["http://localhost:5173"], trustProxy: false, devicePolicy, registration, passBuyUrl, admin, checkin, checkinSweepMs, demoStamps, recoveryStartsPerHour,
   });
   await gateway.start();
   if (!bind) delete process.env.HUMID_BIND_HOST; // read when each service starts listening: done
-  const stack = {
-    revoked,
+  stack = {
+    revoked, cellVaults, addCell,
     baseUrl: url(gateway), gateway, identity, vault, ledger, recovery, access, keyshare, relay, root, upstreams, internalSk: ik.sk, internalPk: ik.pk, coreKeys, keysKeys,
     /** Stop keyshare and start it again on the same port and data, as a crash or an update would. */
     async restartKeyshare() {
@@ -79,7 +99,8 @@ export async function startStack({ messaging = true, relayOpts = {}, port = 0, r
       // whatever is running now (a test may have restarted one)
       await Promise.all([stack.gateway, stack.identity, stack.vault, stack.ledger, stack.recovery, stack.access, stack.keyshare, stack.relay].filter(Boolean).map((s) => s.stop()));
       // every database closed before the data is removed: Windows can't delete an open file
-      for (const s of [stack.identity, stack.vault, stack.ledger, stack.recovery, stack.access, stack.keyshare, stack.relay]) s?.close?.();
+      await Promise.all(cellVaults.map((v) => v.stop()));
+      for (const s of [stack.identity, stack.vault, stack.ledger, stack.recovery, stack.access, stack.keyshare, stack.relay, ...cellVaults]) s?.close?.();
       if (!dataDir) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };

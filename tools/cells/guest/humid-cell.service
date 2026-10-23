@@ -1,0 +1,37 @@
+[Unit]
+Description=HumID holder cell: the vault for one HumID holder
+Requires=humid-cell-init.service
+After=humid-cell-init.service systemd-networkd.service
+
+[Service]
+User=humid
+Group=humid
+EnvironmentFile=/run/humid-cell.env
+ExecStart=/opt/node/bin/node /opt/humid/vault.mjs
+Restart=always
+RestartSec=2
+# Nothing but its own data folder is writable; no new privileges, no devices, no other users' files.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_UNIX
+ReadWritePaths=/var/lib/humid/data
+ReadOnlyPaths=/var/lib/humid/cell
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

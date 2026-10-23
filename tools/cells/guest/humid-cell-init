@@ -1,0 +1,100 @@
+#!/bin/sh
+# HumID holder cell, first thing at every boot (docs/CELLS.md). Runs as root before the vault.
+#
+#   1. the data disk: LABEL=HUMIDDATA, formatted on first boot (the one blank disk that isn't
+#      the OS disk or the seed), mounted at /var/lib/humid
+#   2. the cell's settings and certificate: copied from the seed disk (LABEL=HUMIDSEED) on first
+#      boot; the controller detaches and deletes the seed once the cell answers. After that they
+#      live only on the data disk.
+#   3. the network: a fixed address on the HumID-Cells switch, no gateway, no DNS
+#   4. the firewall: in, only the host to port 8502; out, nothing new
+#   5. /run/humid-cell.env for the vault service
+set -eu
+umask 077
+PATH=/opt/node/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DATA=/var/lib/humid
+CFG=$DATA/cell
+
+root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+
+if ! blkid -L HUMIDDATA >/dev/null 2>&1; then
+  blank=""
+  for d in $(lsblk -dno NAME,TYPE | awk '$2=="disk"{print $1}'); do
+    [ "$d" = "$root_disk" ] && continue
+    [ -n "$(lsblk -no FSTYPE "/dev/$d" | tr -d '[:space:]')" ] && continue   # has a filesystem (the seed)
+    blank=$d; break
+  done
+  [ -n "$blank" ] || { echo "humid-cell: no data disk" >&2; exit 1; }
+  mkfs.ext4 -q -L HUMIDDATA "/dev/$blank"
+fi
+mkdir -p $DATA
+mountpoint -q $DATA || mount -o nodev,nosuid,noexec LABEL=HUMIDDATA $DATA
+
+if [ ! -f $CFG/cell.json ]; then
+  seed=$(blkid -L HUMIDSEED) || { echo "humid-cell: first boot, but no seed disk" >&2; exit 1; }
+  mkdir -p /run/humid-seed
+  mount -o ro,nodev,nosuid,noexec "$seed" /run/humid-seed
+  mkdir -p $CFG.new
+  for f in cell.json ca.crt cell.crt cell.key; do cp /run/humid-seed/$f $CFG.new/$f; done
+  umount /run/humid-seed
+  mv $CFG.new $CFG
+fi
+mkdir -p $DATA/data
+chown -R humid:humid $DATA/data $CFG
+chmod 700 $CFG $DATA/data
+chmod 600 $CFG/cell.key
+
+j() { node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=c[process.argv[2]];if(v===undefined)process.exit(1);process.stdout.write(String(v))' $CFG/cell.json "$1"; }
+ID=$(j id); IP=$(j ip); PREFIX=$(j prefix); HOST=$(j host); PORT=$(j port)
+case "$ID" in *[!a-z0-9]*|"") echo "humid-cell: bad cell id" >&2; exit 1;; esac
+case "$IP$HOST" in *[!0-9.]*) echo "humid-cell: bad address" >&2; exit 1;; esac
+
+mkdir -p /run/systemd/network
+cat > /run/systemd/network/10-humid-cell.network <<EOF
+[Match]
+Type=ether
+
+[Network]
+Address=$IP/$PREFIX
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+DHCP=no
+EOF
+networkctl reload 2>/dev/null || true
+
+cat > /run/humid-cell.nft <<EOF
+flush ruleset
+table inet humid {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ip saddr $HOST tcp dport $PORT ct state new accept
+  }
+  chain forward { type filter hook forward priority 0; policy drop; }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif lo accept
+    ct state established,related accept
+  }
+}
+EOF
+nft -f /run/humid-cell.nft
+
+cat > /run/humid-cell.env <<EOF
+NODE_ENV=production
+NODE_NO_WARNINGS=1
+PORT=$PORT
+HUMID_BIND_HOST=$IP
+DATA_DIR=$DATA/data
+HUMID_CELL_ID=$ID
+HUMID_INTERNAL_PK=$(j internalPk)
+HUMID_CORE_STATEMENT_PK=$(j corePk)
+HUMID_KEYS_STATEMENT_PK=$(j keysPk)
+VAULT_QUOTA_BYTES=$(j quotaBytes)
+HUMID_TLS_CA=$CFG/ca.crt
+HUMID_TLS_CERT=$CFG/cell.crt
+HUMID_TLS_KEY=$CFG/cell.key
+EOF
+chmod 644 /run/humid-cell.env
+echo "humid-cell: cell $ID at $IP:$PORT"

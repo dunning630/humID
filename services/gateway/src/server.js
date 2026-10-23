@@ -286,6 +286,11 @@ export function createGateway({
   msgStatsMin = Number(env("HUMID_MSG_STATS_MIN", "1000")),
   /** Signed-in sessions one account may hold at once (CRYPTO-04): its own oldest makes room. */
   sessionsPerAccount = Number(env("HUMID_SESSIONS_PER_ACCOUNT", "16")),
+  /**
+   * Holder cells (docs/CELLS.md): createCells() from ./cells.js, or null. With it, each new
+   * account gets a cell from the controller's pool, and its vault calls go there.
+   */
+  cells = null,
 } = {}) {
   const log = logger("gateway");
   const DEMO_STAMPS = demoStamps === true && devicePolicy === "demo";
@@ -400,15 +405,20 @@ export function createGateway({
     agents[role] ||= roleAgent(clientTls({ ...internalTls, expect: role }));
   }
 
-  async function internal(service, method, path, { claims = {}, body, headers = {} } = {}) {
+  async function internal(service, method, path, { claims = {}, body, headers = {}, to = null } = {}) {
     // SEC-S-01: the assertion names this exact request (service, method, path and query as sent, body), once.
     const target = new URL(path, "http://internal");
     const sent = target.pathname + target.search;
     const payload = body && body.length ? body : undefined;
     const assertion = signRequest(internalSk, { aud: service, method, path: sent, body: payload, claims });
+    // Holder cells: an account with a cell has its vault there, and only there (no fallback to
+    // the shared vault, which doesn't hold its documents). `to` names one cell outright (binding).
+    let base = upstreams[service], agent = agents[ROLE_OF[service]];
+    const cellOf = to || (service === "vault" && cells && claims?.sub ? cells.forSub(claims.sub) : null);
+    if (cellOf) ({ url: base, agent } = cellOf);
     let res;
     try {
-      res = await internalRequest(`${upstreams[service]}${sent}`, { method, headers: { "x-humid-assertion": assertion, ...headers }, body: payload, agent: agents[ROLE_OF[service]] });
+      res = await internalRequest(`${base}${sent}`, { method, headers: { "x-humid-assertion": assertion, ...headers }, body: payload, agent });
     } catch {
       throw new HttpError(503, `${service}_unavailable`, `${service} service is unavailable`);
     }
@@ -672,6 +682,14 @@ export function createGateway({
       if (reg.status !== 201) await refund(); // failed, or these keys already had an account: the pass stays unspent
       if (reg.status >= 300) fail(reg);
       bindSession(s, reg.data, { method: r.device?.gateMethod, assurance: r.device?.assurance });
+      // A new account's own cell (docs/CELLS.md), before anything is stored for it. None free:
+      // it uses the shared vault, as every account did before cells.
+      if (reg.status === 201 && cells) {
+        await cells.claim(s.subject, async (to) => {
+          const b = await internalJson("vault", "POST", "/internal/cell/bind", { to, json: { owner: s.subject } });
+          return b.status === 200 && b.data?.owner === s.subject;
+        }).catch((e) => log.warn("holder cell not assigned", { err: e.message }));
+      }
       if (reg.status === 201) await recordQuietly(s.subject, "identity.created", { platform: s.platform, method: s.gateMethod, assurance: s.assurance });
       await recordQuietly(s.subject, "device.added", { device: s.deviceId, platform: s.platform, via: "register", method: s.gateMethod, assurance: s.assurance, level: s.proof, soleBiometric: r.soleBiometric === true });
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
@@ -861,6 +879,8 @@ export function createGateway({
       await internalJson("recovery", "DELETE", "/escrow", { claims }).catch(() => {});
       const closed = await internalJson("identity", "DELETE", "/me", { claims });
       if (closed.status === 200) await recordQuietly(s.subject, "identity.closed", { ...proved(s, stepUp) });
+      // Its cell, now empty, may go: the controller removes it only once the cell itself says so.
+      if (closed.status === 200) cells?.retire(s.subject);
       const subject = s.subject;
       s.closeAfterReply = true;
       dropWhere((x) => x !== s && x.subject === subject);
@@ -1496,7 +1516,7 @@ export function createGateway({
   ];
 
   const svc = createService({ name: "gateway", port, routes, extraHeaders: cors });
-  return { ...svc, htp, sweepCheckin };
+  return { ...svc, htp, sweepCheckin, cells };
 }
 
 /** Internal TLS from files: HUMID_TLS_CA, HUMID_TLS_CERT, HUMID_TLS_KEY (a sealed key file opens with the seal key). */

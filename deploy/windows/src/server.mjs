@@ -8,6 +8,7 @@
 //   node humid-server.mjs mint  [--root DIR] COUNT [BATCH]   print COUNT new access codes to sell (docs/ANONYMITY.md)
 //   node humid-server.mjs pki init|status|issue ROLE --out DIR|import --from DIR [--root DIR]   mutual TLS between roles
 //   node humid-server.mjs seal-status [--root DIR]           which secrets are sealed (JSON)
+//   node humid-server.mjs cells run|once|status|check [--root DIR]   holder cells (docs/CELLS.md; run as SYSTEM)
 //   node humid-server.mjs version
 //
 // DIR defaults to %ProgramData%\HumID (HUMID_HOME overrides). Inside it:
@@ -57,6 +58,9 @@ const newStatements = (seal) => {
 import { teeToFile } from "./logfile.mjs";
 import { createEdge } from "./edge.mjs";
 import { createAdminBridge } from "./adminbridge.mjs";
+import { createCells } from "../../../services/gateway/src/cells.js";
+import { createController } from "./cells.mjs";
+import { hyperV } from "./hyperv.mjs";
 import { startStatus, watchLog } from "./status.mjs";
 
 /* global __HUMID_SERVER_VERSION__, __HUMID_APP_VERSION__ */
@@ -92,7 +96,8 @@ async function main() {
     case "mint": return mint(argv[0], argv[1]);
     case "pki": return pki(argv.shift(), argv);
     case "seal-status": return sealStatus();
-    default: fail(`Unknown command "${command}". Use run, init, set, show, mint, pki, seal-status or version. (Backups: humid-admin.mjs backup and restore.)`, 2);
+    case "cells": return cells(argv.shift());
+    default: fail(`Unknown command "${command}". Use run, init, set, show, mint, pki, seal-status, cells or version. (Backups: humid-admin.mjs backup and restore.)`, 2);
   }
 }
 
@@ -264,8 +269,14 @@ async function run({ service }) {
       else fail(`HUMID_ROLES=${roles.join(",")} leaves out ${role}, so set HUMID_${role.toUpperCase()}_HOST to the machine that runs it.`);
     }
     const internalTls = Object.values(upstreams).some((u) => u.startsWith("https:")) ? roleCert("front", seal) : null;
+    // Holder cells (docs/CELLS.md): the pool the controller writes, read here; claims kept in the gateway's data.
+    let cellRouter = null;
+    if (S("HUMID_CELLS", "off") === "hyperv") {
+      cellRouter = createCells({ poolFile: join(root, "cells", "pool.json"), dataDir: data("gateway"), tls: roleCert("front", seal), log: { warn: (msg, extra) => log("warn", msg, extra) } });
+      log("info", "holder cells on", cellRouter.stats());
+    }
     gateway = createGateway({
-      port: 0, dataDir: data("gateway"), internalSk, seal, internalTls,
+      port: 0, dataDir: data("gateway"), internalSk, seal, internalTls, cells: cellRouter,
       upstreams,
       trustProxy: true, // only the edge talks to it, and the edge sets X-Forwarded-For
       admin: createAdminBridge(root), // approvals from administrators' phones, checked again by the admin console
@@ -398,6 +409,48 @@ function pki(sub, args) {
     return;
   }
   fail("Usage: pki init | status | issue core|keys --out DIR | import --from DIR");
+}
+
+/* ---------------- holder cells (docs/CELLS.md) ---------------- */
+
+/** The cell controller's settings and keys, from humid.env and the PKI. Runs as SYSTEM: it opens the seal key. */
+function cellController({ hv } = {}) {
+  if (!existsSync(envFile)) fail(`${envFile} doesn't exist. Run: humid-server.mjs init`);
+  const cfg = { ...readEnvFile(envFile), ...process.env };
+  const n = (k, d) => Number(cfg[k] || d);
+  const seal = makeSealer(loadSealKey(root, { create: false, env: cfg }));
+  const d = pkiDir();
+  if (!existsSync(join(d, "ca.key"))) fail("Holder cells need this server's CA: run  humid pki init  first.");
+  const front = roleCert("front", seal);
+  return createController({
+    root,
+    settings: {
+      warm: n("HUMID_CELLS_WARM", 2), max: n("HUMID_CELLS_MAX", 25), reserveMb: n("HUMID_CELLS_RESERVE_MB", 4096), diskMb: n("HUMID_CELLS_DISK_MB", 1024),
+      image: cfg.HUMID_CELLS_IMAGE || join(root, "cells", "base", "humid-cell.vhdx"), quotaBytes: n("VAULT_QUOTA_BYTES", 262144000),
+    },
+    keys: { internalSk: seal.openText("humid.env/HUMID_INTERNAL_SK", cfg.HUMID_INTERNAL_SK || ""), internalPk: cfg.HUMID_INTERNAL_PK, corePk: cfg.HUMID_CORE_STATEMENT_PK, keysPk: cfg.HUMID_KEYS_STATEMENT_PK },
+    ca: { certPem: readFileSync(join(d, "ca.crt"), "utf8"), keyPem: seal.open("pki/ca.key", readFileSync(join(d, "ca.key"))).toString("utf8") },
+    front: { cert: front.cert, key: front.key },
+    hv: hv || hyperV({ root }),
+    log: (level, msg, extra = {}) => process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level, service: "cells", msg, ...extra }) + "\n"),
+  });
+}
+
+async function cells(sub) {
+  if (sub === "check") { process.stdout.write(JSON.stringify(await hyperV({ root }).check()) + "\n"); return; }
+  if (sub === "switch") { process.stdout.write(JSON.stringify(await hyperV({ root }).ensureSwitch()) + "\n"); return; }
+  if (!["run", "once", "status"].includes(sub)) fail("Usage: cells run | once | status | check | switch");
+  const c = cellController();
+  if (sub === "status") { process.stdout.write(JSON.stringify(c.summary(), null, 2) + "\n"); return; }
+  const on = () => (readEnvFile(envFile).HUMID_CELLS || "off") === "hyperv";
+  const pass = async () => {
+    if (!on()) return;
+    try { const r = await c.reconcile(); if (Object.values(r).some((x) => x.length)) process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level: "info", service: "cells", msg: "pass", ...r }) + "\n"); }
+    catch (e) { process.stdout.write(JSON.stringify({ t: new Date().toISOString(), level: "error", service: "cells", msg: "pass failed", err: e.message }) + "\n"); }
+  };
+  if (sub === "once") { if (!on()) fail("HUMID_CELLS is off (humid set HUMID_CELLS=hyperv)."); await pass(); process.stdout.write(JSON.stringify(c.summary()) + "\n"); return; }
+  teeToFile(join(root, "logs", "humid-cells.log"), { quiet: true });
+  for (;;) { await pass(); await new Promise((r) => setTimeout(r, 15_000)); }
 }
 
 /** Which secrets are sealed: for humid status and the CI. */

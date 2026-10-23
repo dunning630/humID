@@ -21,6 +21,18 @@ import { createSecureContext } from "node:tls";
 export const ROLES = ["front", "core", "keys"];
 export const roleName = (role) => `humid-${role}`;
 
+/**
+ * Holder cells (docs/CELLS.md): one small VM per HumID holder, running only the vault. Each
+ * gets its own certificate, issued to humid-cell-<id>. roleOf() never returns a role for one,
+ * so a cell's certificate can't stand in for front, core or keys; the gateway accepts a cell
+ * only under the exact name the pool lists for it (clientTls expectName).
+ */
+export const CELL_ID = /^[a-z0-9]{8,32}$/;
+export const cellName = (id) => {
+  if (!CELL_ID.test(String(id))) throw new Error(`A cell id is 8 to 32 lowercase letters and digits (got "${id}")`);
+  return `humid-cell-${id}`;
+};
+
 /* ---------------- DER, just enough for a certificate ---------------- */
 
 const len = (n) => {
@@ -114,6 +126,26 @@ export function issueRoleCert(ca, role, { days = 825 } = {}) {
   };
 }
 
+/** A certificate for one holder cell, signed by the CA: { certPem, keyPem }. */
+export function issueCellCert(ca, id, { days = 825 } = {}) {
+  const cn = cellName(id);
+  const caCert = new X509Certificate(ca.certPem);
+  const caKey = createPrivateKey(ca.keyPem);
+  const issuerCn = /CN=([^\n,]+)/.exec(caCert.subject)?.[1] || "HumID internal CA";
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return {
+    certPem: certificate({ subject: cn, issuer: issuerCn, pub: rawPub(publicKey), signer: caKey, ca: false, days, issuerPub: rawPub(caKey) }),
+    keyPem: pemKey(privateKey),
+  };
+}
+
+/** The cell id a certificate was issued to (humid-cell-<id>), or null. */
+export function cellOf(cert) {
+  const cn = typeof cert === "string" ? /CN=([^\n,]+)/.exec(new X509Certificate(cert).subject)?.[1] : cert?.subject?.CN;
+  const m = /^humid-cell-([a-z0-9]{8,32})$/.exec(Array.isArray(cn) ? cn[0] : cn || "");
+  return m ? m[1] : null;
+}
+
 /** The role a certificate was issued to (by its CN), or null. */
 export function roleOf(cert) {
   const cn = typeof cert === "string" ? /CN=([^\n,]+)/.exec(new X509Certificate(cert).subject)?.[1] : cert?.subject?.CN;
@@ -150,12 +182,17 @@ export function serverTls({ ca, cert, key, allow = ["front"] }) {
   return { ca, cert, key, allow, requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3", ecdhCurve: INTERNAL_TLS_GROUPS };
 }
 
-/** TLS settings for the gateway's calls to a role on another machine. */
-export function clientTls({ ca, cert, key, expect }) {
+/**
+ * TLS settings for the gateway's calls to a role on another machine (expect: "core" | "keys"),
+ * or to one holder cell (expectCell: its id; the certificate must be humid-cell-<that id>).
+ */
+export function clientTls({ ca, cert, key, expect, expectCell }) {
   needHybridGroup();
+  const want = expectCell != null ? cellName(expectCell) : roleName(expect);
+  const ok = (peer) => (expectCell != null ? cellOf(peer) === expectCell : roleOf(peer) === expect);
   return {
     ca, cert, key, minVersion: "TLSv1.3", rejectUnauthorized: true, ecdhCurve: INTERNAL_TLS_GROUPS,
     // the CA is this server's own; the name it gave the role is what is checked, not the address
-    checkServerIdentity: (_host, peer) => (roleOf(peer) === expect ? undefined : new Error(`expected ${roleName(expect)}, got ${peer?.subject?.CN || "no name"}`)),
+    checkServerIdentity: (_host, peer) => (ok(peer) ? undefined : new Error(`expected ${want}, got ${peer?.subject?.CN || "no name"}`)),
   };
 }

@@ -11,6 +11,10 @@
 // service (SRV-30), against the device key identity vouches for: a stolen
 // session alone cannot drain a vault, and neither can the gateway's own key.
 // Nothing leaves without the ledger's signed receipt for it.
+//
+// Holder cells (docs/CELLS.md): with HUMID_CELL_ID set, this vault runs alone in one holder's
+// VM. The gateway binds it to one account on its first call, and from then on it refuses
+// every other account, even with a request the gateway signed.
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -21,6 +25,7 @@ import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
 import { sha3_256, toHex, sealLiveMessage } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
+const ACCOUNT_ID = /^hid_[0-9a-f]{40}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function createVault({
@@ -34,6 +39,8 @@ export function createVault({
   keysPk = env("HUMID_KEYS_STATEMENT_PK"),
   quotaBytes = Number(env("VAULT_QUOTA_BYTES", String(250 * 1024 * 1024))),
   maxObjectBytes = Number(env("VAULT_MAX_OBJECT_BYTES", String(50 * 1024 * 1024))),
+  /** Holder cell id (docs/CELLS.md): set, this vault serves exactly one account, the one it is bound to. */
+  cell = env("HUMID_CELL_ID", ""),
 } = {}) {
   const blobDir = `${dataDir}/blobs`;
   mkdirSync(blobDir, { recursive: true });
@@ -50,6 +57,13 @@ export function createVault({
   ]);
   // A deleted row's encrypted index entry is overwritten in the database file, not left in free pages.
   db.exec("PRAGMA secure_delete = ON");
+  // A cell's one account, written once. Its own table, so a shared vault's database never has it.
+  if (cell) db.exec("CREATE TABLE IF NOT EXISTS cell_binding (k INTEGER PRIMARY KEY CHECK (k = 1), cell TEXT NOT NULL, owner TEXT NOT NULL, bound_at TEXT NOT NULL)");
+  const binding = () => (cell ? db.prepare("SELECT cell, owner, bound_at FROM cell_binding WHERE k = 1").get() || null : null);
+  if (cell) {
+    const b = binding();
+    if (b && b.cell !== cell) throw new Error(`This vault's data belongs to cell ${b.cell}, not ${cell}`);
+  }
 
   const blobPath = (h) => `${blobDir}/${h.slice(0, 2)}/${h}`;
   const writeBlob = (data) => {
@@ -86,10 +100,43 @@ export function createVault({
   const requireStepUp = (claims, method, path) => proofs.check(claims.holder, { sub: requireUser(claims), method, path });
   const requireUser = (claims) => {
     if (!claims.sub) throw new HttpError(401, "unauthenticated", "Sign in first");
+    if (cell) {
+      const b = binding();
+      if (!b) throw new HttpError(409, "cell_unbound", "This cell isn't anyone's yet.");
+      if (claims.sub !== b.owner) throw new HttpError(403, "wrong_cell", "This cell belongs to another account.");
+    }
     return claims.sub;
   };
+  const gatewayOnly = (claims) => { if (claims.iss !== "gateway") throw new HttpError(403, "forbidden", "Gateway only"); };
+
+  // Holder cells: bind once, and say how full the cell is. Only on a cell.
+  const cellRoutes = !cell ? [] : [
+    ["POST", "/internal/cell/bind", ({ claims, body }) => {
+      gatewayOnly(claims);
+      const owner = String((parseJson(body) || {}).owner || "");
+      if (!ACCOUNT_ID.test(owner)) throw new HttpError(400, "bad_request", "Name the account (hid_…) to bind this cell to.");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const b = binding();
+        if (b && b.owner !== owner) throw new HttpError(409, "cell_taken", "This cell already belongs to another account.");
+        if (!b) db.prepare("INSERT INTO cell_binding (k, cell, owner, bound_at) VALUES (1, ?, ?, ?)").run(cell, owner, new Date().toISOString());
+        db.exec("COMMIT");
+      } catch (e) { db.exec("ROLLBACK"); throw e; }
+      const b = binding();
+      return json(200, { cell, owner: b.owner, boundAt: b.bound_at });
+    }, { bodyLimit: 4096 }],
+    // Counts only, for the gateway and the cell controller: nothing about what is stored.
+    ["GET", "/internal/cell/status", ({ claims }) => {
+      gatewayOnly(claims);
+      const b = binding();
+      const u = b ? usage(b.owner) : { n: 0, b: 0 };
+      const all = db.prepare("SELECT COUNT(*) AS n FROM objects").get().n;
+      return json(200, { cell, bound: !!b, owner: b?.owner ?? null, count: u.n, bytes: u.b, total: all });
+    }],
+  ];
 
   const routes = [
+    ...cellRoutes,
     ["GET", "/objects", ({ claims }) => {
       const owner = requireUser(claims);
       const rows = db.prepare("SELECT * FROM objects WHERE owner = ? ORDER BY uploaded_at DESC").all(owner);
@@ -222,7 +269,7 @@ export function createVault({
     verify: (t) => verifyAssertion(internalPk, t, "vault"),
   });
   // close: release the database file (Windows can't delete an open one; tests remove their data)
-  return { ...svc, close: () => db.close() };
+  return { ...svc, cell: cell || null, binding, close: () => db.close() };
 }
 
 if (isMain(import.meta.url)) createVault().start();
