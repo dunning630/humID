@@ -10,7 +10,7 @@ import {
 } from "@humid/recovery";
 import * as S from "./state.js";
 import { SERVER_URL } from "./config.js";
-import { R, KEY_TYPE, wipe } from "./runtime.js";
+import { R, KEY_TYPE, wipe, epoch, stale } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
@@ -31,6 +31,7 @@ const calmRecovery = ({ anchorAvailable = false, keysAvailable = false, keysMax 
 });
 
 export async function loadRecovery() {
+  const ep = epoch(); // an answer that lands after a lock is dropped, never shown to the next session
   if (S.offline.value) {
     // The offline copy was written by a real session: a decoy session takes nothing from it
     // but what the server offers everyone.
@@ -44,7 +45,7 @@ export async function loadRecovery() {
     quietly(R.api.card()), quietly(R.api.contacts()), quietly(R.api.anchor()), quietly(R.api.settings()),
     R.api.keys().catch(() => null), // an older server has no security keys: shown as unavailable
   ]);
-  if (!card || !contacts) return;
+  if (stale(ep) || !card || !contacts) return;
   if (S.decoy.value) {
     // The same requests were made above, so the traffic looks the same.
     S.recovery.value = calmRecovery({ anchorAvailable: anchor?.available, keysAvailable: !!keyList, keysMax: keyList?.max || 4 });
@@ -62,6 +63,7 @@ export async function loadRecovery() {
     try { if (k.label && R.indexKey) name = (await suite().openIndex(R.indexKey, k.label)).name || name; } catch {}
     keys.push({ id: k.id, name, createdAt: k.createdAt });
   }
+  if (stale(ep)) return;
   // Two-proof recovery is ready when at least two different proofs are set up.
   const proofs = {
     witness: contacts.n > 0 && contacts.scheme === "quorum",
@@ -78,8 +80,8 @@ export async function loadRecovery() {
   };
   keepOffline({ recovery: S.recovery.value });
   if (!S.decoy.value) {
-    R.api.protectingAlerts().then((a) => { S.protecting.value = a; }).catch(() => {});
-    R.api.station().then((st) => { S.station.value = st; }).catch(() => {});
+    R.api.protectingAlerts().then((a) => { if (!stale(ep)) S.protecting.value = a; }).catch(() => {});
+    R.api.station().then((st) => { if (!stale(ep)) S.station.value = st; }).catch(() => {});
   }
 }
 
@@ -247,9 +249,11 @@ export async function releasePiece(req, person) {
 export async function loadAlerts() {
   if (S.decoy.value) { S.alerts.value = []; return; } // a decoy session sees a calm account
   if (S.offline.value) return; // recoveries in progress are a live question: shown once back online
+  const ep = epoch();
   const a = await R.api.alerts().catch(() => null);
+  if (stale(ep)) return;
   if (a) S.alerts.value = a;
-  R.api.protectingAlerts().then((p) => { S.protecting.value = p; }).catch(() => {});
+  R.api.protectingAlerts().then((p) => { if (!stale(ep)) S.protecting.value = p; }).catch(() => {});
 }
 
 export async function cancelRecovery(alert) {
