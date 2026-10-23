@@ -13,7 +13,7 @@ const honest = chain([ev("identity.created"), ev("device.added", { device: "dev_
 function phone(api) {
   const saved = [];
   R.api = api;
-  R.store = { putIdentity: async (r) => { saved.push(r); } };
+  R.store = { getIdentity: async () => saved.at(-1) ?? S.identity.value, putIdentity: async (r) => { saved.push(r); } };
   S.offline.value = null; S.decoy.value = false; S.items.value = [];
   S.ledger.value = null; S.continuity.value = null;
   S.identity.value = { server: { id: "hid_x" }, ledgerKeyFp: histLedgerKey.fp, schema: 4 };

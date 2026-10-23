@@ -142,6 +142,7 @@ export const DEVICE_SCOPED = Object.freeze({
   joinStep: "joining, before any session",
   joinMethod: "joining, before any session",
   joinStatus: "joining, before any session",
+  joinMode: "joining, before any session",
   identity: "this device's identity record",
   hwGate: "this device's sensor",
   server: "the server this device trusts",

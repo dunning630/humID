@@ -224,7 +224,7 @@ test("CRYPTO-07: the policy hint is believed only with the pinned server's signa
   assert.equal(good.policySigned, true);
   assert.equal(good.policy.splitKeys, true);
   assert.equal(good.policy.passBuyUrl, POLICY.passBuyUrl);
-  assert.deepEqual(good.policy.messaging, { stampsPerCheck: 2 });
+  assert.deepEqual(good.policy.messaging, { stampsPerCheck: 2, stampNeeds: "hardware" });
 
   // The PoC: a TLS-ending proxy rewrites the policy and leaves the keys alone.
   const rewritten = { ...signed, policy: { ...POLICY, splitKeys: false, passBuyUrl: "https://humid-access.example/buy" } };
