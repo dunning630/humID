@@ -84,8 +84,8 @@ function Hub() {
 
       <div class="rows">
         <Row icon="shield" tone={done === items.length ? "mint" : "amber"} title="Protection"
-          sub={decoy || S.offline.value || !rec || !devices ? "How HumID protects you" : done === items.length ? "All set" : `${done} of ${items.length} done`}
-          trail={!decoy && rec && devices && done < items.length ? <span class="pill amber">{items.length - done} to do</span> : null} onClick={() => go("protect")} />
+          sub={S.offline.value || !rec || !devices ? "How HumID protects you" : done === items.length ? "All set" : `${done} of ${items.length} done`}
+          trail={!S.offline.value && rec && devices && done < items.length ? <span class="pill amber">{items.length - done} to do</span> : null} onClick={() => go("protect")} />
         <Row icon="key" title="Devices" sub={devices ? `${devices.length} ${devices.length === 1 ? "device" : "devices"}` : "Loading…"} onClick={() => go("devices")} />
         <Row icon="users" tone={rec?.ready ? "mint" : ""} title="Recovery"
           sub={!rec ? "Loading…" : rec.ready ? "Ready · two proofs set up" : `${proofs} of 2 proofs set up`}

@@ -104,6 +104,13 @@ test("decoy Duress screen: off with nothing picked, then echoes what it saved, u
   S.resetSession(); R.duressSetting = null;
 });
 
+test("Protection has the same shape in a decoy session: count on the hub, checklist inside (verify-71 #3)", () => {
+  const p = src("screens/you/protect.jsx"), hub = src("screens/you/index.jsx");
+  assert.match(p, /const items = S\.offline\.value \? \[\] : protectionItems\(rec, devices\);/);
+  const row = hub.slice(hub.indexOf('title="Protection"'), hub.indexOf('onClick={() => go("protect")}'));
+  assert.doesNotMatch(row, /decoy/, "the hub's Protection row doesn't change for a decoy session");
+});
+
 test("an offline decoy session takes nothing personal from the offline copy (verify-71 #1)", async () => {
   const { decoyCopy } = await import("../apps/mobile/src/core/session.js");
   const real = {
