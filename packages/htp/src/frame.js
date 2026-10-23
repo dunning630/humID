@@ -43,9 +43,17 @@ function pack(meta, body) {
   return concat(u32(m.length), m, body || new Uint8Array(0));
 }
 
+/**
+ * Largest meta JSON a frame may carry. Meta is method, path, headers and a step-up proof (an
+ * ML-DSA-87 signature is 4.6 KB): a few KiB. It is parsed while the frame is opened, before the
+ * route is known, so it gets its own small cap (SRV-25/SRV-32).
+ */
+export const MAX_META_BYTES = 64 * 1024;
+
 function unpack(plain) {
   const len = readU32(plain, 0);
   if (4 + len > plain.length) throw new Error("HTP: malformed payload");
+  if (len > MAX_META_BYTES) throw new Error("HTP: frame meta too large");
   return { meta: JSON.parse(fromUtf8(plain.subarray(4, 4 + len))), body: plain.slice(4 + len) };
 }
 
