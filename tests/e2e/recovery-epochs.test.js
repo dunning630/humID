@@ -14,7 +14,7 @@ import { random } from "@humid/htp";
 import { HumidApi } from "@humid/api";
 import {
   quorumParts, split, combine, combineQuorum, newCard, cardTag, sealCardPart, openCardPart, QUORUM,
-  encodeShare, recoveryModeMessage,
+  encodeShare, recoveryModeMessage, recoveryModeHash, RECMODE_GENESIS,
 } from "@humid/recovery";
 import { makeHolder, register, sealBytes } from "./holder.js";
 
@@ -23,7 +23,15 @@ let stack;
 before(async () => { stack = await startStack({ recoveryDelayMs: 100_000 }); });
 after(async () => { await stack?.stop(); });
 
-const statement = (h, mode, version, epoch) => ({ mode, version, epoch, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch), h.keys.dsaSk) });
+const signed = new Map();
+/** As the app signs it: chained to the statement this holder signed at version - 1. */
+const statement = (h, mode, version, epoch) => {
+  const after = signed.get(`${h.id}/${version - 1}`);
+  const prev = version > 1 && after ? recoveryModeHash(h.id, after) : RECMODE_GENESIS;
+  const st = { mode, version, epoch, prev, sig: ml_dsa87.sign(recoveryModeMessage(h.id, mode, version, epoch, prev), h.keys.dsaSk) };
+  signed.set(`${h.id}/${version}`, st);
+  return st;
+};
 
 test("the PoC: removed witnesses + a new card, or + the anchor part, no longer rebuild the seed once the pieces are new", async () => {
   const seed = crypto.getRandomValues(new Uint8Array(64));

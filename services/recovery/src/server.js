@@ -41,7 +41,7 @@ import { sha3_256, toHex, identityId, verify as verifyDsa, STEP_UP_MAX_AGE_MS } 
 import {
   keyCode, parseCode, LINK_LABEL, OFFER_LABEL, REQUEST_LABEL, MIN_CONTACTS, MAX_CONTACTS,
   QUORUM, quorumDelay, evidenceLabel, DURESS_WINDOW_MS, CARD_PART_BLOB_BYTES, CARD_FULL_BLOB_BYTES, KEY_PART_BLOB_BYTES, ANCHOR_PART_BLOB_BYTES,
-  RECOVERY_MODES, isRecoveryMode, recoveryModeMessage,
+  RECOVERY_MODES, isRecoveryMode, recoveryModeMessage, recoveryModeHash, RECMODE_GENESIS,
 } from "@humid/recovery";
 
 /* Security keys (docs/SECURITY-KEY.md). The relying party no website can claim, and what the key signs. */
@@ -135,6 +135,11 @@ export function createRecovery({
     `ALTER TABLE cards ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
      ALTER TABLE guardian_sets ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1;
      ALTER TABLE seckeys ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1`,
+    // V74-01/02: statements are chained (prev), and the highest one ever accepted is kept apart
+    // from the statement itself. The mark only goes up: a statement row that is missing or older
+    // than its mark means someone deleted or rolled it back, and counts as holder-only.
+    `ALTER TABLE modes ADD COLUMN prev TEXT NOT NULL DEFAULT '${"0".repeat(64)}';
+     CREATE TABLE mode_marks (account TEXT PRIMARY KEY, version INTEGER NOT NULL, epoch INTEGER NOT NULL, hash TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   ]);
 
   /* ---------- the anchor secret and trusted countries ---------- */
@@ -275,28 +280,44 @@ export function createRecovery({
   /* ---------- recovery modes ---------- */
 
   const getMode = db.prepare("SELECT * FROM modes WHERE account = ?");
+  const getMark = db.prepare("SELECT * FROM mode_marks WHERE account = ?");
   const u32ok = (n) => Number.isSafeInteger(n) && n >= 1 && n < 2 ** 32;
-  /** A mode statement { mode, version, epoch, sig, dsaPk } for `account`, checked. Throws if it isn't the account's own. */
+  /** A mode statement { mode, version, epoch, prev, sig, dsaPk } for `account`, checked. Throws if it isn't the account's own. */
   function checkStatement(account, st) {
-    const mode = String(st?.mode || ""), version = Number(st?.version), epoch = Number(st?.epoch);
+    const mode = String(st?.mode || ""), version = Number(st?.version), epoch = Number(st?.epoch), prev = String(st?.prev ?? RECMODE_GENESIS);
     if (!isRecoveryMode(mode) || !u32ok(version) || !u32ok(epoch)) throw new HttpError(400, "bad_recovery_mode", "Unknown recovery mode.");
     const dsaPk = st.dsaPk instanceof Uint8Array ? st.dsaPk : unb64u(String(st.dsaPk || ""));
     const sig = st.sig instanceof Uint8Array ? st.sig : unb64u(String(st.sig || ""));
     let ok = false;
-    try { ok = dsaPk.length === SIZES.dsaPk && identityId(dsaPk) === account && verifyDsa(sig, recoveryModeMessage(account, mode, version, epoch), dsaPk); } catch { ok = false; }
+    try { ok = dsaPk.length === SIZES.dsaPk && identityId(dsaPk) === account && verifyDsa(sig, recoveryModeMessage(account, mode, version, epoch, prev), dsaPk); } catch { ok = false; }
     if (!ok) throw new HttpError(401, "bad_proof", "The recovery mode wasn't signed by this account's key.");
-    return { mode, version, epoch, sig, dsaPk };
+    return { mode, version, epoch, prev, sig, dsaPk, hash: recoveryModeHash(account, { mode, version, epoch, prev }) };
   }
   /**
-   * This account's recovery mode. Accounts from before modes, with no statement on file, are
-   * hardened. A stored statement is checked again every time, so a row changed on disk without
-   * the account key fails closed (as holder-only: nothing more is stored or released).
+   * This account's recovery mode. An account with neither a statement nor a mark is from before
+   * modes: hardened. A stored statement is checked again every time, and against the mark: a
+   * row changed on disk without the account key, deleted, or put back to an older one fails
+   * closed (as holder-only: nothing more is stored or released) until a statement at least as
+   * new as the mark arrives (from the holder, or from identity through the gateway).
    */
   function statementOf(account) {
     const m = account && getMode.get(account);
-    if (!m) return { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, sig: null };
-    try { return checkStatement(account, { mode: m.mode, version: m.version, epoch: m.epoch, sig: new Uint8Array(m.sig), dsaPk: new Uint8Array(m.dsa_pk) }); }
-    catch { log.warn("recovery mode statement doesn't verify", { account }); return { mode: RECOVERY_MODES.holderOnly, version: m.version, epoch: m.epoch, sig: null, broken: true }; }
+    const mark = account && getMark.get(account);
+    const broken = (why) => { log.warn("recovery mode statement doesn't hold", { account, why }); return { mode: RECOVERY_MODES.holderOnly, version: mark?.version ?? m?.version ?? 0, epoch: Math.max(mark?.epoch ?? 1, m?.epoch ?? 1), sig: null, broken: true }; };
+    if (!m) return mark ? broken("missing") : { mode: RECOVERY_MODES.hardened, version: 0, epoch: 1, sig: null };
+    let st;
+    try { st = checkStatement(account, { mode: m.mode, version: m.version, epoch: m.epoch, prev: m.prev, sig: new Uint8Array(m.sig), dsaPk: new Uint8Array(m.dsa_pk) }); }
+    catch { return broken("signature"); }
+    if (mark && (st.version < mark.version || st.epoch < mark.epoch || (st.version === mark.version && st.hash !== mark.hash))) return broken("rolled back");
+    return st;
+  }
+  /** May `next` replace what's on file? Compared with the mark, which a deleted or rolled-back row doesn't lower. */
+  function follows(account, next) {
+    const mark = getMark.get(account);
+    if (!mark) return true;
+    if (next.version === mark.version) return next.hash === mark.hash;
+    if (next.version < mark.version || next.epoch < mark.epoch) return false;
+    return next.version > mark.version + 1 || next.prev === mark.hash;
   }
   const modeOf = (account) => statementOf(account).mode;
   /** Refuse anything that would store or use recovery material for a holder-only account. */
@@ -333,25 +354,49 @@ export function createRecovery({
     db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
     db.exec("COMMIT");
   }
-  /** Keep a newer signed statement. The same one again is fine; an older one never replaces it. */
-  function learnMode(account, st) {
+  /**
+   * Keep a newer signed statement. The same one again is fine; an older one never replaces it.
+   * sync: the gateway is bringing this service up to identity's statement (it holds the account's
+   * latest choice; this one's row was deleted, rolled back, or restored from an old backup).
+   * The holder already made that switch, so pieces still here are left over or planted: for
+   * holder-only they're deleted rather than refused.
+   */
+  function learnMode(account, st, { sync = false } = {}) {
     const m = checkStatement(account, st);
-    const cur = getMode.get(account);
-    if (cur && (m.version < cur.version || (m.version === cur.version && (m.mode !== cur.mode || m.epoch !== cur.epoch)))) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
-    if (m.epoch < (cur?.epoch || 1)) throw new HttpError(409, "stale_recovery_mode", "Recovery pieces can't go back to an older set.");
-    if (cur && m.version === cur.version) return m;
+    if (!follows(account, m)) throw new HttpError(409, "stale_recovery_mode", "A newer recovery choice is already on file.");
+    const mark = getMark.get(account);
+    const cur = statementOf(account);
+    if (cur.version === m.version && !cur.broken && mark) return m; // already on file
     if (m.mode === RECOVERY_MODES.holderOnly) {
-      // Holder-only only once nothing is left here: the holder deletes each proof first.
       const left = escrowOf(account);
-      if (left.length) throw new HttpError(409, "escrow_remains", `Remove your ${left.join(", ")} first.`, { left });
+      // The holder deletes each proof first (each with its own check); only then is the switch accepted.
+      if (left.length && !sync) throw new HttpError(409, "escrow_remains", `Remove your ${left.join(", ")} first.`, { left });
+      if (left.length) deleteEscrow(account);
       // Recoveries already under way can't finish any more.
       db.prepare("UPDATE requests SET status = 'cancelled', closed_at = ?, anchor_blob = NULL WHERE account = ? AND status IN ('collecting', 'waiting')").run(now(), account);
     }
-    db.prepare(`INSERT INTO modes (account, mode, version, epoch, sig, dsa_pk, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(account) DO UPDATE SET mode = excluded.mode, version = excluded.version, epoch = excluded.epoch, sig = excluded.sig, dsa_pk = excluded.dsa_pk, updated_at = excluded.updated_at`)
-      .run(account, m.mode, m.version, m.epoch, m.sig, m.dsaPk, new Date().toISOString());
-    if (m.epoch > (cur?.epoch || 1)) retireOlderPieces(account, m.epoch);
+    const at = new Date().toISOString();
+    db.exec("BEGIN");
+    db.prepare(`INSERT INTO modes (account, mode, version, epoch, prev, sig, dsa_pk, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account) DO UPDATE SET mode = excluded.mode, version = excluded.version, epoch = excluded.epoch, prev = excluded.prev, sig = excluded.sig, dsa_pk = excluded.dsa_pk, updated_at = excluded.updated_at`)
+      .run(account, m.mode, m.version, m.epoch, m.prev, m.sig, m.dsaPk, at);
+    db.prepare(`INSERT INTO mode_marks (account, version, epoch, hash, updated_at) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account) DO UPDATE SET version = excluded.version, epoch = excluded.epoch, hash = excluded.hash, updated_at = excluded.updated_at
+                WHERE excluded.version >= mode_marks.version`)
+      .run(account, m.version, m.epoch, m.hash, at);
+    db.exec("COMMIT");
+    // Pieces from an older epoch than this one, wherever they came from, are retired.
+    retireOlderPieces(account, m.epoch);
     return m;
+  }
+  function deleteEscrow(account) {
+    db.exec("BEGIN");
+    db.prepare("DELETE FROM cards WHERE account = ?").run(account);
+    db.prepare("DELETE FROM guardians WHERE owner = ?").run(account);
+    db.prepare("DELETE FROM guardian_sets WHERE owner = ?").run(account);
+    db.prepare("DELETE FROM anchors WHERE account = ?").run(account);
+    db.prepare("DELETE FROM seckeys WHERE account = ?").run(account);
+    db.exec("COMMIT");
   }
 
   /* ---------- two-proof recovery: which proofs a request has, and when it opens ---------- */
@@ -1104,15 +1149,25 @@ export function createRecovery({
       const r = parseObject(body);
       const account = String(r.account || "");
       if (!/^hid_[0-9a-f]{40}$/.test(account)) throw new HttpError(400, "bad_subject", "Unknown subject");
-      const m = learnMode(account, r);
+      const m = learnMode(account, r, { sync: r.sync === true });
       return json(200, { mode: m.mode, version: m.version, epoch: m.epoch });
+    }],
+    // Gateway only: where this service stands, to compare with identity's statement.
+    ["GET", "/internal/recovery-mode/:id", ({ params, claims }) => {
+      gatewayOnly(claims);
+      const st = statementOf(String(params.id));
+      const mark = getMark.get(String(params.id));
+      return json(200, {
+        mode: st.mode, version: st.version, epoch: st.epoch, broken: !!st.broken, markVersion: mark?.version ?? 0,
+        ...(st.sig ? { statement: { mode: st.mode, version: st.version, epoch: st.epoch, prev: st.prev, sig: b64u(st.sig) } } : {}),
+      });
     }],
     // The account's signed statement as this service holds it, for the holder's devices to check
     // against their own account key, and what recovery material is still stored here.
     ["GET", "/mode", ({ claims }) => {
       const sub = needUser(claims);
       const st = statementOf(sub);
-      return json(200, { mode: st.mode, version: st.version, epoch: st.epoch, sig: st.sig ? b64u(st.sig) : null, ...(st.broken ? { broken: true } : {}), escrow: escrowOf(sub) });
+      return json(200, { mode: st.mode, version: st.version, epoch: st.epoch, prev: st.prev ?? RECMODE_GENESIS, sig: st.sig ? b64u(st.sig) : null, ...(st.broken ? { broken: true } : {}), escrow: escrowOf(sub) });
     }],
   ];
 
