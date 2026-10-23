@@ -91,7 +91,7 @@ were written by root before, and the edge now runs as user 65532. Hand its two
 volumes over before `up -d`, or it can't renew certificates:
 
 ```bash
-docker compose run --rm --no-deps --user 0 --entrypoint chown edge -R 65532:65532 /data /config
+docker compose run --rm --no-deps --user 0 --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint chown edge -R 65532:65532 /data /config
 ```
 
 ## Keep these safe
