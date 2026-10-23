@@ -24,7 +24,7 @@ and the app turns it on for every conversation.
 | See who's asking | the inviter's live check (the request opens only with the invite's persona keys) | it stays sealed |
 | Approve | a live check; the "accept" carries a live stamp | the requester's phone discards it and stays unconnected |
 | Every message (text, media, delete, timer, end, "I'm here") | a live check; a stamp over its exact bytes | discarded unread; nothing it says is applied; its key is still used up |
-| Read | the reader's own live check within the freshness window | what arrived stays ciphertext on the phone, counted, never opened |
+| Read | the reader's own live check within the freshness window | the app doesn't open what arrived: it stays ciphertext on the phone, counted. (While the phone is unlocked, the keys that open it are in memory, so this is the app's rule, not a cryptographic lock: malware on an unlocked phone could read it.) |
 
 **Only a proven phone gets stamps.** The gateway signs stamps only for a step-up made with a
 hardware liveness key (a phone whose secure chip proves the face or fingerprint check), whatever
@@ -82,8 +82,10 @@ not only writing.
 
 What it proves, exactly: a face or fingerprint on a proven phone approved those bytes (the
 stamp), and only the contact's persona could have sent them (the ratchet). It does not prove
-who wrote the words, or that the person wasn't coerced. The app says "confirmed by its
-sender's face or fingerprint", never "verified human".
+who wrote the words, or that the person wasn't coerced, or that they're there right now (only
+that they were within the last few minutes, and within the stamp key's hour). The app says
+"confirmed by a live face or fingerprint check on a proven phone", never "verified human" or
+"live human ✓".
 
 ## In the app
 
@@ -177,7 +179,7 @@ browser with two phones (`tests/browser/messages.mjs`, screenshots with `SHOTS=d
                                    reply box ◄──────────── request + live stamp ──────────── requestContact
  readRequest:                                                                                  (new persona for A)
   "HC-7F3K-… wants to connect
-   live human ✓  ·  note: 'from the workshop'
+   asked with a live check  ·  note: 'from the workshop'
    safety code QM4T-…"
  live check → acceptRequest
  encrypt("accept") ─────────────►  conversation box (rotates daily)  ───────────────────────► session opens: connected
@@ -291,11 +293,16 @@ contact: verify(stamp, commitment recomputed from what arrived), and `at` inside
 
 ### A new signal about human activity, with nothing about any human
 
-The stamp issuer can count stamps per day and publish the total: how many
-messages, anywhere on the network, a live human approved. That is a measure of
-real human activity no bot farm can inflate without real people passing real
-checks, and it reveals nothing about who talked to whom. (What it does learn,
-see the table below: how many stamps each account asked for.)
+The stamp issuer counts stamps and checks per day, and the server publishes the
+totals (`/msg/stats`): how many messages, requests, approvals, "I'm here"
+receipts and deletes on this server were approved with a live check on a proven
+phone. Since only proven phones get stamps, a bot farm can't inflate it without
+real people passing real checks (a person paid to approve a bot's messages
+still can, at human speed), and it says nothing about who talked to whom. On a
+small server, exact daily numbers would show individual activity, so a day is
+published only once it has at least 1,000 checks (`HUMID_MSG_STATS_MIN`), and
+both numbers are rounded down to a hundred. (What the issuer itself learns, see
+the table below: how many stamps each account asked for.)
 
 ## Deleting
 
@@ -594,7 +601,17 @@ internal call), SRV-05, SEC-S-09, SEC-S-04, and the supply-chain items SC-01–0
   network, and size classes tell invites, requests and messages apart. A
   request also carries its ephemeral X25519 key in the clear (it has to: it's
   how the inviter derives the keys); Elligator encoding would make it look
-  random. Cover traffic is not built.
+  random. Cover traffic is not built. The relay and the stamp issuer write no
+  log line per request (the relay keeps arrival to the minute, the issuer only
+  days), so their logs can't be lined up to pair a stamp with a deposit; the
+  gateway logs only that an encrypted call happened, not what it was.
+- **"Locked" is the app's rule, not a cryptographic lock.** While the phone is
+  unlocked, the keys that open waiting messages are in memory. The app shows
+  nothing without a fresh live check, but malware on an unlocked phone, or a
+  modified app, could read what's waiting. Locking the phone wipes them.
+- **"Both here" is "within the last few minutes".** A modified app can buy
+  stamps ahead, but only within the current stamp key's hour, so a holder can
+  look "here" for at most the rest of that hour after their last real check.
 - **Skipped message keys** (for messages a relay withholds) are kept until the
   message arrives or for 14 days, the relay's retention, then erased.
 - **One messaging device per account, for now.** The ratchet state lives on one

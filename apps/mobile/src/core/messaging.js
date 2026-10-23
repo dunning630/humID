@@ -891,9 +891,17 @@ export function liveStateOf(id) {
   return M.liveState({ ownAt: S.liveAt.value || null, peerAt: c?.peerLiveAt ?? null, now: now(), windowMs: WINDOW });
 }
 
-/** Network-wide: how many messages a live human sent today. */
+/**
+ * Network-wide: how many live stamps were issued today (messages, requests, approvals, receipts
+ * and deletes alike), rounded down to a hundred. Null when the server publishes no figure for
+ * today (it does only once enough checks were made that the number says nothing about anyone).
+ */
 export async function humanToday() {
-  try { const days = await R.api.msgStats(); return days?.[0]?.stamps ?? 0; } catch { return null; }
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const d = (await R.api.msgStats())?.find((x) => x.day === today);
+    return d ? d.stamps : null;
+  } catch { return null; }
 }
 
 export const LIVE_WINDOW_MS = WINDOW;
