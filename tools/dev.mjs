@@ -26,6 +26,8 @@ const PORT = Number(process.env.PORT || 5173);
 // This computer only (PC-25): the dev stack mints access codes and runs demo mode for anyone who
 // reaches it. HOST=0.0.0.0 to show it on your network on purpose.
 const HOST = process.env.HOST || "127.0.0.1";
+// The stack's own services too: every one listens on this computer only (createService reads it).
+process.env.HUMID_BIND_HOST ||= "127.0.0.1";
 const dist = fileURLToPath(new URL("../apps/mobile/dist/", import.meta.url));
 // Recovery normally waits 72 hours; locally it's 2 minutes so you can try it (RECOVERY_DELAY_MS to change).
 // Demo passports: a throwaway country signing CA the dev server trusts, and one chip per holder name,

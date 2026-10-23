@@ -34,3 +34,13 @@ test("the dev server uses the contained lookup and listens on 127.0.0.1 unless t
   assert.match(src, /const HOST = process\.env\.HOST \|\| "127\.0\.0\.1"/);
   assert.match(src, /\.listen\(PORT, HOST,/);
 });
+
+test("the dev stack's own services listen on 127.0.0.1 too", async () => {
+  const src = readFileSync(new URL("../tools/dev.mjs", import.meta.url), "utf8");
+  assert.match(src, /process\.env\.HUMID_BIND_HOST \|\|= "127\.0\.0\.1"/);
+  const { startStack } = await import("./e2e/stack.js");
+  const s = await startStack({ devicePolicy: "demo", messaging: false });
+  try {
+    for (const k of ["gateway", "identity", "vault", "ledger", "recovery", "access", "keyshare"]) assert.equal(s[k].server.address().address, "127.0.0.1", k);
+  } finally { await s.stop(); }
+});
