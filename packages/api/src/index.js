@@ -99,7 +99,7 @@ export class HumidApi {
   /** Server identity, for display ("Connected to … · 7A3F-91C2-…") and pinning, plus its policy hint. */
   async server() {
     const s = await this.htp.serverKeys();
-    return { kid: s.kid, fingerprint: s.fingerprint, policy: s.policy };
+    return { kid: s.kid, fingerprint: s.fingerprint, policy: s.policy, policyAt: s.policyAt };
   }
 
   get signedIn() { return !!this.session && this.htp.connected; }

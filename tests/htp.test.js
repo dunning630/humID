@@ -345,3 +345,41 @@ async function rawSeal(s, seq, plain) {
   const out = new Uint8Array(h.length + ct.length); out.set(h); out.set(ct, h.length);
   return out;
 }
+
+test("CRYPTO-07 round 2: an older signed policy, replayed within its 7 days, never replaces a newer one", async () => {
+  const server = new HtpServer(createStatics());
+  const day = 24 * 3600_000, now = Date.now();
+  const old = server.signedPolicy({ ...POLICY, splitKeys: false, passBuyUrl: "https://old-shop.example/buy" }, now - 6 * day);
+  server.policyCache = null;
+  const current = server.signedPolicy(POLICY, now - day);
+  // the client has seen the current one (this run, or remembered from storage)
+  const c = new HtpClient({ fetch: keysWith(server, current), pinnedKid: server.kid });
+  const seen = await c.serverKeys();
+  assert.equal(seen.policy.passBuyUrl, POLICY.passBuyUrl);
+  const stored = structuredClone(c.policySeen);
+  // later, on a hostile network, the 6-day-old one is served: still validly signed
+  for (const client of [c, new HtpClient({ fetch: keysWith(server, old), pinnedKid: server.kid })]) {
+    client.server = null;
+    client.fetch = keysWith(server, old);
+    client.policySeen = stored; // a fresh start reads it from the identity record
+    const s = await client.serverKeys();
+    assert.equal(s.policyReplayed, true);
+    assert.equal(s.policy.splitKeys, true, "split keys can't go from on to off");
+    assert.equal(s.policy.passBuyUrl, POLICY.passBuyUrl, "the shop link can't revert");
+    assert.equal(s.policyAt, current.policySig.at);
+  }
+  // a stripped policy doesn't erase what was seen either, and a forged stored copy isn't believed
+  const bare = new HtpClient({ fetch: keysWith(server, {}), pinnedKid: server.kid });
+  bare.policySeen = stored;
+  assert.equal((await bare.serverKeys()).policy.splitKeys, true);
+  const forged = new HtpClient({ fetch: keysWith(server, {}), pinnedKid: server.kid });
+  forged.policySeen = { ...stored, policy: { ...stored.policy, passBuyUrl: "https://evil.example" } };
+  assert.equal((await forged.serverKeys()).policy.passBuyUrl, null);
+  // a newer signature from the server does replace it
+  server.policyCache = null;
+  const next = server.signedPolicy({ ...POLICY, passBuyUrl: "https://humidsecure.com/new" }, now);
+  const n = new HtpClient({ fetch: keysWith(server, next), pinnedKid: server.kid });
+  n.policySeen = stored;
+  assert.equal((await n.serverKeys()).policy.passBuyUrl, "https://humidsecure.com/new");
+  assert.equal(n.policySeen.at, next.policySig.at);
+});

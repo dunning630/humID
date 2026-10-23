@@ -40,6 +40,9 @@ export class HtpClient {
     // nonce under the session's c2s key, so each one may be used for exactly one frame.
     this.reserved = new Set();
     this.onSessionLost = null;
+    // The newest signed policy this client has accepted ({ policy, at, sig }), from the device's
+    // storage or this run. A signed policy older than it is a replay and is never used.
+    this.policySeen = null;
   }
 
   /** fetch with the request timeout: a hung connection surfaces as TimeoutError (a network failure) instead of waiting forever. */
@@ -65,8 +68,22 @@ export class HtpClient {
     // binds (CRYPTO-07, PC-13): a proxy that ends TLS can't point "Buy an access code"
     // elsewhere, turn split keys off, or hide features. Unsigned, altered or stale, it's
     // ignored and the strict defaults below apply. The gateway enforces policy either way.
-    const policySigned = verifyPolicy(keys.dsaPk, keyId(keys.kemPk, keys.xPk, keys.dsaPk), j.policy, j.policySig);
-    const p = policySigned ? j.policy : {};
+    //
+    // Within its 7 days a signed policy could be saved and served again later, after the server
+    // changed it (a new shop link, Check-in turned on). So the client remembers the newest one
+    // it has accepted (`policySeen`; the app keeps it in the identity record) and uses whichever
+    // is newer: a replayed older one, or none at all, never takes the place of the newest the
+    // server has signed. The remembered one is checked again here, so a stored copy can't be
+    // forged either; only a newer signature from this server replaces it.
+    const kidBytes = keyId(keys.kemPk, keys.xPk, keys.dsaPk);
+    const fresh = verifyPolicy(keys.dsaPk, kidBytes, j.policy, j.policySig) ? { policy: j.policy, at: Number(j.policySig.at), sig: String(j.policySig.sig) } : null;
+    const s = this.policySeen;
+    const seen = s && verifyPolicy(keys.dsaPk, kidBytes, s.policy, { at: s.at, sig: s.sig }, Date.now(), { maxAgeMs: Infinity }) ? s : null;
+    const best = fresh && (!seen || fresh.at >= seen.at) ? fresh : seen;
+    if (best !== s) this.policySeen = best;
+    const policySigned = !!best;
+    const policyReplayed = !!(fresh && seen && fresh.at < seen.at);
+    const p = best ? best.policy : {};
     const devicePolicy = ["attested", "biometric", "demo"].includes(p.devicePolicy) ? p.devicePolicy : "attested";
     // Older servers don't say: they had no payment step, so "open".
     const registration = p.registration === "pass" ? "pass" : "open";
@@ -80,7 +97,7 @@ export class HtpClient {
     // 4.0: whether this server runs a messaging relay and stamp issuer (shows the Messages tab).
     const spc = Number(p.messaging?.stampsPerCheck);
     const messaging = p.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging }, policySigned };
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging }, policySigned, policyReplayed, policyAt: best?.at ?? null };
     return this.server;
   }
 

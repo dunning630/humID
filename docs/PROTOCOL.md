@@ -80,6 +80,15 @@ no shop link, no split keys, no Check-in, no messaging. A build pinned to its
 server also refuses to seal a document unsplit when the hint says otherwise,
 from its very first run.
 
+A signed policy stays valid for 7 days, so someone who saved one could serve
+it again after the server changed it. The app therefore keeps the newest
+signed policy it has accepted (`policySeen` in the identity record, with its
+signature, checked again on every load) and uses whichever of that and the
+one just served is newer. A replayed older policy, or none at all, never
+replaces it: split keys can't go from on to off and the shop link can't
+revert. Before the first honest connection there is nothing to compare
+against; a pinned build's split-keys rule covers that case.
+
 ## Handshake
 
 ```
