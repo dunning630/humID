@@ -169,6 +169,27 @@ const ROUTES = [
   { m: "POST", p: re("/msg/relay/retract"), h: "relayRetract", relay: true, msg: true },
 ];
 
+/**
+ * Largest inner body each route takes (SRV-32). The frame cap is chosen from the session before
+ * the route is known (it's inside the encryption), so a signed-in session's frame may be as big
+ * as a vault upload; this is checked as soon as the frame is open, before anything parses the
+ * body. Every route not listed takes CALL_CAP_DEFAULT: JSON and control bodies are a few KiB.
+ * Keyed by handler, or by upstream service and path.
+ */
+const CALL_CAP_DEFAULT = 64 * 1024;
+const RECOVERY_ENVELOPE_CAP = 96 * 1024;  // one sealed envelope (recovery: 64 KiB), as bytes or base64 in JSON
+const RECOVERY_CHIP_CAP = 256 * 1024;     // up to three ID-chip reads (recovery: 3 × 48 KiB), base64 in JSON
+const CALL_CAPS = {
+  "h:upload": "max",                       // POST /vault/objects: the vault-sized cap (GATEWAY_MAX_CALL_BYTES)
+  "recovery:/links/$1/approve": RECOVERY_ENVELOPE_CAP,
+  "h:helpRecover": RECOVERY_ENVELOPE_CAP,
+  "recovery:/contacts": 6 * RECOVERY_ENVELOPE_CAP, // up to five contacts' envelopes
+  "recovery:/anchor": RECOVERY_CHIP_CAP,
+  "h:addEvidence": RECOVERY_CHIP_CAP,
+  "h:stationVerify": RECOVERY_CHIP_CAP,
+};
+const capKey = (route) => (route.h ? `h:${route.h}` : `${route.to}:${route.path}`);
+
 /** Check-in settings, as keyshare accepts them (CHECKIN_WINDOWS_MS, CHECKIN_GRACE_MS). Published in the policy hint. */
 const CHECKIN_POLICY = { windowsH: [1, 2, 4, 8, 24], graceMin: [0, 15, 30, 60] };
 const CHECKIN_WINDOWS = CHECKIN_POLICY.windowsH.map((h) => h * 3_600_000);
@@ -221,6 +242,8 @@ export function createGateway({
   maxCallBytes = Number(env("GATEWAY_MAX_CALL_BYTES", String(64 * 1024 * 1024))),
   /** Largest frame accepted from a session that has not signed in (recovery requests carry up to three ID-chip reads). */
   maxAnonCallBytes = Number(env("GATEWAY_MAX_ANON_CALL_BYTES", String(512 * 1024))),
+  /** New recovery requests per source network (IPv4 address or IPv6 /64) per hour (SRV-34). */
+  recoveryStartsPerHour = Number(env("HUMID_RECOVERY_STARTS_PER_HOUR", "20")),
   devicePolicy = env("HUMID_DEVICE_POLICY", "attested"),
   registration = env("HUMID_REGISTRATION", "pass"),
   passBuyUrl = env("HUMID_PASS_BUY_URL", ""),
@@ -283,6 +306,10 @@ export function createGateway({
   const keyRefusedNote = new Buckets(1, 3_600_000); // one "security key answer refused" note per account and reason per hour
   const anonLimit = new Buckets(20, 60_000);    // per session, for calls before sign-in
   const keysGoneNote = new Buckets(1, 24 * 3_600_000); // one "keys gone" report per device a day
+  // SRV-34: new recovery requests per source network (IPv4 address or IPv6 /64). Anonymous and
+  // kept by the recovery service, so a session's own limit isn't enough: one person recovering
+  // starts one or two. The recovery service also caps how many unproven requests exist at all.
+  const recoveryStartLimit = new Buckets(recoveryStartsPerHour, 3_600_000);
 
   // Bodies still being uploaded before the frame is authenticated: per source address and in total.
   const inflight = new Map();
@@ -343,10 +370,34 @@ export function createGateway({
   }
   const recordQuietly = (sub, type, detail) => record(sub, type, detail).catch((e) => log.warn("ledger write failed", { type, err: e.message }));
 
-  const claimsFor = (s, extra = {}) => ({
-    sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance,
-    ...(s.livePub ? { livePub: b64u(s.livePub) } : {}), ...extra,
-  });
+  const claimsFor = (s, extra = {}) => {
+    const out = {
+      sub: s.subject, device: s.deviceId, sid: s.sidText.slice(0, 8), dsaFp: s.dsaFp, kemFp: s.kemFp, assurance: s.assurance,
+      ...(s.livePub ? { livePub: b64u(s.livePub) } : {}), ...extra,
+    };
+    // SRV-30: the holder's own step-up proof goes with it, so the service that releases or
+    // destroys a secret checks it itself; the gateway's word (stepUp) is a hint, not the proof.
+    // The proof travels in the assertion header, so a large signed body (an envelope) stays out;
+    // no service that checks proofs needs one, and a caller that does sends it in the request body.
+    if (extra.stepUp?.holder) {
+      const { body, ...h } = extra.stepUp.holder;
+      out.holder = body.length <= 8 * 1024 ? { ...h, body } : h;
+    }
+    return out;
+  };
+
+  /**
+   * SRV-30: everything a back-end service needs to check this step-up itself: the request as the
+   * holder's device signed it, its signatures, and identity's statement that this device key
+   * belongs to the account (vault and keyshare hold no device keys).
+   */
+  async function holderProof(s, seq, meta, body, proof, nonce, exp) {
+    const v = await internalJson("identity", "POST", "/internal/vouch", { json: { account: s.subject, device: s.deviceId } }).catch(() => ({ status: 503 }));
+    if (v.status !== 200) throw new HttpError(503, "identity_unavailable", "identity service is unavailable");
+    return { th: b64u(s.th), seq, at: Number(proof.at), m: meta.m, p: meta.p, body: b64u(body || new Uint8Array(0)), nonce, exp, device: s.deviceId, sig: String(proof.sig), ...(proof.live ? { live: String(proof.live) } : {}), vouch: v.data.vouch };
+  }
+  /** The holder proof with its body left out, for a caller that sends the body in the request instead (Check-in's settings). */
+  const withoutBody = (stepUp) => ({ ...stepUp, holder: { ...stepUp.holder, body: "" } });
 
   /** Bind a session to an account and the device that proved itself. */
   function bindSession(s, view, interrupt) {
@@ -375,10 +426,14 @@ export function createGateway({
    * erases the vault. Every sign-in asks keyshare where Check-in stands, so a duress sign-in
    * takes the same time, and the work happens after the reply, so the answer looks the same.
    */
-  async function presence(s, duress) {
+  async function presence(s, duress, signIn) {
     const ck = CHECKIN ? await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null) : null;
     if (!duress || s.duress) return;
     s.duress = true;
+    // The duress sign-in as the device signed it: keyshare erases an armed vault only on this.
+    const vouch = CHECKIN ? await internalJson("identity", "POST", "/internal/vouch", { json: { account: s.subject, device: s.deviceId } }).catch(() => null) : null;
+    s.duressProof = vouch?.status === 200 ? { ...signIn, device: s.deviceId, vouch: vouch.data.vouch } : null;
+    const duressProof = s.duressProof;
     const st = ck?.status === 200 ? ck.data : null;
     s.decoyCheckin = st && (st.state === "armed" || st.state === "locked")
       ? decoyFrom({ ...st, deadline: st.state === "armed" ? st.deadline : Date.now() + st.windowMs })
@@ -386,7 +441,7 @@ export function createGateway({
     const account = s.subject, device = s.deviceId, platform = s.platform;
     setImmediate(async () => {
       // Check-in first: a duress signal while it's armed erases the vault now (decoys stay).
-      if (CHECKIN) await eraseNow(account);
+      if (CHECKIN) await eraseNow(account, duressProof);
       await internalJson("identity", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: identity", { err: e.message }));
       await internalJson("recovery", "POST", "/internal/duress", { json: { account } }).catch((e) => log.warn("duress: recovery", { err: e.message }));
       await recordQuietly(account, "duress.signaled", { device, platform });
@@ -427,23 +482,47 @@ export function createGateway({
 
     // Open: the envelope from the vault and, for a split document, its key from keyshare,
     // both under this one live step-up. Recorded in the ledger before either is released.
+    // SRV-30: the open is written to the ledger FIRST, and the vault releases the envelope only
+    // against the ledger's signed receipt for it, so an open can't happen without its entry.
+    // The document key leaves keyshare sealed to a one-time key in the body the holder signed
+    // (CRYPTO-03), so this gateway forwards it without being able to read it.
     async download(s, body, stepUp, m) {
       const id = m[1], path = `/vault/objects/${id}`;
-      const claims = claimsFor(s, stepUp ? { stepUp } : {});
+      if (!stepUp) {
+        const e = new HttpError(403, "step_up_required", "This needs a fresh biometric check on your device.");
+        await denied(s, path, { body: utf8(JSON.stringify({ error: e.code })) });
+        throw e;
+      }
+      const own = await internalJson("vault", "GET", `/objects/${id}/meta`, { claims: claimsFor(s) });
+      if (own.status !== 200) fail(own);
+      // The document key is asked for only when the signed body names a one-time key to seal it
+      // to (downloadWithShare); a plain download (exporting the sealed copy) gets the envelope alone.
+      const wantShare = !!safeJson(body)?.to;
+      // Would keyshare release this document's key now (and is it split)? Releases nothing.
+      const keyshareRefused = async (ks) => {
+        // 423: a missed check-in locks the vault; 410: Check-in erased this document's key
+        if ([403, 410, 423].includes(ks.status)) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
+        throw new HttpError([403, 410, 423, 426, 429].includes(ks.status) ? ks.status : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+      };
+      let split = false;
+      if (wantShare) {
+        const pre = await internalJson("keyshare", "GET", `/internal/shares/${id}/state`, { claims: claimsFor(s) }).catch(() => ({ status: 503 }));
+        if (pre.status !== 200) await keyshareRefused(pre);
+        split = !!pre.data.split;
+      }
+      const opened = await record(s.subject, "object.opened", { id, split, proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance });
+      if (!opened?.receipt) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
+      const claims = claimsFor(s, { stepUp, receipt: opened.receipt });
       const res = await internal("vault", "GET", `/objects/${id}`, { claims });
       if (res.status !== 200) {
         if (res.status === 403) await denied(s, path, res);
         return res;
       }
-      const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
-      if (ks.status !== 200 && ks.status !== 404) {
-        // 423: a missed check-in locks the vault; 410: Check-in erased this document's key
-        if ([403, 410, 423].includes(ks.status)) await denied(s, path, { body: utf8(JSON.stringify(ks.data || {})) });
-        throw new HttpError([403, 410, 423, 429].includes(ks.status) ? ks.status : 503, ks.data?.error || "keyshare_unavailable", ks.data?.message || "Your document's key is unavailable right now. Try again.");
+      if (split) {
+        const ks = await internalJson("keyshare", "GET", `/shares/${id}`, { claims }).catch(() => ({ status: 503 }));
+        if (ks.status !== 200) await keyshareRefused(ks);
+        res.headers[SHARE_HEADER] = ks.data.sealed;
       }
-      const split = ks.status === 200;
-      await record(s.subject, "object.opened", { id, split, ...(stepUp ? { proof: stepUp.proof, method: stepUp.method, assurance: stepUp.assurance } : {}) });
-      if (split) res.headers[SHARE_HEADER] = ks.data.share;
       return res;
     },
 
@@ -615,14 +694,19 @@ export function createGateway({
           message: b64u(reported ? loginPresenceMessage(s.th, who, c.nonce, r.d) : liveMsg), liveMessage: b64u(liveMsg) },
       });
       const failed = v.status >= 400 && v.status < 500;
+      // SRV-24: identity gives an unknown account, an unknown device and a wrong key one answer
+      // after the same work; `known` (gateway only) says whether there is a ledger to note it in.
+      // The note is written after the reply, so it can't make a real account's refusal slower.
+      const known = v.status !== 401 || v.data?.error !== "bad_signature" || v.data?.known === true;
+      const noteLater = (detail) => { if (known) setImmediate(() => recordQuietly(r.id, "access.denied", { ...detail, device: r.device })); };
       const throttled = failed && ![loginFailId.take(r.id), loginFailIp.take(rateKey(s.clientIp || "")), loginFailAll.take("*")].every(Boolean);
       if (throttled) {
-        if (loginNote.take(r.id)) await recordQuietly(r.id, "access.denied", { reason: "sign_in_throttled", device: r.device });
+        if (loginNote.take(r.id)) noteLater({ reason: "sign_in_throttled" });
         throw new HttpError(429, "rate_limited", "Too many failed sign-in attempts. Wait a few minutes.");
       }
       if (v.status === 401) {
         const live = v.data?.error === "bad_live_proof";
-        await recordQuietly(r.id, "access.denied", { reason: live ? "no_live_biometric" : "bad_login_proof", device: r.device });
+        noteLater({ reason: live ? "no_live_biometric" : "bad_login_proof" });
         throw new HttpError(401, live ? "bad_live_proof" : "bad_proof", live ? "Sign-in needs a live face or fingerprint check on this device." : "Sign-in proof was rejected.");
       }
       if (v.status === 403 && ["device_removed", "device_not_proven"].includes(v.data?.error)) {
@@ -631,7 +715,7 @@ export function createGateway({
       if (v.status !== 200) fail(v);
       bindSession(s, v.data, r.interrupt);
       await recordQuietly(s.subject, "session.opened", { device: s.deviceId, platform: s.platform, method: s.gateMethod, assurance: s.assurance, level: s.proof, proof: proofHash(unb64u(r.sig)) });
-      await presence(s, reported && r.d === 1);
+      await presence(s, reported && r.d === 1, { th: b64u(s.th), nonce: b64u(c.nonce), sig: String(r.sig), ...(r.live ? { live: String(r.live) } : {}) });
       return { status: 200, json: sessionView(s) };
     },
 
@@ -719,6 +803,7 @@ export function createGateway({
 
     // A new device asks to recover. For a card the account is known now, so its devices are alerted now.
     async startRecovery(s, body) {
+      if (!recoveryStartLimit.take(rateKey(s.clientIp || ""))) throw new HttpError(429, "rate_limited", "Too many recoveries started from this network. Wait an hour and try again.");
       let r = await internalJson("recovery", "POST", "/requests", { body });
       if (r.status >= 300) fail(r);
       // The recovery service's mode for that account may be stale (a deleted or rolled-back row):
@@ -893,7 +978,7 @@ export function createGateway({
         return { status: 200, json: decoyView(s.decoyCheckin) };
       }
       const out = await internalJson("keyshare", "POST", "/internal/checkin/arm", {
-        claims, json: { ...settings, objects: list.data.items.map((i) => i.id), keep: Array.isArray(r.keep) ? r.keep : [] },
+        claims: claimsFor(s, { stepUp: withoutBody(stepUp) }), json: { objects: list.data.items.map((i) => i.id), holderBody: stepUp.holder.body },
       }).catch(() => ({ status: 503, data: { error: "keyshare_unavailable", message: "Check-in can't be turned on right now. Try again." } }));
       if (out.status !== 200) return { status: out.status, json: out.data }; // e.g. unsplit_items, with which ones
       await recordQuietly(s.subject, "checkin.armed", { windowMs: out.data.windowMs, maxWindowMs: out.data.maxWindowMs, graceMs: out.data.graceMs, kept: Array.isArray(r.keep) ? r.keep.length : 0, proof: stepUp.proof });
@@ -909,7 +994,7 @@ export function createGateway({
       if (s.duress) {
         // It looks like a check-in. The vault was already erased when this session opened.
         await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
-        setImmediate(() => eraseNow(s.subject));
+        setImmediate(() => eraseNow(s.subject, s.duressProof));
         const d = s.decoyCheckin, v = decoyView(d);
         if (v.state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
         if (v.state === "off") throw new HttpError(409, "checkin_off", "Check-in isn't on.");
@@ -930,7 +1015,7 @@ export function createGateway({
       if (!stepUp) throw new HttpError(403, "step_up_required", "Turning off Check-in needs a fresh biometric check.");
       if (s.duress) {
         await internalJson("keyshare", "GET", "/internal/checkin", { claims: claimsFor(s) }).catch(() => null);
-        setImmediate(() => eraseNow(s.subject));
+        setImmediate(() => eraseNow(s.subject, s.duressProof));
         if (decoyView(s.decoyCheckin).state === "erased") throw new HttpError(410, "vault_erased", "Your vault was erased by Check-in.");
         s.decoyCheckin = null;
         return { status: 200, json: { state: "off" } };
@@ -952,7 +1037,7 @@ export function createGateway({
     async clearDuress(s, body, stepUp) {
       if (!stepUp) throw new HttpError(403, "step_up_required", "Lifting lockdown needs a fresh biometric check.");
       if (s.duress) throw busy();
-      const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`);
+      const r = await internalJson("identity", "POST", `/internal/lockdown/${s.subject}/clear`, { claims: claimsFor(s, { stepUp }) });
       if (r.status !== 200) fail(r);
       if (r.data.cleared) await recordQuietly(s.subject, "duress.cleared", { device: s.deviceId, since: r.data.since, proof: stepUp.proof });
       return { status: 200, json: r.data };
@@ -1019,12 +1104,19 @@ export function createGateway({
 
   /* ---------- the encrypted call ---------- */
 
+  /** SRV-32: the route's own cap. Relay routes keep the frame cap (they only ever come from a session that isn't signed in, capped at maxAnonCallBytes). */
+  const callCap = (route) => {
+    const c = route.relay ? "max" : CALL_CAPS[capKey(route)] ?? CALL_CAP_DEFAULT;
+    return c === "max" ? maxCallBytes : Math.min(c, maxCallBytes);
+  };
+
   async function dispatch(s, seq, meta, body) {
     const url = new URL(String(meta.p || "/"), "http://inner");
     const route = ROUTES.find((r) => r.m === meta.m && r.p.test(url.pathname));
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
     if (route.msg && !MESSAGING) throw new HttpError(404, "not_found", "No such endpoint");
+    if (body.length > callCap(route)) throw new HttpError(413, "too_large", "Request body is too large for this endpoint.");
     if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
     // Step-up: a fresh biometric signature over exactly this request, by this session's device key.
@@ -1057,6 +1149,8 @@ export function createGateway({
       }
       const i = meta.proof.interrupt || {};
       stepUp = { at, proof: proofHash(sig), method: String(i.method || s.gateMethod).slice(0, 64), assurance: s.assurance, live: !!s.livePub };
+      // The proof as signed, for the service that acts on it to check again (SRV-30).
+      Object.defineProperty(stepUp, "holder", { value: await holderProof(s, seq, meta, body, meta.proof, nonceKey, issued.exp), enumerable: true });
       // The proof as signed, for a handler that hands it on to be checked again elsewhere (admin approvals).
       Object.defineProperty(stepUp, "raw", { value: { seq, at, sig: meta.proof.sig, live: meta.proof.live || null, nonce: nonceKey, exp: issued.exp }, enumerable: false });
     }
@@ -1171,8 +1265,9 @@ export function createGateway({
   }
 
   /** A duress signal: if this account is armed, keyshare destroys its fuse key now. Then tidy up. */
-  async function eraseNow(account) {
-    const r = await internalJson("keyshare", "POST", "/internal/checkin/erase", { claims: { sub: account } })
+  async function eraseNow(account, duressProof) {
+    if (!duressProof) return; // only a duress sign-in can set off an erase (keyshare checks it: SRV-30)
+    const r = await internalJson("keyshare", "POST", "/internal/checkin/erase", { claims: { sub: account, duress: duressProof } })
       .catch((e) => { log.warn("check-in erase: keyshare", { err: e.message }); return null; });
     if (r?.data?.erased) await sweepCheckin().catch(() => {});
   }
@@ -1192,7 +1287,7 @@ export function createGateway({
       const r = await list().catch(() => list()).catch(() => null); // once more: keyshare may have just restarted
       for (const e of r?.status === 200 ? r.data.erased : []) {
         const claims = { sub: e.owner };
-        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { keep: e.keep, before: e.erasedAt } }).catch(() => null);
+        const v = await internalJson("vault", "DELETE", "/internal/objects", { claims, json: { token: e.token } }).catch(() => null);
         if (v?.status !== 200) continue;
         // Once per erase, however many sweeps it takes (a lost "cleaned" mustn't write it twice).
         // The count is keyshare's: how many document keys were destroyed.
@@ -1309,8 +1404,13 @@ export function tlsFromEnv(env = process.env, seal = sealerFromEnv(env)) {
 if (isMain(import.meta.url)) {
   if (process.argv.includes("keygen")) {
     // `docker compose run --rm gateway server.mjs keygen` -> lines for deploy/.env
-    const { newInternalKeys } = await import("@humid/svc");
+    const { newInternalKeys, newStatementKeys } = await import("@humid/svc");
     const k = newInternalKeys();
     process.stdout.write(`HUMID_INTERNAL_SK=${k.sk}\nHUMID_INTERNAL_PK=${k.pk}\n`);
+    if (process.argv.includes("statements") || !process.argv.includes("internal-only")) {
+      // SRV-30: what the gateway's key alone can't do. Only identity, ledger (core) and keyshare (keys) get the private halves.
+      const c = newStatementKeys(), ks = newStatementKeys();
+      process.stdout.write(`HUMID_CORE_STATEMENT_SK=${c.sk}\nHUMID_CORE_STATEMENT_PK=${c.pk}\nHUMID_KEYS_STATEMENT_SK=${ks.sk}\nHUMID_KEYS_STATEMENT_PK=${ks.pk}\n`);
+    }
   } else createGateway().start();
 }

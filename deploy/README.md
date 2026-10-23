@@ -58,6 +58,7 @@ Android apps.
 |---|---|---|
 | `HUMID_DOMAIN` | (required) | The server's domain. |
 | `HUMID_INTERNAL_SK`, `HUMID_INTERNAL_PK` | (generated) | Key pair the gateway uses to sign calls to the other services. |
+| `HUMID_CORE_STATEMENT_SK`/`_PK`, `HUMID_KEYS_STATEMENT_SK`/`_PK` | (generated) | Statement keys (SRV-30): identity and the ledger (core) and keyshare (keys) sign what the gateway can't make up, so its key alone releases and deletes nothing. The private halves go only to those services, never the gateway. `./setup.sh` adds them to an existing `.env`. |
 | `HUMID_DEVICE_POLICY` | `attested` | Which devices may join and sign in. `attested`: phones whose secure chip proves every live face or fingerprint check. `biometric`: also biometric-only desktops (Touch ID, fingerprint readers), which can't prove it. `demo`: local testing only. No policy accepts a PIN or password. |
 | `HUMID_IOS_APP_ID` | (empty) | `<Apple Team ID>.app.humid.vault`. Needed to accept iPhones (App Attest). `setup.sh` asks for the Team ID. |
 | `HUMID_APP_ATTEST_ENV` | `production` | `development` only for Xcode debug builds. |
@@ -130,10 +131,12 @@ payment off.
 | Setting | What it does |
 |---|---|
 | `deploy/csca/` (mounted at `/csca`) | Country signing certificates (CSCA) for passport and ID chips. Empty = ID anchors off. See [csca/README.md](csca/README.md). |
-| `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. |
+| `HUMID_STATION_ACCOUNTS` | `hid_…` accounts (comma-separated) that run in-person verification stations. `*` (every account) is refused unless `HUMID_ALLOW_ANY_STATION=dev` is also set: local development only. |
 | `HUMID_DURESS_COOLOFF_MS` | How long it must be calm after a duress signal before the owner can lift the lockdown (default 24 h). |
 | `HUMID_TLOG_COSIGNERS` | `name=key,…` independent cosigners of the public log. They run `node tools/tlog-cosign.mjs run https://your-server <name> <keyfile>` on a schedule; `keygen` makes the key. Build the apps with the same value (`HUMID_TLOG_COSIGNERS` when running `build.mjs`): phones count only cosigners built into them, never a list the server sends. |
 | `RECOVERY_DELAY_MS` | The base wait (72 h). Station = ⅓, witnesses = 1×, card + chip = 7⁄3; doubled after a duress signal. |
+| `HUMID_RECOVERY_STARTS_PER_HOUR` | New recovery requests one network (IPv4 address or IPv6 /64) may start per hour, at the gateway (default 20). |
+| `HUMID_RECOVERY_UNBOUND_TTL_MS`, `HUMID_RECOVERY_MAX_UNBOUND` | A recovery request with no proof yet is anonymous: it ends this long after it was made unless a first proof arrives (default 24 h; then the week applies), and at most this many exist at once (default 20,000; past it new ones are refused as busy). |
 
 The edge serves the public log at `/tlog/v1/checkpoint`, `/tlog/v1/consistency`
 and `/tlog/v1/cosign`. See [../docs/CONTINUITY.md](../docs/CONTINUITY.md).

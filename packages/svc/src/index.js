@@ -12,7 +12,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { roleOf, serverTls } from "./pki.js";
 import { sealerFromEnv } from "./seal.js";
 
-export { makeCa, issueRoleCert, serverTls, clientTls, roleOf, roleName, daysLeft, ROLES } from "./pki.js";
+export { makeCa, issueRoleCert, serverTls, clientTls, roleOf, roleName, daysLeft, ROLES, INTERNAL_TLS_GROUPS } from "./pki.js";
 export { sealer, sealerFromEnv, secretFile, writeAtomic, isSealedFile, isSealedText, parseKeyText } from "./seal.js";
 
 /* ---------------- config & logging ---------------- */
@@ -112,6 +112,44 @@ export function verifyAssertion(pkB64, token, audience) {
   if (!(claims.iat <= now + CLOCK_SKEW_MS) || !(claims.exp - claims.iat <= 5 * 60_000)) throw new HttpError(401, "unauthenticated", "Assertion times out of range");
   return claims;
 }
+
+/* ---------------- statements between back-end services (SRV-30) ---------------- */
+// The gateway's internal key says who is calling; it must not be enough to release or destroy
+// a holder's secrets. Facts a releasing service needs and must not take from the gateway are
+// signed by the service that knows them, with a key the gateway never holds:
+//   "device"  identity (core key): this device key and liveness key belong to this account, now
+//   "ledger"  ledger (core key): this entry is in the holder's ledger
+//   "erased"  keyshare (keys key): Check-in destroyed these keys, so these envelopes may go
+// Short-lived, and checked against public keys pinned in each service's settings.
+
+const STATEMENT_PREFIX = "HUMID-STATEMENT-v1.";
+const STATEMENT_KINDS = new Set(["device", "ledger", "erased"]);
+
+export function signStatement(skB64, kind, claims, ttlMs = 60_000) {
+  if (!STATEMENT_KINDS.has(kind)) throw new Error(`Unknown statement kind ${kind}`);
+  const now = Date.now();
+  const payload = b64u(Buffer.from(JSON.stringify({ kind, iat: now, exp: now + ttlMs, ...claims })));
+  const sig = ed25519.sign(new TextEncoder().encode(`${STATEMENT_PREFIX}${kind}.${payload}`), unb64u(skB64));
+  return `${payload}.${b64u(sig)}`;
+}
+
+/** The claims of a statement of `kind` signed by `pkB64`, unexpired; a 403 otherwise. */
+export function verifyStatement(pkB64, token, kind) {
+  const bad = (why) => new HttpError(403, "not_vouched", why);
+  if (typeof token !== "string" || token.length > 8 << 20) throw bad(`Missing ${kind} statement`);
+  const [payload, sig] = token.split(".");
+  let ok = false;
+  try { ok = ed25519.verify(unb64u(sig), new TextEncoder().encode(`${STATEMENT_PREFIX}${kind}.${payload}`), unb64u(pkB64)); } catch {}
+  if (!ok) throw bad(`Bad ${kind} statement`);
+  let c;
+  try { c = JSON.parse(Buffer.from(payload, "base64url").toString()); } catch { throw bad(`Bad ${kind} statement`); }
+  const now = Date.now();
+  if (!c || c.kind !== kind || !(now <= c.exp) || !(c.iat <= now + CLOCK_SKEW_MS)) throw bad(`Stale ${kind} statement`);
+  return c;
+}
+
+/** A key pair for statements (Ed25519, base64url), like newInternalKeys. */
+export const newStatementKeys = () => newInternalKeys();
 
 /**
  * Each service's memory of the assertion ids it has accepted, until they expire. Bounded: if
@@ -288,7 +326,10 @@ export function createService({ name, port, routes, bodyLimit = 1 << 20, verify,
   };
   // Calls from another machine (server 3.0, split roles): mutual TLS with the server's own CA
   // (pki.js), and only the roles in tls.allow (the gateway's humid-front) may connect at all.
-  const server = tls ? https.createServer(tls, onRequest) : http.createServer(onRequest);
+  // Assertions can carry the holder's own proof and the statements that vouch for it (SRV-30):
+  // tens of KiB, past Node's 16 KiB default for headers. Only the gateway can send them.
+  const serverOpts = { maxHeaderSize: 128 * 1024 };
+  const server = tls ? https.createServer({ ...tls, ...serverOpts }, onRequest) : http.createServer(serverOpts, onRequest);
   if (tls) {
     const allow = tls.allow || ["front"];
     server.on("secureConnection", (sock) => {

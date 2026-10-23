@@ -10,13 +10,24 @@ if [ -z "$domain" ]; then read -rp "Domain for this server (e.g. vault.humidsecu
 
 if [ ! -f .env ]; then
   echo "Generating internal service keys…"
-  HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x docker compose build gateway >/dev/null
-  keys="$(HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x docker compose run --rm --no-deps gateway server.mjs keygen)"
+  X="HUMID_CORE_STATEMENT_PK=x HUMID_KEYS_STATEMENT_PK=x HUMID_CORE_STATEMENT_SK=x HUMID_KEYS_STATEMENT_SK=x"
+  env HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x $X docker compose build gateway >/dev/null
+  keys="$(env HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x $X docker compose run --rm --no-deps gateway server.mjs keygen)"
   umask 077
   team="${HUMID_APPLE_TEAM_ID:-}"
   if [ -z "$team" ]; then read -rp "Apple Developer Team ID for the iPhone app (10 characters; Enter to skip iPhones for now): " team; fi
   { echo "HUMID_DOMAIN=$domain"; echo "$keys"; [ -n "$team" ] && echo "HUMID_IOS_APP_ID=$team.app.humid.vault"; } > .env
   echo "Wrote deploy/.env (keep it secret; it is not in git)."
+fi
+
+# 4.1.x (SRV-30): statement keys, so the gateway's internal key alone can't release or delete
+# anything. Added to an existing .env once; the gateway never gets the private halves.
+if ! grep -q '^HUMID_CORE_STATEMENT_PK=' .env; then
+  echo "Adding statement keys…"
+  X="HUMID_CORE_STATEMENT_PK=x HUMID_KEYS_STATEMENT_PK=x HUMID_CORE_STATEMENT_SK=x HUMID_KEYS_STATEMENT_SK=x"
+  st="$(env HUMID_DOMAIN="$domain" HUMID_INTERNAL_SK=x HUMID_INTERNAL_PK=x $X docker compose run --rm --no-deps gateway server.mjs keygen statements | grep '_STATEMENT_')"
+  umask 077
+  echo "$st" >> .env
 fi
 
 docker compose up -d --build
