@@ -11,6 +11,7 @@
 
 import { fromB64, toB64 } from "@humid/codec";
 import { GATE_CONTRACT, ASSURANCE, CANCELLED, interruptRecord } from "../contract.js";
+import { lowS } from "../lows.js";
 
 /** What the native side accepts (it checks too): one line, at most 120 characters. */
 const promptText = (s, fallback) => {
@@ -38,7 +39,7 @@ function live(l) {
   const a = l.attestation;
   return {
     pub: l.pub ? fromB64(l.pub) : null,
-    sig: fromB64(l.sig),
+    sig: lowS(fromB64(l.sig)), // the secure chip may return either form; servers take only low-S
     ...(a ? { attestation: a.kind === "android-key" ? { kind: a.kind, chain: a.chain.map(fromB64) } : { kind: a.kind, object: fromB64(a.object) } } : {}),
   };
 }

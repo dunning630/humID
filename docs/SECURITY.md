@@ -421,6 +421,13 @@ A missing or wrong signature is refused and logged in the holder's activity
 as an access denied, so a bot holding the account's keys gets nowhere and
 leaves a trace.
 
+Each signature has one accepted form: the server takes only low-S ECDSA
+(`s ≤ n/2`), so a signature seen on the wire can't be rewritten into a second
+valid one with a different proof hash. The app normalises what the chip
+returns. Checks of other people's signatures (ID documents, mDLs, SD-JWT
+credentials, security keys) follow their own standards, which allow either
+form; they trust what was signed, never the signature's bytes.
+
 **Device policy** (`HUMID_DEVICE_POLICY` on the gateway): `attested`
 (default) accepts only proven phones; `biometric` also accepts
 biometric-only desktops without proof; `demo` is for local development.
