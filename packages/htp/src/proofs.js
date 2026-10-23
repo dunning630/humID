@@ -4,7 +4,7 @@
 // Every proof is bound to this session's transcript hash, so it cannot be
 // replayed into another session; step-up proofs are also bound to one request.
 
-import { ml_dsa87, sha3_256, concat, lp, u64, utf8, toHex, fromHex } from "./primitives.js";
+import { ml_dsa87, sha3_256, concat, lp, u64, utf8, toHex, fromHex, unb64u } from "./primitives.js";
 
 export const STEP_UP_MAX_AGE_MS = 60 * 1000;
 /** A step-up approval the server hands out is good for this long, and for one request. */
@@ -73,6 +73,35 @@ export const sign = (msg, dsaSk) => ml_dsa87.sign(msg, dsaSk);
 
 export function verify(sig, msg, dsaPk) {
   try { return ml_dsa87.verify(sig, msg, dsaPk); } catch { return false; }
+}
+
+/**
+ * JSON with object keys in sorted order at every level, so the server and the app
+ * sign and check the same bytes for the same value (the policy hint below).
+ */
+export function canonicalJson(v) {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
+  return JSON.stringify(v ?? null);
+}
+
+/**
+ * The server's policy hint (GET /htp/v1/keys), signed with its static ML-DSA-87 key
+ * (CRYPTO-07, PC-13). The key id is in the message, so a signature made for one server
+ * key set never checks under another; `at` lets the app refuse a very old one.
+ */
+export const policyMessage = (kid, policy, at) =>
+  concat(utf8("HTP/1 policy"), lp(kid, utf8(canonicalJson(policy)), u64(at)));
+
+/** How old a signed policy the app still believes. The gateway re-signs it every hour. */
+export const POLICY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** True when `sig` ({ at, sig }) is the server's signature over exactly this policy, and recent. */
+export function verifyPolicy(dsaPk, kid, policy, sig, now = Date.now()) {
+  if (!policy || typeof policy !== "object" || !sig || typeof sig !== "object") return false;
+  const at = Number(sig.at);
+  if (!Number.isSafeInteger(at) || at < 0 || Math.abs(now - at) > POLICY_MAX_AGE_MS) return false;
+  try { return ml_dsa87.verify(unb64u(String(sig.sig)), policyMessage(kid, policy, at), dsaPk); } catch { return false; }
 }
 
 /** Short hash of a proof, recorded in the ledger as evidence of the interrupt. */

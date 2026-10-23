@@ -16,16 +16,23 @@ import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline, markPicking } from "./session.js";
 import { openChip } from "./nfc.js";
 import { mark } from "./perf.js";
+import { PINNED_KID, SIM } from "./config.js";
+
+/** A build pinned to its server's key id (every published build; never the simulation). */
+const pinnedRelease = () => !!PINNED_KID && !SIM;
 
 /* global __HUMID_ALLOW_DEMO__ */
 
 /**
- * The split-keys policy hint arrives in plain JSON before any session exists, so a proxy
- * could strip it. Remember the first time a vault says it splits keys, in the identity
- * record, and refuse to seal unsplit from then on.
+ * The split-keys policy hint is signed by the server (CRYPTO-07), but an unsigned or stripped
+ * hint simply reads as "no split keys". Remember the first time a vault says it splits keys,
+ * in the identity record, and refuse to seal unsplit from then on. A release build pinned to
+ * its server knows that server splits keys, so it starts out as if it had seen the hint
+ * (VAULT-04): a hostile network on the very first run can't make it seal unsplit either.
  */
-async function splitKeysRatchet(id) {
+export async function splitKeysRatchet(id) {
   const hint = !!S.server.value?.policy?.splitKeys;
+  if (!hint && pinnedRelease()) throw Object.assign(new Error("Your vault didn't offer split keys this time, so nothing was sealed. Try again on a connection you trust."), { code: "split_keys_missing" });
   if (hint && !id.splitKeysSeen) {
     const next = { ...id, splitKeysSeen: true };
     try { await R.store.putIdentity(next); S.identity.value = next; } catch { /* remembered next time */ }

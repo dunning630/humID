@@ -5,6 +5,7 @@ import { serverRespond, keyId, fingerprint, generateServerKeys } from "./handsha
 import { sealFrame, openFrame, parseHeader, DIR, FRAME_SKEW_MS } from "./frame.js";
 import { ReplayWindow } from "./replay.js";
 import { ml_dsa87, b64u, unb64u, toHex, wipe } from "./primitives.js";
+import { policyMessage, canonicalJson } from "./proofs.js";
 
 export class HtpServerError extends Error {
   constructor(status, code, message) {
@@ -16,6 +17,8 @@ export class HtpServerError extends Error {
 
 export const SESSION_IDLE_MS = 15 * 60 * 1000;
 export const SESSION_MAX_MS = 8 * 60 * 60 * 1000;
+/** A signed policy hint is re-signed this often (one ML-DSA-87 signature, not one per request). */
+export const POLICY_RESIGN_MS = 60 * 60 * 1000;
 
 /** Create a full static key set (KEM + X25519 for the handshake, ML-DSA-87 for signed statements). */
 export function createStatics() {
@@ -46,6 +49,21 @@ export class HtpServer {
   publicKeys() {
     const s = this.statics;
     return { v: 1, kid: this.kid, fingerprint: this.fingerprint, kem: b64u(s.kemPk), x25519: b64u(s.xPk), dsa: b64u(s.dsaPk) };
+  }
+
+  /**
+   * The policy hint with the server's ML-DSA-87 signature, for GET /htp/v1/keys:
+   * { policy, policySig: { at, sig } }. Signed once and re-used until the policy
+   * changes or the signature is an hour old, so a public route costs no signing.
+   */
+  signedPolicy(policy, now = Date.now()) {
+    const text = canonicalJson(policy);
+    const c = this.policyCache;
+    if (!c || c.text !== text || now - c.at > POLICY_RESIGN_MS || now < c.at) {
+      const sig = ml_dsa87.sign(policyMessage(this.statics.kid, policy, now), this.statics.dsaSk);
+      this.policyCache = { text, at: now, sig: b64u(sig) };
+    }
+    return { policy, policySig: { at: this.policyCache.at, sig: this.policyCache.sig } };
   }
 
   hello(wire, now = Date.now()) {

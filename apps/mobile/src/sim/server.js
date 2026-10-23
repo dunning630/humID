@@ -621,7 +621,7 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
   async function fetchFn(input, init = {}) {
     const path = new URL(String(input), "sim://humid").pathname;
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 90)); // a little network latency
-    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), policy: { devicePolicy: platformPolicy, registration: "pass", splitKeys: true } });
+    if (path.endsWith("/htp/v1/keys")) return jsonRes(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy: platformPolicy, registration: "pass", splitKeys: true }) });
     if (path.endsWith("/htp/v1/hello")) {
       try { return jsonRes(200, htp.hello(JSON.parse(init.body))); }
       catch (e) { return jsonRes(e.status || 400, { error: e.code || "handshake_failed", message: e.message }); }

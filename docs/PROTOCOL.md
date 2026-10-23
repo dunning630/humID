@@ -59,6 +59,27 @@ The app accepts a server only if `kid` matches its pin:
 A changed key is never accepted silently. The client raises
 `server_identity_changed` and the app stops on a warning screen.
 
+### The signed policy hint
+
+`GET /htp/v1/keys` also carries the server's **policy hint** (device policy,
+registration, split keys, Check-in, messaging, the access-code shop link) for
+the app's screens. The gateway enforces policy on every request either way;
+the hint only decides what the app offers. It is signed with the server's
+ML-DSA-87 key, the one `kid` binds:
+
+```
+policySig = { at, sig: ML-DSA-87.Sign(dsaSk, "HTP/1 policy" || lp(kid, canonical JSON(policy), u64(at))) }
+```
+
+Canonical JSON sorts object keys at every level. The gateway re-signs once an
+hour or when the policy changes. The app believes a hint only when the
+signature checks under the pinned server's `dsaPk` and `at` is under 7 days
+old. Anything else (no signature, an altered policy, another server's
+signature) is ignored and the strict defaults apply: attested devices only,
+no shop link, no split keys, no Check-in, no messaging. A build pinned to its
+server also refuses to seal a document unsplit when the hint says otherwise,
+from its very first run.
+
 ## Handshake
 
 ```

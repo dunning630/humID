@@ -4,7 +4,7 @@
 
 import { clientHello, clientFinish, keyId, fingerprint } from "./handshake.js";
 import { sealFrame, openFrame, parseHeader, DIR, MEDIA_TYPE } from "./frame.js";
-import { stepUpMessage, liveMessage, actionBytes } from "./proofs.js";
+import { stepUpMessage, liveMessage, actionBytes, verifyPolicy } from "./proofs.js";
 import { unb64u, toHex, equal, wipe, utf8, fromUtf8 } from "./primitives.js";
 
 export class HtpError extends Error {
@@ -61,22 +61,26 @@ export class HtpClient {
     if (this.pinnedKid && kid !== this.pinnedKid) {
       throw new HtpError("server_identity_changed", "This server's identity does not match the one this app trusts. Refusing to connect.");
     }
-    // policy is a UI hint (e.g. whether demo identities are accepted); the server enforces it.
-    // A hint for the app's UI only; the gateway enforces the policy on every sign-in.
-    const devicePolicy = ["attested", "biometric", "demo"].includes(j.policy?.devicePolicy) ? j.policy.devicePolicy : "attested";
+    // The policy hint is believed only with the server's signature under the key this kid
+    // binds (CRYPTO-07, PC-13): a proxy that ends TLS can't point "Buy an access code"
+    // elsewhere, turn split keys off, or hide features. Unsigned, altered or stale, it's
+    // ignored and the strict defaults below apply. The gateway enforces policy either way.
+    const policySigned = verifyPolicy(keys.dsaPk, keyId(keys.kemPk, keys.xPk, keys.dsaPk), j.policy, j.policySig);
+    const p = policySigned ? j.policy : {};
+    const devicePolicy = ["attested", "biometric", "demo"].includes(p.devicePolicy) ? p.devicePolicy : "attested";
     // Older servers don't say: they had no payment step, so "open".
-    const registration = j.policy?.registration === "pass" ? "pass" : "open";
-    const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(j.policy?.passBuyUrl || "")) ? j.policy.passBuyUrl : null;
+    const registration = p.registration === "pass" ? "pass" : "open";
+    const passBuyUrl = /^https:\/\/[^\s"<>]+$/.test(String(p.passBuyUrl || "")) ? p.passBuyUrl : null;
     // Split keys: only a server with a keyshare service keeps a document's second key. An older one would drop it.
-    const splitKeys = j.policy?.splitKeys === true;
+    const splitKeys = p.splitKeys === true;
     // Check-in (docs/CHECKIN.md): the windows (hours) and grace periods (minutes) the server allows; null if it doesn't offer it.
     const ints = (a, max) => (Array.isArray(a) && a.length > 0 && a.length <= 12 && a.every((n) => Number.isInteger(n) && n >= 0 && n <= max) ? [...a] : null);
-    const ck = j.policy?.checkin;
+    const ck = p.checkin;
     const checkin = ck && ints(ck.windowsH, 168) && ints(ck.graceMin, 1440) ? { windowsH: ints(ck.windowsH, 168), graceMin: ints(ck.graceMin, 1440) } : null;
     // 4.0: whether this server runs a messaging relay and stamp issuer (shows the Messages tab).
-    const spc = Number(j.policy?.messaging?.stampsPerCheck);
-    const messaging = j.policy?.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
-    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging } };
+    const spc = Number(p.messaging?.stampsPerCheck);
+    const messaging = p.messaging && Number.isInteger(spc) && spc >= 1 && spc <= 4 ? { stampsPerCheck: spc } : null;
+    this.server = { ...keys, kid, fingerprint: fingerprint(keyId(keys.kemPk, keys.xPk, keys.dsaPk)), policy: { devicePolicy, registration, passBuyUrl, splitKeys, checkin, messaging }, policySigned };
     return this.server;
   }
 

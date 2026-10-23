@@ -209,3 +209,45 @@ test("CRYPTO-06: a step-up ticket sends exactly one frame, so its seq (the GCM n
   const fresh = await client.ticket("PUT", "/recovery/card");
   assert.equal((await client.call("PUT", "/recovery/card", { body: {}, stepUp: { ticket: fresh, sign: stepUp.sign } })).status, 200);
 });
+
+/* ---------------- the signed policy hint (CRYPTO-07, PC-13) ---------------- */
+
+const keysWith = (server, extra) => async () => Response.json({ ...server.publicKeys(), ...extra });
+const POLICY = { devicePolicy: "attested", registration: "pass", splitKeys: true, passBuyUrl: "https://humidsecure.com/access", messaging: { stampsPerCheck: 2 } };
+
+test("CRYPTO-07: the policy hint is believed only with the pinned server's signature", async () => {
+  const server = new HtpServer(createStatics());
+  const signed = server.signedPolicy(POLICY);
+  const good = await new HtpClient({ fetch: keysWith(server, signed), pinnedKid: server.kid }).serverKeys();
+  assert.equal(good.policySigned, true);
+  assert.equal(good.policy.splitKeys, true);
+  assert.equal(good.policy.passBuyUrl, POLICY.passBuyUrl);
+  assert.deepEqual(good.policy.messaging, { stampsPerCheck: 2 });
+
+  // The PoC: a TLS-ending proxy rewrites the policy and leaves the keys alone.
+  const rewritten = { ...signed, policy: { ...POLICY, splitKeys: false, passBuyUrl: "https://humid-access.example/buy" } };
+  const bad = await new HtpClient({ fetch: keysWith(server, rewritten), pinnedKid: server.kid }).serverKeys();
+  assert.equal(bad.policySigned, false);
+  assert.equal(bad.policy.passBuyUrl, null, "a rewritten buy link is never shown");
+  assert.equal(bad.policy.splitKeys, false);
+  assert.equal(bad.policy.devicePolicy, "attested", "strict defaults");
+  assert.equal(bad.policy.messaging, null);
+
+  // Stripped signature, a signature from another server's key, or a very old one: all ignored.
+  for (const extra of [
+    { policy: POLICY },
+    new HtpServer(createStatics()).signedPolicy(POLICY),
+    { policy: POLICY, policySig: { at: Date.now() - 8 * 24 * 3600_000, sig: signed.policySig.sig } },
+  ]) {
+    const s = await new HtpClient({ fetch: keysWith(server, extra), pinnedKid: server.kid }).serverKeys();
+    assert.equal(s.policySigned, false);
+    assert.equal(s.policy.passBuyUrl, null);
+  }
+});
+
+test("the server signs its policy once, not once per request, and re-signs when it changes", () => {
+  const server = new HtpServer(createStatics());
+  const a = server.signedPolicy(POLICY, 1_000);
+  assert.equal(server.signedPolicy({ ...POLICY }, 2_000).policySig.sig, a.policySig.sig);
+  assert.notEqual(server.signedPolicy({ ...POLICY, splitKeys: false }, 3_000).policySig.sig, a.policySig.sig);
+});

@@ -1118,8 +1118,9 @@ export function createGateway({
 
   const routes = [
     // Never cached: a stale key bundle would hide a server change. `policy` is a hint for the app's
-    // UI; the gateway enforces it on every sign-in and step-up.
-    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), policy: { devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) } }), { public: true }],
+    // UI; the gateway enforces it on every sign-in and step-up. It's signed with the server's
+    // ML-DSA-87 key (CRYPTO-07), so the app believes it only from the server it pinned.
+    ["GET", "/htp/v1/keys", () => json(200, { ...htp.publicKeys(), ...htp.signedPolicy({ devicePolicy, registration, splitKeys: true, ...(MESSAGING ? { messaging: { stampsPerCheck: 2 } } : {}), ...(passBuyUrl ? { passBuyUrl } : {}), ...(CHECKIN ? { checkin: CHECKIN_POLICY } : {}) }) }), { public: true }],
     ["POST", "/htp/v1/hello", ({ req, body }) => {
       if (!helloLimit.take(clientIp(req))) return json(429, { error: "rate_limited", message: "Too many handshakes" });
       try { return json(200, htp.hello(parseJson(body))); }
