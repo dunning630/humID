@@ -169,6 +169,6 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | F-08/F-09 | Android wrapping key is valid 3 s after any biometric, not per use; no runtime root detection | ⬜ |
 | SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
 | SC-06 | Android Maven dependencies (incl. `play-services-mlkit-document-scanner`) pinned but not checksum-verified: no Gradle dependency verification | ⬜ |
-| SRV-07 / F-04 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ⬜ |
+| SRV-07 / F-04 / SRV-31 | Per-IP limits bypassable with spoofed `CF-Connecting-IP` / `X-Forwarded-For` | ✅ Windows edge: no tunnel header is believed unless `HUMID_TRUST_FORWARDED` names the tunnel (`cloudflare` for Cloudflare Tunnel, set by `humid expose`; default `off`). Behind Tailscale Funnel the visitor's address isn't knowable, so all visitors share one bucket (`tests/e2e/windows-edge-forwarded.test.js`) |
 | SEC-S-01 / PC-08 | Internal gateway→service assertions not bound to the request (replayable, a read became a delete) | ✅ each assertion signs method, target and body hash and is accepted once (`signRequestAssertion`, `createService`) |
 | Dep | `@noble/post-quantum` 0.7.1 is pre-1.0 and not independently audited; HTP, blind-RSA pass and key-share code are in-house | ⬜ independent review |
