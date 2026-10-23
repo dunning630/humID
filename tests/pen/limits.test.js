@@ -72,6 +72,19 @@ test("login: unknown account and wrong key return the same error", { todo: "user
   assert.equal(unknown, wrong, `an attacker can tell accounts apart: unknown → ${unknown}, wrong key → ${wrong}`);
 });
 
+test("a replayed hello: 409 replay, and the gateway does none of the handshake work again (CRYPTO-04)", async () => {
+  const j = await (await fetch(`${stack.baseUrl}/htp/v1/keys`)).json();
+  const { wire } = clientHello({ kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) });
+  const body = JSON.stringify(wire);
+  assert.equal((await hello(stack.baseUrl, body)).status, 200);
+  const sessions = stack.gateway.htp.sessions.size;
+  const again = await hello(stack.baseUrl, body);
+  assert.equal(again.status, 409);
+  assert.equal(again.error, "replay");
+  assertNoLeak(assert, again.text);
+  assert.equal(stack.gateway.htp.sessions.size, sessions, "no second session");
+});
+
 test("handshake flood from one IP: at most 30 succeed per minute, the rest are 429 rate_limited", async () => {
   const j = await (await fetch(`${stack.baseUrl}/htp/v1/keys`)).json();
   const server = { kemPk: unb64u(j.kem), xPk: unb64u(j.x25519), dsaPk: unb64u(j.dsa) };
