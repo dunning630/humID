@@ -373,6 +373,26 @@ try {
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor();
   step("PC-17: hidden mid-check locks at once; the document never opens");
 
+  // APP-06: the duress unlock for keyboards and screen readers is named for what it does,
+  // drawn when focused, and behind a disclosure, off the straight Tab path
+  await page.evaluate(() => document.activeElement?.blur());
+  const focused = () => page.evaluate(() => { const a = document.activeElement, r = a.getBoundingClientRect(); return { name: (a.innerText || a.getAttribute("aria-label") || "").trim(), w: r.width, h: r.height }; });
+  const order = [];
+  for (let i = 0; i < 4; i++) { await page.keyboard.press("Tab"); order.push(await focused()); }
+  assert.ok(!order.some((f) => /duress|safe mode/i.test(f.name)), `no duress unlock on the straight Tab path: ${order.map((f) => f.name).join(" › ")}`);
+  const more = order.find((f) => f.name === "More ways to unlock");
+  assert.ok(more, "the disclosure is reachable");
+  assert.ok(more.w > 40 && more.h >= 40, `and drawn while focused (${Math.round(more.w)}×${Math.round(more.h)})`);
+  while ((await focused()).name !== "More ways to unlock") await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Enter");
+  assert.equal((await focused()).name, "More ways to unlock", "opening it doesn't move focus onto the duress unlock");
+  await page.keyboard.press("Tab");
+  const d = await focused();
+  assert.match(d.name, /^Unlock with your duress gesture \(shows only decoys, locks your vault\)$/);
+  assert.ok(d.w > 40 && d.h >= 40, "drawn while focused");
+  assert.equal(await page.getByText(/safe mode/i).count(), 0);
+  step("Lock: the duress unlock is named, drawn when focused, behind More ways to unlock");
+
   await page.reload();
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });
   assert.equal(await html("theme"), "light", "the theme is there before unlocking");

@@ -3,8 +3,10 @@
 // holding Unlock for three seconds — because which one (if any) is the duress gesture
 // is sealed and only known after the check. Nothing on screen changes either way.
 // 3.0: a tap on the mark responds at once; a plain click (screen readers, switch control)
-// unlocks; "Unlock in safe mode" is reachable without any gesture. The taps are recognised by
-// core/gesture.js, the same code Duress Practice uses, and the unlock waits for its window.
+// unlocks. The taps are recognised by core/gesture.js, the same code Duress Practice uses,
+// and the unlock waits for its window. For people who can't make the gestures, the duress
+// unlock is a control too: named for what it does, drawn when focused, and behind "More ways
+// to unlock", so the straight Tab path never reaches it (APP-06).
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Mark, Wordmark } from "../brand/mark.jsx";
 import { Icon } from "../brand/icons.jsx";
@@ -52,6 +54,20 @@ function useUnlockGestures() {
   return { onMark, button, pressed };
 }
 
+/** The duress unlock for screen readers, switch control and keyboards. Not drawn until focused. */
+function MoreWays() {
+  const [open, setOpen] = useState(false);
+  // Focus stays on the disclosure: Enter twice must not be a duress unlock.
+  return (
+    <>
+      <button class="sr" aria-expanded={open} aria-controls="lock-more" onClick={() => setOpen(!open)}>More ways to unlock</button>
+      <div id="lock-more" hidden={!open}>
+        <button class="sr" onClick={() => unlock(true)}>Unlock with your duress gesture (shows only decoys, locks your vault)</button>
+      </div>
+    </>
+  );
+}
+
 export function Lock() {
   const id = S.identity.value;
   const [confirm, setConfirm] = useState(false);
@@ -89,9 +105,9 @@ export function Lock() {
       </div>
       <div class="foot stack">
         <button class="btn primary lg block" {...g.button}><Icon name="fingerprint" />Unlock</button>
-        {/* For screen readers and switch control, which can't make the gestures: the same
-            choice, spoken, never drawn. "Safe mode" means the duress gesture, whichever it is. */}
-        <button class="sr" onClick={() => unlock(true)}>Unlock in safe mode</button>
+        {/* For screen readers, switch control and keyboards, which can't make the gestures:
+            the same choice, spoken, drawn only when focused, never on the straight Tab path. */}
+        <MoreWays />
         {down && S.offlineReady.value && <p class="fine center" role="status">No connection. You can still unlock to see your vault, read only.</p>}
         <p class="fine center">No password exists. Only your live face or fingerprint opens it.{id?.mode === "demo" ? " (Demo identity · no hardware sensor.)" : ""}{id?.server ? ` · ${serverHost(id.server.url)}` : ""}</p>
       </div>
