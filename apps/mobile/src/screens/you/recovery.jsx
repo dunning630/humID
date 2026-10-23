@@ -183,7 +183,7 @@ function CardInfoSheet({ onClose }) {
       <p class="t2 small">A code you write down or print and keep away from your ID. With your witnesses, your ID chip or a security key it brings your vault back on a new phone. HumID stores only a piece locked by the card, which it can't open.</p>
       {has && rec.card.scheme !== "quorum" && <Banner tone="amber" icon="info" title="This is an older card" text="It works on its own after 72 hours. A new recovery card replaces it and always needs a second proof." />}
       <div class="actions">
-        <button class="btn primary block" onClick={async () => { if (await makeNewCard()) onClose(); }}><Icon name="fingerprint" />{has ? "Make a new card (the old one stops working)" : "Make my card"}</button>
+        <button class="btn primary block" onClick={async () => { if (await makeNewCard()) onClose(); }}><Icon name="fingerprint" />{has ? "Make a new card (the old one stops counting on your server)" : "Make my card"}</button>
         {has && <button class="btn danger block" onClick={async () => { if (await removeCard()) onClose(); }}><Icon name="fingerprint" />Remove my card</button>}
       </div>
     </Sheet>

@@ -23,7 +23,9 @@ Each holder chooses at setup how far that chain may reach
 
 - **Only my own devices (holder-only).** Layers 1 and 2 only. No recovery
   part exists anywhere, and the servers refuse to store or use one. The
-  choice is signed by the account key, so a server can't switch it on.
+  choice is signed by the account key, so a server can't forge a switch to
+  hardened; it can at most show a phone that hasn't seen this choice an
+  older one the holder made ([RECOVERY.md](RECOVERY.md#when-a-phone-makes-recovery-pieces)).
   Lose every device and the vault is gone.
 - **A safe way back in (hardened, recommended).** Layers 1 to 5: two
   different proofs, a wait set by the evidence, and a veto from any
