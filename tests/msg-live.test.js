@@ -347,6 +347,87 @@ test("H1: a future-dated message isn't live; freshness counts from when it came 
   assert.equal(M.liveState({ ownAt: T0 + 3 * DAY, peerAt: b.peerLiveAt, now: T0 + 3 * DAY }).live, false);
 });
 
+/* ---------- delete for both and the outbox are atomic (precert PC-28) ---------- */
+
+/** Like the app's stamper and the gateway: one check, at most 2 blinded values; can be made to fail. */
+const serverLike = ({ fail = null } = {}) => {
+  const calls = { n: 0 };
+  const many = async (commits) => {
+    calls.n++;
+    if (fail) throw new M.MsgError(fail, "the server said no");
+    if (commits.length > 2) throw new M.MsgError("bad_request", "One check approves 1 or 2 stamps");
+    return commits.map((c) => { const { blinded, draft } = M.blindStamp(stampKeys, c); return M.finalizeStamp(stampKeys, draft, blindSign(issuer, blinded)); });
+  };
+  return Object.assign(async (c) => (await many([c]))[0], { many, calls });
+};
+
+test("PC-28: a delete for both whose check fails erases nothing, and can be tried again", async () => {
+  const { a, b, relay } = await meetStrict();
+  const sent = await a.send("something I regret", { now: T0 + MIN, stamper });
+  relay.put(sent.box, sent.wire, { tag: sent.retractTag });
+  await code(a.forget({ forBoth: true, now: T0 + 2 * MIN, stamper: serverLike({ fail: "rate_limited" }) }), "rate_limited");
+  assert.equal(a.status, "connected", "the conversation is still here");
+  assert.deepEqual(a.messages(T0 + 2 * MIN).map((m) => m.text), ["something I regret"]);
+  // the retry works, and the unsend tokens come back
+  const r = await a.forget({ forBoth: true, now: T0 + 3 * MIN, stamper: serverLike() });
+  assert.equal(r.done, true);
+  assert.equal(r.unsend.length, 1);
+  assert.equal(relay.retract(r.unsend[0].box, r.unsend[0].retract), true, "never delivered: unsent");
+  for (const s of r.send) relay.put(s.box, s.wire);
+  await deliver(relay, b, T0 + 3 * MIN);
+  assert.equal(b.status, "closed");
+});
+
+test("PC-28: over 500 recallable messages, delete for both goes in two checks within the 2-stamp cap", async () => {
+  const { a, b } = await meetStrict();
+  const relay = M.memoryRelay({ now: () => T0, depositsPerMinute: 10_000, maxPerBox: 1000, maxBoxBytes: 1 << 30 });
+  const lax = new M.Conversation(a.session, a.store, { requireLive: false });
+  for (let i = 0; i < 501; i++) {
+    const r = await lax.send(`m${i}`, { now: T0 + MIN });
+    relay.put(r.box, r.wire);
+    await lax.posted([r.id]);
+  }
+  const strict = new M.Conversation(lax.session, lax.store, { requireLive: true });
+  assert.deepEqual(strict.forgetPlan({ forBoth: true, now: T0 + 2 * MIN }), { stamps: 3, steps: 2 });
+  const st = serverLike();
+  const one = await strict.forget({ forBoth: true, now: T0 + 2 * MIN, stamper: st });
+  assert.equal(one.done, false, "first step: two deletes, nothing erased yet");
+  assert.equal(one.left, 1);
+  assert.equal(one.send.length, 2);
+  assert.equal(strict.status, "connected");
+  assert.equal(strict.messages(T0 + 2 * MIN).length, 0, "the deleted messages are gone from this phone");
+  assert.equal(strict.pending().length, 2, "step one's deletes are in the outbox until posted");
+  for (const s of one.send) relay.put(s.box, s.wire);
+  await strict.posted(one.send.map((s) => s.id));
+  const two = await strict.forget({ forBoth: true, now: T0 + 3 * MIN, stamper: serverLike() });
+  assert.equal(two.done, true);
+  assert.deepEqual(two.send.length, 1, "the end");
+  assert.equal(strict.status, "erased");
+  assert.equal(st.calls.n, 1, "one check per step, never more than 2 stamps");
+  assert.equal(two.pending.length, 0);
+  for (const s of two.send) relay.put(s.box, s.wire);
+  await deliver(relay, b, T0 + 3 * MIN);
+  assert.equal(b.status, "closed");
+  assert.equal(b.messages(T0 + 3 * MIN).filter((m) => m.dir === "in").length, 0, "every one of them erased on the contact's phone");
+});
+
+test("PC-28: what hasn't reached the relay is sealed with the conversation; a crash after the save loses nothing", async () => {
+  const { a, b, relay } = await meetStrict();
+  let saved = null;
+  const c = new M.Conversation(a.session, a.store, { requireLive: true, persist: async (x) => { saved = x; } });
+  const sent = await c.send("don't lose me", { now: T0 + MIN, stamper });
+  // the app crashes here, before posting: reopen from the save
+  const back = await M.Conversation.open(saved.key, saved.blob, { convId: c.session.convId, requireLive: true });
+  const [p] = back.pending();
+  assert.equal(p.id, sent.id);
+  assert.deepEqual(p.wire, sent.wire, "the exact wire, not a re-encryption: no ratchet gap");
+  relay.put(p.box, p.wire, { tag: p.retractTag });
+  await back.posted([p.id]);
+  assert.equal(back.pending().length, 0);
+  const [r] = await deliver(relay, b, T0 + MIN);
+  assert.equal(r.text, "don't lose me");
+});
+
 /* ---------- stamps bound to their epoch (security review MSG-01) ---------- */
 
 /**

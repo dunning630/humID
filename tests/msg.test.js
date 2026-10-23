@@ -755,10 +755,12 @@ test("forget: the conversation and every key gone from this phone; for both, you
 
 test("forget for me only: nothing is sent; the contact's phone is untouched", async () => {
   const { A, B, relay } = await conv();
-  postTo(relay, await A.send("still on B's phone", { now: T0 }));
+  const sent = await A.send("still on B's phone", { now: T0 });
+  postTo(relay, sent);
+  await A.posted([sent.id]);
   await deliver(relay, B);
   const out = await A.forget({ now: T0 });
-  assert.deepEqual(out, { send: [], unsend: [] });
+  assert.deepEqual(out, { done: true, send: [], unsend: [], pending: [], left: 0 });
   assert.equal(B.messages(T0).length, 1);
   assert.equal(B.status, "connected");
 });
