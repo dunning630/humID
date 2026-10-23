@@ -194,7 +194,11 @@ seconds, or tap the mark three times) unlocks exactly as usual. Then:
 
 - **Decoy view.** The app shows only documents you marked "Show in decoy
   view" (a flag inside the encrypted index), a calm Security screen (duress
-  off, no alerts) and an Activity list limited to those documents.
+  off, no alerts) and an Activity list limited to those documents. Each index
+  entry is sealed to its own item and carries a rev that only grows; the phone
+  remembers the highest rev it has seen for each item (sealed on the device),
+  so the vault can't bring back a flag you turned off by serving an older
+  entry. An older entry shows as "Changed on the server" and is not believed.
 - **Silent lockdown.** Every sign-in carries a duress flag, signed by the
   device key that only the live check releases (the flag is decided inside
   that check, from the sealed setting). The sign-in has the same size and

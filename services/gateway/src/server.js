@@ -166,7 +166,7 @@ const CHECKIN_GRACES = CHECKIN_POLICY.graceMin.map((m) => m * 60_000);
 /** What a locked-down account sees for a sensitive change: an ordinary, temporary failure. */
 const busy = () => new HttpError(503, "busy", "HumID is busy right now. Try again in a few minutes.");
 
-const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index"];
+const FORWARD_REQ_HEADERS = ["content-type", "x-humid-index", "x-humid-object-id"];
 const FORWARD_RES_HEADERS = ["content-type", "x-humid-size"];
 const SHARE_HEADER = "x-humid-share"; // a split document's key: app ⇄ gateway ⇄ keyshare only, never the vault
 

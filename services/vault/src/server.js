@@ -18,6 +18,8 @@ import { isEnvelope, MEDIA_TYPE } from "@humid/codec";
 import { sha3_256, toHex, STEP_UP_MAX_AGE_MS, sealLiveMessage } from "@humid/htp";
 import { verifyLiveSig } from "@humid/attest";
 
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 export function createVault({
   /** Mutual TLS when the gateway calls from another machine (server 3.0): HUMID_TLS_* files. */
   tls = serviceTlsFromEnv(),
@@ -115,7 +117,11 @@ export function createVault({
       const u = usage(owner);
       if (u.b + body.length > quotaBytes) throw new HttpError(507, "quota_exceeded", "Your vault is full");
       const now = new Date().toISOString();
-      const id = randomUUID();
+      // The app picks the id (CRYPTO-05): its encrypted index entry is sealed to it before upload.
+      const asked = headers["x-humid-object-id"];
+      if (asked != null && !UUID_V4.test(String(asked))) throw new HttpError(400, "bad_id", "An item id is a lowercase UUID v4");
+      if (asked != null && db.prepare("SELECT 1 FROM objects WHERE id = ?").get(String(asked))) throw new HttpError(409, "id_taken", "That item id is already in use");
+      const id = asked != null ? String(asked) : randomUUID();
       const blob = writeBlob(body);
       db.prepare(`INSERT INTO objects (id, owner, blob, size, idx, sealed_at, uploaded_at, updated_at, interrupt_method, assurance, signer_fp)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

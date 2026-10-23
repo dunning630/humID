@@ -440,7 +440,9 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
       checks.push(pass("Its second key went to the keyshare service", "the vault never sees it; the account keys alone can't open this document"));
     }
     if (usage(s.subject).bytes + body.length > QUOTA) throw fail(507, "quota_exceeded", "Your vault is full");
-    const id = crypto.randomUUID(), t = iso();
+    const asked = headers["x-humid-object-id"];
+    if (asked != null && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(asked)) || st.objects[asked])) throw fail(409, "id_taken", "That item id can't be used");
+    const id = asked != null ? String(asked) : crypto.randomUUID(), t = iso();
     if (share) st.keyshare[id] = { owner: s.subject, share: b64u(share) };
     await tx(db, "blobs", "readwrite", (b) => b.put(body, id));
     st.objects[id] = { id, owner: s.subject, size: body.length, index, sealedAt: v.manifest.created, uploadedAt: t, updatedAt: t, method: v.manifest.interrupt?.method || null, assurance: v.manifest.interrupt?.assurance || null };
