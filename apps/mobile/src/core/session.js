@@ -399,7 +399,8 @@ export function reloadTab() {
 }
 
 /**
- * Lock: keys wiped, session ended, everything the vault showed forgotten. What survives
+ * Lock: keys wiped, session ended, everything the vault showed forgotten (every session
+ * signal, state.js resetSession: the search, the filters and the open sheet too). What survives
  * is a draft of what the person was in the middle of (core/drafts.js): typed text for
  * ten minutes, a captured page for two, so an incoming call doesn't cost them the form.
  */
@@ -412,25 +413,11 @@ export function lock(reason) {
   clearTimeout(idleTimer);
   R.hooks.stopCheckinWatch?.();
   R.hooks.stopMessaging?.();
-  keepDraft();
+  keepDraft(); // before the reset: it reads whether this was a decoy session
+  closeViewer(); // wipes the open document's bytes, not only the signal
   batch(() => {
+    S.resetSession();
     S.view.value = "locked";
-    S.checkin.value = null;
-    S.session.value = null;
-    S.items.value = [];
-    S.ledger.value = null;
-    S.devices.value = null;
-    S.recovery.value = null;
-    S.alerts.value = [];
-    S.protecting.value = [];
-    S.station.value = null;
-    S.duressInfo.value = null;
-    S.continuity.value = null;
-    S.decoy.value = false;
-    S.offline.value = null;
-    S.sheet.value = null;
-    S.push.value = null;
-    closeViewer();
   });
   if (reason) toast(reason, "warn");
 }
