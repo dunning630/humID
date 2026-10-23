@@ -343,3 +343,11 @@ button.event:active { background: var(--surface-2); }
   .print-sheet { display: block !important; padding: 24mm; font: 12pt/1.5 var(--f-ui); color: #000; }
 }
 .print-sheet { display: none; }
+
+/* Spacing utilities on the token grid (4 · 8 · 12 · 16 · 20 · 24 · 32). They stand in for the
+   inline style={{ marginTop: N }} the screens used to carry, so they win the way an inline style
+   did: over any rule of the component's own. */
+.mt-0 { margin-top: 0 !important; }
+.mt-1 { margin-top: var(--s-1) !important; } .mt-2 { margin-top: var(--s-2) !important; } .mt-3 { margin-top: var(--s-3) !important; }
+.mt-4 { margin-top: var(--s-4) !important; } .mt-5 { margin-top: var(--s-5) !important; } .mt-6 { margin-top: var(--s-6) !important; } .mt-8 { margin-top: var(--s-8) !important; }
+.mb-1 { margin-bottom: var(--s-1) !important; } .mb-2 { margin-bottom: var(--s-2) !important; } .mb-3 { margin-bottom: var(--s-3) !important; } .mb-4 { margin-bottom: var(--s-4) !important; }

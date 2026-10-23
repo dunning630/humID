@@ -21,7 +21,7 @@ export function Devices() {
   return (
     <Pushed title="Devices" onBack={back} trailing={!off && <button class="btn quiet sm" onClick={() => setAdding(true)}><Icon name="plus" />Add</button>}>
       <p class="t2 small">Your other phones and computers go here. Each one makes its own live checks (on a phone, its secure chip signs them); remove a lost one and it can never reach your vault again.</p>
-      <div class="rows" style={{ marginTop: 14 }}>
+      <div class="rows mt-3">
         {!devices && <Row chevron={false} title="Loading…" />}
         {devices?.length === 0 && <Row chevron={false} title="Nothing here yet" sub="Add a second device so a lost phone isn't an emergency." />}
         {devices?.map((d) => (
@@ -42,7 +42,7 @@ export function Devices() {
           </div>
         ))}
       </div>
-      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Adding or removing needs a connection.</p>}
+      {off && <p class="fine mt-3">Offline: as of your last sync. Adding or removing needs a connection.</p>}
       {adding && <AddDeviceSheet onClose={() => setAdding(false)} />}
     </Pushed>
   );

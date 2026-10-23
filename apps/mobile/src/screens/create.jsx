@@ -33,9 +33,9 @@ export function ConnectStep({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow}</div>
-      <h1 style={{ marginTop: 8 }}>Your vault server</h1>
-      <p class="lede" style={{ marginTop: 10 }}>HumID stores sealed copies at <b>{serverHost(SERVER_URL)}</b> and remembers its post-quantum key. If that key ever changes, HumID refuses to connect.</p>
-      <div class="card" style={{ marginTop: 22 }}>
+      <h1 class="mt-2">Your vault server</h1>
+      <p class="lede mt-3">HumID stores sealed copies at <b>{serverHost(SERVER_URL)}</b> and remembers its post-quantum key. If that key ever changes, HumID refuses to connect.</p>
+      <div class="card mt-6">
         {srv ? (
           <>
             <Row icon="server" tone="mint" chevron={false} title={serverHost(SERVER_URL)} sub="Answering, with a post-quantum key" />
@@ -62,13 +62,13 @@ export function SoleBiometric({ checked, onChange, id = "sole" }) {
   const what = hw?.probe.label && !/demo/i.test(hw.probe.label) ? hw.probe.label : "Face ID / fingerprint";
   const [why, setWhy] = useState(false);
   return (
-    <div class="card" id={id} style={{ marginBottom: 12 }}>
+    <div class="card mb-3" id={id}>
       <button class="toggle" role="checkbox" aria-checked={!!checked} onClick={() => onChange(!checked)}>
         <span><span class="title">Only I use {what} on this phone</span></span>
         <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: checked ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{checked && <Icon name="check" />}</span>
       </button>
       <button class="link muted" type="button" aria-expanded={why} onClick={() => setWhy(!why)}>What does this mean?</button>
-      {why && <p class="small muted" style={{ marginTop: 6 }}>HumID can't see whose faces or fingers this phone knows, only that a live match happened. If anyone else's is enrolled, they could open your vault, so HumID asks once and records your answer in your activity. If another one is added later, this phone has to be added to your HumID again; your vault is safe.</p>}
+      {why && <p class="small muted mt-2">HumID can't see whose faces or fingers this phone knows, only that a live match happened. If anyone else's is enrolled, they could open your vault, so HumID asks once and records your answer in your activity. If another one is added later, this phone has to be added to your HumID again; your vault is safe.</p>}
     </div>
   );
 }
@@ -118,8 +118,8 @@ export function Create() {
       {step === "bind" && (
         <>
           <div class="eyebrow">{n("bind")} · Lock it to you</div>
-          <h1 style={{ marginTop: 8 }}>Your body becomes the key</h1>
-          <p class="lede" style={{ marginTop: 10 }}>Your keys are made on this phone and locked behind {hw?.probe.available ? hw.probe.label : "your face or fingerprint"}. They never leave it, and HumID never sees your face or fingerprint.</p>
+          <h1 class="mt-2">Your body becomes the key</h1>
+          <p class="lede mt-3">Your keys are made on this phone and locked behind {hw?.probe.available ? hw.probe.label : "your face or fingerprint"}. They never leave it, and HumID never sees your face or fingerprint.</p>
           <div class="hero" style={{ flex: "0 0 auto", margin: "18px 0 6px" }}><Mark size={150} /></div>
           <div class="foot">
             <SoleBiometric checked={sole} onChange={setSole} />
@@ -145,16 +145,16 @@ function AccessStep({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow} · Your access pass</div>
-      <h1 style={{ marginTop: 8 }}>Pay without being known</h1>
-      <p class="lede" style={{ marginTop: 10 }}>An access code becomes a pass the vault signs without seeing it. When you create your HumID, the vault can check the pass is real, but it can't tell which code, purchase or person it came from.</p>
-      <div class="card" style={{ marginTop: 18 }}>
+      <h1 class="mt-2">Pay without being known</h1>
+      <p class="lede mt-3">An access code becomes a pass the vault signs without seeing it. When you create your HumID, the vault can check the pass is real, but it can't tell which code, purchase or person it came from.</p>
+      <div class="card mt-4">
         <Row icon="key" tone="mint" chevron={false} title="Where to get one" sub={buyUrl ? "Buy an access code online, or with cash at a counter: cash leaves no trace at all." : "Ask whoever runs your vault server for an access code, or buy one with cash at a counter."} />
-        {buyUrl && <button class="btn quiet sm" style={{ marginTop: 8 }} type="button" onClick={() => openExternal(buyUrl)}><Icon name="out" />Buy an access code</button>}
+        {buyUrl && <button class="btn quiet sm mt-2" type="button" onClick={() => openExternal(buyUrl)}><Icon name="out" />Buy an access code</button>}
       </div>
-      {rec?.state === "ready" ? <div style={{ marginTop: 16 }}><Banner tone="mint" icon="check" title="Access pass ready" text="Kept sealed on this phone until you create your HumID. Your access code is no longer stored." /></div>
-        : rec?.state === "draft" ? <div style={{ marginTop: 16 }}><Banner tone="amber" icon="clock" title="Finishing your pass" text="Your code was sent but the answer didn't arrive. It's saved sealed here, so nothing is lost." /></div>
+      {rec?.state === "ready" ? <div class="mt-4"><Banner tone="mint" icon="check" title="Access pass ready" text="Kept sealed on this phone until you create your HumID. Your access code is no longer stored." /></div>
+        : rec?.state === "draft" ? <div class="mt-4"><Banner tone="amber" icon="clock" title="Finishing your pass" text="Your code was sent but the answer didn't arrive. It's saved sealed here, so nothing is lost." /></div>
         : (
-          <div class="field" style={{ marginTop: 16 }}>
+          <div class="field mt-4">
             <label for="access">Access code</label>
             <input autocorrect="off" id="access" class="input code" autocomplete="off" autocapitalize="characters" spellcheck={false} placeholder="HA-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
               value={text} onInput={(e) => setText(e.currentTarget.value)} disabled={busy} />
@@ -199,14 +199,14 @@ function ModeStep({ eyebrow, onNext }) {
   return (
     <>
       <div class="eyebrow">{eyebrow} · Getting back in</div>
-      <h1 style={{ marginTop: 8 }}>If you lose every device</h1>
-      <p class="lede" style={{ marginTop: 10 }}>How do you want to be able to get back in? You can change this later under You → Recovery.</p>
-      <div class="options" style={{ marginTop: 18 }} role="radiogroup" aria-label="How you get back in">
+      <h1 class="mt-2">If you lose every device</h1>
+      <p class="lede mt-3">How do you want to be able to get back in? You can change this later under You → Recovery.</p>
+      <div class="options mt-4" role="radiogroup" aria-label="How you get back in">
         {MODE_CHOICES.map((c) => (
           <button class="option" role="radio" aria-checked={pick === c.id} data-mode={c.id} onClick={() => { S.setupMode.value = c.id; setSure(false); }}>
             <span class="lead"><Icon name={c.icon} /></span>
             <span>
-              <span class="title">{c.title} <span class={`pill ${c.id === HARDENED ? "mint" : ""}`} style={{ marginLeft: 6 }}>{c.tag}</span></span>
+              <span class="title">{c.title} <span class={`pill ${c.id === HARDENED ? "mint" : ""}`} style={{ marginLeft: 8 }}>{c.tag}</span></span>
               <span class="sub" style={{ display: "block" }}>{c.text}</span>
               <span class="sub muted" style={{ display: "block", marginTop: 4 }}>{c.cost}</span>
             </span>
@@ -215,9 +215,9 @@ function ModeStep({ eyebrow, onNext }) {
         ))}
       </div>
       {holderOnly && (
-        <div class="card" style={{ marginTop: 14 }} id="mode-sure">
+        <div class="card mt-3" id="mode-sure">
           <Banner tone="danger" icon="alert" title="Lose every device, lose your vault" text="HumID will keep no way to bring it back. Not even we can help, by design." />
-          <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 8 }}>
+          <button class="toggle mt-2" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)}>
             <span><span class="title">I understand. I'll set up a second device</span></span>
             <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
           </button>
@@ -245,13 +245,13 @@ function SecondDeviceStep({ onNext }) {
   return (
     <>
       <div class="eyebrow">Only your own devices · do this now</div>
-      <h1 style={{ marginTop: 8 }}>Add a second device</h1>
-      <p class="lede" style={{ marginTop: 10 }}>Right now this phone is the only way into your vault. If it's lost, broken or stolen, your documents are gone for good. A second phone, tablet or computer you keep somewhere else fixes that.</p>
-      <div class="rows" style={{ marginTop: 16 }}>
+      <h1 class="mt-2">Add a second device</h1>
+      <p class="lede mt-3">Right now this phone is the only way into your vault. If it's lost, broken or stolen, your documents are gone for good. A second phone, tablet or computer you keep somewhere else fixes that.</p>
+      <div class="rows mt-4">
         <Row icon="key" tone="mint" chevron={false} title="On the other device" sub="Install HumID, then choose I already have HumID → From another device. It shows a code." />
         <Row icon="fingerprint" tone="mint" chevron={false} title="On this phone" sub="Open your vault, then You → Devices → Add a device, and type or scan that code." />
       </div>
-      <div style={{ marginTop: 14 }}><Banner tone="danger" icon="alert" title="Until then, one lost phone is the end" text="HumID keeps no recovery for you: no card, no witnesses, nothing on our servers. That's what makes it private." /></div>
+      <div class="mt-3"><Banner tone="danger" icon="alert" title="Until then, one lost phone is the end" text="HumID keeps no recovery for you: no card, no witnesses, nothing on our servers. That's what makes it private." /></div>
       <div class="foot">
         <button class="btn primary block" onClick={() => { finishEnroll(); S.push.value = { type: "devices", open: "add" }; S.tab.value = "you"; }}><Icon name="plus" />Add my second device now</button>
         {!later
@@ -269,22 +269,22 @@ function RecoveryCardStep({ onNext }) {
   return (
     <>
       <div class="eyebrow">{code ? "Shown once · write it down now" : "Your recovery card"}</div>
-      <h1 style={{ marginTop: 8 }}>{code ? "Your recovery card" : "No recovery set up yet"}</h1>
+      <h1 class="mt-2">{code ? "Your recovery card" : "No recovery set up yet"}</h1>
       {code ? (
         <>
-          <p class="lede" style={{ marginTop: 10 }}>{CARD_IS_ONE}</p>
-          <div class="card" style={{ marginTop: 16 }}>
+          <p class="lede mt-3">{CARD_IS_ONE}</p>
+          <div class="card mt-4">
             <CardBox code={code} />
             <CardConfirm code={code} onChange={setSaved} />
-            <div class="row-x" style={{ marginTop: 12 }}>
+            <div class="row-x mt-3">
               {CAN_PRINT && <button class="btn quiet sm" onClick={() => window.print()}><Icon name="file" />Print</button>}
               <button class="btn quiet sm" onClick={() => saveCard(code)}><Icon name="download" />Save as a file</button>
             </div>
-            <p class="fine" style={{ marginTop: 8 }}>A saved file can sync to a cloud you don't control. Paper, kept away from your ID, is the safer copy.</p>
+            <p class="fine mt-2">A saved file can sync to a cloud you don't control. Paper, kept away from your ID, is the safer copy.</p>
             <PrintableCard code={code} />
           </div>
         </>
-      ) : <div style={{ marginTop: 18 }}><Banner tone="amber" title="Set it up under You" text={`${RECOVERY_RULE} Set up two, or a second device, so losing this phone doesn't lose your vault.`} /></div>}
+      ) : <div class="mt-4"><Banner tone="amber" title="Set it up under You" text={`${RECOVERY_RULE} Set up two, or a second device, so losing this phone doesn't lose your vault.`} /></div>}
       <div class="foot">
         <button class="btn primary block" onClick={() => {
           if (!(code && !saved)) return onNext();
@@ -304,9 +304,9 @@ function YoureIn() {
   return (
     <>
       <div class="hero" style={{ flex: "0 0 auto", marginTop: 4 }}><Mark state="verified" size={150} /></div>
-      <h1 class="center" style={{ marginTop: 10 }}>You're in</h1>
+      <h1 class="center mt-3">You're in</h1>
       <p class="lede center" style={{ margin: "8px auto 0" }}>Your HumID is live and locked to this phone.</p>
-      <p class="center" style={{ marginTop: 10 }}><AssurancePill assurance={S.identity.value?.assurance} /></p>
+      <p class="center mt-3"><AssurancePill assurance={S.identity.value?.assurance} /></p>
       <div class="foot">
         <button class="btn primary mint lg block" onClick={finishEnroll}><Icon name="vault" />Open my vault</button>
         <p class="fine center">{holderOnly

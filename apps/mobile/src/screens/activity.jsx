@@ -117,7 +117,7 @@ export function Activity() {
         </button>
       )}
       {l?.ok && details && (
-        <div class="rows" style={{ marginBottom: 12 }}>
+        <div class="rows mb-3">
           {/* A decoy session's list is filtered (core/ledger.js decoyView): "nothing missing" would be false there. */}
           <Row chevron={false} icon="chain" tone="mint" title={l.decoy ? `${l.entries.length} events` : `${l.entries.length} events, nothing altered or missing`} sub="Each entry is chained to the one before it; this phone re-checked every link." />
           <Row chevron={false} icon="server" tone="mint" title="Signed by your vault server" sub={<>Its signing key: <span class="mono">{l.keyFp?.slice(0, 8)}</span></>} />
@@ -177,7 +177,7 @@ function EventSheet({ e, x, onClose }) {
         <Fact k="Entry" v={`#${e.seq}`} />
         <Fact stacked k="Chain hash" v={<span class="mono small">{e.hash}</span>} />
       </div>
-      <p class="fine" style={{ marginTop: 12 }}>This entry is chained to the one before it and signed by your vault server; this phone verified both. It can't be changed or removed without that showing here.</p>
+      <p class="fine mt-3">This entry is chained to the one before it and signed by your vault server; this phone verified both. It can't be changed or removed without that showing here.</p>
       <div class="actions"><button class="btn ghost block" onClick={onClose}>Close</button></div>
     </Sheet>
   );

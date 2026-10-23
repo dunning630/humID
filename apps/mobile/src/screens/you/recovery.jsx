@@ -36,9 +36,9 @@ export function Recovery() {
       <ModeCard mode={mode} off={off} onSwitch={() => setOpen("mode")} />
       {open === "mode" && <ModeSheet mode={mode} onClose={() => setOpen(null)} />}
       {holderOnly ? null : <>
-      <p class="t2 small" style={{ marginTop: 16 }}>If you lose every device, any <b>two</b> of these four prove it's you. HumID never holds a key that opens your vault, and one proof alone never does.</p>
+      <p class="t2 small mt-4">Set up <b>two</b> of these four. One proof alone never opens your vault, and HumID never holds a key that does.</p>
       {rec && <ProofMeter have={PROOFS.map((p) => p.id).filter((k) => rec.proofs[k])} />}
-      <div class="rows" style={{ marginTop: 14 }}>
+      <div class="rows mt-3">
         <Row icon="users" tone={rec?.proofs.witness ? "mint" : ""} title="Witnesses"
           sub={rec?.contacts.n ? `${rec.contacts.names.join(", ")} · any ${rec.contacts.threshold}${rec.contacts.scheme !== "quorum" ? " · older setup" : ""}` : "People you trust, who approve with their own face or fingerprint"}
           onClick={off ? undefined : () => setOpen("witnesses")} />
@@ -52,19 +52,19 @@ export function Recovery() {
           sub={rec?.keys?.list.length ? rec.keys.list.map((k) => k.name).join(", ") : rec && !rec.keys?.available ? "Not available on this server yet" : "A FIDO2 key with NFC, on your keyring"}
           onClick={off ? undefined : () => setOpen("key")} />
       </div>
-      {rec?.legacy && <div style={{ marginTop: 14 }}><Banner tone="amber" icon="info" title="Upgrade to two-proof recovery" text="You have an older card or witnesses that work on their own. Make a new recovery card and save your witnesses again to switch." /></div>}
+      {rec?.legacy && <div class="mt-3"><Banner tone="amber" icon="info" title="Upgrade to two-proof recovery" text="You have an older card or witnesses that work on their own. Make a new recovery card and save your witnesses again to switch." /></div>}
       {!off && <NewPieces />}
-      <section style={{ marginTop: 20 }}>
-        <div class="eyebrow" style={{ marginBottom: 8 }}>How long a recovery waits</div>
+      <section class="mt-5">
+        <div class="eyebrow mb-2">How long a recovery waits</div>
         <div class="rows">{WAITS.map((w) => <Row chevron={false} title={w.pair} trail={w.wait} />)}</div>
-        <p class="fine" style={{ marginTop: 8 }}>Every device that still has your HumID is alerted and can veto during the wait.</p>
+        <p class="fine mt-2">Every device that still has your HumID is alerted and can veto during the wait.</p>
       </section>
       {open === "witnesses" && <WitnessesSheet onClose={() => setOpen(null)} />}
       {open === "anchor" && <AnchorSheet onClose={() => setOpen(null)} />}
       {open === "card" && <CardInfoSheet onClose={() => setOpen(null)} />}
       {open === "key" && <SecurityKeySheet onClose={() => setOpen(null)} />}
       </>}
-      {off && <p class="fine" style={{ marginTop: 12 }}>Offline: as of your last sync. Changing recovery needs a connection.</p>}
+      {off && <p class="fine mt-3">Offline: as of your last sync. Changing recovery needs a connection.</p>}
     </Pushed>
   );
 }
@@ -78,13 +78,13 @@ export function Recovery() {
 function NewPieces() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  if (!open) return <button class="link muted" style={{ marginTop: 12 }} onClick={() => setOpen(true)}>Lost a card, or dropped a witness you don't trust? Make new recovery pieces</button>;
+  if (!open) return <button class="link muted mt-3" onClick={() => setOpen(true)}>Lost a card, or dropped a witness you don't trust? Make new recovery pieces</button>;
   return (
-    <div class="card" style={{ marginTop: 12 }}>
+    <div class="card mt-3">
       <h2 class="h3">Make new recovery pieces</h2>
-      <p class="small t2" style={{ marginTop: 6 }}>Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces never fit with old ones, so a lost card or a removed witness's piece can't be combined with anything you make from now on.</p>
-      <p class="small t2" style={{ marginTop: 6 }}><b>Old pieces still fit each other.</b> Two of them together (your old card and a former witness's piece, say) could still rebuild your HumID's key, because the key itself stays the same. Destroy old recovery cards. (Witnesses' pieces are deleted from your vault server, but a witness, or an old server backup, could have kept a copy.)</p>
-      <p class="small t2" style={{ marginTop: 6 }}>Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
+      <p class="small t2 mt-2">Removing a witness or a card stops it counting on your vault server, but the piece itself still fits with your others. New pieces never fit with old ones, so a lost card or a removed witness's piece can't be combined with anything you make from now on.</p>
+      <p class="small t2 mt-2"><b>Old pieces still fit each other.</b> Two of them together (your old card and a former witness's piece, say) could still rebuild your HumID's key, because the key itself stays the same. Destroy old recovery cards. (Witnesses' pieces are deleted from your vault server, but a witness, or an old server backup, could have kept a copy.)</p>
+      <p class="small t2 mt-2">Your vault server deletes what it holds now, and you set up your proofs again: a new recovery card, your witnesses again, your ID chip and security keys again.</p>
       <div class="actions row" style={{ paddingTop: 8 }}>
         <button class="btn ghost" data-back onClick={() => setOpen(false)}>Not now</button>
         <button class="btn danger" disabled={busy} onClick={async () => { setBusy(true); try { if (await newRecoveryPieces()) { setOpen(false); loadRecovery(); } } finally { setBusy(false); } }}><Icon name="fingerprint" />Make new pieces</button>
@@ -109,13 +109,13 @@ function ModeCard({ mode, off, onSwitch }) {
   return (
     <div class="card">
       <div class="eyebrow">How you get back in</div>
-      <h2 style={{ marginTop: 6 }}>{holderOnly ? "Only my own devices" : "A safe way back in"}</h2>
-      <p class="small t2" style={{ marginTop: 6 }}>{holderOnly
+      <h2 class="mt-2">{holderOnly ? "Only my own devices" : "A safe way back in"}</h2>
+      <p class="small t2 mt-2">{holderOnly
         ? "Your vault opens only on devices you've already set up. HumID keeps no recovery for you, so if you lose every one of them, no one can bring it back, not even HumID."
         : `${RECOVERY_IF_LOST} Then there's a wait that any device you still have can cancel.`}</p>
-      {!mode.trusted && <div style={{ marginTop: 10 }}><Banner tone="danger" icon="alert" role="alert" title="Your vault server's record of this choice doesn't check out"
+      {!mode.trusted && <div class="mt-3"><Banner tone="danger" icon="alert" role="alert" title="Your vault server's record of this choice doesn't check out"
         text={`${UNTRUSTED[mode.reason] || UNTRUSTED.unsigned} This phone won't act on it: it treats your HumID as Only my own devices and won't make any recovery piece until the server shows your real choice again. Your documents aren't affected. Tell whoever runs your vault server.`} /></div>}
-      {!off && mode.trusted && <button class="btn quiet sm" style={{ marginTop: 10 }} onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
+      {!off && mode.trusted && <button class="btn quiet sm mt-3" onClick={onSwitch}>{holderOnly ? "Turn on recovery" : "Switch to only my own devices"}</button>}
     </div>
   );
 }
@@ -129,7 +129,7 @@ function ModeSheet({ mode, onClose }) {
   return holderOnly ? (
     <Sheet onClose={onClose} eyebrow="Recovery mode" title="Turn on a safe way back in">
       <p class="t2 small">You'll then set up two proofs: people you trust, your passport or ID card, a recovery card or a security key. Getting back in takes any two of them and a wait that any of your devices can cancel. Some of that proof is kept on HumID's servers. Your witnesses' pieces, your card's and your security key's are locked so the server can't open them; your passport's piece isn't (see ID chip).</p>
-      <p class="fine" style={{ marginTop: 8 }}>One live check signs this change with your HumID's key, and it's recorded in your activity.</p>
+      <p class="fine mt-2">One live check signs this change with your HumID's key, and it's recorded in your activity.</p>
       <div class="actions"><button class="btn primary block" disabled={busy} onClick={() => run(switchToHardened)}><Icon name="fingerprint" />Turn on recovery</button></div>
     </Sheet>
   ) : (
@@ -137,7 +137,7 @@ function ModeSheet({ mode, onClose }) {
       <p class="t2 small">Your vault will open only on devices you've already set up. If you lose every one of them, <b>no one can get your documents back</b>: not your witnesses, not your ID, not HumID.</p>
       {left.length > 0 && <Banner tone="amber" icon="trash" title="This deletes your recovery proofs first" text={`Your ${left.join(", ")} will be deleted from your vault server, one at a time, each with its own live check. Only then does the switch happen.`} />}
       <Banner tone="danger" icon="alert" title="Old pieces still fit each other" text="This stops your vault server from keeping or using any recovery piece. But pieces made before (your printed recovery card, a witness's piece, copies in old server backups) can still rebuild your HumID's key offline if two of them come together, because the key itself doesn't change. Destroy your old recovery cards. Your witnesses' pieces are deleted from the server, but a witness or an old backup could have kept a copy. Full protection needs a new account key, which HumID can't make yet." />
-      <button class="toggle" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)} style={{ marginTop: 10 }}>
+      <button class="toggle mt-3" role="checkbox" aria-checked={sure} onClick={() => setSure(!sure)}>
         <span><span class="title">I understand: lose every device, lose my vault</span></span>
         <span class="lead" style={{ width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center", background: sure ? "var(--mint)" : "var(--surface-3)", color: "var(--mint-ink)" }}>{sure && <Icon name="check" />}</span>
       </button>
@@ -206,21 +206,21 @@ function SecurityKeySheet({ onClose }) {
   return (
     <Sheet onClose={onClose} eyebrow="Security key · one of four proofs" title={keys.length ? (keys.length === 1 ? "Your security key" : `Your ${keys.length} security keys`) : "Add a security key"}>
       <p class="t2 small">A FIDO2 security key with NFC, like a YubiKey 5 NFC, on your keyring. Its secret never leaves it, it answers only with its PIN, and it locks itself after eight wrong tries. With any one other proof it brings your vault back. HumID never stores a fingerprint or a face, and can't open what your key locks.</p>
-      <p class="fine" style={{ marginTop: 6 }}>Type its PIN only into HumID, and hold it only to your own phone: an app that has your key and its PIN can read the key's answer.</p>
+      <p class="fine mt-2">Type its PIN only into HumID, and hold it only to your own phone: an app that has your key and its PIN can read the key's answer.</p>
       {!available && <Banner tone="amber" icon="globe" title="Not available on this server yet" text="Your vault server needs HumID Server 4.0. Use witnesses, your ID chip and a recovery card for now." />}
       {keys.length > 0 && (
-        <div class="rows" style={{ marginTop: 12 }}>
+        <div class="rows mt-3">
           {keys.map((k) => (
             <Row key={k.id} icon="seckey" tone="mint" chevron={false} title={k.name} sub={`Added ${fmtDate(k.createdAt)}`}
               trail={<button class="link muted" disabled={busy} onClick={async () => { setBusy(true); await removeSecurityKey(k); setBusy(false); }}>Remove</button>} />
           ))}
         </div>
       )}
-      {keys.length === 1 && <p class="fine" style={{ marginTop: 8 }}>Add a second key and keep it somewhere else. Lose one, and the other still counts.</p>}
-      {rec?.proofs.card && <p class="fine" style={{ marginTop: 8 }}>Keep your key apart from your recovery card: together, without anyone else, they wait 7 days.</p>}
+      {keys.length === 1 && <p class="fine mt-2">Add a second key and keep it somewhere else. Lose one, and the other still counts.</p>}
+      {rec?.proofs.card && <p class="fine mt-2">Keep your key apart from your recovery card: together, without anyone else, they wait 7 days.</p>}
       {available && keys.length < max && (
-        <div class="card" style={{ marginTop: 14 }}>
-          <div class="eyebrow" style={{ marginBottom: 8 }}>{keys.length ? "Add another key" : "Add your key"}</div>
+        <div class="card mt-3">
+          <div class="eyebrow mb-2">{keys.length ? "Add another key" : "Add your key"}</div>
           <div class="field">
             <label for="key-name">A name for it</label>
             <input autocorrect="off" spellcheck={false} autocomplete="off" id="key-name" class="input" value={name} maxLength={40} placeholder="e.g. Blue key on my keyring" onInput={(e) => setName(e.currentTarget.value)} />
@@ -240,13 +240,13 @@ function SecurityKeySheet({ onClose }) {
           )}
           <Toggle checked={newPin} label="My key doesn't have a PIN yet" hint="HumID gives it the one you choose. The key keeps it; HumID doesn't."
             onChange={(v) => { setNewPin(v); setProblem(null); setAgain(""); }} />
-          <button class="btn primary block" style={{ marginTop: 12 }} disabled={!usable} onClick={add}><Icon name="fingerprint" />Hold the key to {reader?.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
-          <p class="fine" style={{ marginTop: 8 }}>{reader && !reader.available
+          <button class="btn primary block mt-3" disabled={!usable} onClick={add}><Icon name="fingerprint" />Hold the key to {reader?.kind === "reader" ? "the reader" : "the phone"}, then confirm</button>
+          <p class="fine mt-2">{reader && !reader.available
             ? (reader.reason || "This device can't reach a security key. Use the HumID app on a phone with NFC, or a computer with a contactless card reader.")
             : "One tap: the key makes HumID's credential and proves it's there. Then your face or fingerprint seals your key's part of recovery."}</p>
         </div>
       )}
-      {available && keys.length >= max && <p class="fine" style={{ marginTop: 12 }}>You have {max} keys, the most HumID keeps. Remove one to add another.</p>}
+      {available && keys.length >= max && <p class="fine mt-3">You have {max} keys, the most HumID keeps. Remove one to add another.</p>}
     </Sheet>
   );
 }
@@ -296,13 +296,13 @@ function WitnessesSheet({ onClose }) {
         <label for="owner-name">Your name, as they know you</label>
         <input autocorrect="off" spellcheck={false} autocomplete="off" id="owner-name" class="input" value={me} maxLength={40} placeholder="e.g. Parker" onInput={(e) => setMe(e.currentTarget.value)} />
       </div>
-      <div class="row-x" style={{ marginTop: 10 }}>
+      <div class="row-x mt-3">
         <button class="btn quiet sm" type="button" onClick={share}><Icon name="users" />Send a witness the steps</button>
       </div>
-      {shared && <p class="small t2 selectable" style={{ marginTop: 8 }}>{STEPS_FOR_A_WITNESS(me.trim())}</p>}
+      {shared && <p class="small t2 selectable mt-2">{STEPS_FOR_A_WITNESS(me.trim())}</p>}
 
       {rows.length > 0 && (
-        <div class="rows" style={{ marginTop: 14 }}>
+        <div class="rows mt-3">
           {rows.map((r, i) => (
             <Row key={r.code} icon="user" tone="mint" chevron={false} title={r.name}
               sub={<>Verified{r.offer?.expiresAt ? <> · their code expires in <Countdown until={r.offer.expiresAt} expired="now; ask for a new one" /></> : ""}</>}
@@ -311,12 +311,12 @@ function WitnessesSheet({ onClose }) {
         </div>
       )}
       {rows.length < MAX_WITNESSES && (
-        <div class="card" style={{ marginTop: 14 }}>
-          <div class="eyebrow" style={{ marginBottom: 8 }}>Add a witness</div>
+        <div class="card mt-3">
+          <div class="eyebrow mb-2">Add a witness</div>
           <div class="field"><label for={`wit-name`}>Their name</label><input autocorrect="off" spellcheck={false} autocomplete="off" id="wit-name" class="input" value={name} maxLength={40} onInput={(e) => setName(e.currentTarget.value)} /></div>
           <CodeInput id="wit-code" label="Their witness code" value={code} onInput={setCode} expect="contact" onScanned={(c) => add(c)} />
-          <button class="btn quiet block" style={{ marginTop: 8 }} disabled={busy || !twelve(code)} onClick={() => add()}>Check and add</button>
-          <p class="fine" style={{ marginTop: 8 }}>Each witness gets their code from HumID → You → Help others → Be a witness. It's checked against their keys as soon as you add it.</p>
+          <button class="btn quiet block mt-2" disabled={busy || !twelve(code)} onClick={() => add()}>Check and add</button>
+          <p class="fine mt-2">Each witness gets their code from HumID → You → Help others → Be a witness. It's checked against their keys as soon as you add it.</p>
         </div>
       )}
       <div class="actions">
@@ -353,9 +353,9 @@ function AnchorSheet({ onClose }) {
       <Banner tone="danger" icon="alert" title="Your vault server can open this piece" text="The key that locks your passport's piece comes from your chip's public data, which your vault server sees when you link it. So whoever runs that server holds this piece in a form they could open. With it and any ONE other of your proofs (a photo of your recovery card, say), they could get into your vault without the wait. If you don't want to trust the people running your server that far, use witnesses or a security key instead, or choose Only my own devices under Recovery." />
       <Banner tone="amber" icon="info" title="What HumID's server holds" text="Your recovery piece; a fingerprint of your chip's key, to find it; your document type and country. Your name and birth date pass through when you link or recover, and aren't kept. It's also the one proof that isn't anonymous: someone who runs the server and has your passport could match it to your HumID." />
       {older && <Banner tone="amber" icon="alert" title="Read your chip again" text="This link was made before recovery pieces were tied to one chip, so any passport with your name and birth date matched it. Read your passport or ID once more and HumID ties it to this chip only." />}
-      <p class="fine" style={{ marginTop: 8 }}>Renewed your passport? Link the new one here: the old one stops counting. Chips that can't prove they're present (some older ID cards) can't be a proof.</p>
+      <p class="fine mt-2">Renewed your passport? Link the new one here: the old one stops counting. Chips that can't prove they're present (some older ID cards) can't be a proof.</p>
       {!a?.available && <Banner tone="amber" icon="globe" title="Not available on this server yet" text="Its operator hasn't added the countries' signing certificates. Use witnesses and a recovery card for now." />}
-      {a?.exists && <div class="rows" style={{ marginTop: 12 }}><Row chevron={false} title="Document" trail={`${a.document}${a.country ? ` · ${a.country}` : ""}`} /><Row chevron={false} title="Linked" trail={fmtDate(a.createdAt)} /></div>}
+      {a?.exists && <div class="rows mt-3"><Row chevron={false} title="Document" trail={`${a.document}${a.country ? ` · ${a.country}` : ""}`} /><Row chevron={false} title="Linked" trail={fmtDate(a.createdAt)} /></div>}
       {a?.available && (
         <>
           {nfcOpen ? (
@@ -371,10 +371,10 @@ function AnchorSheet({ onClose }) {
               <button class="btn primary block" disabled={!nfc?.available || busy} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{a?.exists ? (older ? "Read my chip again" : "Link a different ID") : nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
               {!nfc?.available && <p class="small muted">{nfc?.reason || "Linking needs the chip itself, read live by a phone with NFC or a card reader."}</p>}
               {DEMO_BUILD && (
-                <div class="field" style={{ marginTop: 0 }}>
+                <div class="field mt-0">
                   <label for="demo-holder">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-holder" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-                  <button class="btn ghost block" style={{ marginTop: 8 }} disabled={busy} onClick={() => link(fromDemo)}><Icon name="passport" />Use a demo passport</button>
+                  <button class="btn ghost block mt-2" disabled={busy} onClick={() => link(fromDemo)}><Icon name="passport" />Use a demo passport</button>
                 </div>
               )}
             </div>

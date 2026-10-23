@@ -393,7 +393,7 @@ export function IdView({ record: rec, item }) {
       <div class="id-card-hero">
         {rec.images[side] && <img src={imageUrl(rec.images[side])} alt={side === "portrait" ? "Photo from the chip" : `${side} of the document`} data-side={side} />}
         {sides.length > 1 && (
-          <div class="seg" role="tablist" aria-label="Which side" style={{ marginTop: 10 }}>
+          <div class="seg mt-3" role="tablist" aria-label="Which side">
             {sides.map((s) => <button role="tab" aria-selected={side === s} aria-pressed={side === s} onClick={() => setSide(s)}>{sideName(s)}</button>)}
           </div>
         )}
