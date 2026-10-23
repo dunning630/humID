@@ -25,7 +25,7 @@
 
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import {
-  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage,
+  MEDIA_TYPE, registerMessage, deviceMessage, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, sealLiveMessage, sealShare,
   identityId, deviceId, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS,
   ml_dsa87, sha3_256, toHex, fromHex, b64u, unb64u, utf8, fromUtf8, random,
 } from "@humid/htp";
@@ -453,9 +453,17 @@ export async function createSimServer({ onCheck = () => {}, platformPolicy = "bi
     needStepUp(su, "Opening a document");
     const o = own(s, m[1]);
     const k = st.keyshare[o.id];
+    // Like keyshare (CRYPTO-03): the key goes back sealed to the one-time key in the signed body.
+    let sealed = null;
+    if (k) {
+      let to = null;
+      try { to = { kemPk: unb64u(String(r.to?.kemPk ?? "")), xPk: unb64u(String(r.to?.xPk ?? "")) }; } catch {}
+      if (!to || to.kemPk.length !== 1568 || to.xPk.length !== 32) throw fail(426, "update_required", "Update HumID to open this document: its key now travels sealed to your phone.");
+      sealed = b64u(await sealShare(unb64u(k.share), to, { account: s.subject, object: o.id }));
+    }
     record(s.subject, "object.opened", { id: o.id, split: !!k, proof: su.proof, method: su.method, assurance: su.assurance });
     report("Document released", [...su.checks, ...(k ? [pass("Its second key released for this document only", "inside this same live check")] : [])], { kind: "open", quiet: true });
-    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(k ? { "x-humid-share": k.share } : {}) }];
+    return [200, await tx(db, "blobs", "readonly", (b) => b.get(o.id)), { "content-type": MEDIA_TYPE, "x-humid-size": String(o.size), ...(sealed ? { "x-humid-share": sealed } : {}) }];
   }, { auth: true });
 
   route("PATCH", `/vault/objects/${OBJ}`, (s, r, su, m, body, headers) => {

@@ -15,6 +15,10 @@ x-service: &service
   networks: [internal]
   environment: &env
     HUMID_INTERNAL_PK: ${HUMID_INTERNAL_PK:?run ./setup.sh first}
+    # SRV-30: public halves of the statement keys. The private halves go only to the services
+    # that sign with them (identity and ledger: core; keyshare: keys), never to the gateway.
+    HUMID_CORE_STATEMENT_PK: "${HUMID_CORE_STATEMENT_PK:?run ./setup.sh again (this version adds statement keys)}"
+    HUMID_KEYS_STATEMENT_PK: "${HUMID_KEYS_STATEMENT_PK:?run ./setup.sh again (this version adds statement keys)}"
   healthcheck: &health
     interval: 10s
     timeout: 3s
@@ -87,6 +91,7 @@ services:
     environment:
       <<: *env
       PORT: "8081"
+      HUMID_CORE_STATEMENT_SK: ${HUMID_CORE_STATEMENT_SK:?run ./setup.sh again}   # vouches for device keys (SRV-30)
       # Hardware proof of each phone's liveness key (docs/SECURITY.md).
       HUMID_ANDROID_PACKAGES: ${HUMID_ANDROID_PACKAGES:-app.humid.vault}
       HUMID_ANDROID_CERT_DIGESTS: ${HUMID_ANDROID_CERT_DIGESTS:-}   # the official HumID app is always accepted; add your own signing cert's SHA-256 if you build your own
@@ -115,7 +120,7 @@ services:
     <<: *service
     image: ${HUMID_REGISTRY:-ghcr.io/dunning630}/humid-ledger:${HUMID_VERSION:-latest}
     build: { context: .., dockerfile: services/Dockerfile, args: { SERVICE: ledger } }
-    environment: { <<: *env, PORT: "8083", HUMID_TLOG_COSIGNERS: "${HUMID_TLOG_COSIGNERS:-}" }
+    environment: { <<: *env, PORT: "8083", HUMID_TLOG_COSIGNERS: "${HUMID_TLOG_COSIGNERS:-}", HUMID_CORE_STATEMENT_SK: "${HUMID_CORE_STATEMENT_SK:?run ./setup.sh again}" }
     volumes: [ledger-data:/data]
     healthcheck:
       <<: *health
@@ -166,6 +171,7 @@ services:
     environment:
       <<: *env
       PORT: "8086"
+      HUMID_KEYS_STATEMENT_SK: ${HUMID_KEYS_STATEMENT_SK:?run ./setup.sh again}   # signs Check-in erases (SRV-30)
       HUMID_SHARE_RELEASES_PER_HOUR: ${HUMID_SHARE_RELEASES_PER_HOUR:-120}
     volumes: [keyshare-data:/data]
     healthcheck:

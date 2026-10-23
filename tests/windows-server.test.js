@@ -31,7 +31,7 @@ test("settings: a new file holds the key pair and every default; edits keep comm
 });
 
 test("settings: validation explains what's wrong", () => {
-  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b" };
+  const ok = { HUMID_INTERNAL_SK: "a", HUMID_INTERNAL_PK: "b", HUMID_CORE_STATEMENT_SK: "c", HUMID_CORE_STATEMENT_PK: "d", HUMID_KEYS_STATEMENT_SK: "e", HUMID_KEYS_STATEMENT_PK: "f" };
   validate({ ...ok, HUMID_DEVICE_POLICY: "attested", HUMID_IOS_APP_ID: "ABCDE12345.app.humid.vault", HUMID_PUBLIC_URL: "https://dell.tail1234.ts.net" });
   assert.throws(() => validate({ ...ok, HUMID_DEVICE_POLICY: "pin" }), /attested, biometric, demo/);
   assert.throws(() => validate({ ...ok, HUMID_IOS_APP_ID: "app.humid.vault" }), /Team ID/);
