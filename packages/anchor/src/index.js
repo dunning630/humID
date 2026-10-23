@@ -59,6 +59,7 @@ const OID = {
   ldsSecurityObject: "2.23.136.1.1.1",
   contentType: "1.2.840.113549.1.9.3",
   messageDigest: "1.2.840.113549.1.9.4",
+  signingTime: "1.2.840.113549.1.9.5",
   countryName: "2.5.4.6",
   subjectKeyId: "2.5.29.14",
   keyUsage: "2.5.29.15",
@@ -245,16 +246,25 @@ const asCert = (c) => (c instanceof X509Certificate ? c : new X509Certificate(c)
 /**
  * Check that the chip's data is genuine. chip: { dg1, sod, dg15? } (bytes).
  * cscas: trusted country signing CA certificates. Returns the parsed MRZ and what was proven.
+ *
+ * SHA-1 anywhere in the SOD (the data group hashes, the signer's digest or its
+ * signature) is refused (`weak_hash`, review finding CREDS-08): Doc 9303 has
+ * allowed only SHA-224/256/384/512 since its 7th edition (2015), and a
+ * chosen-prefix collision on SHA-1 is practical. Passports issued under the
+ * 6th edition with SHA-1 may still be in date; allowSha1: true accepts them and
+ * the result says `weakHash: true`, for a caller that will treat them as weaker.
  */
 export function passiveAuth(chip, opts = {}) {
   // Whatever a phone sends, the answer is a refusal with a reason, never a server error.
   return tryRead(() => passiveAuthInner(chip, opts), "bad_chip_data", "The chip data can't be read.");
 }
 
-function passiveAuthInner(chip, { cscas = [], now = new Date() } = {}) {
+function passiveAuthInner(chip, { cscas = [], now = new Date(), allowSha1 = false } = {}) {
   if (!chip?.dg1 || !chip?.sod) fail("bad_chip_data", "The chip data needs DG1 and the document security object.");
   if (!cscas.length) fail("no_trust", "This server has no country signing certificates configured, so it can't check ID chips yet.");
   const sod = parseSod(chip.sod);
+  const weakHash = sodUsesSha1(sod);
+  if (weakHash && !allowSha1) fail("weak_hash", "This document's chip is signed with SHA-1, which HumID no longer accepts as proof.");
 
   // 1. Every data group sent matches its signed hash (and every signed hash is the right size).
   for (const h of sod.dgHashes.values()) if (h.length !== HASH_LEN[sod.hashAlg]) fail("bad_chip_data", "The chip's signed record is malformed.");
@@ -301,7 +311,15 @@ function passiveAuthInner(chip, { cscas = [], now = new Date() } = {}) {
 
   // aaRequired: the SOD lists an Active Authentication key, so the chip can prove it's
   // present and must; leaving DG15 out doesn't make it a chip that can't.
-  return { mrz, hashAlg: sod.hashAlg, hasAaKey: sod.dgHashes.has(15) && !!chip.dg15, aaRequired: sod.dgHashes.has(15), issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+  return { mrz, hashAlg: sod.hashAlg, weakHash, hasAaKey: sod.dgHashes.has(15) && !!chip.dg15, aaRequired: sod.dgHashes.has(15), issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+}
+
+/** Does the SOD rest on SHA-1 anywhere: its data group hashes, its signer's digest, or its signature? */
+function sodUsesSha1(sod) {
+  const mdAlg = sod.signerDigest || sod.hashAlg;
+  const spec = SIG[sod.signatureAlg.oid];
+  const sigHash = spec?.kind === "pss" ? pssParams(sod.signatureAlg.params).hash : spec?.hash || mdAlg;
+  return [sod.hashAlg, mdAlg, sigHash].includes("sha1");
 }
 
 /** DG1 (tag 0x61) → MRZ (tag 0x5F1F) → parsed fields. */
@@ -384,6 +402,18 @@ export const anchorSummary = (mrz) => ({ document: mrz.documentCode?.startsWith(
 
 /* ---------------- ICAO master lists ---------------- */
 
+/** UTCTime or GeneralizedTime (whole seconds, Z) → Date. */
+function timeOf(t) {
+  const s = Buffer.from(t.value).toString("latin1");
+  const m = t.tag === 23 ? /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s) : t.tag === 24 ? /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s) : null;
+  if (!m) fail("bad_master_list", "The master list's signing time can't be read.");
+  let y = Number(m[1]);
+  if (t.tag === 23) y += y < 50 ? 2000 : 1900;
+  const d = new Date(Date.UTC(y, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])));
+  if (Number.isNaN(d.getTime())) fail("bad_master_list", "The master list's signing time can't be read.");
+  return d;
+}
+
 const ML = { content: "2.23.136.1.1.2", signerEku: "2.23.136.1.1.3", extKeyUsage: "2.5.29.37" };
 
 /**
@@ -393,8 +423,11 @@ const ML = { content: "2.23.136.1.1.2", signerEku: "2.23.136.1.1.3", extKeyUsage
  * the publisher's vetting, so its signer must chain to a CSCA you already
  * trust for that publisher (`publisherCscas`).
  *
- * Returns { publisher, signer, cscas: [X509Certificate] } (expired CSCAs kept:
- * a passport signed under one stays checkable until its own expiry rules say not).
+ * Returns { publisher, signer, signingTime, cscas: [X509Certificate] } (expired
+ * CSCAs kept: a passport signed under one stays checkable until its own expiry
+ * rules say not). signingTime is the signed CMS signing-time attribute (a Date,
+ * or null when the list has none): master lists carry no issue number, so it is
+ * what a store uses to refuse an older list replayed over a newer one.
  */
 export function readMasterList(bytes, { publisherCscas = [], now = new Date() } = {}) {
   return tryRead(() => readMasterListInner(bytes, publisherCscas, now), "bad_master_list", "The master list can't be read.");
@@ -452,5 +485,7 @@ function readMasterListInner(bytes, publisherCscas, now) {
     if (!certFields(x.raw).ca) continue; // only CA certificates belong in a CSCA list
     cscas.push(x);
   }
-  return { publisher: certFields(publisher.raw).country, signer: signer.subject, cscas };
+  const st = attrs.get(OID.signingTime);
+  const signingTime = st ? timeOf(st) : null;
+  return { publisher: certFields(publisher.raw).country, signer: signer.subject, signingTime, cscas };
 }

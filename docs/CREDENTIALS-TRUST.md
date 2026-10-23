@@ -56,7 +56,12 @@ To pin a provider:
   its list names; hand-pinned roots default to mobile driver's licenses.
 - **Lists only move forward.** A VICAL with a lower issue ID (or an earlier
   date) than the one applied is refused, so replaying an old list can't bring
-  back a root that was removed. A list over 120 days old, more than 30 days
+  back a root that was removed. A master list carries no issue number, so its
+  signed CMS signing time orders it: one signed before the list applied for
+  that source (or at the same time with other contents, or with no signing
+  time once one was seen) is refused, so replaying last year's list can't drop
+  the CSCAs added since and lock those countries' passports out (CREDS-06).
+  Each source (`icao`, `bsi`, …) keeps its own clock. A list over 120 days old, more than 30 days
   past its own `nextUpdate`, or dated in the future is refused.
 - **The store has a revision** that rises with every change.
   `loadTrustStore(snapshot, { minRev })` refuses an older copy; the refresher
