@@ -84,7 +84,11 @@ export async function withKeys(purpose, label, fn, { keepOpen = false, challenge
       message: gate.needsHold ? holdMessage : `Confirm with ${gateLabel(id.method)}.` });
     if (!id.device) throw Object.assign(new Error("This HumID was made by an earlier test version and has to be set up again."), { code: "unknown_identity" });
     await waitForHold(gate);
-    const rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest });
+    // Only the system's prompt itself excuses HumID leaving the screen (core/leave.js, PC-17).
+    let rel;
+    R.hooks.promptStart?.();
+    try { rel = await gate.release(id.gate.handle, { purpose, prompt: label, challenge: challenge ?? localChallenge(purpose), attest }); }
+    finally { R.hooks.promptEnd?.(); }
     secret = rel.secret;
     // The human-to-human rule (@humid/msg live.js): when this phone's holder was last proven live.
     S.liveAt.value = Date.now();

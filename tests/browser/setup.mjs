@@ -10,6 +10,7 @@
 //   - every button, link and checkbox is at least 44 px in both directions
 //   - preferences: theme, four text sizes, animations, lock time, sort; pins ride with the item
 //   - the back gesture closes what's on top, one level at a time, and never leaves HumID
+//   - leaving HumID while a check is running locks it; the document never opens (PC-17)
 //   - a deleted biometric key is explained, and setting up again starts from Welcome
 //   - an app built with a pinned server skips the "trust this server" step
 //
@@ -348,6 +349,29 @@ try {
   assert.equal((await rows.first().locator(".name").innerText()).trim(), lastName, "a pinned item goes to the top");
   await shot(page, "small-vault-pinned-day");
   step("a pinned item moves to the top of the vault");
+
+  // PC-17: HumID hidden while a check is running (here the demo hold, before the prompt)
+  // locks at once; the document never opens behind the scenes, and isn't showing on return
+  const setHidden = (h) => page.evaluate((hid) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hid });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hid ? "hidden" : "visible") });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, h);
+  await rows.first().click();
+  await page.locator(".pushed").getByRole("button", { name: "Open", exact: true }).click();
+  await page.locator(".interrupt button.hold").waitFor();
+  await setHidden(true);
+  await page.waitForTimeout(300);
+  if (await page.locator(".interrupt button.hold").count()) { // finish the check while hidden, if it's still asking
+    await page.locator(".interrupt button.hold").focus(); await page.keyboard.down(" "); await page.waitForTimeout(1500); await page.keyboard.up(" ");
+  }
+  await page.waitForTimeout(2500);
+  await setHidden(false);
+  await page.waitForTimeout(800);
+  assert.equal(await page.locator(".viewer").count(), 0, "no document showing after HumID came back");
+  assert.equal(await page.locator(".tabbar").count(), 0, "the vault is locked");
+  await page.getByRole("button", { name: "Unlock", exact: true }).waitFor();
+  step("PC-17: hidden mid-check locks at once; the document never opens");
 
   await page.reload();
   await page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ timeout: 15_000 });
