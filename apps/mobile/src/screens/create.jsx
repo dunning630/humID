@@ -184,7 +184,7 @@ export const MODE_CHOICES = [
   {
     id: HARDENED, icon: "shield", title: "A safe way back in", tag: "Recommended",
     text: "Set up two ways to prove it's you later: people you trust, your passport or ID card, a recovery card, a security key. To get back in you use any two of them, then there's a wait during which any device you still have can cancel it.",
-    cost: "More ways back in, but some of that proof is kept on HumID's servers, locked so they can't open it on their own.",
+    cost: "More ways back in, but some of that proof is kept on HumID's servers. Your witnesses', card's and security key's pieces are locked so the servers can't open them; a passport or ID card piece isn't.",
   },
   {
     id: HOLDER_ONLY, icon: "key", title: "Only my own devices", tag: "Most private",
