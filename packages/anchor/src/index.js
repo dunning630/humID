@@ -246,16 +246,25 @@ const asCert = (c) => (c instanceof X509Certificate ? c : new X509Certificate(c)
 /**
  * Check that the chip's data is genuine. chip: { dg1, sod, dg15? } (bytes).
  * cscas: trusted country signing CA certificates. Returns the parsed MRZ and what was proven.
+ *
+ * SHA-1 anywhere in the SOD (the data group hashes, the signer's digest or its
+ * signature) is refused (`weak_hash`, review finding CREDS-08): Doc 9303 has
+ * allowed only SHA-224/256/384/512 since its 7th edition (2015), and a
+ * chosen-prefix collision on SHA-1 is practical. Passports issued under the
+ * 6th edition with SHA-1 may still be in date; allowSha1: true accepts them and
+ * the result says `weakHash: true`, for a caller that will treat them as weaker.
  */
 export function passiveAuth(chip, opts = {}) {
   // Whatever a phone sends, the answer is a refusal with a reason, never a server error.
   return tryRead(() => passiveAuthInner(chip, opts), "bad_chip_data", "The chip data can't be read.");
 }
 
-function passiveAuthInner(chip, { cscas = [], now = new Date() } = {}) {
+function passiveAuthInner(chip, { cscas = [], now = new Date(), allowSha1 = false } = {}) {
   if (!chip?.dg1 || !chip?.sod) fail("bad_chip_data", "The chip data needs DG1 and the document security object.");
   if (!cscas.length) fail("no_trust", "This server has no country signing certificates configured, so it can't check ID chips yet.");
   const sod = parseSod(chip.sod);
+  const weakHash = sodUsesSha1(sod);
+  if (weakHash && !allowSha1) fail("weak_hash", "This document's chip is signed with SHA-1, which HumID no longer accepts as proof.");
 
   // 1. Every data group sent matches its signed hash (and every signed hash is the right size).
   for (const h of sod.dgHashes.values()) if (h.length !== HASH_LEN[sod.hashAlg]) fail("bad_chip_data", "The chip's signed record is malformed.");
@@ -302,7 +311,15 @@ function passiveAuthInner(chip, { cscas = [], now = new Date() } = {}) {
 
   // aaRequired: the SOD lists an Active Authentication key, so the chip can prove it's
   // present and must; leaving DG15 out doesn't make it a chip that can't.
-  return { mrz, hashAlg: sod.hashAlg, hasAaKey: sod.dgHashes.has(15) && !!chip.dg15, aaRequired: sod.dgHashes.has(15), issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+  return { mrz, hashAlg: sod.hashAlg, weakHash, hasAaKey: sod.dgHashes.has(15) && !!chip.dg15, aaRequired: sod.dgHashes.has(15), issuerCountry: mrz.issuer, cscaSubject: csca.subject };
+}
+
+/** Does the SOD rest on SHA-1 anywhere: its data group hashes, its signer's digest, or its signature? */
+function sodUsesSha1(sod) {
+  const mdAlg = sod.signerDigest || sod.hashAlg;
+  const spec = SIG[sod.signatureAlg.oid];
+  const sigHash = spec?.kind === "pss" ? pssParams(sod.signatureAlg.params).hash : spec?.hash || mdAlg;
+  return [sod.hashAlg, mdAlg, sigHash].includes("sha1");
 }
 
 /** DG1 (tag 0x61) → MRZ (tag 0x5F1F) → parsed fields. */

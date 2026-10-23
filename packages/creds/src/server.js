@@ -24,12 +24,14 @@ function mrzDate(yymmdd, kind, now = new Date()) {
  * signature over the server's fresh nonce.
  *   cscas: trusted CSCAs (from a directory, a master list, or both)
  *   active: { nonce, signature, hash? } — required when the chip has an AA key
+ *   allowSha1: accept an older chip signed with SHA-1 (refused by default,
+ *              CREDS-08); the result then says weakHash: true
  */
-export function verifyPassportChip(chip, { cscas, active, now = new Date() } = {}) {
+export function verifyPassportChip(chip, { cscas, active, allowSha1 = false, now = new Date() } = {}) {
   const bytes = (v) => v == null || v instanceof Uint8Array;
   if (!chip || typeof chip !== "object" || !["dg1", "sod", "dg15"].every((k) => bytes(chip[k]))) fail("bad_request", "The chip data must be bytes.");
   if (active && (!bytes(active.nonce) || !bytes(active.signature))) fail("bad_request", "The chip's answer must be bytes.");
-  const pa = wrap(() => passiveAuth(chip, { cscas, now }));
+  const pa = wrap(() => passiveAuth(chip, { cscas, now, allowSha1 }));
   let holder = false;
   if (pa.aaRequired) {
     if (!active?.nonce || !active?.signature) fail("no_chip_proof", "This chip can prove it's the original; answer the challenge to continue.");
@@ -47,8 +49,9 @@ export function verifyPassportChip(chip, { cscas, active, now = new Date() } = {
       document_number: m.number || null, expiry_date: mrzDate(m.expiry, "expiry", now),
       issuing_country: country, nationality: m.nationality || null, sex: m.sex || null,
     }).filter(([, v]) => v != null)),
-    values: null, validUntil: mrzDate(m.expiry, "expiry", now), statusRef: null, status: null,
-    note: holder ? null : "This chip has no Active Authentication key, so a copy of its data can't be told from the original.",
+    values: null, validUntil: mrzDate(m.expiry, "expiry", now), statusRef: null, status: null, weakHash: pa.weakHash,
+    note: [holder ? null : "This chip has no Active Authentication key, so a copy of its data can't be told from the original.",
+      pa.weakHash ? "This chip's data is signed with SHA-1, which is no longer collision-resistant." : null].filter(Boolean).join(" ") || null,
   };
 }
 
