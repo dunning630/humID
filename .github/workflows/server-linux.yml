@@ -60,10 +60,17 @@ jobs:
       - name: Backup, restore, update in place, uninstall
         run: |
           set -euo pipefail
+          # Every command's output goes to a file too: on failure its tail and the service's journal
+          # become an annotation, readable through the API without the job log.
+          log="$RUNNER_TEMP/backup-restore.log"
+          trap 'rc=$?; if [ $rc != 0 ]; then echo "::error title=Backup/restore failed (exit $rc)::$( { tail -40 "$log"; echo "--- journal ---"; sudo journalctl -u humid -n 25 --no-pager -o cat 2>/dev/null; } | sed -e "s/%/%25/g" | awk "BEGIN{ORS=\"%0A\"} {print}" | cut -c1-3900)"; fi' EXIT
+          exec > >(tee -a "$log") 2>&1
+          set -x
           kid=$(sudo /opt/humid/node/bin/node -p "require('/var/lib/humid/server.json').kid")
           mkdir -p "$RUNNER_TEMP/usb" "$RUNNER_TEMP/bak"
           sudo humid backup-key new "$RUNNER_TEMP/usb/humid-backup.key"
           sudo humid backup "$RUNNER_TEMP/bak"
+          ls -la "$RUNNER_TEMP/bak"
           sudo humid restore "$RUNNER_TEMP"/bak/HumID-backup-*.humidbak "$RUNNER_TEMP"/bak/HumID-keyshare-*.humidbak "$RUNNER_TEMP/usb/humid-backup.key"
           test "$(sudo /opt/humid/node/bin/node -p "require('/var/lib/humid/server.json').kid")" = "$kid" || { echo "::error::the restored server has another identity"; exit 1; }
           sudo "$RUNNER_TEMP/pkg/humid-server/bin/humid" install
