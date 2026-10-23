@@ -1,6 +1,7 @@
 {
   "name": "@humid/svc",
   "version": "1.2.0",
+  "private": true,
   "description": "Tiny service kit shared by HumID microservices: HTTP router, internal assertions, SQLite, logging, health, graceful shutdown. No framework.",
   "type": "module",
   "exports": "./src/index.js",

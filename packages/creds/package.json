@@ -1,6 +1,7 @@
 {
   "name": "@humid/creds",
   "version": "0.1.0",
+  "private": true,
   "description": "HumID 4.0 (provisional): ask for and check public identity credentials through one interface. Digital Credentials API requests (OpenID4VP 1.0 + ISO 18013-7 Annex C), verification of mobile driver's licenses and IDs, EU digital identity (mdoc and SD-JWT VC) and wallet photo IDs with issuer trust, holder binding and revocation; passport and ID chips (server); license barcodes (unsigned); SSN structure and eCBSV for permitted entities; minimised claims committed to a persona.",
   "type": "module",
   "exports": {
