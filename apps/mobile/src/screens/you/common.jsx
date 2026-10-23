@@ -70,7 +70,8 @@ export function Fact({ k, v, stacked = false }) {
   return <div class="row no-lead"><span class="body"><span class="title" style={{ fontWeight: 500 }}>{k}</span></span><span class="trail" style={{ textAlign: "right", whiteSpace: "normal", flex: "0 1 60%", justifyContent: "flex-end" }}>{v}</span></div>;
 }
 
-export const twelve = (code) => String(code || "").replace(/[^0-9a-z]/gi, "").length === 12;
+/** A whole code: 12 characters, or 16 for a recovery request (CRYPTO-08). */
+export const twelve = (code) => [12, 16].includes(String(code || "").replace(/[^0-9a-z]/gi, "").length);
 /** Push one of the You detail screens. */
 export const go = (type, extra = {}) => { S.push.value = { type, ...extra }; };
 export const back = () => { S.push.value = null; };

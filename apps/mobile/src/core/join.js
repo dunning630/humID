@@ -105,8 +105,9 @@ export async function beginJoin(method, { useDemo = false, cardInput = "", soleB
       const lk = Suite.deriveKeys(x);
       // The link names this device's key (PC-02): only this device can join with it once it's approved.
       const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: dkeys.dsaPk });
+      // The link's PUBLIC keys stay with the record: the match code commits to them (CRYPTO-08).
+      pending = { method, code: r.code, expiresAt: r.expiresAt, linkKem: toB64(lk.kemPk), linkX: toB64(lk.xPk) };
       Suite.wipeKeys(lk);
-      pending = { method, code: r.code, expiresAt: r.expiresAt };
     } else if (method === "card") {
       const r = await R.api.startRecovery({ method: "card", tag: cardTag(cardSecret), platform: PLATFORM });
       pending = { method, requestId: r.id, account: r.account, releaseAt: r.releaseAt, expiresAt: r.expiresAt };
@@ -167,10 +168,11 @@ export async function renewLink() {
     const lk = Suite.deriveKeys(x);
     // A fresh code for the same bound device key (PC-02).
     const r = await R.api.startLink({ kemPk: lk.kemPk, xPk: lk.xPk, platform: PLATFORM, devicePk: fromB64(p.devicePub) });
+    const linkKeys = { linkKem: toB64(lk.kemPk), linkX: toB64(lk.xPk) };
     Suite.wipeKeys(lk);
     next = concat(both.subarray(0, SEED), x);
     const wrapped = await Suite.wrapSeed(secret, next, fromB64(id.bindingId));
-    const record = { ...id, wrapped, pending: { ...p, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now() } };
+    const record = { ...id, wrapped, pending: { ...p, code: r.code, expiresAt: r.expiresAt, startedAt: Date.now(), ...linkKeys } };
     delete record.schema;
     await R.store.putIdentity(record);
     batch(() => { S.identity.value = { ...record, schema: 4 }; S.joinStatus.value = null; });
@@ -201,7 +203,12 @@ export async function pollJoin() {
   }
   if (st && ["approved", "released"].includes(st.status)) {
     // Adding a device: the person compares the match code on both screens first.
-    if (p.method === "link") { S.joinStatus.value = { ...st, check: accountCheck(st.account) }; return; }
+    if (p.method === "link") {
+      // A link from before the record kept its keys can't show a match code: get a fresh one.
+      if (!p.linkKem) { S.joinStatus.value = { status: "expired" }; return; }
+      S.joinStatus.value = { ...st, check: accountCheck(st.account, fromB64(p.linkKem), fromB64(p.linkX)) };
+      return;
+    }
     return finishJoin(st);
   }
   if (st?.reason === "holder_only") setJoinMode(HOLDER_ONLY);

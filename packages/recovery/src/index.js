@@ -60,7 +60,13 @@ export const normalize = (s) => String(s || "").toUpperCase().replace(/[\s\-_.]/
 
 /* ---------------- key codes: XXXX-XXXX-XXXX ---------------- */
 
-export const CODE_LENGTH = 12; // 60 bits
+export const CODE_LENGTH = 12; // 60 bits: codes that live minutes (links, witness offers, admin)
+/**
+ * Recovery-request codes live up to a week while witnesses respond, long enough that a 60-bit
+ * second preimage (a server finding its own keys for someone's code) is within reach of a
+ * well-funded attacker (CRYPTO-08). They have 16 characters: 80 bits.
+ */
+export const LONG_CODE_LENGTH = 16;
 
 /**
  * A short code that commits to public keys. The device that shows it made the
@@ -68,15 +74,16 @@ export const CODE_LENGTH = 12; // 60 bits
  * hands it, so a server that substituted keys is caught.
  */
 export function keyCode(label, ...publicKeys) {
-  return base32(sha3_256(concat(utf8(label), lp(...publicKeys)))).slice(0, CODE_LENGTH);
+  return base32(sha3_256(concat(utf8(label), lp(...publicKeys)))).slice(0, codeLengthFor(label));
 }
+const codeLengthFor = (label) => (label === REQUEST_LABEL ? LONG_CODE_LENGTH : CODE_LENGTH);
 
 export const formatCode = (code) => normalize(code).match(/.{1,4}/g)?.join("-") ?? "";
 
-/** Normalised 12-character code, or null if the input cannot be one. */
+/** A normalised 12- or 16-character code, or null if the input cannot be one. */
 export function parseCode(input) {
   const c = normalize(input);
-  return c.length === CODE_LENGTH && [...c].every((ch) => ch in DECODE) ? c : null;
+  return (c.length === CODE_LENGTH || c.length === LONG_CODE_LENGTH) && [...c].every((ch) => ch in DECODE) ? c : null;
 }
 
 export const LINK_LABEL = "HUMID-LINK-v1";       // a new device asking to join
@@ -457,7 +464,7 @@ export const QR_VERSION = 2;
 export const QR_MAX = 48;
 export const QR_KINDS = Object.freeze({ link: "LINK", recover: "RECOVER", contact: "CONTACT", admin: "ADMIN" });
 // One spelling per payload: no leading zeros in the version or the expiry.
-const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}):([1-9A-Z][0-9A-Z]{0,7})$/;
+const QR_RE = /^HUMID:([1-9][0-9]{0,2}):([A-Z]{1,10}):([0-9A-Z]{12}|[0-9A-Z]{16}):([1-9A-Z][0-9A-Z]{0,7})$/;
 
 /** The text for a QR code. expiresAt in ms. */
 export function qrPayload(kind, code, expiresAt) {
@@ -509,12 +516,19 @@ export function recoveryModeMessage(accountId, mode, version, epoch) {
 export const routesFor = (mode) => (mode === RECOVERY_MODES.holderOnly ? ["link"] : ["link", "quorum", "card", "contacts"]);
 
 /* ---------------- account check ----------------
- * Adding a device: both screens show this short string for the account, and the
- * person compares them before the new device finishes. A server that sealed some
- * other account's key to the new device would show a different one.
+ * Adding a device: both screens show this short string, and the person compares them before
+ * the new device finishes. A server that sealed some other account's key to the new device
+ * would show a different one.
+ *
+ * v2 (CRYPTO-08): it commits to the account AND this link's own public keys, which the new
+ * device made for this link and which live 10 minutes. v1 hashed the account id alone, so a
+ * server could grind, ahead of time and at leisure, an account of its own whose 40-bit check
+ * matched a victim's. Now any such grinding has to start after the link exists and finish
+ * inside its 10 minutes, for those keys only.
  */
-export const ACCOUNT_CHECK_LABEL = "HUMID-ACCOUNT-CHECK-v1";
-export function accountCheck(accountId) {
+export const ACCOUNT_CHECK_LABEL = "HUMID-ACCOUNT-CHECK-v2";
+export function accountCheck(accountId, linkKemPk, linkXPk) {
   if (!accountId) throw new Error("No account");
-  return base32(sha3_256(concat(utf8(ACCOUNT_CHECK_LABEL), utf8(String(accountId))))).slice(0, 8).match(/.{4}/g).join("-");
+  if (!(linkKemPk instanceof Uint8Array) || !(linkXPk instanceof Uint8Array) || !linkKemPk.length || !linkXPk.length) throw new Error("The match code needs this link's keys");
+  return base32(sha3_256(concat(utf8(ACCOUNT_CHECK_LABEL), lp(utf8(String(accountId)), linkKemPk, linkXPk)))).slice(0, 8).match(/.{4}/g).join("-");
 }

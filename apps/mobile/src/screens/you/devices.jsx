@@ -53,7 +53,7 @@ function AddDeviceSheet({ onClose }) {
   const [req, setReq] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  const check = myAccountCheck();
+  const check = myAccountCheck(req);
   const find = async (c = code) => { if (busy) return; setBusy(true); setReq(await findLink(c)); setBusy(false); };
   const approve = async () => { setBusy(true); if (await approveLink(req)) setDone(true); setBusy(false); };
   return (
