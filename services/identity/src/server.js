@@ -326,6 +326,18 @@ export function createIdentity({
       const id = identityId(keys.dsaPk);
       const existing = getAccount.get(id);
       if (existing && existing.status !== "active") throw new HttpError(409, "identity_closed", "This identity was closed.");
+      // Registration creates an account with its first device. On an account that already exists it
+      // may only repeat for a device that is already enrolled there (a retry whose answer was lost).
+      // A NEW device joins only through /internal/devices, behind an existing device's approval or a
+      // completed recovery (PC-02). Without this, a copied account seed alone enrolled a thief's
+      // phone with no approval, no wait and no alert (review 2026-10-23, SRV-01).
+      if (existing) {
+        const dsaPk = key(r.device?.dsaPk, "device dsaPk", SIZES.dsaPk);
+        const known = getDevice.get(deviceId(dsaPk));
+        if (!known || known.account_id !== id || known.revoked_at) {
+          throw new HttpError(409, "identity_exists", "This HumID already exists. Add this phone from one of your devices, or recover your HumID.");
+        }
+      }
       db.exec("BEGIN");
       try {
         if (!existing) {

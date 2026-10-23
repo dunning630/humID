@@ -405,12 +405,20 @@ export function openDb(dir, file, migrations) {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
   db.exec("CREATE TABLE IF NOT EXISTS _migrations (n INTEGER PRIMARY KEY, at TEXT NOT NULL)");
   const done = new Set(db.prepare("SELECT n FROM _migrations").all().map((r) => r.n));
+  // One transaction, always closed: COMMIT on success, ROLLBACK on any throw. A BEGIN left open
+  // after a throw (a UNIQUE clash, say) wedges this single shared connection for every later
+  // write until a restart (review 2026-10-23, SRV-02). Use db.tx for every multi-statement write.
+  db.tx = (fn) => {
+    db.exec("BEGIN");
+    try { const out = fn(); db.exec("COMMIT"); return out; }
+    catch (e) { try { db.exec("ROLLBACK"); } catch { /* already closed */ } throw e; }
+  };
   migrations.forEach((sql, i) => {
     if (done.has(i + 1)) return;
-    db.exec("BEGIN");
-    db.exec(sql);
-    db.prepare("INSERT INTO _migrations (n, at) VALUES (?, ?)").run(i + 1, new Date().toISOString());
-    db.exec("COMMIT");
+    db.tx(() => {
+      db.exec(sql);
+      db.prepare("INSERT INTO _migrations (n, at) VALUES (?, ?)").run(i + 1, new Date().toISOString());
+    });
   });
   return db;
 }

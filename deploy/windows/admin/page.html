@@ -135,7 +135,10 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ago = (t) => { if (!t) return "never"; const s = Math.round((Date.now() - (typeof t === "number" ? t : Date.parse(t))) / 1000); if (s < 60) return "just now"; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 172800) return `${Math.round(s / 3600)} h ago`; return `${Math.round(s / 86400)} days ago`; };
 const dur = (s) => { if (s == null) return ""; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
 const gb = (n) => (n == null ? "" : n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : `${Math.round(n / 2 ** 20)} MB`);
-const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+// Numbers the server writes are only ever shown as numbers: anything else becomes 0, never markup
+// (review 2026-10-23, DEPLOY-02: server-status.json fields went into innerHTML unescaped).
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const plural = (n, w) => { n = num(n); return `${n} ${w}${n === 1 ? "" : "s"}`; };
 const when = (t) => (t ? new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "");
 
 async function api(path, body) {
@@ -205,7 +208,7 @@ function draw() {
     <button data-act="logout" class="small">Sign out</button>
   </header>
   <p class="verdict" data-level="${level}"><span class="lamp"></span>${esc(verdict)}
-    <span class="sub">${srv.up ? `HumID server up ${dur(st?.uptimeS)}, ${st?.sessions ?? 0} open session${st?.sessions === 1 ? "" : "s"}.` : srv.down ? "The HumID server isn't answering." : "Waiting for the server's status."} ${s.admins.length ? `Changes are approved on ${s.admins.length === 1 ? "your phone" : `one of ${s.admins.length} administrator phones`}.` : "No administrator phone yet, so nothing can be changed from here."}</span>
+    <span class="sub">${srv.up ? `HumID server up ${dur(st?.uptimeS)}, ${plural(st?.sessions, "open session")}.` : srv.down ? "The HumID server isn't answering." : "Waiting for the server's status."} ${s.admins.length ? `Changes are approved on ${s.admins.length === 1 ? "your phone" : `one of ${s.admins.length} administrator phones`}.` : "No administrator phone yet, so nothing can be changed from here."}</span>
   </p>
   <main>
     <section class="wide">
@@ -243,15 +246,15 @@ function serverSection(s) {
   return `<section>
     <h2>HumID server <span class="tools"><button data-req="backup" ${dis(s)}>Back up now</button><button data-req="restart-server" ${dis(s)}>Restart</button></span></h2>
     <dl class="facts">
-      <dt>State</dt><dd><span class="dot ${srv.up ? "" : srv.down ? "bad" : "warn"}"></span>${srv.up ? "Answering" : srv.down ? `Not answering for ${Math.round(srv.downFor / 1000)} s` : srv.stale ? "Answering, but not reporting status" : "Starting"}${srv.edge?.ms != null ? ` <span class="soft">· ${srv.edge.ms} ms</span>` : ""}</dd>
+      <dt>State</dt><dd><span class="dot ${srv.up ? "" : srv.down ? "bad" : "warn"}"></span>${srv.up ? "Answering" : srv.down ? `Not answering for ${Math.round(num(srv.downFor) / 1000)} s` : srv.stale ? "Answering, but not reporting status" : "Starting"}${srv.edge?.ms != null ? ` <span class="soft">· ${num(srv.edge.ms)} ms</span>` : ""}</dd>
       <dt>Version</dt><dd>${esc(st?.version || info.version || "")} <span class="soft">· serves the HumID app ${esc(st?.appVersion || info.appVersion || "")}</span></dd>
       <dt>Public address</dt><dd>${pub.url ? `<span class="dot ${pub.ok ? "" : pub.ok === false ? "bad" : "off"}"></span>${esc(pub.url)}${pub.ok === false ? ` <span class="soft">· ${esc(pub.status ? `HTTP ${pub.status}` : pub.error)}</span>` : ""}${pub.certExpires ? ` <span class="soft">· certificate until ${esc(new Date(pub.certExpires).toLocaleDateString())}</span>` : ""}` : `<span class="soft">None. Run <span class="mono">humid expose tailscale</span>.</span>`}</dd>
       <dt>Fingerprint</dt><dd class="mono small">${esc(info.fingerprint || st?.fingerprint || "")}</dd>
       <dt>Device policy</dt><dd>${esc(st?.devicePolicy || info.devicePolicy || "")}${(st?.registration || info.registration) === "pass" ? " · new accounts need an access pass" : " · open registration"}</dd>
-      ${st?.process ? `<dt>Process</dt><dd>${st.process.rssMB} MB memory · ${st.process.cpuPct}% CPU · ${st.process.loopLagP99Ms} ms delay (p99) · Node ${esc(st.process.node)}</dd>` : ""}
+      ${st?.process ? `<dt>Process</dt><dd>${num(st.process.rssMB)} MB memory · ${num(st.process.cpuPct)}% CPU · ${num(st.process.loopLagP99Ms)} ms delay (p99) · Node ${esc(st.process.node)}</dd>` : ""}
     </dl>
     ${services.length ? `<table style="margin-top:14px"><thead><tr><th>Service</th><th>Health</th><th class="num">Response</th><th class="num">Data</th></tr></thead><tbody>
-      ${services.map((x) => `<tr><td>${esc(x.name)}</td><td><span class="dot ${x.ok ? "" : "bad"}"></span>${x.ok ? "ok" : esc(x.error || `HTTP ${x.status}`)}</td><td class="num">${x.ms ?? ""} ms</td><td class="num">${gb((st.data || []).find((d) => d.name === x.name)?.bytes)}</td></tr>`).join("")}
+      ${services.map((x) => `<tr><td>${esc(x.name)}</td><td><span class="dot ${x.ok ? "" : "bad"}"></span>${x.ok ? "ok" : esc(x.error || `HTTP ${x.status}`)}</td><td class="num">${x.ms == null ? "" : num(x.ms)} ms</td><td class="num">${gb((st.data || []).find((d) => d.name === x.name)?.bytes)}</td></tr>`).join("")}
     </tbody></table>` : ""}
     <h2 style="margin-top:18px;font-size:15px">Gateway response, last 24 hours</h2>
     ${spark(s.history, "ms", { max: 50, downKey: "ok" })}
