@@ -164,7 +164,7 @@ A read-only audit of crypto/transit, server, app/plugins/ID parsers, supply chai
 | SRV-01 | Device enrolment needs only the account key, no approval from an existing device (`gateway` `enrollDevice`) | ✅ a device joins only with an approved link naming its device key (single use) or a released recovery of the same route; `via: register` refused (PC-02, `tests/e2e/enrol.test.js`) |
 | SRV-05 | `POST /auth/presence` with `d:1` destroys an armed vault with no step-up | ✅ the duress flag is signed into the sign-in by the device key the live check releases (`loginPresenceMessage`); the presence flag is ignored (PC-01, `tests/e2e/checkin.test.js`) |
 | SRV-04 | Windows SYSTEM console works in a directory LOCAL SERVICE controls (junction primitive) | ⬜ |
-| M-1 | `/htp/v1/keys` policy hints are unauthenticated (a proxy can turn off split keys) | ⬜ |
+| M-1 | `/htp/v1/keys` policy hints are unauthenticated (a proxy can turn off split keys) | ✅ the policy is signed with the server's ML-DSA-87 key (`policySig`) and checked against the pinned kid; unsigned or altered hints are ignored (strict defaults). A pinned release build never seals unsplit, even on its first run (CRYPTO-07, VAULT-04, `tests/htp.test.js`, `tests/split-ratchet.test.js`) |
 | F-07 | Windows/Linux desktop gates are not OS-enforced (desktop paused) | ⬜ |
 | F-08/F-09 | Android wrapping key is valid 3 s after any biometric, not per use; no runtime root detection | ⬜ |
 | SC-01..05 | Actions pinned to mutable tags, release job permissions, no artifact provenance, unpinned base images, secrets in scripts | ⬜ |
