@@ -224,14 +224,15 @@ export function combine(shares) {
 const b64 = (b) => btoa(String.fromCharCode(...b));
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-export function encodeShare({ owner, label, x, t, n, y }) {
-  return utf8(JSON.stringify({ v: 1, kind: "humid-recovery-share", owner, label: String(label || "").slice(0, 60), x, t, n, y: b64(y) }));
+/** `epoch`: which set of recovery pieces the share belongs to (omitted for the first, 1). */
+export function encodeShare({ owner, label, x, t, n, y, epoch }) {
+  return utf8(JSON.stringify({ v: 1, kind: "humid-recovery-share", owner, label: String(label || "").slice(0, 60), x, t, n, y: b64(y), ...(epoch > 1 ? { e: epoch } : {}) }));
 }
 
 export function decodeShare(bytes) {
   const j = JSON.parse(td.decode(bytes));
   if (j?.kind !== "humid-recovery-share" || j.v !== 1) throw new Error("Not a HumID recovery share");
-  return { owner: String(j.owner), label: String(j.label || ""), x: j.x, t: j.t, n: j.n, y: unb64(j.y) };
+  return { owner: String(j.owner), label: String(j.label || ""), x: j.x, t: j.t, n: j.n, y: unb64(j.y), epoch: Number.isSafeInteger(j.e) && j.e > 1 ? j.e : 1 };
 }
 
 /* ---------------- two-proof recovery (quorum, v2) ----------------
@@ -247,10 +248,16 @@ export function decodeShare(bytes) {
  *   x = 4  key       encrypted under a FIDO2 security key's hmac-secret, which the
  *                    key gives out only with its PIN (4.0, docs/SECURITY-KEY.md)
  *
- * Any two different parts rebuild A (the polynomial has degree 1). Parts made at
- * different times fit together, so a key added later works with an older card.
- * The split is deterministic (coefficients come from A and an epoch), so any
- * device holding A can make any part at any time and they always fit together.
+ * Any two different parts OF ONE EPOCH rebuild A (the polynomial has degree 1). Within an
+ * epoch, parts made at different times fit together, so a key added later works with an
+ * older card. The split is deterministic (coefficients come from A and the epoch), so any
+ * device holding A can make any part of the current epoch at any time.
+ *
+ * Epochs (CRYPTO-02): a new epoch is a new line through A. Every part of an older epoch is
+ * then useless with every part of the new one, so pieces a removed witness still holds, or an
+ * old card (and its blob in a server backup), can't be combined with anything current. The
+ * account's epoch is in its signed recovery-mode statement; each part carries it (in the card
+ * and key AAD and the witness share, from epoch 2 on), and combineQuorum refuses a mix.
  */
 
 export const QUORUM = Object.freeze({ witness: 1, anchor: 2, card: 3, key: 4 });
@@ -258,15 +265,16 @@ export const QUORUM_KINDS = Object.freeze(Object.keys(QUORUM));
 export const QUORUM_THRESHOLD = 2;
 const QUORUM_PART_BYTES = 65; // x ‖ y(64)
 
-/** The parts of `seed` for `epoch`, any two of which rebuild it. Returns { witness, anchor, card, key }: { x, y }. */
+/** The parts of `seed` for `epoch`, any two of which rebuild it. Returns { witness, anchor, card, key }: { x, y, epoch }. */
 export function quorumParts(seed, epoch = 1) {
   if (!(seed instanceof Uint8Array) || seed.length !== 64) throw new Error("Account seed must be 64 bytes");
+  if (!(Number.isSafeInteger(epoch) && epoch >= 1)) throw new Error("Unknown recovery epoch");
   const coeff = hkdf(sha3_256, seed, undefined, utf8(`HUMID-QUORUM-v1 coefficient epoch ${epoch}`), seed.length);
   const out = {};
   for (const [kind, x] of Object.entries(QUORUM)) {
     const y = new Uint8Array(seed.length);
     for (let k = 0; k < seed.length; k++) y[k] = mul(coeff[k], x) ^ seed[k]; // degree 1: A + c·x
-    out[kind] = { x, y };
+    out[kind] = { x, y, epoch };
   }
   wipe(coeff);
   return out;
@@ -286,31 +294,35 @@ export function decodeQuorumPart(bytes) {
 
 export const kindOfPart = (x) => QUORUM_KINDS.find((k) => QUORUM[k] === x);
 
-/** Rebuild the seed from any two different parts. */
+const epochOf = (p) => p?.epoch ?? 1;
+/** Rebuild the seed from any two different parts of the same epoch. */
 export function combineQuorum(parts) {
   const distinct = [...new Map(parts.map((p) => [p.x, p])).values()];
   if (distinct.length < QUORUM_THRESHOLD) throw new Error("Recovery needs two different kinds of proof");
-  return combine(distinct.slice(0, QUORUM_THRESHOLD));
+  const two = distinct.slice(0, QUORUM_THRESHOLD);
+  if (epochOf(two[0]) !== epochOf(two[1])) throw new Error("These proofs are from different sets of recovery pieces, so they don't fit together.");
+  return combine(two);
 }
 
-/* Seal card (v2): the card part, encrypted under the card. Same card code format. */
-const aad2 = (accountId) => utf8(`HUMID-CARD-v2|${accountId}`);
+/* Seal card (v2): the card part, encrypted under the card. Same card code format.
+ * The epoch is in the AAD from epoch 2 on (epoch 1 keeps the original bytes). */
+const aad2 = (accountId, epoch = 1) => utf8(`HUMID-CARD-v2|${accountId}${epoch > 1 ? `|epoch ${epoch}` : ""}`);
 
-export async function sealCardPart(secret, part, accountId) {
+export async function sealCardPart(secret, part, accountId, epoch = epochOf(part)) {
   const raw = cardKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
   wipe(raw);
   const nonce = random(12);
-  const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad2(accountId) }, key, encodeQuorumPart(part)));
+  const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad2(accountId, epoch) }, key, encodeQuorumPart(part)));
   return concat(nonce, ct);
 }
 
-export async function openCardPart(secret, blob, accountId) {
+export async function openCardPart(secret, blob, accountId, epoch = 1) {
   const raw = cardKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
   wipe(raw);
   try {
-    return decodeQuorumPart(new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aad2(accountId) }, key, blob.subarray(12))));
+    return { ...decodeQuorumPart(new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aad2(accountId, epoch) }, key, blob.subarray(12)))), epoch };
   } catch {
     throw new Error("This seal card does not open this vault.");
   }
@@ -327,12 +339,12 @@ const keyKdf = (secret, what, len) => {
   if (!(secret instanceof Uint8Array) || secret.length !== KEY_SECRET_BYTES) throw new Error("A security key's secret has 32 bytes");
   return hkdf(sha3_256, secret, undefined, utf8(`HUMID-KEY-v1 ${what}`), len);
 };
-const aadKey = (accountId) => utf8(`HUMID-KEY-v1|${accountId}`);
+const aadKey = (accountId, epoch = 1) => utf8(`HUMID-KEY-v1|${accountId}${epoch > 1 ? `|epoch ${epoch}` : ""}`);
 
 /** What the server finds the key part by: base32 of 16 bytes, 26 characters. Reveals nothing about the secret. */
 export const keyTag = (secret) => base32(keyKdf(secret, "tag", 16));
 
-export async function sealKeyPart(secret, part, accountId) {
+export async function sealKeyPart(secret, part, accountId, epoch = epochOf(part)) {
   if (part?.x !== QUORUM.key) throw new Error("That isn't the key part");
   const raw = keyKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
@@ -340,25 +352,25 @@ export async function sealKeyPart(secret, part, accountId) {
   const nonce = random(12);
   const plain = encodeQuorumPart(part);
   try {
-    const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadKey(accountId) }, key, plain));
+    const ct = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonce, additionalData: aadKey(accountId, epoch) }, key, plain));
     return concat(nonce, ct);
   } finally { wipe(plain); }
 }
 
-export async function openKeyPart(secret, blob, accountId) {
+export async function openKeyPart(secret, blob, accountId, epoch = 1) {
   const raw = keyKdf(secret, "key", 32);
   const key = await subtle().importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
   wipe(raw);
   let plain;
   try {
-    plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadKey(accountId) }, key, blob.subarray(12)));
+    plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: blob.subarray(0, 12), additionalData: aadKey(accountId, epoch) }, key, blob.subarray(12)));
   } catch {
     throw new Error("This security key doesn't open this vault.");
   }
   try {
     const part = decodeQuorumPart(plain);
     if (part.x !== QUORUM.key) throw new Error("This security key doesn't open this vault.");
-    return part;
+    return { ...part, epoch };
   } finally { wipe(plain); }
 }
 
@@ -377,7 +389,7 @@ export function anchorPartKey(dg15) {
   return hkdf(sha3_256, dg15, undefined, utf8("HUMID-ANCHOR-PART-v2 key"), 32);
 }
 
-export async function sealAnchorPart(key, part, accountId, epoch = 1) {
+export async function sealAnchorPart(key, part, accountId, epoch = epochOf(part)) {
   if (part?.x !== QUORUM.anchor) throw new Error("That isn't the anchor part");
   const k = await subtle().importKey("raw", key, "AES-GCM", false, ["encrypt"]);
   const nonce = random(12);
@@ -394,7 +406,7 @@ export async function openAnchorPart(key, blob, accountId, epoch = 1) {
   try {
     const part = decodeQuorumPart(plain);
     if (part.x !== QUORUM.anchor) throw new Error("This ID chip doesn't open this vault's part.");
-    return part;
+    return { ...part, epoch };
   } finally { wipe(plain); }
 }
 

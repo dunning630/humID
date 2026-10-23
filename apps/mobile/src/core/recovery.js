@@ -14,7 +14,7 @@ import { R, KEY_TYPE, wipe } from "./runtime.js";
 import { toast, friendly, cancelled, quietly } from "./notify.js";
 import { withKeys, withStepUp, showInterrupt, needVault } from "./interrupt.js";
 import { keepOffline } from "./session.js";
-import { loadRecoveryMode, isHolderOnly } from "./recmode.js";
+import { loadRecoveryMode, isHolderOnly, currentEpoch } from "./recmode.js";
 
 /* global __HUMID_ALLOW_DEMO__ */
 
@@ -60,9 +60,12 @@ export async function loadRecovery() {
   }
 }
 
-/** The part of two-proof recovery this flow needs, made from the seed inside a live check. */
+/**
+ * The part of two-proof recovery this flow needs, made from the seed inside a live check, for
+ * the account's current set of pieces (its epoch, from the signed recovery-mode statement).
+ */
 export const partOf = (seed, kind) => {
-  const parts = quorumParts(seed);
+  const parts = quorumParts(seed, currentEpoch());
   const p = parts[kind];
   for (const k of Object.keys(parts)) if (k !== kind) wipe(parts[k].y);
   return p;
@@ -78,7 +81,7 @@ export async function makeNewCard() {
     await withStepUp("setCard", [], "card", "Make a recovery card", async ({ seed, proof }) => {
       card = newCard();
       const part = partOf(seed, "card");
-      try { await R.api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId) }, proof); }
+      try { await R.api.setCard({ tag: cardTag(card.secret), blob: await sealCardPart(card.secret, part, accountId), epoch: part.epoch }, proof); }
       finally { wipe(part.y); }
     });
     S.cardCode.value = card.code;
@@ -91,7 +94,7 @@ export async function makeNewCard() {
 export async function removeCard() {
   try {
     await withStepUp("removeCard", [], "card", "Remove your recovery card", async ({ proof }) => R.api.removeCard(proof));
-    toast("Recovery card removed. The old card no longer works.");
+    toast("Recovery card removed. It no longer counts on your vault server. To make it useless everywhere, make new recovery pieces.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -124,12 +127,12 @@ export async function saveContacts(contacts, ownerName) {
       const guardians = [];
       for (let i = 0; i < n; i++) {
         const c = contacts[i];
-        const piece = encodeShare({ owner: id.server.id, label: ownerName, ...shares[i], t, n });
+        const piece = encodeShare({ owner: id.server.id, label: ownerName, ...shares[i], t, n, epoch: part.epoch });
         const { envelope } = await Suite.seal({ bytes: piece, name: "HumID recovery piece", type: KEY_TYPE }, keys, { kemPk: c.offer.kemPk, xPk: c.offer.xPk }, { identityCommit: id.commit, interrupt: rec });
         guardians.push({ contact: c.offer.account, offer: c.code, envelope, label: await Suite.sealIndex(R.indexKey, { name: c.name.trim().slice(0, 40) || "Contact" }) });
         wipe(piece, shares[i].y);
       }
-      await R.api.setContacts({ threshold: t, guardians, scheme: "quorum" }, proof);
+      await R.api.setContacts({ threshold: t, guardians, scheme: "quorum", epoch: part.epoch }, proof);
     });
     toast(`Saved. Any ${t} of your ${n} witnesses count as one proof.`);
     loadRecovery();
@@ -140,7 +143,7 @@ export async function saveContacts(contacts, ownerName) {
 export async function removeContacts() {
   try {
     await withStepUp("removeContacts", [], "contacts", "Remove your witnesses", async ({ proof }) => R.api.removeContacts(proof));
-    toast("Witnesses removed. Their pieces no longer work.");
+    toast("Witnesses removed. Their pieces no longer count on your vault server. To make them useless everywhere, make new recovery pieces.");
     loadRecovery();
     return true;
   } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
@@ -284,7 +287,7 @@ export async function setAnchor(read) {
       showInterrupt({ progress: 0.6, message: "Sealing your recovery piece to your ID chip…" });
       const part = partOf(seed, "anchor");
       const key = anchorPartKey(chip.dg15);
-      try { return await R.api.setAnchor({ chip, sealedPart: await sealAnchorPart(key, part, S.identity.value.server.id), signature: chip.aaSignature }, proof); }
+      try { return await R.api.setAnchor({ chip, sealedPart: await sealAnchorPart(key, part, S.identity.value.server.id), signature: chip.aaSignature, epoch: part.epoch }, proof); }
       finally { wipe(part.y, key); }
     });
     toast(`Linked to your ${r.document}'s chip${r.country ? ` (${r.country})` : ""}.`);

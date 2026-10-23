@@ -63,6 +63,30 @@ export async function loadRecoveryMode() {
 }
 
 export const isHolderOnly = () => S.recoveryMode.value?.mode === HOLDER_ONLY;
+/** Which set of recovery pieces this account is on (CRYPTO-02): new pieces are made for it. */
+export const currentEpoch = () => S.recoveryMode.value?.epoch || 1;
+
+/**
+ * Make new recovery pieces (CRYPTO-02): one live check signs a new epoch. The vault server
+ * then deletes every piece it held from older sets and cancels any recovery under way, and
+ * every piece already out in the world (a removed witness's share, an old card, its blob in a
+ * backup) no longer fits with anything new. The holder then makes the proofs again: a new
+ * card, their witnesses again, a fresh chip read, their security keys again.
+ */
+export async function newRecoveryPieces() {
+  const id = S.identity.value;
+  const cur = await loadRecoveryMode();
+  if (!cur || cur.mode !== HARDENED || !cur.trusted) return false;
+  try {
+    await withStepUp("setRecoveryMode", [], "mode", "Make new recovery pieces", async ({ keys, proof }) => {
+      showInterrupt({ progress: 0.6, message: "Retiring your old recovery pieces…" });
+      return R.api.setRecoveryMode(signMode(id.server.id, keys.dsaSk, HARDENED, (cur.version || 0) + 1, (cur.epoch || 1) + 1), proof);
+    });
+    toast("Old recovery pieces retired. Set up your proofs again: they all start fresh.", "warn");
+    await loadRecoveryMode();
+    return true;
+  } catch (e) { if (!cancelled(e)) toast(friendly(e), "error"); return false; }
+}
 
 /** Holder-only → hardened: one fresh live check signs the new statement and sends it. */
 export async function switchToHardened() {

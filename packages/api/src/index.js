@@ -350,7 +350,8 @@ export class HumidApi {
   /* ---------------- recovery card ---------------- */
 
   card() { return this.#json("GET", "/recovery/card"); }
-  setCard({ tag, blob }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob) }, stepUp }); }
+  /** epoch: which set of recovery pieces the card's part is from (the account's current one). */
+  setCard({ tag, blob, epoch }, stepUp) { return this.#json("PUT", "/recovery/card", { body: { tag, blob: b64u(blob), ...(epoch ? { epoch } : {}) }, stepUp }); }
   removeCard(stepUp) { return this.#json("DELETE", "/recovery/card", { stepUp }); }
 
   /* ---------------- recovery contacts ---------------- */
@@ -374,9 +375,9 @@ export class HumidApi {
     return { ...r, guardians: (r.guardians || []).map((g) => ({ ...g, label: g.label ? unb64u(g.label) : null })) };
   }
   /** guardians: [{ contact, offer (code), envelope (bytes), label (bytes) }] */
-  setContacts({ threshold, guardians, scheme }, stepUp) {
+  setContacts({ threshold, guardians, scheme, epoch }, stepUp) {
     return this.#json("PUT", "/recovery/contacts", {
-      body: { threshold, scheme, guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
+      body: { threshold, scheme, ...(epoch ? { epoch } : {}), guardians: guardians.map((g) => ({ contact: g.contact, offer: g.offer, envelope: b64u(g.envelope), label: g.label ? b64u(g.label) : undefined })) },
       stepUp,
     });
   }
@@ -398,8 +399,8 @@ export class HumidApi {
    * this phone under anchorPartKey(dg15) (sealAnchorPart), so the server never sees it openable.
    * signature: the chip's answer to anchorChallenge(). epoch: which set of recovery pieces it belongs to.
    */
-  setAnchor({ chip, sealedPart, signature, hash, epoch = 1 }, stepUp) {
-    return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), sealedPart: b64u(sealedPart), signature: b64u(signature || new Uint8Array(0)), ...(hash ? { hash } : {}), epoch }, stepUp });
+  setAnchor({ chip, sealedPart, signature, hash, epoch }, stepUp) {
+    return this.#json("PUT", "/recovery/anchor", { body: { chip: chipBody(chip), sealedPart: b64u(sealedPart), signature: b64u(signature || new Uint8Array(0)), ...(hash ? { hash } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
   }
   removeAnchor(stepUp) { return this.#json("DELETE", "/recovery/anchor", { stepUp }); }
   settings() { return this.#json("GET", "/recovery/settings"); }
@@ -420,8 +421,8 @@ export class HumidApi {
     return { challenge: unb64u(r.challenge), exclude: (r.exclude || []).map(unb64u) };
   }
   /** Store the key part under a key: { tag, blob, pub, credentialId, authData, signature, label? } (bytes, except tag). */
-  addKey({ tag, blob, pub, credentialId, authData, signature, label }, stepUp) {
-    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}) }, stepUp });
+  addKey({ tag, blob, pub, credentialId, authData, signature, label, epoch }, stepUp) {
+    return this.#json("POST", "/recovery/keys", { body: { tag, blob: b64u(blob), pub: b64u(pub), credentialId: b64u(credentialId), authData: b64u(authData), signature: b64u(signature), ...(label ? { label: b64u(label) } : {}), ...(epoch ? { epoch } : {}) }, stepUp });
   }
   removeKey(id, stepUp) { return this.#json("DELETE", `/recovery/keys/${keyIdOf(id)}`, { stepUp }); }
   removeAllKeys(stepUp) { return this.#json("DELETE", "/recovery/keys", { stepUp }); }

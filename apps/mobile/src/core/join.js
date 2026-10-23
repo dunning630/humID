@@ -249,11 +249,11 @@ async function finishJoin(st) {
           if (st.shares?.length) {
             xkeys = Suite.deriveKeys(x);
             for (const env of st.shares) pieces.push(decodeShare((await Suite.open(env, xkeys)).bytes));
-            parts.push({ x: QUORUM.witness, y: combine(pieces) });
+            parts.push({ x: QUORUM.witness, y: combine(pieces), epoch: pieces[0]?.epoch ?? 1 });
           }
           const slot = quorumSlots(both, p);
-          if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account));
-          if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account));
+          if (st.blob && slot.card) parts.push(await openCardPart(slot.card, st.blob, account, st.epoch ?? 1));
+          if (st.keyBlob && slot.key) parts.push(await openKeyPart(slot.key, st.keyBlob, account, st.epoch ?? 1));
           if (st.anchorPart) parts.push(decodeQuorumPart(st.anchorPart)); // linked before chip binding (v1)
           if (st.anchorSealed) {
             // The part the holder's phone sealed to their chip: opened with the chip key this
@@ -265,7 +265,7 @@ async function finishJoin(st) {
               chipKey = anchorPartKey(dg15);
               wipe(dg15);
             }
-            if (chipKey) parts.push(await openAnchorPart(chipKey, st.anchorSealed, account, st.anchorEpoch ?? 1));
+            if (chipKey) parts.push(await openAnchorPart(chipKey, st.anchorSealed, account, st.epoch ?? st.anchorEpoch ?? 1));
           }
           seed = combineQuorum(parts);
           for (const pt of parts) wipe(pt.y);
