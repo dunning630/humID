@@ -3,8 +3,8 @@
 
 use serde::de::DeserializeOwned;
 use tauri::{
-    plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
+    plugin::{PluginApi, PluginHandle},
 };
 
 use crate::models::*;
@@ -41,14 +41,19 @@ impl<R: Runtime> HumidGate<R> {
 
     pub async fn forget(&self, req: ForgetRequest) -> crate::Result<()> {
         handle_id(&req.handle)?;
-        self.0.run_mobile_plugin_async::<serde_json::Value>("forget", req).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("forget", req)
+            .await?;
         Ok(())
     }
 
     /// Android lists them; iOS has no API for other apps' accessibility access, so none.
     pub async fn enabled_accessibility_services(&self) -> crate::Result<AccessibilityServices> {
         #[cfg(target_os = "android")]
-        return Ok(self.0.run_mobile_plugin_async("enabledAccessibilityServices", ()).await?);
+        return Ok(self
+            .0
+            .run_mobile_plugin_async("enabledAccessibilityServices", ())
+            .await?);
         #[cfg(not(target_os = "android"))]
         Ok(AccessibilityServices::default())
     }

@@ -186,7 +186,7 @@ jobs:
   server-windows:
     needs: [plan, guard]
     if: needs.plan.outputs.server == 'true'
-    uses: ./.github/workflows/server-windows.yml
+    uses: ./.github/workflows/server-windows.yml # zizmor: ignore[self-repository]
     with:
       publish: ${{ inputs.publish_server == true }}
     permissions:
@@ -195,7 +195,7 @@ jobs:
   server-linux:
     needs: [plan, guard]
     if: needs.plan.outputs.linuxServer == 'true'
-    uses: ./.github/workflows/server-linux.yml
+    uses: ./.github/workflows/server-linux.yml # zizmor: ignore[self-repository]
     with:
       publish: ${{ inputs.publish_server == true }}
     permissions:
@@ -226,8 +226,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       # No caches in a signing job: nothing a CI run left behind flows into a signed build.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22 }
+      # setup-node v4 has no automatic cache, and none is configured (zizmor assumes v5's default)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0  # zizmor: ignore[cache-poisoning]
+        with: { node-version: 24 }
       - run: npm ci --ignore-scripts # no dependency install scripts in the job that holds the signing keys
       - run: npm test
         env: { NODE_NO_WARNINGS: "1" }
@@ -270,8 +271,7 @@ jobs:
              || matrix.platform == 'android' && 'aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android'
              || '' }}
       # No rust-cache here (see setup-node above). Cargo builds exactly what Cargo.lock names.
-      - name: Cargo.lock is complete (cargo --locked)
-        working-directory: apps/mobile/src-tauri
+      - name: Cargo.lock is complete (cargo --locked; one workspace lockfile at the root)
         run: cargo fetch --locked
 
       # ---------------- Linux ----------------
@@ -418,9 +418,11 @@ jobs:
           SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           test -x "$SDKM" || { echo "::error::no Android SDK on this runner ($SDK)"; exit 1; }
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          # minSdk 37 (Android 17): Tauri links with <triple>37-clang, which needs an NDK whose
+          # sysroot goes to API 37 (r30, "Upgraded the max API to 37"); compileSdk is 37 too.
+          "$SDKM" --install "ndk;30.0.16248370" "platforms;android-37" "build-tools;37.0.0" > /dev/null
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$SDK/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/30.0.16248370" >> "$GITHUB_ENV"
           echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
       - name: Android · generate Gradle project
@@ -528,7 +530,7 @@ jobs:
         shell: pwsh
         run: Remove-Item -LiteralPath "$env:RUNNER_TEMP\sign.pfx" -Force -ErrorAction SilentlyContinue
       - name: Cargo.lock unchanged by the build
-        run: git diff --exit-code -- apps/mobile/src-tauri/Cargo.lock
+        run: git diff --exit-code -- Cargo.lock
 
       # ---------------- collect ----------------
       - name: Collect artifacts
@@ -537,7 +539,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p out
-          find apps/mobile/src-tauri/target apps/mobile/src-tauri/gen -type f \
+          find target apps/mobile/src-tauri/gen -type f \
             \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' \
                -o -name '*.dmg' -o -name '*.ipa' \) \
             -not -path '*/deps/*' -exec cp {} out/ \; 2>/dev/null || true
@@ -547,7 +549,7 @@ jobs:
             while read -r f; do cp "$f" out/; done < android-release-files.txt
           fi
           if [ -z "$(ls -A out)" ] && [ "$PLATFORM" = "macos" ]; then
-            ( cd apps/mobile/src-tauri/target && find . -maxdepth 6 \( -name 'HumID.app' -o -name 'HumID Sim.app' \) -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
+            ( cd target && find . -maxdepth 6 \( -name 'HumID.app' -o -name 'HumID Sim.app' \) -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
           fi
           ls -la out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

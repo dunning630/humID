@@ -2,15 +2,19 @@ name: CI
 
 # Every push / PR:
 #   1. unit, protocol, end-to-end and penetration-regression tests (all services in-process)
-#   2. compile only the app platforms the change touches
-#   3. build only the service images the change touches, then boot the whole
-#      stack with docker compose and run the smoke test against it over TLS
-#   4. build HumID Server for Windows, install it on a Windows runner from the
-#      zip (as a person would), smoke-test, back up, restore, update, test the
-#      admin console and its jobs (tests/windows/admin-console.ps1), uninstall
+#   2. rust: cargo fmt --check, clippy -D warnings, cargo test, cargo-deny (deny.toml)
+#   3. when app or plugin code changed: compile the iPhone app (Rust + the plugins' Swift)
+#      and build the Android app (Rust + the plugins' Kotlin, Gradle, unsigned debug APK)
+#   4. when server code changed: build every service image, boot the whole stack with
+#      docker compose and run the smoke test against it over TLS; and build HumID Server
+#      for Windows, install it on a Windows runner from the zip (as a person would),
+#      smoke-test, back up, restore, update, test the admin console and its jobs
+#      (tests/windows/admin-console.ps1), uninstall
 #   5. the app in Chromium: "Scan an ID" and "Take a photo" with a fake camera, getting
 #      set up, offline mode, managing the server, Check-in, the native camera's events (tests/browser/idscan.mjs, nativecam.mjs, photo.mjs, scanfeedback.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs)
-# tools/affected.mjs decides what "touches" means.
+#   6. zizmor on the workflows (codeql.yml runs CodeQL)
+# The `changes` job decides what changed, by path. Desktop apps are paused for 5.0, so
+# no desktop app is compiled.
 
 on:
   pull_request:
@@ -26,18 +30,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-22.04
+  # What changed, by path (git diff against the PR base, or the previous commit on main).
+  # A manual run, or a diff git can't make (a new branch, a force-push), counts as everything.
+  changes:
+    runs-on: ubuntu-24.04
     outputs:
-      apps: ${{ steps.affected.outputs.apps }}
-      services: ${{ steps.affected.outputs.services }}
-      anyApps: ${{ steps.affected.outputs.anyApps }}
-      anyServices: ${{ steps.affected.outputs.anyServices }}
+      apps: ${{ steps.c.outputs.apps }}
+      server: ${{ steps.c.outputs.server }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0, persist-credentials: false }
+      - id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base="${PR_BASE:-$BEFORE}"
+          if [ "$EVENT" = "workflow_dispatch" ] || ! files=$(git diff --name-only "$base"...HEAD 2>/dev/null); then
+            echo "apps=true" >> "$GITHUB_OUTPUT"; echo "server=true" >> "$GITHUB_OUTPUT"; echo "everything"; exit 0
+          fi
+          printf '%s\n' "$files"
+          # shared: anything both the apps and the servers are built from
+          shared='^(packages/|package(-lock)?\.json$|\.github/workflows/ci\.yml$)'
+          apps='^(apps/mobile/|plugins/|crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|tools/ci-cargo\.sh$)'
+          server='^(services/|deploy/|server/|tests/smoke\.mjs$|tests/windows/|\.dockerignore$|apps/mobile/)'
+          echo "apps=$(grep -qE "$shared|$apps" <<< "$files" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "server=$(grep -qE "$shared|$server" <<< "$files" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       # Yubico's python-fido2: the reference client the simulated security key is checked against.
       # The runner's system cryptography (3.4.8) satisfies fido2's range but is too old for it: pin a current one.
@@ -58,102 +87,134 @@ jobs:
         run: npm run test:timing -- 20000
       - name: Build the app bundle (module contract check included)
         run: npm run build:app
-      - name: Work out what this change affects
-        id: affected
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          BASE="${PR_BASE:-HEAD~1}"
-          if [ "$EVENT" = "workflow_dispatch" ]; then BASE=none; fi
-          OUT=$(node tools/affected.mjs "$BASE")
-          echo "$OUT" | jq .
-          echo "apps=$(echo "$OUT" | jq -c .appMatrix)" >> "$GITHUB_OUTPUT"
-          echo "services=$(echo "$OUT" | jq -c .serviceMatrix)" >> "$GITHUB_OUTPUT"
-          echo "anyApps=$(echo "$OUT" | jq '.platforms | length > 0')" >> "$GITHUB_OUTPUT"
-          echo "anyServices=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
 
-  # The release workflow runs the unit tests on Windows before building the Windows app, so a
-  # test that only fails there (a path with \ instead of /) blocks a release. Catch it here.
-  # Each failing test becomes an annotation on the check, readable without the log.
-  test-windows:
-    needs: test
-    if: needs.test.outputs.anyApps == 'true'
-    runs-on: windows-latest
+  # (test-windows, which re-ran the whole unit suite on Windows because the release built the
+  # Windows app, is gone with the desktop apps; the Windows server keeps windows-server below.)
+
+  # The whole Cargo workspace on Linux: formatting, clippy with warnings as errors, the tests,
+  # and cargo-deny (RustSec advisories, licences, sources: deny.toml). The app shell's lib
+  # compiles here for the host (its iOS and Android builds are in `app`).
+  rust:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
-      - name: Unit tests on Windows (as the release runs them)
-        shell: pwsh
-        env: { NODE_NO_WARNINGS: "1" }
-        run: |
-          node --test --test-reporter=tap tests/*.test.js 2>&1 | Tee-Object -FilePath tap.txt | Out-Null
-          $code = $LASTEXITCODE
-          Get-Content tap.txt | Select-String '^# (tests|pass|fail)' | ForEach-Object { $_.Line }
-          if ($code) {
-            $lines = Get-Content tap.txt
-            for ($i = 0; $i -lt $lines.Count; $i++) {
-              if ($lines[$i] -match '^\s*not ok \d+ - (.*)') {
-                $name = $Matches[1]
-                $detail = ($lines[($i + 1)..([Math]::Min($i + 40, $lines.Count - 1))] | Where-Object { $_ -match "error:|expected|actual|location:|\.test\.js:" } | Select-Object -First 6) -join ' | '
-                Write-Output "::error title=Windows unit test failed::$name | $detail"
-              }
-            }
-            exit $code
-          }
+        with: { node-version: 24, cache: npm }
+      - run: npm ci --ignore-scripts
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
+        with: { toolchain: 1.99.1, components: "rustfmt, clippy" } # = rust-toolchain.toml
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with: { key: rust }
+      - name: Linux system libraries (Tauri's WebKitGTK; the gate's D-Bus; PC/SC for the reader bridge)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libpcsclite-dev
+      # generate_context!() embeds the web app, so the shell crate needs apps/mobile/dist
+      - run: npm run build:app
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy (warnings are errors)
+        run: tools/ci-cargo.sh clippy --workspace --all-targets --features tauri-plugin-humid-nfc/pcsc-linux -- -D warnings
+      - name: cargo test
+        run: tools/ci-cargo.sh test --workspace --features tauri-plugin-humid-nfc/pcsc-linux
+      - name: cargo-deny (advisories, licences, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with: { command: check, arguments: --all-features }
 
+  # Static analysis of the workflows themselves (template injection, credential persistence,
+  # cache poisoning, excessive permissions, unpinned actions...). Offline audits only, and no
+  # SARIF upload: code scanning isn't enabled on this private repository, so findings fail the
+  # job and show in its log. Known, accepted findings are in .github/zizmor.yml.
+  zizmor:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          version: 1.31.1
+          online-audits: false
+          advanced-security: false
+          min-severity: low
+
+  # Starts with the tests rather than after them: the native builds are the longest jobs.
   app:
-    needs: test
-    if: needs.test.outputs.anyApps == 'true'
+    needs: changes
+    if: needs.changes.outputs.apps == 'true'
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.test.outputs.apps) }}
+      matrix:
+        include:
+          - { platform: ios, runner: macos-26 } # = release.yml (Xcode 26, App Store requirement)
+          - { platform: android, runner: ubuntu-22.04 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml
-          targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || matrix.platform == 'android' && 'aarch64-linux-android' || '' }}
+          targets: ${{ matrix.platform == 'ios' && 'aarch64-apple-ios' || 'aarch64-linux-android' }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with: { workspaces: apps/mobile/src-tauri }
-      - name: Linux system libraries
-        if: matrix.platform == 'linux' || matrix.platform == 'android'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev
-      - name: Android NDK
-        if: matrix.platform == 'android'
-        id: ndk
-        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
-        with: { ndk-version: r27c }
-      - name: Android NDK toolchain on PATH
-        if: matrix.platform == 'android'
-        env:
-          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
-        run: echo "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+        with: { key: "${{ matrix.platform }}" }
       - run: npm run build:app
-      - name: Compile (desktop)
-        if: contains(fromJson('["macos","windows","linux"]'), matrix.platform)
-        working-directory: apps/mobile/src-tauri
-        shell: bash
-        run: ../../../tools/ci-cargo.sh build
-      - name: Compile (iOS library)
+
+      # ---- iPhone: the Rust library, whose build scripts compile the plugins' Swift packages
+      - name: Use Xcode 26 (as release.yml)
         if: matrix.platform == 'ios'
-        working-directory: apps/mobile/src-tauri
-        run: ../../../tools/ci-cargo.sh build --target aarch64-apple-ios --lib
-      - name: Compile (Android library)
-        if: matrix.platform == 'android'
-        working-directory: apps/mobile/src-tauri
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] || { echo "::error::no Xcode 26 on this runner"; exit 1; }
+          sudo xcode-select -s "$X/Contents/Developer"; xcodebuild -version
+      - name: Compile (iOS library and the plugins' Swift)
+        if: matrix.platform == 'ios'
         env:
-          CC_aarch64_linux_android: aarch64-linux-android24-clang
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
-        run: ../../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
+          IPHONEOS_DEPLOYMENT_TARGET: "26.0" # = tauri.conf.json bundle.iOS.minimumSystemVersion
+        run: tools/ci-cargo.sh build -p humid --target aarch64-apple-ios --lib
+
+      # ---- Android: the whole Gradle build, so the plugins' Kotlin compiles on every PR (it
+      # never did before 5.0: CI built only the Rust library). Release variant, unsigned, one
+      # ABI: the release type is the one with R8 minification, so a shrinker rule that strips a
+      # plugin class fails here, and nothing debuggable is built. The APK is not uploaded.
+      - name: Android · Java 17
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with: { distribution: temurin, java-version: 17 }
+      - name: Android · SDK platform 37, build-tools 37, NDK r30 (as release.yml)
+        if: matrix.platform == 'android'
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKM" || { echo "::error::no Android SDK on this runner ($SDK)"; exit 1; }
+          yes | "$SDKM" --licenses > /dev/null || true
+          # Pick the packages by what the SDK repository lists (platform ids for 36+ can carry a
+          # minor, e.g. android-37.0), and say what was there if something is missing.
+          "$SDKM" --list > sdk-list.txt 2>&1 || true
+          pick() { grep -oE "^ *$1[^ ]*" sdk-list.txt | tr -d ' ' | sort -uV | tail -1; }
+          PLATFORM=$(pick 'platforms;android-37'); TOOLS=$(pick 'build-tools;37\.'); NDK=$(pick 'ndk;30\.')
+          if [ -z "$PLATFORM" ] || [ -z "$TOOLS" ] || [ -z "$NDK" ]; then
+            echo "::error title=Android SDK packages::platform=${PLATFORM:-missing} build-tools=${TOOLS:-missing} ndk=${NDK:-missing}. Listed: $(grep -oE '(platforms;android-3[5-9][^ ]*|build-tools;3[5-9][^ ]*|ndk;(2[7-9]|3[0-9])[^ ]*)' sdk-list.txt | sort -uV | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "Installing $PLATFORM $TOOLS $NDK"
+          "$SDKM" --install "$NDK" "$PLATFORM" "$TOOLS" > sdk-install.log 2>&1 || { echo "::error title=sdkmanager install failed::$(tail -15 sdk-install.log | tr '\n' ' ' | cut -c1-1500)"; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/${NDK#ndk;}" >> "$GITHUB_ENV"
+      - name: Android · generate the Gradle project
+        if: matrix.platform == 'android'
+        run: npm run tauri -- android init --ci
+      - name: Android · build (Rust, the plugins' Kotlin, Gradle; unsigned release APK, arm64)
+        if: matrix.platform == 'android'
+        run: |
+          set -o pipefail
+          npm run tauri -- android build --ci --apk --target aarch64 2>&1 | tee android-build.log && exit 0
+          echo "::error title=Android build failed::$(grep -v '^w: ' android-build.log | grep -A14 -E 'What went wrong|^e: |error(\[E[0-9]+\])?:' | head -45 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-3800)"
+          exit 1
 
   # The chip reader end to end through real native code: the shared ICAO 9303 reader drives
   # tauri-plugin-humid-nfc's PC/SC transport, through pcscd, to a simulated passport chip in a
@@ -165,19 +226,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
         with: { toolchain: 1.99.1 } # = rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with: { workspaces: plugins/humid-nfc }
+        with: { key: chip-reader }
       - name: PC/SC daemon, virtual reader, Linux libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libpcsclite-dev pcscd vsmartcard-vpcd
       - name: Build the reader bridge (the plugin's real PC/SC code, without Tauri)
-        working-directory: plugins/humid-nfc
-        run: ../../tools/ci-cargo.sh build --example apdu-bridge --features pcsc-linux
+        run: tools/ci-cargo.sh build -p tauri-plugin-humid-nfc --example apdu-bridge --features pcsc-linux
       - name: Start pcscd with the virtual reader
         run: |
           sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
@@ -200,9 +260,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       - name: Chromium for the browser check
+        # zizmor: ignore[adhoc-packages] exact version; a locked devDependency is audit 6-build M6
         run: npm i --no-save --no-audit --no-fund playwright@1.56.0 && npx playwright install --with-deps chromium
       - name: Scan an ID with a fake camera (barcode, live MRZ, simulated chip, seal, open)
         run: |
@@ -263,11 +324,12 @@ jobs:
         with: { name: idscan-shots, path: idscan-shots, if-no-files-found: ignore, retention-days: 7 }
 
   images:
-    needs: test
-    if: needs.test.outputs.anyServices == 'true'
+    needs: [changes, test]
+    if: needs.changes.outputs.server == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.test.outputs.services) }}
+      matrix:
+        service: [gateway, identity, vault, ledger, recovery, access, keyshare, relay, edge]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -287,14 +349,14 @@ jobs:
         with: { name: "image-${{ matrix.service }}", path: "/tmp/humid-${{ matrix.service }}.tar", retention-days: 1 }
 
   stack:
-    needs: [test, images]
-    if: needs.test.outputs.anyServices == 'true'
+    needs: [changes, test, images]
+    if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { pattern: "image-*", path: /tmp/images, merge-multiple: true }
@@ -339,8 +401,8 @@ jobs:
         run: docker compose logs --no-color | tail -200
 
   windows-server:
-    needs: test
-    if: needs.test.outputs.anyServices == 'true'
+    needs: [changes, test]
+    if: needs.changes.outputs.server == 'true'
     runs-on: windows-latest
     env:
       HUMID: C:\Program Files\HumID Server\humid.ps1
@@ -349,12 +411,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       - name: Build HumID Server for Windows
         run: node deploy/windows/build.mjs --zip
       - name: Install from the zip (Windows PowerShell 5.1; fetches Node.js from nodejs.org, checksum verified)
-        shell: cmd
+        shell: cmd # zizmor: ignore[misfeature] Windows PowerShell 5.1 from cmd, as a person installs it; no expressions
         run: |
           powershell -NoProfile -Command "Expand-Archive -Path (Get-ChildItem deploy\windows\out\HumID-Server-Windows-*.zip).FullName -DestinationPath $env:RUNNER_TEMP\pkg"
           powershell -NoProfile -ExecutionPolicy Bypass -File "%RUNNER_TEMP%\pkg\HumID-Server\humid.ps1" install -Quiet
