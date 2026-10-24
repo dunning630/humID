@@ -95,8 +95,23 @@ jobs:
   # The whole Cargo workspace on Linux: formatting, clippy with warnings as errors, the tests,
   # and cargo-deny (RustSec advisories, licences, sources: deny.toml). The app shell's lib
   # compiles here for the host (its iOS and Android builds are in `app`).
+  # The 5.0 server's tests (server/humid-server) need PostgreSQL: one throwaway schema per test.
   rust:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        # TODO(supply chain): pin by digest (Docker Hub isn't reachable from the session that
+        # wrote this, so the digest couldn't be looked up and verified)
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: humid_test
+          POSTGRES_PASSWORD: humid_test # throwaway CI database, reachable only from this job
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U humid_test" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      HUMID_TEST_DATABASE_URL: host=127.0.0.1 port=5432 user=humid_test password=humid_test dbname=postgres
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
@@ -135,13 +150,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
         with: { toolchain: nightly-2026-10-15 }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with: { key: fuzz, workspaces: "crates/humid-pq2/fuzz\ncrates/humid-core/fuzz" }
+        with: { key: fuzz, workspaces: "crates/humid-pq2/fuzz\ncrates/humid-core/fuzz\ncrates/humid-htp/fuzz" }
       - name: cargo-fuzz
         run: cargo +nightly-2026-10-15 install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz every target for 60 s
         run: |
           set -euo pipefail
-          for crate in humid-pq2 humid-core; do
+          for crate in humid-pq2 humid-core humid-htp; do
             for target in $(cargo +nightly-2026-10-15 fuzz list --fuzz-dir "crates/$crate/fuzz"); do
               echo "::group::$crate/$target"
               cargo +nightly-2026-10-15 fuzz run --fuzz-dir "crates/$crate/fuzz" "$target" -- -max_total_time=60 -rss_limit_mb=4096

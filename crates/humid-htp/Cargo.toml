@@ -1,0 +1,18 @@
+[package]
+name = "humid-htp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "HTP/2: the HumID 5.0 transport between the phone's core and the core/anon units (docs/v5/HTP2.md). Sans-io client and server state machines over HUMID-PQ2."
+
+[lints]
+workspace = true
+
+[dependencies]
+humid-pq2 = { path = "../humid-pq2" }
+zeroize = { version = "1.9", features = ["alloc"] }
+
+[dev-dependencies]
+proptest = "1.5"
