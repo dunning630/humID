@@ -314,7 +314,7 @@ fn kmac_bits(key: &[u8], msg: &[u8], custom: &[u8], bits: usize, xof: bool) -> V
     let mut bp = le(136);
     bp.extend(le(key.len() as u64 * 8));
     bp.extend_from_slice(key);
-    while bp.len() % 136 != 0 {
+    while !bp.len().is_multiple_of(136) {
         bp.push(0);
     }
     c.update(&bp);
@@ -343,7 +343,7 @@ fn kmac256_acvp() {
         let same = got[..] == want[..bits / 8];
         let expected = t["testPassed"].as_bool().unwrap_or(true);
         assert_eq!(same, expected, "{}", tc(t));
-        if bits % 8 == 0 {
+        if bits.is_multiple_of(8) {
             // the suite's own KMAC agrees
             let mut o = vec![0u8; bits / 8];
             kmac256(&key, &msg, &custom, &mut o, xof).unwrap();

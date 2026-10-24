@@ -98,6 +98,24 @@ test("release.yml: a published build pins its server key from a repository varia
   assert.match(pin.run, /\^\[0-9a-fA-F\]\{64\}\$/);
 });
 
+test("CI runs the Rust checks, zizmor and CodeQL, and compiles Kotlin and Swift on PRs (V5 build rules)", () => {
+  const ci = wf("ci.yml");
+  const run = (job) => steps(ci.jobs[job]).map((s) => s.run || "").join("\n");
+  assert.match(run("rust"), /cargo fmt --all --check/);
+  assert.match(run("rust"), /clippy --workspace --all-targets.* -- -D warnings/);
+  assert.match(run("rust"), /ci-cargo\.sh test --workspace/);
+  assert.ok(steps(ci.jobs.rust).some((s) => s.uses?.startsWith("EmbarkStudios/cargo-deny-action@")), "cargo-deny");
+  assert.ok(existsSync(new URL("deny.toml", repo)));
+  assert.ok(steps(ci.jobs.zizmor).some((s) => s.uses?.startsWith("zizmorcore/zizmor-action@")), "zizmor");
+  // Android: the whole Gradle build (the plugins' Kotlin), not just the Rust library
+  assert.match(run("app"), /tauri -- android build/);
+  assert.match(run("app"), /--target aarch64-apple-ios/);
+  const codeql = wf("codeql.yml");
+  assert.deepEqual(codeql.permissions, { contents: "read" });
+  assert.deepEqual(codeql.jobs.analyze.strategy.matrix.language, ["javascript-typescript", "rust"]);
+  assert.ok(codeql.on.pull_request !== undefined && codeql.on.schedule);
+});
+
 test("ci.yml and images.yml: read-only tokens; only image publishing may write packages", () => {
   assert.deepEqual(wf("ci.yml").permissions, { contents: "read" });
   const images = wf("images.yml");

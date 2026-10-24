@@ -6,17 +6,22 @@
 # reviewable PRs rather than a branch per package. Major versions (Preact 11,
 # Node 25, and so on) are left for a deliberate upgrade: they change behaviour,
 # and Node's odd-numbered majors never become long-term-support releases.
+#
+# Cooldown: a release is proposed only once it is a week old, so a hijacked or broken
+# release that is caught and yanked in its first days never reaches a pull request.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
     groups:
       actions: { patterns: ["*"] }
 
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
     open-pull-requests-limit: 3
     groups:
       npm-minor-and-patch:
@@ -26,9 +31,12 @@ updates:
       - dependency-name: "*"
         update-types: [version-update:semver-major]
 
+  # One Cargo workspace at the root (Cargo.toml, Cargo.lock): every crate's update lands in
+  # the one lockfile the builds use.
   - package-ecosystem: cargo
-    directories: [/apps/mobile/src-tauri, /plugins/humid-gate, /plugins/humid-nfc, /plugins/humid-docscan]
+    directory: /
     schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
     open-pull-requests-limit: 3
     groups:
       cargo-minor-and-patch:
@@ -41,6 +49,7 @@ updates:
   - package-ecosystem: docker
     directories: [/services, /services/edge]
     schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
     groups:
       base-images: { patterns: ["*"] }
     ignore:

@@ -5,10 +5,10 @@ plugins {
 
 android {
     namespace = "app.humid.docscan"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
-        minSdk = 30
+        minSdk = 37 // Android 17 (HumID 5.0 floor)
         consumerProguardFiles("consumer-rules.pro")
     }
 

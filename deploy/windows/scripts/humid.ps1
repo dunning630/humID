@@ -68,7 +68,7 @@ param(
   [int]$AdminPort,
   [string]$Instance,
   [string]$NodePath,
-  [string]$NodeMajor = '22',
+  [string]$NodeMajor = '24',
   [string]$Token,
   [string]$Hostname,
   [string[]]$Path,

@@ -75,10 +75,14 @@ const stack = await startStack({
 });
 const gw = new URL(stack.baseUrl);
 
-// The page runs under the same content security policy as the phone and desktop apps
-// (src-tauri/tauri.conf.json), so a policy that blocks something in the app blocks it
-// here, and the browser tests catch it.
-const APP_CSP = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8")).app.security.csp;
+// The page runs under the same web-view rules as the apps (src-tauri/tauri.conf.json), so a
+// rule that breaks something in the app breaks it here, and the browser checks catch it:
+//  - the content security policy `tauri dev` uses (devCsp: the release csp plus loopback);
+//  - freezePrototype: Object.prototype is frozen before any app script runs, as Tauri's
+//    init script does. It is a plain script, so the CSP's script-src 'self' allows it.
+const SECURITY = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8")).app.security;
+const APP_CSP = SECURITY.devCsp || SECURITY.csp;
+const FREEZE = SECURITY.freezePrototype === true ? '<script src="/freeze-prototype.js"></script>' : "";
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".png": "image/png", ".json": "application/json", ".webmanifest": "application/manifest+json", ".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8" };
 
@@ -145,12 +149,18 @@ http.createServer(async (req, res) => {
     p.on("error", () => { res.writeHead(502); res.end(); });
     return req.pipe(p);
   }
+  if (url.pathname === "/freeze-prototype.js") {
+    res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+    return res.end("Object.freeze(Object.prototype);\n");
+  }
   let file = devFile(dist, url.pathname); // never outside dist (PC-25)
   if (!file) { res.writeHead(400); return res.end(); }
   try { if ((await stat(file)).isDirectory()) file = join(file, "index.html"); }
   catch { file = join(dist, "index.html"); }
   try {
-    const body = await readFile(file);
+    let body = await readFile(file);
+    // first thing in <head>, before every app script (Tauri injects its init script the same way)
+    if (FREEZE && extname(file) === ".html") body = Buffer.from(String(body).replace(/<head>/i, `<head>\n${FREEZE}`));
     res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream", "cache-control": "no-store", ...(extname(file) === ".html" ? { "content-security-policy": APP_CSP } : {}) });
     res.end(body);
   } catch { res.writeHead(404); res.end(); }

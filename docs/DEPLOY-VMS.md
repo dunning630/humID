@@ -91,7 +91,7 @@ To split an existing single-PC install, run the steps above on the PC as front, 
 
 ## Setting it up (Linux VMs)
 
-The same program runs on Linux (it is what the test suite runs). With the HumID Server package unzipped to `/opt/humid` and Node.js 22:
+The same program runs on Linux (it is what the test suite runs). With the HumID Server package unzipped to `/opt/humid` and Node.js 24:
 
 ```
 # a seal key, encrypted to this VM's TPM, readable only by systemd for this service

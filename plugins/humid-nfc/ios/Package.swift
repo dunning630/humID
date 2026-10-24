@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "tauri-plugin-humid-nfc",
-  platforms: [.iOS(.v14)],
+  platforms: [.iOS("26.0")],
   products: [
     .library(name: "tauri-plugin-humid-nfc", type: .static, targets: ["tauri-plugin-humid-nfc"])
   ],
