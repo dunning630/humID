@@ -1,0 +1,65 @@
+[package]
+name = "humid-htp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+humid-htp = { path = ".." }
+humid-pq2 = { path = "../../humid-pq2" }
+
+# Its own workspace: cargo-fuzz builds it with nightly sanitizers, apart from the rest.
+[workspace]
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "messages"
+path = "fuzz_targets/messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_bodies"
+path = "fuzz_targets/handshake_bodies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parts"
+path = "fuzz_targets/parts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certs"
+path = "fuzz_targets/certs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_calls"
+path = "fuzz_targets/server_calls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_answers"
+path = "fuzz_targets/client_answers.rs"
+test = false
+doc = false
+bench = false

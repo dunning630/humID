@@ -2135,6 +2135,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "humid-htp"
+version = "0.1.0"
+dependencies = [
+ "humid-pq2",
+ "proptest",
+ "zeroize",
+]
+
+[[package]]
 name = "humid-pq2"
 version = "0.1.0"
 dependencies = [
