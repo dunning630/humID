@@ -6,10 +6,10 @@ import { Pushed, Sheet, Banner, Row } from "../../ui/kit.jsx";
 import { CodeBox, CodeInput, QrCode, ChipAccess } from "../../ui/codes.jsx";
 import { fmtDate, fmtAgo } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { DEMO_BUILD } from "../../core/config.js";
 import { chipReader } from "../../core/index.js";
 import { offerToBeContact, findHelpRequest, whoDoIProtect, releasePiece, stationLookup, stationReadChip, stationVerify } from "../../core/setup.js";
 import { back, twelve, Countdown, Check } from "./common.jsx";
+/* global __HUMID_ALLOW_DEMO__ */
 
 export function Help() {
   const [open, setOpen] = useState(S.push.value?.step || null); // witness | recover | station
@@ -147,7 +147,7 @@ function StationSheet({ onClose }) {
                 </>
               )}
               {!nfc?.available && <p class="small muted">{nfc?.reason || "This device can't read ID chips."}</p>}
-              {DEMO_BUILD && (
+              {(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && (
                 <div class="field mt-0">
                   <label for="station-demo">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="station-demo" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />

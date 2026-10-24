@@ -11,11 +11,11 @@ import { Pushed, Sheet, Banner, Row, Toggle } from "../../ui/kit.jsx";
 import { CodeInput, ChipAccess, ProofMeter, PROOFS, WAITS } from "../../ui/codes.jsx";
 import { fmtDate } from "../../ui/format.js";
 import * as S from "../../core/state.js";
-import { DEMO_BUILD } from "../../core/config.js";
 import { readChip, chipReader, setDraft, clearDraft, draft, toast } from "../../core/index.js";
 import { loadRecovery, makeNewCard, removeCard, findContact, saveContacts, removeContacts, demoPassport, setAnchor, removeAnchor, keyReader, addSecurityKey, removeSecurityKey, switchToHardened, switchToHolderOnly, newRecoveryPieces, confirmModeHere, modeHistory, escrowWords, HOLDER_ONLY } from "../../core/setup.js";
 import { back, twelve, Countdown } from "./common.jsx";
 import { RECOVERY_IF_LOST } from "../../ui/labels.js";
+/* global __HUMID_ALLOW_DEMO__ */
 
 const MIN_WITNESSES = 2, MAX_WITNESSES = 5;
 const threshold = (n) => Math.floor(n / 2) + 1;
@@ -397,7 +397,7 @@ function AnchorSheet({ onClose }) {
             <div class="actions">
               <button class="btn primary block" disabled={!nfc?.available || busy} onClick={() => setNfcOpen(true)}><Icon name="nfc" />{a?.exists ? (older ? "Read my chip again" : "Link a different ID") : nfc?.kind === "reader" ? "Read the chip with the card reader" : "Read the chip with this phone"}</button>
               {!nfc?.available && <p class="small muted">{nfc?.reason || "Linking needs the chip itself, read live by a phone with NFC or a card reader."}</p>}
-              {DEMO_BUILD && (
+              {(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && (
                 <div class="field mt-0">
                   <label for="demo-holder">Development build: demo passport holder</label>
                   <input autocorrect="off" spellcheck={false} autocomplete="off" id="demo-holder" class="input" value={name} onInput={(e) => setName(e.currentTarget.value)} />
