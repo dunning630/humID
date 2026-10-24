@@ -96,7 +96,17 @@ impl MlDsaSigningKey {
     /// # Errors
     /// [`Error::Label`] for a malformed label; [`Error::Rng`] if the generator fails.
     pub fn sign(&self, label: &str, msg: &[u8]) -> Result<MlDsaSignature> {
-        let ctx = context(ObjectType::MLDSA_SIGNATURE, label)?;
+        self.sign_typed(ObjectType::MLDSA_SIGNATURE, label, msg)
+    }
+
+    /// As [`MlDsaSigningKey::sign`], with the context naming the statement's own type
+    /// (`SUITE ‖ u16 type ‖ label`, PQ2.md §6): for structured statements such as a
+    /// document (`ObjectType::DOC_SIGNED`).
+    ///
+    /// # Errors
+    /// As [`MlDsaSigningKey::sign`].
+    pub fn sign_typed(&self, t: ObjectType, label: &str, msg: &[u8]) -> Result<MlDsaSignature> {
+        let ctx = context(t, label)?;
         self.sign_ctx(msg, &ctx, None).map(MlDsaSignature)
     }
 
@@ -195,7 +205,21 @@ impl MlDsaVerifyingKey {
     /// # Errors
     /// [`Error::Verify`] if it does not verify; [`Error::Label`] for a malformed label.
     pub fn verify(&self, label: &str, msg: &[u8], sig: &MlDsaSignature) -> Result<()> {
-        let ctx = context(ObjectType::MLDSA_SIGNATURE, label)?;
+        self.verify_typed(ObjectType::MLDSA_SIGNATURE, label, msg, sig)
+    }
+
+    /// Verify a signature made with [`MlDsaSigningKey::sign_typed`].
+    ///
+    /// # Errors
+    /// As [`MlDsaVerifyingKey::verify`].
+    pub fn verify_typed(
+        &self,
+        t: ObjectType,
+        label: &str,
+        msg: &[u8],
+        sig: &MlDsaSignature,
+    ) -> Result<()> {
+        let ctx = context(t, label)?;
         self.verify_ctx(msg, &ctx, &sig.0[..])
     }
 

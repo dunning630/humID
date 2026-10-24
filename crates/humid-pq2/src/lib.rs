@@ -49,7 +49,7 @@ mod kat;
 
 pub use aead::{
     BOX_OVERHEAD, MAX_PLAINTEXT, NONCE_LEN, REPLAY_WINDOW, SEALED_OVERHEAD, TAG_LEN, TransitOpener,
-    TransitSealer, open_at_rest, open_sealed, seal_at_rest, seal_to,
+    TransitSealer, open_at_rest, open_sealed, seal_at_rest, seal_to, siv_open, siv_seal,
 };
 pub use encoding::{ObjectType, SUITE, VERSION};
 pub use error::{Error, Result};

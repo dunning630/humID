@@ -64,9 +64,10 @@ humid-core records (CORE.md).
 | `0x0008` | dual signature | `0x0112` | offline copy |
 | `0x0009` | generic at-rest box | `0x0113` | record revisions |
 | `0x000A` | generic sealed box | `0x0114` | message store |
-| `0x0010` | share, phone → key service | | |
-| `0x0011` | share, key service → phone | | |
-| `0x0020` | transit record (AAD only) | | |
+| `0x0010` | share, phone → key service | `0x0105` | pending device slot (joining device) |
+| `0x0011` | share, key service → phone | `0x0106` | account seed sealed to a joining device |
+| `0x0012` | share request (phone → key service) | | |
+| `0x0020` | transit record (AAD only) | `0x0107` | document metadata box |
 
 ## 3. Labels
 

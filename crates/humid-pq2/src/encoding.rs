@@ -47,6 +47,8 @@ impl ObjectType {
     pub const SHARE_UPLOAD: Self = Self(0x0010);
     /// A document key share sealed by the key-share service to a phone's one-time key.
     pub const SHARE_RELEASE: Self = Self(0x0011);
+    /// A phone's request for one document's share (names the one-time key to seal it to).
+    pub const SHARE_REQUEST: Self = Self(0x0012);
     /// AAD header of an AES-256-GCM transit record.
     pub const TRANSIT_RECORD: Self = Self(0x0020);
 
@@ -60,6 +62,12 @@ impl ObjectType {
     pub const DOC_SIGNED: Self = Self(0x0103);
     /// humid-core: one device's slot holding a document's `r_doc`.
     pub const DEVICE_SLOT: Self = Self(0x0104);
+    /// humid-core: a document's `r_doc` sealed to a joining device, until it has its own slot.
+    pub const PENDING_SLOT: Self = Self(0x0105);
+    /// humid-core: the account seed sealed to a joining device.
+    pub const JOIN_SEED: Self = Self(0x0106);
+    /// humid-core: a document's metadata box (name, type, size), under the document's key.
+    pub const DOC_META: Self = Self(0x0107);
     /// humid-core: a vault index entry.
     pub const INDEX_ENTRY: Self = Self(0x0110);
     /// humid-core: sealed device settings.
