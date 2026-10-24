@@ -2,7 +2,8 @@ name: CI
 
 # Every push / PR:
 #   1. unit, protocol, end-to-end and penetration-regression tests (all services in-process)
-#   2. rust: cargo fmt --check, clippy -D warnings, cargo test, cargo-deny (deny.toml)
+#   2. rust: cargo fmt --check, clippy -D warnings, cargo test, cargo-deny (deny.toml), for the
+#      whole workspace (the app, the plugins, the 5.0 crates/*); fuzz: 60 s per cargo-fuzz target
 #   3. when app or plugin code changed: compile the iPhone app (Rust + the plugins' Swift)
 #      and build the Android app (Rust + the plugins' Kotlin, Gradle, unsigned debug APK)
 #   4. when server code changed: build every service image, boot the whole stack with
@@ -119,6 +120,34 @@ jobs:
       - name: cargo-deny (advisories, licences, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with: { command: check, arguments: --all-features }
+
+  # The 5.0 crypto crates' cargo-fuzz targets (every decoder, the transit opener, the core's
+  # open path): crates/*/fuzz are separate workspaces built with nightly sanitizers. Each target
+  # runs for 60 s from an empty corpus; a crash fails the job and its input is in the log.
+  # (The crates' tests, clippy and cargo-deny run in `rust`: they are workspace members.)
+  fuzz:
+    needs: changes
+    if: needs.changes.outputs.apps == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
+        with: { toolchain: nightly-2026-10-15 }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with: { key: fuzz, workspaces: "crates/humid-pq2/fuzz\ncrates/humid-core/fuzz" }
+      - name: cargo-fuzz
+        run: cargo +nightly-2026-10-15 install cargo-fuzz --version 0.13.2 --locked
+      - name: Fuzz every target for 60 s
+        run: |
+          set -euo pipefail
+          for crate in humid-pq2 humid-core; do
+            for target in $(cargo +nightly-2026-10-15 fuzz list --fuzz-dir "crates/$crate/fuzz"); do
+              echo "::group::$crate/$target"
+              cargo +nightly-2026-10-15 fuzz run --fuzz-dir "crates/$crate/fuzz" "$target" -- -max_total_time=60 -rss_limit_mb=4096
+              echo "::endgroup::"
+            done
+          done
 
   # Static analysis of the workflows themselves (template injection, credential persistence,
   # cache poisoning, excessive permissions, unpinned actions...). Offline audits only, and no
