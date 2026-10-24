@@ -192,9 +192,19 @@ jobs:
           SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           test -x "$SDKM" || { echo "::error::no Android SDK on this runner ($SDK)"; exit 1; }
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" --install "ndk;30.0.16248370" "platforms;android-37" "build-tools;37.0.0" > /dev/null
+          # Pick the packages by what the SDK repository lists (platform ids for 36+ can carry a
+          # minor, e.g. android-37.0), and say what was there if something is missing.
+          "$SDKM" --list > sdk-list.txt 2>&1 || true
+          pick() { grep -oE "^ *$1[^ ]*" sdk-list.txt | tr -d ' ' | sort -uV | tail -1; }
+          PLATFORM=$(pick 'platforms;android-37'); TOOLS=$(pick 'build-tools;37\.'); NDK=$(pick 'ndk;30\.')
+          if [ -z "$PLATFORM" ] || [ -z "$TOOLS" ] || [ -z "$NDK" ]; then
+            echo "::error title=Android SDK packages::platform=${PLATFORM:-missing} build-tools=${TOOLS:-missing} ndk=${NDK:-missing}. Listed: $(grep -oE '(platforms;android-3[5-9][^ ]*|build-tools;3[5-9][^ ]*|ndk;(2[7-9]|3[0-9])[^ ]*)' sdk-list.txt | sort -uV | tr '\n' ' ' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "Installing $PLATFORM $TOOLS $NDK"
+          "$SDKM" --install "$NDK" "$PLATFORM" "$TOOLS" > sdk-install.log 2>&1 || { echo "::error title=sdkmanager install failed::$(tail -15 sdk-install.log | tr '\n' ' ' | cut -c1-1500)"; exit 1; }
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$SDK/ndk/30.0.16248370" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/${NDK#ndk;}" >> "$GITHUB_ENV"
       - name: Android · generate the Gradle project
         if: matrix.platform == 'android'
         run: npm run tauri -- android init --ci
