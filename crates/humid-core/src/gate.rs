@@ -97,6 +97,10 @@ pub enum LiveAlg {
     EcdsaP256,
     /// ML-DSA-87 (iOS 26 CryptoKit SecureEnclave.MLDSA87; Android 17 Keystore where present).
     MlDsa87,
+    /// iOS App Attest assertion over `SHA-256(signed message)`, made in the same check
+    /// (SERVER.md §2.7). Not a live-key signature: it proves the genuine app made the
+    /// request, and rides beside the signatures as the proof's `app_attest` field.
+    AppAttest,
 }
 
 /// One liveness signature.

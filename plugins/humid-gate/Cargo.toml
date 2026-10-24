@@ -1,7 +1,7 @@
 [package]
 name = "tauri-plugin-humid-gate"
-version = "2.2.0"
-description = "HumID biological interrupt: releases a 32-byte secret only after a live face or fingerprint check; on phones a hardware liveness key signs each check."
+version = "3.0.0"
+description = "HumID gate v3: the per-unlock hardware operation inside one live biometric check (iOS 26 Secure Enclave ML-KEM-1024 + P-256; Android 17 Keystore / StrongBox HMAC), as humid-core's HardwareGate. Hardware outputs go native to Rust as bytes and are wiped; nothing secret reaches JavaScript."
 edition.workspace = true
 rust-version.workspace = true
 links = "tauri-plugin-humid-gate"
@@ -12,24 +12,25 @@ publish.workspace = true
 tauri = "2.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
-zeroize = "1.9"
-getrandom = "0.3"
+zeroize = { version = "1.9", features = ["alloc"] }
+humid-core = { path = "../../crates/humid-core" }
+humid-pq2 = { path = "../../crates/humid-pq2" }
+# Android proposals A, B and C: the core picks an imported HMAC key's bytes, so this side
+# computes HMAC-SHA256 once in software at target time (CORE.md §5 A) and then wipes the key.
+hmac = { version = "0.13", features = ["zeroize"] }
+sha2 = { version = "0.11", default-features = false, features = ["zeroize"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { version = "3.7", features = ["OSX_10_15"] }
-core-foundation = "0.10"
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-local-authentication = { version = "0.3", features = ["LAContext"] }
+# Rust calls the Kotlin half directly over JNI (bytes in, bytes out), never through the
+# web view's IPC.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
-# Windows: WinBio, DPAPI and token calls are declared directly in src/desktop/windows.rs.
-
-[target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-secret-service = { version = "5.2", features = ["rt-tokio-crypto-rust"] }
-futures-util = { version = "0.3", default-features = false }
-tokio = { version = "1", features = ["time"] }
+[dev-dependencies]
+# the glue is tested against humid-core's software gate and a simulated device
+humid-core = { path = "../../crates/humid-core", features = ["software-gate"] }
+# the JNI half compiles (and is linted) on the host too
+jni = "0.21"
 
 [build-dependencies]
 tauri-plugin = { version = "2.7", features = ["build"] }
