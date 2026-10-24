@@ -5,6 +5,10 @@
 # crates/ and server/ each hold a .gitkeep: Cargo treats a glob that matches nothing as a
 # literal path and refuses the workspace, and a hidden file keeps the glob matching while
 # not being a member itself. Every directory under them must be a crate.
+#
+# A crate joining here drops its own [workspace] table and moves any [profile.*] section
+# into this file (Cargo ignores profiles outside the root). Members opt into the shared
+# settings with `edition.workspace = true` (etc.) and `[lints] workspace = true`.
 [workspace]
 resolver = "3"
 members = [
@@ -36,7 +40,8 @@ todo = "warn"
 unimplemented = "warn"
 
 # The app's release profile (moved here from apps/mobile/src-tauri: profiles only take
-# effect at the workspace root).
+# effect at the workspace root). Crate-specific profile overrides (for example the crypto
+# crates' optimised dependencies in debug builds, [profile.dev.package."*"]) go here too.
 [profile.release]
 codegen-units = 1
 lto = true
