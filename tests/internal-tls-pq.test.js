@@ -35,7 +35,7 @@ test("internal TLS settings name the hybrid group on both ends", () => {
 test("front and core connect, and the group is not plain X25519", async () => {
   const r = await connect(S, C);
   assert.ok(r.ok, r.err);
-  // Node 22 reports no details for a hybrid group ({}); for a classical one it names it
+  // Node 22 and 24 report no details for a hybrid group ({}); for a classical one it names it
   assert.notEqual(r.info?.name, "X25519");
   assert.notEqual(r.info?.type, "ECDH");
 });

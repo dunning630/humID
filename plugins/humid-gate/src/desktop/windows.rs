@@ -16,15 +16,15 @@
 
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use serde_json::{json, Value};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use serde_json::{Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{random32, Secret};
+use super::{Secret, random32};
 use crate::{Error, Probe, Result};
 
 pub const METHOD: &str = "windows-winbio-fingerprint";
@@ -85,7 +85,7 @@ struct SidAndAttributes {
 }
 
 #[link(name = "winbio")]
-extern "system" {
+unsafe extern "system" {
     fn WinBioOpenSession(
         factor: u32,
         pool: u32,
@@ -110,21 +110,27 @@ extern "system" {
 }
 
 #[link(name = "advapi32")]
-extern "system" {
+unsafe extern "system" {
     fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
-    fn GetTokenInformation(token: *mut c_void, class: u32, info: *mut c_void, len: u32, returned: *mut u32) -> i32;
+    fn GetTokenInformation(
+        token: *mut c_void,
+        class: u32,
+        info: *mut c_void,
+        len: u32,
+        returned: *mut u32,
+    ) -> i32;
     fn GetLengthSid(sid: *mut c_void) -> u32;
 }
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
     fn LocalFree(mem: *mut c_void) -> *mut c_void;
 }
 
 #[link(name = "crypt32")]
-extern "system" {
+unsafe extern "system" {
     fn CryptProtectData(
         input: *const DataBlob,
         description: *const u16,
@@ -170,7 +176,13 @@ fn current_sid() -> Result<Vec<u8>> {
         }
         let mut buf = vec![0u64; 64]; // 512 bytes, 8-aligned: TOKEN_USER plus the SID it points to
         let mut used = 0u32;
-        let ok = GetTokenInformation(token, TOKEN_USER_CLASS, buf.as_mut_ptr().cast(), 512, &mut used);
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            buf.as_mut_ptr().cast(),
+            512,
+            &mut used,
+        );
         CloseHandle(token);
         if ok == 0 {
             return Err(fail());
@@ -188,7 +200,10 @@ fn current_sid() -> Result<Vec<u8>> {
 /// Gives up after a minute so a forgotten prompt doesn't hang the app.
 fn verify_finger() -> Result<()> {
     let sid = current_sid()?;
-    let mut identity = Identity { kind: WINBIO_ID_TYPE_SID, value: [0; 64] };
+    let mut identity = Identity {
+        kind: WINBIO_ID_TYPE_SID,
+        value: [0; 64],
+    };
     identity.value[0] = sid.len() as u32;
     unsafe {
         let data = identity.value.as_mut_ptr().add(1).cast::<u8>();
@@ -197,7 +212,15 @@ fn verify_finger() -> Result<()> {
 
     let mut session = 0u32;
     let hr = unsafe {
-        WinBioOpenSession(WINBIO_TYPE_FINGERPRINT, WINBIO_POOL_SYSTEM, WINBIO_FLAG_DEFAULT, null(), 0, WINBIO_DB_DEFAULT, &mut session)
+        WinBioOpenSession(
+            WINBIO_TYPE_FINGERPRINT,
+            WINBIO_POOL_SYSTEM,
+            WINBIO_FLAG_DEFAULT,
+            null(),
+            0,
+            WINBIO_DB_DEFAULT,
+            &mut session,
+        )
     };
     if hr < 0 {
         return Err(winbio_error(hr));
@@ -221,7 +244,16 @@ fn verify_finger() -> Result<()> {
     };
 
     let (mut unit, mut matched, mut reject) = (0u32, 0u8, 0u32);
-    let hr = unsafe { WinBioVerify(session, &mut identity, WINBIO_SUBTYPE_ANY, &mut unit, &mut matched, &mut reject) };
+    let hr = unsafe {
+        WinBioVerify(
+            session,
+            &mut identity,
+            WINBIO_SUBTYPE_ANY,
+            &mut unit,
+            &mut matched,
+            &mut reject,
+        )
+    };
     done.store(true, Ordering::SeqCst);
     let _ = watchdog.join();
     unsafe { WinBioCloseSession(session) };
@@ -241,12 +273,33 @@ fn entropy(id: &str) -> Vec<u8> {
 
 fn protect(secret: &[u8], id: &str) -> Result<Vec<u8>> {
     let ent = entropy(id);
-    let input = DataBlob { len: secret.len() as u32, data: secret.as_ptr() as *mut u8 };
-    let ent_blob = DataBlob { len: ent.len() as u32, data: ent.as_ptr() as *mut u8 };
-    let mut out = DataBlob { len: 0, data: null_mut() };
-    let ok = unsafe { CryptProtectData(&input, null(), &ent_blob, null_mut(), null_mut(), CRYPTPROTECT_UI_FORBIDDEN, &mut out) };
+    let input = DataBlob {
+        len: secret.len() as u32,
+        data: secret.as_ptr() as *mut u8,
+    };
+    let ent_blob = DataBlob {
+        len: ent.len() as u32,
+        data: ent.as_ptr() as *mut u8,
+    };
+    let mut out = DataBlob {
+        len: 0,
+        data: null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            null(),
+            &ent_blob,
+            null_mut(),
+            null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out,
+        )
+    };
     if ok == 0 || out.data.is_null() {
-        return Err(Error::Platform("Windows could not protect the HumID key.".into()));
+        return Err(Error::Platform(
+            "Windows could not protect the HumID key.".into(),
+        ));
     }
     let v = unsafe { std::slice::from_raw_parts(out.data, out.len as usize).to_vec() };
     unsafe { LocalFree(out.data.cast()) };
@@ -255,10 +308,29 @@ fn protect(secret: &[u8], id: &str) -> Result<Vec<u8>> {
 
 fn unprotect(blob: &[u8], id: &str) -> Result<Zeroizing<Vec<u8>>> {
     let ent = entropy(id);
-    let input = DataBlob { len: blob.len() as u32, data: blob.as_ptr() as *mut u8 };
-    let ent_blob = DataBlob { len: ent.len() as u32, data: ent.as_ptr() as *mut u8 };
-    let mut out = DataBlob { len: 0, data: null_mut() };
-    let ok = unsafe { CryptUnprotectData(&input, null_mut(), &ent_blob, null_mut(), null_mut(), CRYPTPROTECT_UI_FORBIDDEN, &mut out) };
+    let input = DataBlob {
+        len: blob.len() as u32,
+        data: blob.as_ptr() as *mut u8,
+    };
+    let ent_blob = DataBlob {
+        len: ent.len() as u32,
+        data: ent.as_ptr() as *mut u8,
+    };
+    let mut out = DataBlob {
+        len: 0,
+        data: null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            null_mut(),
+            &ent_blob,
+            null_mut(),
+            null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out,
+        )
+    };
     if ok == 0 || out.data.is_null() {
         return Err(Error::KeyInvalidated);
     }

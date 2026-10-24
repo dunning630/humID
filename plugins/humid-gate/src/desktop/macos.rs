@@ -7,15 +7,17 @@
 // Requires a signed build with the keychain-access-groups entitlement
 // (shell/src-tauri/Entitlements.plist); unsigned builds get errSecMissingEntitlement.
 
-use objc2_local_authentication::{LAContext, LAPolicy};
-use security_framework::access_control::{ProtectionMode, SecAccessControl};
-use security_framework::passwords::{delete_generic_password_options, generic_password, set_generic_password_options};
-use security_framework::passwords_options::{AccessControlOptions, PasswordOptions};
 use core_foundation::base::TCFType;
 use core_foundation::string::{CFString, CFStringRef};
+use objc2_local_authentication::{LAContext, LAPolicy};
+use security_framework::access_control::{ProtectionMode, SecAccessControl};
+use security_framework::passwords::{
+    delete_generic_password_options, generic_password, set_generic_password_options,
+};
+use security_framework::passwords_options::{AccessControlOptions, PasswordOptions};
 use zeroize::Zeroizing;
 
-use super::{random32, Secret};
+use super::{Secret, random32};
 use crate::{Error, Probe, Result};
 
 pub const METHOD: &str = "macos-keychain-biometry";
@@ -24,7 +26,7 @@ const SERVICE: &str = "app.humid.gate";
 
 // Not exported by security-framework-sys; declared here from Security.framework.
 #[link(name = "Security", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kSecUseOperationPrompt: CFStringRef;
 }
 
@@ -53,7 +55,9 @@ fn map(e: security_framework::base::Error) -> Error {
 
 pub fn probe() -> Result<Probe> {
     let ctx = unsafe { LAContext::new() };
-    let ok = unsafe { ctx.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics) }.is_ok();
+    let ok =
+        unsafe { ctx.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics) }
+            .is_ok();
     Ok(Probe {
         available: ok,
         method: METHOD.into(),
@@ -61,7 +65,9 @@ pub fn probe() -> Result<Probe> {
         label: "Touch ID".into(),
         modalities: vec!["fingerprint".into()],
         proof: None,
-        reason: (!ok).then(|| "Touch ID is not available or has no fingerprints enrolled on this Mac.".into()),
+        reason: (!ok).then(|| {
+            "Touch ID is not available or has no fingerprints enrolled on this Mac.".into()
+        }),
     })
 }
 
