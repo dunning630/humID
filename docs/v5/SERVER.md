@@ -44,7 +44,7 @@ The one rule everything below serves:
 
 | Unit | Merges (4.x) | Owns | Never holds | Called by |
 | --- | --- | --- | --- | --- |
-| **front** | edge, gateway | outer TLS; HTP/2 termination; socket-address rate limits; route allow-list; content-free push fan-out to anon | a document key, a share, a device key's private half, any database | the internet |
+| **front** | edge, gateway | outer TLS; HTP/2 pass-through (sessions end in core and anon, [HTP2.md](HTP2.md)); socket-address rate limits; route allow-list; content-free push fan-out to anon | a document key, a share, a device key's private half, any database | the internet |
 | **core** | identity, vault, ledger, recovery | `accounts`, `devices`, `sessions`, `nonces`, `objects`, `ledger_entries`, `tlog_*`, `recovery_*`, `links` | a share; an account or device private key; a passport secret | front only |
 | **keys** | keyshare | `shares` (wrapped by the HSM KEK), `used_proofs`, `checkin`; fuse keys in memory | an envelope, a document name, an account key | core only |
 | **anon** | access, relay | `access_codes`, `blind_keys`, `spent`, `relay_objects`, `push_subs` | any account id or device id | front only |
@@ -155,14 +155,15 @@ that sign in while it is compromised). "Step-up" means a live proof (§2.3) chec
 
 | Route | Who | Checks itself |
 | --- | --- | --- |
-| `GET /htp/v2/keys` | anyone | — serves the signed policy and the current HTP KEM key with its certificate |
-| `POST /htp/v2/hello`, `POST /htp/v2/call` | anyone | HTP/2 handshake and frames: **stubbed** (HTP/2 not yet specified, §12) |
+| `GET /htp/v2/keys` | anyone | — the key bundle: the signed policy as is and each unit's certified HTP/2 KEM key (HTP2.md §2) |
+| `POST /htp/v2/call` | anyone | frame headers well formed, one unit and session per call; handshakes per network, records per session; forwarded unread to that unit (HTP2.md §3) |
 | `GET /tlog/v2/checkpoint`, `/tlog/v2/consistency` | anyone | rate limited per network (L8); forwarded to core |
 | `POST /tlog/v2/cosign` | a cosigner | forwarded; core checks the cosignature against the policy's cosigner keys |
 | `GET /healthz` | anyone | — |
 
-Inner routes (inside an HTP/2 frame once it lands) map one-to-one onto the core and anon routes below; anything
-not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`).
+Inner routes travel inside HTP/2 records, which only core and anon open. Each unit's endpoint checks them against
+the allow-list (`front::routes::resolve`) before its own code sees them, and the units' `/v1/…` routes answer only
+requests the endpoint dispatched, so front's certificate reaches only `/htp/v2/*`, `/tlog/*` and `/healthz`.
 
 **core (caller: front)**
 
@@ -452,8 +453,8 @@ There is no `X-Forwarded-For`, no `TRUST_FORWARDED` mode, no shared bucket, no l
 deleted, audit §3). Keys: IPv4 address, IPv6 /64. Front sends the key to units in `x-humid-client-net` over mTLS;
 units use it only for limits (availability), never for authorisation.
 
-Limits: handshakes 30/min per network; calls `limits.calls_per_minute` per session (core enforces it until HTP/2
-front does); step-up actions 600/hour per account; sign-in failures 20 per network per 5 minutes and, only for a
+Limits: handshakes 30/min per network; calls `limits.calls_per_minute` per session (front per HTP/2 session and core per
+signed-in session); step-up actions 600/hour per account; sign-in failures 20 per network per 5 minutes and, only for a
 valid challenge whose signatures don't verify, 10 per identity (a valid proof is never refused, §2.3); recovery
 starts per network, unbound requests per /24 or /48, and per account once bound; open links per /24 or /48 (**M4**,
 review M-5: no global bucket a handful of networks can fill); relay deposits by post token rather than address
@@ -471,7 +472,7 @@ do the work.
 | --- | --- |
 | **One delta `POST /v1/sync {since}`** replacing the ~13-request unlock: items changed since the phone's object revision (index entries only), tombstones, ledger entries since its head, devices/recovery digests, and a nonce pool top-up | core `sync` |
 | **Step-up nonce pool**: login and every signed-in reply carry up to 8 single-use nonces (15 min), so a sensitive action is one round trip, not two. Freshness comes from `at` (≤ 60 s) and single use, not from a fresh nonce round trip | core `nonces` |
-| **Binary chunked frames**: a document is served in 1 MiB chunks under one approval with a 60 s download ticket; a dropped connection resumes from the next chunk without a new live check. Proofs travel as binary fields, not base64 in JSON (once HTP/2 lands; internal APIs use JSON with base64url until then) | core `objects`, front HTP/2 |
+| **Binary chunked frames**: a document is served in 1 MiB chunks under one approval with a 60 s download ticket; a dropped connection resumes from the next chunk without a new live check. Proofs and blobs travel as binary parts inside HTP/2 (HTP2.md §6); internal unit-to-unit APIs stay JSON with base64url | core `objects`, front HTP/2 |
 | **Content-free push**: the phone registers a push token (anonymously, with a post token) against coarse prefix buckets; a deposit into a bucket queues one batched, jittered "check now" wake. No polling in the background | anon `push` (sender stubbed) |
 | **Constant-rate messaging check**: one fixed-size `tick` per interval covering every prefix the phone follows, with a fixed-size padded reply; the same request is the cover traffic | anon `relay::tick` |
 | **Relay deletes only after acknowledgement**: tick only reads (per-prefix cursors, so a prefix shared with strangers hides nothing from them); `ack` with the per-object ack token (whose SHA3 the sender stored at deposit; only the recipient can derive it from the box key) deletes; unacked objects stay until their 14-day TTL | anon `relay` |
@@ -509,7 +510,7 @@ production-mode start refuses while any required stub is in the path.
 | Anon: live stamps | stub | partially blind RSA with epoch metadata (stamp v2 design) |
 | Push sender (APNs / FCM) | stub | provider accounts |
 | Front: outer TLS, rate limits, allow-list, key bundle, internal client | implemented | — |
-| Front: HTP/2 handshake and frames | stub | HTP/2 specification (KEM handshake over PQ2 §5, TransitSealer frames, binary TLV) |
+| HTP/2: handshake, resumption, records, chunks, typed bodies and binary proofs; ends in core and anon; front passes it through ([HTP2.md](HTP2.md), `crates/humid-htp`, `src/htp.rs`) | implemented | — |
 | `humid-server-core dev-setup <dir>`: CA, leaves, dev identity root, signed dev policy, soft HSMs, four `*.toml` | implemented (development only) | — |
 
 Tests (`cargo test -p humid-server`; Postgres from `HUMID_TEST_DATABASE_URL`, one schema per test; CI runs them
@@ -537,8 +538,8 @@ M-2 is documented (§2.2, §11). Still open:
 
 ## 13. Open questions for the owner
 
-1. **HTP/2.** Front can't carry app traffic until HTP/2 is specified (handshake, binary frames, proofs as TLV).
-   Who writes it, and does it live in PQ2.md or its own doc?
+1. **HTP/2.** Specified in [HTP2.md](HTP2.md) (its own §13 has the protocol's open questions) and built (branch
+   `v5-htp2`).
 2. **Proof formats.** Shares and join requests now follow CORE.md §5.3 and §6.3 exactly (tested against
    humid-core). The step-up ticket now carries humid-core's session mode byte (§2.3). The rest of the step-up,
    sign-in and enrolment proofs are still this server's proposal: CORE.md §9 has per-action live labels

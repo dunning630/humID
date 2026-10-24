@@ -179,6 +179,7 @@ pub struct Server {
     hello_nonces: HashMap<[u8; 32], u64>,
     used_tickets: HashMap<[u8; 32], u64>,
     buffered: usize,
+    kept: usize,
 }
 
 fn rand<const N: usize>() -> Result<[u8; N]> {
@@ -188,6 +189,8 @@ fn rand<const N: usize>() -> Result<[u8; N]> {
 }
 
 const TICKET_PLAIN: usize = 1 + 4 + 8 + 8 + TH_LEN + 32;
+/// Most answer bytes one session keeps for pulls (four full chunks).
+pub const MAX_KEPT_BYTES: usize = 4 << 20;
 /// Most remembered hello nonces and used tickets (each).
 pub const MAX_REMEMBERED: usize = 200_000;
 
@@ -206,6 +209,7 @@ impl Server {
             hello_nonces: HashMap::new(),
             used_tickets: HashMap::new(),
             buffered: 0,
+            kept: 0,
         })
     }
 
@@ -282,6 +286,13 @@ impl Server {
     fn release(&mut self, s: &Sess) {
         let b: usize = s.assembling.values().map(|a| a.bytes).sum();
         self.buffered = self.buffered.saturating_sub(b);
+        self.kept = self.kept.saturating_sub(kept_bytes(s));
+    }
+
+    /// Answer bytes kept for pulls, across all sessions.
+    #[must_use]
+    pub fn kept(&self) -> usize {
+        self.kept
     }
 
     /// Drop expired sessions, hello nonces and used tickets.
@@ -648,7 +659,9 @@ impl Server {
                     }
                     return err(rid, Code::RidReused);
                 }
+                let before = kept_bytes(s);
                 s.answers.retain(|_, a| now <= a.at + answer_ms);
+                self.kept = self.kept.saturating_sub(before - kept_bytes(s));
                 if let Some(a) = s.answers.get(&rid) {
                     let c = a.class;
                     return answer_msgs(&a.head, &a.body, 0)
@@ -709,7 +722,9 @@ impl Server {
                         0,
                     )];
                 }
+                let before = kept_bytes(s);
                 s.answers.retain(|_, a| now <= a.at + answer_ms);
+                self.kept = self.kept.saturating_sub(before - kept_bytes(s));
                 if let Some(a) = s.answers.get(&rid) {
                     let c = a.class;
                     return answer_msgs(&a.head, &a.body, from)
@@ -803,7 +818,10 @@ impl Server {
             return Err(Code::TooLarge);
         }
         let keep = self.cfg.keep_answers;
+        let max_kept = self.cfg.max_buffered / 4;
+        let total = self.kept;
         let s = self.sessions.get_mut(sid).ok_or(Code::SessionUnknown)?;
+        let before = kept_bytes(s);
         let class = s.dispatched.remove(&rid).unwrap_or(0);
         let head = ResponseHead {
             rid,
@@ -813,29 +831,38 @@ impl Server {
             body_hash: sha3_512(body),
         };
         let msgs = answer_msgs(&head, body, 0);
-        s.answers.insert(
-            rid,
-            Answer {
-                head,
-                body: Zeroizing::new(body.to_vec()),
-                class,
-                at: now,
-            },
-        );
+        // keep the answer for pulls, unless it would push this session's kept answers past
+        // MAX_KEPT_BYTES (a large one is then pulled by repeating the request's own
+        // idempotent route, e.g. a chunk under its download ticket)
+        if before + body.len() <= MAX_KEPT_BYTES && total + body.len() <= max_kept {
+            s.answers.insert(
+                rid,
+                Answer {
+                    head,
+                    body: Zeroizing::new(body.to_vec()),
+                    class,
+                    at: now,
+                },
+            );
+        }
         while s.answers.len() > keep {
             s.answers.pop_first();
         }
+        let after = kept_bytes(s);
+        let unit = self.cfg.unit;
         let mut out = vec![];
+        let mut sealed = Ok(());
         for m in msgs {
-            out.extend_from_slice(&frame::seal_record(
-                &mut s.tx,
-                self.cfg.unit,
-                *sid,
-                &m.encode(),
-                class_of(&m, class),
-            )?);
+            match frame::seal_record(&mut s.tx, unit, *sid, &m.encode(), class_of(&m, class)) {
+                Ok(b) => out.extend_from_slice(&b),
+                Err(c) => {
+                    sealed = Err(c);
+                    break;
+                }
+            }
         }
-        Ok(out)
+        self.kept = (self.kept + after).saturating_sub(before);
+        sealed.map(|()| out)
     }
 
     /// Refuse request `rid` with an authenticated error (the unit was unreachable, say).
@@ -884,6 +911,10 @@ fn check_proof(head: &RequestHead, body: &[u8], th: &[u8; TH_LEN], seq: u64) -> 
         return Err(Code::ProofMismatch);
     }
     Ok(())
+}
+
+fn kept_bytes(s: &Sess) -> usize {
+    s.answers.values().map(|a| a.body.len()).sum()
 }
 
 fn check_time(t: u64, now: u64) -> Result<()> {
@@ -1050,6 +1081,33 @@ mod tests {
         assert!(!r.take(5), "old ids stay used after the window moves");
         assert!(!r.take(2000));
         assert!(r.take(5000));
+    }
+
+    #[test]
+    fn kept_answers_are_bounded_and_released_with_the_session() {
+        let (mut srv, mut s) = pair();
+        let big = vec![7u8; 3 << 20];
+        for _ in 0..3 {
+            let (rid, call) = s
+                .request(Method::Get, "/v1/x", Encoding::Raw, &[], b"")
+                .unwrap();
+            let r = srv.receive(&call, NOW);
+            let sid = r.ready[0].sid;
+            let out = srv.respond(&sid, rid, 200, 1, &big, NOW).unwrap();
+            let _ = s.receive(&out).unwrap();
+            assert!(srv.kept() <= MAX_KEPT_BYTES, "{}", srv.kept());
+        }
+        assert_eq!(
+            srv.kept(),
+            3 << 20,
+            "the first is kept, the next two would pass the cap"
+        );
+        // a pull for an answer that wasn't kept: rid_unknown (the client repeats the request)
+        let pull = s.pull(3, 0).unwrap();
+        let r = srv.receive(&pull, NOW);
+        assert_eq!(refused(&mut s, &r.frames), [Code::RidUnknown]);
+        srv.close(&s.sid());
+        assert_eq!(srv.kept(), 0);
     }
 
     #[test]
