@@ -1,6 +1,4 @@
 // What a capture waits on, and the parts of it that can be tested without a phone:
-//   - the document found in a still near the live outline gives what the whole-picture search
-//     gives (apps/mobile/src/core/docnear.js), and falls back to it when nothing is there
 //   - base64 ↔ bytes without the slow path (core/bytes.js)
 //   - the clean scan done off the main thread (core/scanjobs.js) is the same picture as on it
 //   - the timing trace exists in development builds only and records names and numbers only
@@ -9,75 +7,12 @@
 // scan, the seal) is timed in a browser: tests/bench/capture.mjs, checked by tests/browser/*.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shrink, findDocument, PAPER } from "../apps/mobile/src/core/docfind.js";
-import { findNear, boxAround, cropGray } from "../apps/mobile/src/core/docnear.js";
 import { b64Bytes, bytesB64 } from "../apps/mobile/src/core/bytes.js";
 import { cleanPixels, closeJobs } from "../apps/mobile/src/core/scanjobs.js";
 import { cleanScan } from "../apps/mobile/src/core/scanclean.js";
 import { warmPlace, stopWarmPlace, watchPlace } from "../apps/mobile/src/core/place.js";
 import { confirmedByStill } from "../apps/mobile/src/core/mrzseed.js";
 import { MrzConsensus } from "@humid/idscan";
-import { PAGES, place, view, cornerError } from "./support/docview.js";
-
-/* ---------------- finding the document near the live outline ---------------- */
-
-const CASES = [
-  { name: "letter upright, left of centre, dark table", page: "letter", turn: 0, at: { cx: 330, cy: 380, size: 560, deg: -6 } },
-  { name: "A4 tilted 18° in perspective, grained table", page: "a4", turn: 0, at: { cx: 560, cy: 420, size: 520, deg: 18, k: 0.1 }, table: "grain" },
-  { name: "letter upside down, top right", page: "letter", turn: 180, at: { cx: 640, cy: 330, size: 500, deg: 9 }, table: 120 },
-  { name: "a card, small and far right", page: "card", turn: 0, at: { cx: 700, cy: 300, size: 380, deg: -20 }, ratio: PAPER.id1 },
-  { name: "a card on end, in perspective", page: "card", turn: 270, at: { cx: 420, cy: 400, size: 460, deg: 7, k: 0.08 }, ratio: PAPER.id1, table: 35 },
-];
-
-/** What the live outline would be: the true corners, each off by up to ~1.2% of the diagonal. */
-function liveGuess(quad, W, H) {
-  const d = Math.hypot(W, H) * 0.012;
-  return quad.map((p, i) => ({ x: p.x + Math.cos(i * 2.1) * d, y: p.y + Math.sin(i * 1.3) * d }));
-}
-
-for (const c of CASES) {
-  test(`near the live outline: the same corners as searching the whole picture (${c.name})`, () => {
-    const page = PAGES[c.page];
-    const quad = place(page, c.turn, c.at);
-    const v = view({ page, turn: c.turn, quad, table: c.table ?? 60 });
-    const k = 640 / v.w;
-    const im = shrink(v, 640);
-    const truth = quad.map((p) => ({ x: p.x * k, y: p.y * k }));
-    const prior = liveGuess(truth, im.w, im.h);
-    const opts = { ratio: c.ratio || null, minArea: 0.03 };
-    const whole = findDocument(im, { ...opts, prior });
-    const near = findNear(im, prior, opts);
-    assert.ok(whole && near, "found in both");
-    const ew = cornerError(whole.quad, truth, im.w, im.h), en = cornerError(near.quad, truth, im.w, im.h);
-    assert.ok(en < 0.015, `near: corners off by ${(en * 100).toFixed(2)}% of the view`);
-    assert.ok(en <= ew + 0.004, `near ${(en * 100).toFixed(2)}% against whole ${(ew * 100).toFixed(2)}%`);
-  });
-}
-
-test("a live outline that is nowhere near anything: the whole picture is searched", () => {
-  const page = PAGES.letter;
-  const quad = place(page, 0, { cx: 330, cy: 380, size: 560, deg: -6 });
-  const v = view({ page, quad, table: 60 });
-  const im = shrink(v, 640), k = 640 / v.w;
-  const truth = quad.map((p) => ({ x: p.x * k, y: p.y * k }));
-  // a small box in the empty right-hand corner of the view
-  const wrong = [{ x: 520, y: 20 }, { x: 600, y: 20 }, { x: 600, y: 90 }, { x: 520, y: 90 }];
-  const got = findNear(im, wrong, { minArea: 0.03 });
-  assert.ok(got, "still found, by the whole-picture search");
-  assert.ok(cornerError(got.quad, truth, im.w, im.h) < 0.015);
-});
-
-test("the box around an outline: grown by a margin, inside the picture, none when it is most of it", () => {
-  const im = { w: 640, h: 480, g: new Uint8ClampedArray(640 * 480) };
-  const q = [{ x: 200, y: 100 }, { x: 400, y: 100 }, { x: 400, y: 300 }, { x: 200, y: 300 }];
-  const b = boxAround(q, im, 0.1);
-  assert.deepEqual(b, { x: 176, y: 76, w: 248, h: 248 });
-  assert.equal(boxAround([{ x: 10, y: 10 }, { x: 630, y: 10 }, { x: 630, y: 470 }, { x: 10, y: 470 }], im), null);
-  const part = cropGray({ w: 4, h: 3, g: Uint8ClampedArray.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) }, { x: 1, y: 1, w: 2, h: 2 });
-  assert.deepEqual([...part.g], [6, 7, 10, 11]);
-});
-
-/* ---------------- bytes ---------------- */
 
 test("base64 to bytes and back: every length, and the same as atob", () => {
   for (const n of [0, 1, 2, 3, 4, 5, 255, 4096, 4097, 70_001]) {

@@ -170,7 +170,7 @@ test("small things the first paint and every second don't pay for (R12)", () => 
 });
 
 test("screens reach the kernel only through core/index.js (and a few leaf modules)", () => {
-  const LEAVES = new Set(["index.js", "setup.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "docscan.js", "nfc.js", "external.js", "prefs.js", "back.js", "guide.js", "guidecap.js", "mrzseed.js",
+  const LEAVES = new Set(["index.js", "setup.js", "state.js", "config.js", "categories.js", "addroute.js", "capture.js", "scan.js", "docfind.js", "barcodefind.js", "sealtime.js", "place.js", "doctpl.js", "doccam.js", "webcam.js", "nfc.js", "external.js", "prefs.js", "back.js", "mrzseed.js",
     // 4.0: the Messages screens load the messaging kernel with their own chunk, so the
     // protocol code never reaches the first paint (core/index.js says so)
     "messaging.js"]);
@@ -228,7 +228,12 @@ test("tabs: Vault, Messages (only with a relay), Activity, You; and the add flow
   assert.match(add, /: \{ at: "pick" \}\)/, "Add opens on the picker (3.0.1)");
   assert.doesNotMatch(add, /\bnative\b/, "the phone's own document scanner (and its four-point outline) isn't used to add");
   assert.doesNotMatch(noComments(read("screens/add/ids.jsx")), /\bnative=/, "nor for IDs");
-  assert.doesNotMatch(noComments(read("screens/add/camera.jsx")), /dc-outline|<polygon/, "no four-point outline is drawn");
+  // 5.0: the camera's own corners are drawn over a card or page until it lines up (they replace 3.0's lock box);
+  // a Photo still gets no four-point outline over it
+  const cam = noComments(read("screens/add/camera.jsx"));
+  assert.doesNotMatch(cam, /dc-outline/, "no free-form outline");
+  assert.equal([...cam.matchAll(/<polygon/g)].length, 1, "one polygon: the camera's corners");
+  assert.match(cam, /\{guided && quad && live && <svg class="dc-quad"/, "only on a guided shape, while it is live");
 });
 
 test("the check overlay names itself plainly and takes focus; steppers say the three plain stages", () => {

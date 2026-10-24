@@ -1,6 +1,7 @@
 node_modules/
 apps/mobile/dist/
-/target/
+# Cargo build output at any depth: the root workspace builds into /target/, but a crate or plugin built on its own still writes its own target/
+target/
 apps/mobile/src-tauri/gen/
 services/*/dist/
 plugins/humid-gate/ios/.build/
@@ -18,6 +19,8 @@ crates/*/fuzz/target/
 crates/*/fuzz/corpus/
 crates/*/fuzz/artifacts/
 plugins/humid-docscan/android/.tauri/
+plugins/humid-docscan/ios/.build/
+plugins/humid-docscan/ios/.tauri/
 
 # Secrets: never commit signing keys, key stores or environment files (PC-05).
 # deploy/.gitignore also keeps deploy/.env out.
