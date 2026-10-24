@@ -15,9 +15,18 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
-const [src, commit] = process.argv.slice(2);
-if (!src || !/^[0-9a-f]{40}$/.test(commit || "")) { console.error("usage: acvp-vectors.mjs <json-files dir> <40-hex ACVP-Server commit>"); process.exit(1); }
-const out = new URL("../tests/fixtures/acvp/", import.meta.url).pathname;
+//
+//   node tools/acvp-vectors.mjs <dir> <commit> --pq2
+//
+// writes tests/fixtures/acvp-pq2/ instead: the vectors the 5.0 Rust suite (crates/humid-pq2,
+// HUMID-PQ2) adds on top of the ones above: SLH-DSA-SHA2-256s (PQ2's hash-based signature;
+// 4.x used 256f), KMAC-256, SHA3-512 and SHAKE-256. The ML-KEM-1024 and ML-DSA-87 files above
+// are shared by both suites. A separate directory, so kat.test.js's file list is unchanged.
+
+const [src, commit, mode] = process.argv.slice(2);
+if (!src || !/^[0-9a-f]{40}$/.test(commit || "") || (mode && mode !== "--pq2")) { console.error("usage: acvp-vectors.mjs <json-files dir> <40-hex ACVP-Server commit> [--pq2]"); process.exit(1); }
+const pq2 = mode === "--pq2";
+const out = new URL(pq2 ? "../tests/fixtures/acvp-pq2/" : "../tests/fixtures/acvp/", import.meta.url).pathname;
 mkdirSync(out, { recursive: true });
 
 /** One case per distinct `reason` (every kind of valid and broken input), then the first `n`. */
@@ -43,10 +52,32 @@ const PICK = {
   "SLH-DSA-sigVer-FIPS205": [(g) => g.parameterSet === "SLH-DSA-SHA2-256f" && g.signatureInterface === "external" && g.preHash === "pure", 8],
 };
 
-for (const [name, [keep, n]] of Object.entries(PICK)) {
+/** Whole bytes only: the Rust suite's hash and KMAC interfaces are byte-oriented. */
+const bytes = (...fields) => (t) => fields.every((f) => t[f] === undefined || t[f] % 8 === 0);
+
+/** name → [group filter, how many cases per group, optional case filter]. */
+const PICK_PQ2 = {
+  "SLH-DSA-keyGen-FIPS205": [(g) => g.parameterSet === "SLH-DSA-SHA2-256s", 10],
+  // 256s signatures are 29,792 bytes and take about a second each to make: two deterministic
+  // and two hedged signing cases, and one verify case per kind of input
+  "SLH-DSA-sigGen-FIPS205": [(g) => g.parameterSet === "SLH-DSA-SHA2-256s" && g.signatureInterface === "external" && g.preHash === "pure", 2],
+  "SLH-DSA-sigVer-FIPS205": [(g) => g.parameterSet === "SLH-DSA-SHA2-256s" && g.signatureInterface === "external" && g.preHash === "pure", 7],
+  // every case whose key and message are whole bytes (a bit-granular macLen is fine: L enters
+  // KMAC as a bit count, and the test compares the whole bytes of the output)
+  "KMAC-256-1.0": [() => true, 100, bytes("keyLen", "msgLen")],
+  // AFT (short and long messages) and the Monte Carlo test; not the multi-gigabyte LDT
+  "SHA3-512-2.0": [(g) => g.testType !== "LDT", 40, bytes("len")],
+  // AFT and variable-output tests; the SHAKE Monte Carlo test is bit-granular
+  "SHAKE-256-1.0": [(g) => g.testType !== "MCT", 40, bytes("len", "outLen")],
+};
+
+for (const [name, [keep, n, ok = () => true]] of Object.entries(pq2 ? PICK_PQ2 : PICK)) {
   const raw = readFileSync(join(src, name, "internalProjection.json"));
   const j = JSON.parse(raw);
-  const testGroups = j.testGroups.filter(keep).map((g) => ({ ...g, tests: g.tests.some((t) => t.reason) ? byReason(g.tests, n) : g.tests.slice(0, n) }));
+  const testGroups = j.testGroups.filter(keep).map((g) => {
+    const tests = g.tests.filter(ok);
+    return { ...g, tests: tests.some((t) => t.reason) ? byReason(tests, n) : tests.slice(0, n) };
+  }).filter((g) => g.tests.length);
   if (!testGroups.length) throw new Error(`${name}: nothing matched`);
   const doc = {
     source: `https://github.com/usnistgov/ACVP-Server/blob/${commit}/gen-val/json-files/${name}/internalProjection.json`,

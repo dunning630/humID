@@ -14,6 +14,10 @@ deploy/linux/out/
 plugins/humid-nfc/ios/.build/
 plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
+# cargo-fuzz crates (outside the workspace): their own target/ and run outputs
+crates/*/fuzz/target/
+crates/*/fuzz/corpus/
+crates/*/fuzz/artifacts/
 plugins/humid-docscan/android/.tauri/
 
 # Secrets: never commit signing keys, key stores or environment files (PC-05).

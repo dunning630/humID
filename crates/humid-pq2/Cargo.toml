@@ -1,0 +1,40 @@
+[package]
+name = "humid-pq2"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "HUMID-PQ2: the one frozen HumID 5.0 crypto suite (ML-KEM-1024+X25519, ML-DSA-87, SLH-DSA-SHA2-256s, AES-256-GCM-SIV/GCM, KMAC256, SHA3-512/SHAKE256)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Post-quantum (RustCrypto). slh-dsa 0.1.0 is pinned to the digest 0.10 / hybrid-array 0.2 /
+# signature 2 generation and does not build next to ml-kem 0.3 / ml-dsa 0.1 (digest 0.11,
+# hybrid-array 0.4, signature 3); 0.2.0-rc.5 is the release on the same generation. Its own
+# `alloc` feature doesn't turn on `pkcs8/alloc`, which its code needs, so keep its defaults.
+# Pre-1.0 / release-candidate crates, not independently audited: tracked in CORE.md §11.
+ml-kem = { version = "0.3.3", default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc", "zeroize", "rand_core"] }
+slh-dsa = { version = "=0.2.0-rc.5", features = ["zeroize"] }
+# Classical leg (dalek)
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["precomputed-tables", "static_secrets", "zeroize"] }
+# Symmetric (RustCrypto)
+aes-gcm-siv = { version = "0.12.1", default-features = false, features = ["aes", "zeroize"] }
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "zeroize"] }
+aes = { version = "0.9", features = ["zeroize"] }  # turns on round-key zeroize inside both AEADs
+sha3 = { version = "0.12.0", default-features = false, features = ["zeroize"] }
+shake = { version = "0.1.0", default-features = false, features = ["zeroize"] }
+cshake = { version = "0.2.1", default-features = false, features = ["zeroize"] }
+zeroize = { version = "1.9", features = ["alloc"] }
+subtle = "2.6"
+getrandom = "0.4"
+rand_core = "0.10"
+
+[dev-dependencies]
+flate2 = "1"
+serde_json = "1"
+hex = "0.4"
+proptest = "1.5"

@@ -17,6 +17,9 @@ members = [
   "crates/*",
   "server/*",
 ]
+# cargo-fuzz crates are built by `cargo fuzz` with nightly sanitizers, each as its own
+# workspace; they are not members.
+exclude = ["crates/*/fuzz"]
 
 [workspace.package]
 edition = "2024"
@@ -42,6 +45,16 @@ unimplemented = "warn"
 # The app's release profile (moved here from apps/mobile/src-tauri: profiles only take
 # effect at the workspace root). Crate-specific profile overrides (for example the crypto
 # crates' optimised dependencies in debug builds, [profile.dev.package."*"]) go here too.
+# humid-pq2 / humid-core: ML-DSA-87, SLH-DSA-SHA2-256s and ML-KEM-1024 are slow unoptimised
+# (the SLH-DSA KATs take minutes at -O0), so dependencies build optimised in debug and test
+# builds too; our own crates stay at -O1 for debuggability.
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev.package.humid-pq2]
+opt-level = 2
+[profile.dev.package.humid-core]
+opt-level = 1
+
 [profile.release]
 codegen-units = 1
 lto = true

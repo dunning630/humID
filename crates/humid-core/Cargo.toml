@@ -1,0 +1,25 @@
+[package]
+name = "humid-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "HumID 5.0 core: holds every key, runs the per-unlock device ratchet, seals and opens three-key documents. The UI gets handles and results, never keys."
+
+[lints]
+workspace = true
+
+[features]
+# The software HardwareGate and the test-only inspection hooks (tests and simulator builds
+# only; never in a release build).
+software-gate = []
+
+[dependencies]
+humid-pq2 = { path = "../humid-pq2" }
+zeroize = { version = "1.9", features = ["alloc"] }
+
+[dev-dependencies]
+proptest = "1.5"
+# the integration tests drive the core through the software gate
+humid-core = { path = ".", features = ["software-gate"] }
