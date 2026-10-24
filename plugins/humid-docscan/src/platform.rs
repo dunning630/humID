@@ -2,12 +2,15 @@
 // uses its own camera.
 
 use serde::de::DeserializeOwned;
-use tauri::{plugin::PluginApi, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, plugin::PluginApi};
 
 use crate::models::*;
 
 #[cfg(target_os = "android")]
-pub fn init<R: Runtime, C: DeserializeOwned>(_app: &AppHandle<R>, api: PluginApi<R, C>) -> crate::Result<HumidDocscan<R>> {
+pub fn init<R: Runtime, C: DeserializeOwned>(
+    _app: &AppHandle<R>,
+    api: PluginApi<R, C>,
+) -> crate::Result<HumidDocscan<R>> {
     let handle = api.register_android_plugin("app.humid.docscan", "HumidDocscanPlugin")?;
     Ok(HumidDocscan(handle))
 }
@@ -29,7 +32,10 @@ impl<R: Runtime> HumidDocscan<R> {
 const WHY: &str = "The phone's document scanner is only on Android.";
 
 #[cfg(not(target_os = "android"))]
-pub fn init<R: Runtime, C: DeserializeOwned>(app: &AppHandle<R>, _api: PluginApi<R, C>) -> crate::Result<HumidDocscan<R>> {
+pub fn init<R: Runtime, C: DeserializeOwned>(
+    app: &AppHandle<R>,
+    _api: PluginApi<R, C>,
+) -> crate::Result<HumidDocscan<R>> {
     Ok(HumidDocscan(app.clone()))
 }
 
@@ -39,7 +45,10 @@ pub struct HumidDocscan<R: Runtime>(#[allow(dead_code)] AppHandle<R>);
 #[cfg(not(target_os = "android"))]
 impl<R: Runtime> HumidDocscan<R> {
     pub async fn probe(&self) -> crate::Result<Probe> {
-        Ok(Probe { available: false, reason: Some(WHY.into()) })
+        Ok(Probe {
+            available: false,
+            reason: Some(WHY.into()),
+        })
     }
     pub async fn scan(&self, _req: ScanRequest) -> crate::Result<Page> {
         Err(crate::Error::Unavailable(WHY.into()))

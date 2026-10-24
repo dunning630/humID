@@ -32,7 +32,7 @@ function build(env) {
 
 // What a release build must not contain: each is a name or path that only the
 // development or simulation code uses.
-const FORBIDDEN = ["createSimServer", "/dev/access-code", "/dev/passport", "/dev/chip", "demoAdapter", "../sim/server", "demoAccessCode()", "__humidFakeScanner", "__humidDemoA11y"];
+const FORBIDDEN = ["createSimServer", "/dev/access-code", "/dev/passport", "/dev/chip", "demoAdapter", "../sim/server", "demoAccessCode()", "Demo passport holder", "Development build: demo passport holder", "Development build: simulated chip for"];
 
 test("a release build has no simulated server, demo gate or /dev endpoints", { timeout: 300_000 }, () => {
   const b = build({});
@@ -40,6 +40,11 @@ test("a release build has no simulated server, demo gate or /dev endpoints", { t
     assert.ok(b.files.length > 1, "the app and its chunks were built");
     for (const [file, text] of Object.entries(b.text)) {
       for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} is in ${file}`);
+      // 5.0 web-view rule "no debug globals": nothing a release ships hangs a __humid* name on
+      // globalThis (the back handler, the camera's guidance and trace, test hooks), not even
+      // as dead code behind a flag that is false at run time.
+      const globals = [...new Set(text.match(/__humid\w*/g) || [])];
+      assert.deepEqual(globals, [], `debug globals in ${file}`);
     }
     assert.ok(!b.files.some((f) => /chunks[\\/]server-/.test(f)), "no sim server chunk was emitted");
     // and the real code is still there

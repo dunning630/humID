@@ -21,8 +21,8 @@
 //! request / response shapes in `models.rs`, nothing else.
 
 use tauri::{
-    plugin::{Builder, TauriPlugin},
     Manager, Runtime,
+    plugin::{Builder, TauriPlugin},
 };
 
 mod commands;

@@ -58,5 +58,7 @@ export async function wireBack() {
   } catch { /* an older shell: Android keeps its default */ }
 }
 
-// Development and tests: the same behaviour without a phone.
-globalThis.__humidBack = handleBack;
+// Development builds and the browser checks: the same behaviour without a phone. Release
+// builds have no __humid globals (the flag is tested inline, so esbuild drops this line).
+/* global __HUMID_ALLOW_DEMO__ */
+if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidBack = handleBack;

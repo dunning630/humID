@@ -17,7 +17,7 @@ for a pilot.
     cd humid-server
     sudo ./bin/humid install
 
-  It downloads the official Node.js 22 runtime from nodejs.org (checksum checked), installs
+  It downloads the official Node.js 24 (LTS) runtime from nodejs.org (checksum checked), installs
   to /opt/humid, keeps its data in /var/lib/humid (readable only by the "humid" system user),
   makes the seal key (sealed to the TPM where there is one), and starts the service.
   Options: --policy attested|biometric|demo  --apple-team-id ABCDE12345  --port 8480

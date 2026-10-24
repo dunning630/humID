@@ -1,0 +1,29 @@
+[package]
+name = "humid-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+humid-core = { path = "..", features = ["software-gate"] }
+humid-pq2 = { path = "../../humid-pq2" }
+
+[workspace]
+
+[[bin]]
+name = "records"
+path = "fuzz_targets/records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_document"
+path = "fuzz_targets/open_document.rs"
+test = false
+doc = false
+bench = false
