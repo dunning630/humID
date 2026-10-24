@@ -1,0 +1,155 @@
+{
+  "about": "Golden vectors for the document camera's guidance (apps/mobile/src/core/lookstate.js), checked by tests/lookstate.test.js and by the Android port's unit test (plugins/humid-docscan/android/src/test). Each case feeds frames (t in ms; m as lookstate.feed takes it) and says what some looks must be. 'expect' entries name a frame index and the fields to compare.",
+  "fit": [
+    { "name": "lined up", "quad": [[16, 16], [396, 16], [396, 256], [16, 256]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": null },
+    { "name": "small", "quad": [[106, 76], [306, 76], [306, 202], [106, 202]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "closer" },
+    { "name": "a bit small", "quad": [[37, 29], [357, 29], [357, 231], [37, 231]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "fill" },
+    { "name": "too big", "quad": [[-14, -4], [426, -4], [426, 274], [-14, 274]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "back" },
+    { "name": "off to the right", "quad": [[46, 16], [426, 16], [426, 256], [46, 256]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "shift" },
+    { "name": "turned 9 degrees", "quad": [[31, -9], [406, 50], [381, 287], [6, 228]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "tilt" },
+    { "name": "phone at an angle", "quad": [[46, 16], [366, 16], [396, 256], [16, 256]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": null, "key": "flat" },
+    { "name": "not a card's shape", "quad": [[16, 16], [396, 16], [396, 396], [16, 396]], "frame": { "x": 16, "y": 16, "w": 380, "h": 240 }, "ratio": 1.585, "key": "shape" }
+  ],
+  "runs": [
+    {
+      "name": "lined up, in focus and steady: held for 300 ms, then ready once",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 100, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 200, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 300, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 400, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "state": "sharp", "key": null, "fire": false, "progress": 0 },
+        { "i": 2, "state": "sharp", "fire": false },
+        { "i": 3, "state": "ready", "fire": true, "progress": 1 },
+        { "i": 4, "state": "ready", "fire": false }
+      ]
+    },
+    {
+      "name": "autofocus moving: 'focusing' only after 250 ms of it, and the hold waits for it",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": "scanning", "steady": true } },
+        { "t": 100, "m": { "found": true, "fit": null, "light": "ok", "focus": "scanning", "steady": true } },
+        { "t": 250, "m": { "found": true, "fit": null, "light": "ok", "focus": "scanning", "steady": true } },
+        { "t": 400, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 700, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "state": "sharp", "fire": false, "progress": 0 },
+        { "i": 1, "state": "sharp", "fire": false },
+        { "i": 2, "state": "focusing", "fire": false, "progress": 0 },
+        { "i": 3, "state": "sharp", "fire": false },
+        { "i": 4, "state": "ready", "fire": true }
+      ]
+    },
+    {
+      "name": "a camera that can't say (web): never 'focusing', never waits for focus",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": null, "steady": true } },
+        { "t": 300, "m": { "found": true, "fit": null, "light": "ok", "focus": null, "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "state": "sharp" },
+        { "i": 1, "state": "ready", "fire": true }
+      ]
+    },
+    {
+      "name": "too close: the lens at its near limit for 600 ms says 'tooclose' at once, and the photo waits",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "near": true, "steady": true } },
+        { "t": 300, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "near": true, "steady": true } },
+        { "t": 600, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "near": true, "steady": true } },
+        { "t": 700, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "near": false, "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "key": null },
+        { "i": 2, "key": "tooclose", "aligned": true, "fire": false, "progress": 0 },
+        { "i": 3, "key": null }
+      ]
+    },
+    {
+      "name": "a problem is said once it has lasted (350 ms), cleared at once",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": "closer", "light": "ok" } },
+        { "t": 200, "m": { "found": true, "fit": "closer", "light": "ok" } },
+        { "t": 350, "m": { "found": true, "fit": "closer", "light": "ok" } },
+        { "t": 400, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "state": "aligning", "key": null, "aligned": false },
+        { "i": 1, "key": null },
+        { "i": 2, "key": "closer" },
+        { "i": 3, "key": null, "state": "sharp", "aligned": true }
+      ]
+    },
+    {
+      "name": "one problem replacing another waits 550 ms",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": "closer", "light": "ok" } },
+        { "t": 400, "m": { "found": true, "fit": "closer", "light": "ok" } },
+        { "t": 500, "m": { "found": true, "fit": "shift", "light": "ok" } },
+        { "t": 1000, "m": { "found": true, "fit": "shift", "light": "ok" } },
+        { "t": 1050, "m": { "found": true, "fit": "shift", "light": "ok" } }
+      ],
+      "expect": [
+        { "i": 1, "key": "closer" },
+        { "i": 2, "key": "closer" },
+        { "i": 3, "key": "closer" },
+        { "i": 4, "key": "shift" }
+      ]
+    },
+    {
+      "name": "dark comes first and waits 600 ms",
+      "frames": [
+        { "t": 0, "m": { "found": false, "light": "dark" } },
+        { "t": 500, "m": { "found": false, "light": "dark" } },
+        { "t": 600, "m": { "found": false, "light": "dark" } }
+      ],
+      "expect": [
+        { "i": 0, "state": "searching", "key": null },
+        { "i": 1, "key": null },
+        { "i": 2, "key": "dark", "state": "searching" }
+      ]
+    },
+    {
+      "name": "moving: 'hold' after 450 ms; one bad moment under 300 ms doesn't restart the hold",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 150, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": false } },
+        { "t": 250, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 300, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true } }
+      ],
+      "expect": [
+        { "i": 1, "key": null, "fire": false },
+        { "i": 3, "state": "ready", "fire": true }
+      ]
+    },
+    {
+      "name": "a read side waits for its text (m.wait), then fires",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true, "wait": true } },
+        { "t": 400, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true, "wait": true } },
+        { "t": 500, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true, "wait": false } },
+        { "t": 800, "m": { "found": true, "fit": null, "light": "ok", "focus": "focused", "steady": true, "wait": false } }
+      ],
+      "expect": [
+        { "i": 1, "state": "sharp", "fire": false, "progress": 0 },
+        { "i": 2, "fire": false },
+        { "i": 3, "state": "ready", "fire": true }
+      ]
+    },
+    {
+      "name": "the wrong side, said after 1200 ms; never ready",
+      "frames": [
+        { "t": 0, "m": { "found": true, "fit": null, "wrong": "showback", "light": "ok", "focus": "focused", "steady": true } },
+        { "t": 1200, "m": { "found": true, "fit": null, "wrong": "showback", "light": "ok", "focus": "focused", "steady": true } }
+      ],
+      "expect": [
+        { "i": 0, "key": null, "aligned": false, "state": "aligning" },
+        { "i": 1, "key": "showback", "fire": false }
+      ]
+    }
+  ]
+}

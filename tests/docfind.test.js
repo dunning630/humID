@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { findDocument, lookAt, tracker, homography, warp, outputSize, orientation, rotateGray, shrink, toGray, PAPER } from "../apps/mobile/src/core/docfind.js";
+import { findDocument, homography, warp, outputSize, orientation, rotateGray, shrink, toGray, PAPER } from "../apps/mobile/src/core/docfind.js";
 
 const fixture = (n) => {
   const b = gunzipSync(readFileSync(new URL(`./fixtures/docs/${n}.pgm.gz`, import.meta.url)));
@@ -158,64 +158,4 @@ test("warp maps the corners exactly and stays inside the picture", () => {
   const src = { width: 4, height: 4, data: new Uint8ClampedArray(64).fill(200) };
   const out = warp(src, [{ x: -5, y: -5 }, { x: 9, y: -5 }, { x: 9, y: 9 }, { x: -5, y: 9 }], 8, 8);
   assert.ok(out.data.every((v, i) => (i % 4 === 3 ? v === 255 : v === 200)));
-});
-
-test("live: the outline settles and the photo is taken only once it holds still", () => {
-  const page = PAGES.letter;
-  const t = tracker({ need: 4 });
-  let fired = false, prev = null, prior = null;
-  // the hand moves for three looks, then holds
-  const at = [{ cx: 380, cy: 360 }, { cx: 430, cy: 350 }, { cx: 470, cy: 365 }, ...Array(6).fill({ cx: 480, cy: 360 })];
-  for (const [i, p] of at.entries()) {
-    const v = shrink(view({ page, quad: place(page, 0, { ...p, size: 640, deg: 4 }), seed: i + 1 }), 320);
-    const look = lookAt(v, { shape: "full", prev, prior });
-    prev = v;
-    const r = t.feed(look, v.w, v.h);
-    prior = r.quad;
-    assert.ok(look.found, `look ${i}: ${look.hint}`);
-    if (i < 5) assert.equal(r.fire, false, `fired too early, at look ${i}`);
-    fired ||= r.fire;
-  }
-  assert.ok(fired, "never took the photo");
-});
-
-test("live: hints say what's needed", () => {
-  const page = PAGES.letter;
-  const far = shrink(view({ page, quad: place(page, 0, { cx: 480, cy: 360, size: 260, deg: 3 }) }), 320);
-  const look = lookAt(far, { shape: "full" });
-  assert.ok(look.found && !look.ok);
-  assert.match(look.hint, /closer/);
-  const none = shrink(view({ page, quad: place(page, 0, { cx: -3000, cy: 0, size: 10 }) }), 320);
-  assert.match(lookAt(none, { shape: "full" }).hint, /Point the camera/);
-  const card = shrink(view({ page, quad: place(page, 0, { cx: 480, cy: 360, size: 600 }) }), 320);
-  assert.match(lookAt(card, { shape: "id1" }).hint, /card/, "a letter page isn't a card");
-});
-
-test("live: a calm capture: it waits out the hold time, and for the focus to settle", () => {
-  const ok = (crisp, quad) => ({ found: true, ok: true, crisp, quad });
-  const q = [{ x: 10, y: 10 }, { x: 200, y: 10 }, { x: 200, y: 260 }, { x: 10, y: 260 }];
-  // steady from the first look, but only 300 ms in: not yet
-  let t = tracker({ need: 3, hold: 900 });
-  const at = (ms, crisp = 0.6) => t.feed(ok(crisp, q), 320, 240, ms);
-  assert.equal(at(0).fire, false);
-  assert.equal(at(150).fire, false);
-  assert.equal(at(300).fire, false, "three steady looks, but not held long enough");
-  assert.ok(t.progress < 0.5, "the progress shows the hold");
-  assert.equal(at(1000).fire, true, "held 900 ms: taken");
-  // the camera still focusing (sharper each look): waits until it stops getting sharper
-  t = tracker({ need: 3, hold: 900 });
-  at(0, 0.32); at(400, 0.45);
-  assert.equal(at(1000, 0.31).fire, false, "a blurry moment after a sharper one: not now");
-  assert.equal(at(1150, 0.46).fire, true, "back to its sharpest: taken");
-  // losing the page starts the clock again
-  t = tracker({ need: 2, hold: 900, lose: 1 });
-  at(0); at(500);
-  t.feed({ found: false }, 320, 240, 600);
-  assert.equal(at(700).fire, false);
-  assert.equal(at(1200).fire, false);
-  assert.equal(at(1700).fire, true);
-  // hold 0 (reading a barcode or MRZ): as before
-  t = tracker({ need: 2 });
-  at(0);
-  assert.equal(at(10).fire, true);
 });
