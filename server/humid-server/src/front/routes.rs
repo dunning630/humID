@@ -94,6 +94,7 @@ pub const ROUTES: &[Route] = &[
     r!("POST", "/v1/stamps", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/deposit", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/tick", Anon, NeverSignedIn),
+    r!("POST", "/v1/relay/fetch", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/ack", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/retract", Anon, NeverSignedIn),
     r!("POST", "/v1/push/subscribe", Anon, NeverSignedIn),
@@ -109,7 +110,7 @@ fn seg_ok(pattern: &str, seg: &str) -> bool {
     match pattern {
         "{id}" => hex(64),
         "{ref}" => hex(16),
-        "{code}" => (12..=16).contains(&seg.len()) && crate::wire::is_code(seg, seg.len()),
+        "{code}" => (12..=20).contains(&seg.len()) && crate::wire::is_code(seg, seg.len()),
         "{n}" => !seg.is_empty() && seg.len() <= 6 && seg.bytes().all(|b| b.is_ascii_digit()),
         "{req}" => {
             seg.len() == 22

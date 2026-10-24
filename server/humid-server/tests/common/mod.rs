@@ -107,6 +107,19 @@ pub async fn open(
     Ok((share, r, ticket))
 }
 
+/// A new device's join request for `account` (humid-core's format, 0x0108), its parse, and
+/// the body a link start sends.
+pub fn join(device: &Phone, account: &Id, kem: &KemSecret) -> (crypto::JoinRequest, Value) {
+    let req = phone::join_request(&account.0, &device.device, &kem.public()).unwrap();
+    let parsed = crypto::JoinRequest::parse(&req).unwrap();
+    (parsed, json!({ "request": B64(req), "platform": "tablet" }))
+}
+
+/// The body an approving device signs for a join request.
+pub fn approval(req: &crypto::JoinRequest, envelope: Vec<u8>) -> Value {
+    json!({ "binding": B64(req.binding.to_vec()), "envelope": B64(envelope) })
+}
+
 /// The error code of a result that must have failed (secrets have no `Debug`, so no `unwrap_err`).
 pub fn err_code<T>(r: humid_server::Result<T>) -> String {
     match r {

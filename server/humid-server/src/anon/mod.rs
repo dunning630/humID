@@ -30,11 +30,18 @@ use crate::unit::{Clock, ms};
 use crate::wire::{self, B64};
 
 /// Anon's migrations.
-pub const MIGRATIONS: &[Migration] = &[(
-    1,
-    "init",
-    include_str!("../../migrations/anon/0001_init.sql"),
-)];
+pub const MIGRATIONS: &[Migration] = &[
+    (
+        1,
+        "init",
+        include_str!("../../migrations/anon/0001_init.sql"),
+    ),
+    (
+        2,
+        "review95",
+        include_str!("../../migrations/anon/0002_review95.sql"),
+    ),
+];
 
 /// HSM keys it needs.
 pub const HSM_KEYS: &[KeyRef] = &[KeyRef::AnonStatement, KeyRef::Seal];
@@ -61,7 +68,15 @@ pub const RETENTION: &[TableRule] = &[
     },
     TableRule {
         table: "relay_objects",
-        rule: Rule::Kept("14 days, by the relay's own expiry (it keeps the byte counter right)"),
+        rule: Rule::Kept("14 days, by the relay's own expiry (it keeps relay_usage right)"),
+    },
+    TableRule {
+        table: "relay_usage",
+        rule: Rule::Kept("one row: the relay's total bytes"),
+    },
+    TableRule {
+        table: "policy_seen",
+        rule: Rule::Kept("one row: the highest policy accepted"),
     },
     TableRule {
         table: "push_subs",
@@ -82,13 +97,11 @@ const POST_ACCEPT_MS: i64 = 21 * ms::DAY;
 /// The anon unit.
 pub struct Anon {
     pub(crate) db: Db,
-    hsm: Arc<dyn Hsm>,
+    pub(crate) hsm: Arc<dyn Hsm>,
     pub(crate) policy: Arc<SignedPolicy>,
     pub(crate) clock: Clock,
     bits: usize,
     signers: tokio::sync::Mutex<std::collections::HashMap<Vec<u8>, Arc<blind::SigningKey>>>,
-    /// The relay's total bytes (kept, not summed per deposit).
-    pub(crate) relay_bytes: std::sync::atomic::AtomicI64,
 }
 
 impl Anon {
@@ -103,15 +116,6 @@ impl Anon {
         clock: Clock,
         bits: usize,
     ) -> Result<Arc<Self>> {
-        let total: i64 = db
-            .conn()
-            .await?
-            .query_one(
-                "SELECT COALESCE(sum(size), 0)::bigint FROM relay_objects",
-                &[],
-            )
-            .await?
-            .get(0);
         Ok(Arc::new(Self {
             db,
             hsm,
@@ -119,7 +123,6 @@ impl Anon {
             clock,
             bits,
             signers: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-            relay_bytes: total.into(),
         }))
     }
 
@@ -138,6 +141,7 @@ impl Anon {
             .route("/v1/stamps", post(stamps))
             .route("/v1/relay/deposit", post(relay::deposit))
             .route("/v1/relay/tick", post(relay::tick))
+            .route("/v1/relay/fetch", post(relay::fetch))
             .route("/v1/relay/ack", post(relay::ack))
             .route("/v1/relay/retract", post(relay::retract))
             .route("/v1/push/subscribe", post(relay::push_subscribe))
@@ -147,6 +151,29 @@ impl Anon {
 
     /// The current issuing key for `purpose`, made if there is none (rotation by period).
     async fn issuing(&self, purpose: &str) -> Result<(Vec<u8>, Arc<blind::SigningKey>)> {
+        if let Some(k) = self.current_key(purpose).await? {
+            return Ok(k);
+        }
+        // L-16: one creator at a time (a race made two keys and split the anonymity set)
+        let mut c = self.db.conn().await?;
+        let tx = c.transaction().await?;
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('humid-blind-' || $1))",
+            &[&purpose],
+        )
+        .await?;
+        if let Some(k) = self.current_key(purpose).await? {
+            return Ok(k);
+        }
+        let k = self.make_key(&tx, purpose).await?;
+        tx.commit().await?;
+        Ok(k)
+    }
+
+    async fn current_key(
+        &self,
+        purpose: &str,
+    ) -> Result<Option<(Vec<u8>, Arc<blind::SigningKey>)>> {
         let now = self.now();
         let c = self.db.conn().await?;
         let row = c
@@ -158,7 +185,7 @@ impl Anon {
         if let Some(r) = row {
             let kid: Vec<u8> = r.get(0);
             if let Some(s) = self.signers.lock().await.get(&kid) {
-                return Ok((kid, s.clone()));
+                return Ok(Some((kid, s.clone())));
             }
             let der = self.hsm.unwrap(
                 KeyRef::Seal,
@@ -168,8 +195,17 @@ impl Anon {
             )?;
             let s = Arc::new(blind::SigningKey::from_der(&der)?);
             self.signers.lock().await.insert(kid.clone(), s.clone());
-            return Ok((kid, s));
+            return Ok(Some((kid, s)));
         }
+        Ok(None)
+    }
+
+    async fn make_key(
+        &self,
+        c: &deadpool_postgres::Transaction<'_>,
+        purpose: &str,
+    ) -> Result<(Vec<u8>, Arc<blind::SigningKey>)> {
+        let now = self.now();
         let (issue, accept) = if purpose == "pass" {
             (PASS_ISSUE_MS, PASS_ACCEPT_MS)
         } else {

@@ -1,17 +1,20 @@
 //! The relay (H-3, M-5, M-10; SERVER.md §10).
 //!
-//! * `deposit`: one wire object of a fixed size class into a 128-bit mailbox, paid with one
-//!   post token (no IP quotas). The sender stores `H(ack token)` beside it; only the recipient
-//!   can derive the ack token (from the box key), and the sender may keep a retract token.
+//! * `deposit`: one wire object of a fixed size class into a 128-bit mailbox, paid with post
+//!   tokens, one per 16 KiB of its size class (no IP quotas; a big object costs what it
+//!   takes up). The sender stores `H(ack token)` beside it; only the recipient can derive the
+//!   ack token (from the box key), and the sender may keep a retract token.
 //! * `tick`: a fixed number of prefix slots, each with a cursor; the reply is always padded to
-//!   the same size. It **never deletes**. A tick is also the cover traffic: a phone sends one
-//!   per interval whether or not it expects anything.
+//!   the same size. It **never deletes**. An object too big for the reply comes back as a
+//!   stub (id, box, size) so the cursor moves past it, and the phone fetches it alone with
+//!   `fetch`. A tick is also the cover traffic: a phone sends one per interval.
 //! * `ack`: the recipient shows ack tokens for what it has stored; only then is it deleted.
 //!   Unacknowledged objects stay until their TTL, so a lost reply or a lock mid-fetch loses
 //!   nothing.
+//! * The relay's total size is kept in SQL (`relay_usage`, updated in each change's own
+//!   transaction), so concurrent deposits can't overshoot it and anon processes share it.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -19,8 +22,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{Anon, Reply, ok, read};
 use crate::api::anon as a;
-use crate::crypto::{self, label};
+use crate::crypto::{self, label, object_type};
 use crate::error::{Error, Result};
+use crate::hsm::KeyRef;
 use crate::unit::ms;
 use crate::wire::B64;
 
@@ -28,6 +32,17 @@ use crate::wire::B64;
 pub const BUCKETS: [usize; 11] = [
     4096, 8192, 16384, 32768, 65536, 131_072, 262_144, 524_288, 1_048_576, 2_097_152, 4_194_304,
 ];
+
+/// Bytes one post token pays for.
+pub const TOKEN_BYTES: usize = 16 << 10;
+
+/// Post tokens a deposit of `size` costs: one per 16 KiB of its size class, at least one
+/// (M-6). With core's cap of 32 live checks per account per day (16 tokens each), filling a
+/// 2 GiB relay takes some 256 account-days; a 4 MiB attachment costs 16 live checks' tokens.
+#[must_use]
+pub fn tokens_for(size: usize) -> usize {
+    size.div_ceil(TOKEN_BYTES).max(1)
+}
 
 /// The prefix of a 16-byte box id, `bits` long.
 #[must_use]
@@ -48,8 +63,8 @@ pub fn token_hash(kind: &[u8], token: &[u8]) -> Result<Vec<u8>> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deposit {
-    /// A post token (spent).
-    pub token: a::Token,
+    /// Post tokens (spent), [`tokens_for`] the wire's size.
+    pub tokens: Vec<a::Token>,
     /// The 16-byte mailbox id.
     pub r#box: B64,
     /// H(ack token), 64 bytes.
@@ -61,9 +76,19 @@ pub struct Deposit {
     pub wire: B64,
 }
 
+async fn add_usage(tx: &deadpool_postgres::Transaction<'_>, delta: i64) -> Result<i64> {
+    Ok(tx
+        .query_one(
+            "UPDATE relay_usage SET bytes = GREATEST(bytes + $1, 0) WHERE one RETURNING bytes",
+            &[&delta],
+        )
+        .await?
+        .get(0))
+}
+
 /// Deposit one object.
 pub async fn deposit(State(an): State<Arc<Anon>>, body: Body) -> Reply {
-    let r: Deposit = read(body, BUCKETS[10] / 3 * 4 + (16 << 10)).await?;
+    let r: Deposit = read(body, BUCKETS[10] / 3 * 4 + (64 << 10)).await?;
     let m = &an.policy.policy.messaging;
     if !m.enabled {
         return Err(Error::forbidden(
@@ -80,25 +105,39 @@ pub async fn deposit(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     if !BUCKETS.contains(&r.wire.len()) {
         return Err(Error::bad("bad_size", "Not a wire object."));
     }
+    if r.tokens.len() != tokens_for(r.wire.len()) {
+        return Err(Error::bad(
+            "bad_tokens",
+            "A deposit takes one post token per 16 KiB of its size.",
+        ));
+    }
     let size = i64::try_from(r.wire.len()).unwrap_or(i64::MAX);
     let mut c = an.db.conn().await?;
-    let tx = c.transaction().await?;
-    an.spend(&tx, "post", &r.token).await?;
-    let use_ = tx
-        .query_one(
-            "SELECT count(*), COALESCE(sum(size), 0)::bigint FROM relay_objects WHERE box = $1",
-            &[&r.r#box.0],
-        )
-        .await?;
-    let (n, bytes): (i64, i64) = (use_.get(0), use_.get(1));
-    if n >= i64::from(m.max_per_box)
-        || u64::try_from(bytes + size).unwrap_or(u64::MAX) > m.max_box_bytes
+    // L-10: the caps are checked before anything is spent, so a token can't probe how full a
+    // box is for free; a deposit refused after the spend keeps the spend
     {
-        return Err(Error::TooLarge("box_full", "That mailbox is full.".into()));
+        let use_ = c
+            .query_one(
+                "SELECT count(*), COALESCE(sum(size), 0)::bigint FROM relay_objects WHERE box = $1",
+                &[&r.r#box.0],
+            )
+            .await?;
+        let (n, bytes): (i64, i64) = (use_.get(0), use_.get(1));
+        if n >= i64::from(m.max_per_box)
+            || u64::try_from(bytes + size).unwrap_or(u64::MAX) > m.max_box_bytes
+        {
+            return Err(Error::TooLarge("box_full", "That mailbox is full.".into()));
+        }
     }
-    if u64::try_from(an.relay_bytes.load(Ordering::SeqCst) + size).unwrap_or(u64::MAX)
-        > m.max_total_bytes
-    {
+    let tx = c.transaction().await?;
+    for t in &r.tokens {
+        an.spend(&tx, "post", t).await?;
+    }
+    tx.commit().await?;
+    let tx = c.transaction().await?;
+    // M-6: the total in SQL, under the one usage row's lock
+    let total = add_usage(&tx, size).await?;
+    if u64::try_from(total).unwrap_or(u64::MAX) > m.max_total_bytes {
         return Err(Error::TooLarge("relay_full", "The relay is full.".into()));
     }
     let minute = an.now() / ms::MINUTE * ms::MINUTE; // arrival to the minute: no finer timing kept
@@ -109,7 +148,6 @@ pub async fn deposit(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     .await?;
     an.count(&tx, "deposits", 1).await?;
     tx.commit().await?;
-    an.relay_bytes.fetch_add(size, Ordering::SeqCst);
     ok(&serde_json::json!({ "ok": true }))
 }
 
@@ -139,8 +177,11 @@ pub struct Got {
     pub id: i64,
     /// Its box.
     pub r#box: B64,
-    /// The wire object.
-    pub wire: B64,
+    /// The wire object; absent when it doesn't fit a tick reply (fetch it with `fetch`).
+    #[serde(default)]
+    pub wire: Option<B64>,
+    /// Its size.
+    pub size: i64,
 }
 
 /// The tick reply, always `tick_reply_bytes` of JSON (padded).
@@ -154,7 +195,12 @@ pub struct TickReply {
     pub pad: String,
 }
 
-/// Read (never delete) what's in the asked prefixes.
+/// What one stub costs in a reply (id, box, size and JSON).
+const STUB_COST: usize = 96;
+
+/// Read (never delete) what's in the asked prefixes. Each slot is filled on its own: an
+/// object too big to fit is a stub, so it never blocks what comes after it (M-6), and one
+/// slot running out of room never empties the others.
 pub async fn tick(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     let r: Tick = read(body, 16 << 10).await?;
     let m = &an.policy.policy.messaging;
@@ -176,20 +222,26 @@ pub async fn tick(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     let mut got = vec![];
     let mut used = 64usize;
     let mut more = false;
-    'slots: for s in &r.slots {
-        let rows = c.query("SELECT id, box, wire FROM relay_objects WHERE prefix = $1 AND id > $2 ORDER BY id LIMIT 64", &[&s.prefix, &s.after]).await?;
+    for s in &r.slots {
+        let rows = c.query("SELECT id, box, size, CASE WHEN size <= $3 THEN wire END FROM relay_objects WHERE prefix = $1 AND id > $2 ORDER BY id LIMIT 64", &[&s.prefix, &s.after, &i32::try_from(budget).unwrap_or(i32::MAX)]).await?;
         for row in rows {
-            let wire: Vec<u8> = row.get(2);
-            let cost = wire.len() / 3 * 4 + 64;
+            let size = i64::from(row.get::<_, i32>(2));
+            let wire: Option<Vec<u8>> = row.get(3);
+            let full = wire.as_ref().map(|w| w.len() / 3 * 4 + STUB_COST);
+            let (cost, wire) = match full {
+                Some(cost) if used + cost <= budget => (cost, wire.map(B64)),
+                _ => (STUB_COST, None),
+            };
             if used + cost > budget {
                 more = true;
-                break 'slots;
+                break; // this slot's next object waits for the next tick; other slots go on
             }
             used += cost;
             got.push(Got {
                 id: row.get(0),
                 r#box: B64(row.get(1)),
-                wire: B64(wire),
+                wire,
+                size,
             });
         }
     }
@@ -203,6 +255,31 @@ pub async fn tick(State(an): State<Arc<Anon>>, body: Body) -> Reply {
         .len();
     reply.pad = "0".repeat(budget.saturating_sub(len));
     ok(&reply)
+}
+
+/// `POST /v1/relay/fetch`: one object a tick returned as a stub, by id and box. Its reply is
+/// padded to its size class, so it shows only what the tick stub already did.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fetch {
+    /// The id from the tick.
+    pub id: i64,
+    /// Its box.
+    pub r#box: B64,
+}
+
+/// Fetch one object (never deletes).
+pub async fn fetch(State(an): State<Arc<Anon>>, body: Body) -> Reply {
+    let r: Fetch = read(body, 4 << 10).await?;
+    let c = an.db.conn().await?;
+    let row = c
+        .query_opt(
+            "SELECT wire FROM relay_objects WHERE id = $1 AND box = $2",
+            &[&r.id, &r.r#box.0],
+        )
+        .await?
+        .ok_or_else(|| Error::not_found("gone", "That message isn't here any more."))?;
+    ok(&serde_json::json!({ "id": r.id, "wire": B64(row.get(0)) }))
 }
 
 /// `POST /v1/relay/ack`: `{id, token}` pairs for what the phone has safely stored.
@@ -229,22 +306,25 @@ pub async fn ack(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     if r.acks.is_empty() || r.acks.len() > 256 {
         return Err(Error::bad("bad_ack", "Acknowledge 1 to 256 objects."));
     }
-    let c = an.db.conn().await?;
+    let mut c = an.db.conn().await?;
+    let tx = c.transaction().await?;
     let mut deleted = 0;
+    let mut freed = 0i64;
     for a in &r.acks {
         let h = token_hash(b"ack", &a.token)?;
-        if let Some(row) = c
+        if let Some(row) = tx
             .query_opt(
                 "DELETE FROM relay_objects WHERE id = $1 AND ack_hash = $2 RETURNING size",
                 &[&a.id, &h],
             )
             .await?
         {
-            an.relay_bytes
-                .fetch_sub(i64::from(row.get::<_, i32>(0)), Ordering::SeqCst);
+            freed += i64::from(row.get::<_, i32>(0));
             deleted += 1;
         }
     }
+    add_usage(&tx, -freed).await?;
+    tx.commit().await?;
     ok(&serde_json::json!({ "deleted": deleted }))
 }
 
@@ -262,40 +342,43 @@ pub struct Retract {
 pub async fn retract(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     let r: Retract = read(body, 4 << 10).await?;
     let h = token_hash(b"retract", &r.token)?;
-    let c = an.db.conn().await?;
-    let row = c
+    let mut c = an.db.conn().await?;
+    let tx = c.transaction().await?;
+    let row = tx
         .query_opt(
             "DELETE FROM relay_objects WHERE box = $1 AND retract_hash = $2 RETURNING size",
             &[&r.r#box.0, &h],
         )
         .await?;
     if let Some(row) = &row {
-        an.relay_bytes
-            .fetch_sub(i64::from(row.get::<_, i32>(0)), Ordering::SeqCst);
+        add_usage(&tx, -i64::from(row.get::<_, i32>(0))).await?;
     }
+    tx.commit().await?;
     ok(&serde_json::json!({ "removed": row.is_some() }))
 }
 
-/// Expire relay objects past their TTL (keeps the byte counter right).
+/// Expire relay objects past their TTL (and keep the usage row right).
 ///
 /// # Errors
 /// Database failure.
 pub async fn expire(an: &Anon) -> Result<u64> {
     let ttl = i64::from(an.policy.policy.messaging.relay_ttl_days) * ms::DAY;
-    let c = an.db.conn().await?;
-    let rows = c
+    let mut c = an.db.conn().await?;
+    let tx = c.transaction().await?;
+    let rows = tx
         .query(
             "DELETE FROM relay_objects WHERE at < $1 RETURNING size",
             &[&(an.now() - ttl)],
         )
         .await?;
     let gone: i64 = rows.iter().map(|r| i64::from(r.get::<_, i32>(0))).sum();
-    an.relay_bytes.fetch_sub(gone, Ordering::SeqCst);
+    add_usage(&tx, -gone).await?;
+    tx.commit().await?;
     Ok(rows.len() as u64)
 }
 
 /// `POST /v1/push/subscribe`: a push token against coarse prefix buckets, paid with a post
-/// token. Stored; the sender (APNs/FCM) is stubbed.
+/// token. Stored sealed under the HSM `seal` key (L-11); the sender (APNs/FCM) is stubbed.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PushSub {
@@ -321,10 +404,16 @@ pub async fn push_subscribe(State(an): State<Arc<Anon>>, body: Body) -> Reply {
     let tx = c.transaction().await?;
     an.spend(&tx, "post", &r.token).await?;
     let h = crypto::sha3_512(&r.push_token).to_vec();
+    let sealed = an.hsm.wrap(
+        KeyRef::Seal,
+        object_type::UNIT_SEALED,
+        &[b"push", &h],
+        &r.push_token,
+    )?;
     tx.execute(
         "INSERT INTO push_subs (token_hash, token, prefixes, refreshed_at) VALUES ($1, $2, $3, $4)
          ON CONFLICT (token_hash) DO UPDATE SET prefixes = $3, refreshed_at = $4",
-        &[&h, &r.push_token.0, &r.prefixes, &an.now()],
+        &[&h, &sealed, &r.prefixes, &an.now()],
     )
     .await?;
     tx.commit().await?;
@@ -340,5 +429,13 @@ mod tests {
         let b = [0xAB, 0xCD, 0xEF, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(prefix_of(&b, 16), 0xABCD);
         assert_eq!(prefix_of(&b, 4), 0xA);
+    }
+
+    #[test]
+    fn size_weighted_tokens() {
+        assert_eq!(tokens_for(4096), 1);
+        assert_eq!(tokens_for(16_384), 1);
+        assert_eq!(tokens_for(131_072), 8);
+        assert_eq!(tokens_for(4_194_304), 256);
     }
 }

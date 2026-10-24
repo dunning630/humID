@@ -18,7 +18,7 @@ use super::auth::{Approved, added, insert_device};
 use super::ledger::{self, Vouch};
 use super::{Core, ENVELOPE, Reply, SMALL, ok, path_id, read};
 use crate::api::app;
-use crate::crypto::{self, KemPublic, MlDsaPublic, label};
+use crate::crypto::{self, JOIN_CODE_LEN, JoinRequest, MlDsaPublic};
 use crate::error::{Error, Result};
 use crate::proofs::{self, Enrolment};
 use crate::unit::ms;
@@ -26,51 +26,68 @@ use crate::wire::{self, B64, Id};
 
 /// A link lives this long.
 pub const LINK_TTL_MS: i64 = 10 * ms::MINUTE;
-/// Open links in all (anonymous route).
+/// Open links in all (anonymous route): a backstop only.
 pub const MAX_OPEN_LINKS: i64 = 10_000;
-/// Code length (60 bits).
-pub const CODE_LEN: usize = 12;
+/// Open links per network bucket (an IPv4 /24 or an IPv6 /48), so a handful of networks can't
+/// fill the global cap and stop device linking for everyone (M-5).
+pub const MAX_OPEN_LINKS_PER_BUCKET: i64 = 64;
 
-/// The 12-character code that commits to a new device's keys (both screens recompute it).
-///
-/// # Errors
-/// Never in practice.
-pub fn link_code(device_vk: &[u8], kem_pk: &[u8]) -> Result<String> {
-    let h = crypto::hash(label::CODE, &[b"link", device_vk, kem_pk])?;
-    Ok(wire::base32(&h, CODE_LEN))
+/// The coarse bucket a network key falls in: IPv4 /24, IPv6 /48 (anything else as is).
+#[must_use]
+pub fn bucket_of(net: &str) -> String {
+    if let Some(v4) = net.strip_prefix("v4:")
+        && let Ok(a) = v4.parse::<std::net::Ipv4Addr>()
+    {
+        let o = a.octets();
+        return format!("v4:{}.{}.{}.0/24", o[0], o[1], o[2]);
+    }
+    if let Some(v6) = net.strip_prefix("v6:") {
+        let groups: Vec<&str> = v6.split(':').take(3).collect();
+        return format!("v6:{}::/48", groups.join(":"));
+    }
+    net.to_string()
 }
 
-/// `POST /v1/links`.
+/// `POST /v1/links`: a new device sends the join request humid-core made (`begin_join`).
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkStart {
-    /// The new device's ML-DSA-87 key (the only key that can join with this link).
-    pub device_vk: B64,
-    /// A hybrid KEM key the account seed will be sealed to.
-    pub kem_pk: B64,
+    /// humid-core's self-signed join request (type `0x0108`).
+    pub request: B64,
     /// What it calls itself.
     #[serde(default)]
     pub platform: String,
 }
 
-/// A new device asks to join (anonymous: it has nothing to sign in with yet).
+/// A new device asks to join (anonymous: it has nothing to sign in with yet). The request is
+/// signed by the new device's key and names the account; its 100-bit code is what both
+/// screens show (CORE.md §5.3).
 pub async fn link_start(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body) -> Reply {
     let r: LinkStart = read(body, SMALL).await?;
-    MlDsaPublic::from_bytes(&r.device_vk)?;
-    KemPublic::from_bytes(&r.kem_pk)?;
+    let req = JoinRequest::parse(&r.request)?;
     let now = core.now();
-    if !core.anon_per_network.take(&Core::network(&headers), now) {
+    let net = core.network(&headers)?;
+    if !core.anon_per_network.take(&net, now) {
         return Err(Error::too_many(
             "rate_limited",
             "Too many requests from this network.",
         ));
     }
-    let code = link_code(&r.device_vk, &r.kem_pk)?;
+    let bucket = bucket_of(&net);
     let c = core.db.conn().await?;
-    let open: i64 = c
-        .query_one("SELECT count(*) FROM links WHERE expires_at > $1", &[&now])
-        .await?
-        .get(0);
+    let row = c
+        .query_one(
+            "SELECT count(*) FILTER (WHERE bucket = $2), count(*) FROM links WHERE expires_at > $1",
+            &[&now, &bucket],
+        )
+        .await?;
+    let (in_bucket, open): (i64, i64) = (row.get(0), row.get(1));
+    if in_bucket >= MAX_OPEN_LINKS_PER_BUCKET {
+        return Err(Error::too_many(
+            "rate_limited",
+            "Too many devices are waiting to join from this network. Try again in a few minutes.",
+        ));
+    }
     if open >= MAX_OPEN_LINKS {
         return Err(Error::busy());
     }
@@ -82,8 +99,10 @@ pub async fn link_start(State(core): State<Arc<Core>>, headers: HeaderMap, body:
         .collect();
     let n = c
         .execute(
-            "INSERT INTO links (code, device_vk, kem_pk, platform, status, created_at, expires_at) VALUES ($1, $2, $3, $4, 'waiting', $5, $6) ON CONFLICT DO NOTHING",
-            &[&code, &r.device_vk.0, &r.kem_pk.0, &platform, &now, &(now + LINK_TTL_MS)],
+            "INSERT INTO links (code, device_vk, kem_pk, platform, status, created_at, expires_at, request, binding, wants, bucket)
+             VALUES ($1, $2, $3, $4, 'waiting', $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING",
+            &[&req.code, &req.device_vk, &req.join_kem.to_bytes(), &platform, &now, &(now + LINK_TTL_MS),
+              &r.request.0, &req.binding.as_slice(), &req.account.as_slice(), &bucket],
         )
         .await?;
     if n != 1 {
@@ -92,30 +111,44 @@ pub async fn link_start(State(core): State<Arc<Core>>, headers: HeaderMap, body:
             "Start again on the new device.",
         ));
     }
-    super::created(&serde_json::json!({ "code": code, "expires_at": now + LINK_TTL_MS }))
+    super::created(&serde_json::json!({ "code": req.code, "expires_at": now + LINK_TTL_MS }))
 }
 
 fn code_param(code: &str) -> Result<String> {
-    if !wire::is_code(code, CODE_LEN) {
+    // the person may type it grouped and in any case; humid-core's alphabet, 20 characters
+    let c: String = code
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if !wire::is_code(&c, JOIN_CODE_LEN) {
         return Err(Error::bad("bad_code", "That isn't a device code."));
     }
-    Ok(code.to_string())
+    Ok(c)
 }
 
-/// A signed-in device looks up a code (to recompute it from the keys and show the check).
+/// A signed-in device looks up a code: it gets the join request itself, so its own core
+/// checks the signature, the account and the code before the person approves.
 pub async fn link_get(
     State(core): State<Arc<Core>>,
     headers: HeaderMap,
     Path(code): Path<String>,
 ) -> Reply {
-    core.session(&headers).await?;
+    let s = core.session(&headers).await?;
     let code = code_param(&code)?;
     let c = core.db.conn().await?;
     let r = c
-        .query_opt("SELECT device_vk, kem_pk, platform, status, expires_at FROM links WHERE code = $1 AND expires_at > $2", &[&code, &core.now()])
+        .query_opt("SELECT request, platform, status, expires_at, wants FROM links WHERE code = $1 AND expires_at > $2", &[&code, &core.now()])
         .await?
         .ok_or_else(|| Error::not_found("unknown_code", "No device is waiting with that code. Codes last 10 minutes."))?;
-    let status: String = r.get(3);
+    // L-18: a request names the account it joins; another account sees nothing
+    if r.get::<_, Option<Vec<u8>>>(4).as_deref() != Some(s.account.as_bytes()) {
+        return Err(Error::not_found(
+            "unknown_code",
+            "No device is waiting with that code. Codes last 10 minutes.",
+        ));
+    }
+    let status: String = r.get(2);
     if status != "waiting" {
         return Err(Error::conflict(
             "already_used",
@@ -123,17 +156,18 @@ pub async fn link_get(
         ));
     }
     ok(
-        &serde_json::json!({ "code": code, "device_vk": B64(r.get(0)), "kem_pk": B64(r.get(1)), "platform": r.get::<_, String>(2), "expires_at": r.get::<_, i64>(4) }),
+        &serde_json::json!({ "code": code, "request": B64(r.get(0)), "platform": r.get::<_, String>(1), "expires_at": r.get::<_, i64>(3) }),
     )
 }
 
-/// `POST /v1/links/:code/approve`: the signed body names the device key it approves.
+/// `POST /v1/links/:code/approve`: the signed body names the request it approves.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkApproval {
-    /// The device key being approved.
-    pub device_vk: B64,
-    /// The account seed sealed (on the approving phone) to the new device's KEM key.
+    /// The join request's binding, `H("HUMID-PQ2 join-binding", [body])`: what the approving
+    /// live check signs (humid-core `live-grant`).
+    pub binding: B64,
+    /// humid-core's grant: the account seed sealed to the request's join key.
     pub envelope: B64,
 }
 
@@ -168,7 +202,7 @@ pub async fn link_approve(
         .await?;
     let l = tx
         .query_opt(
-            "SELECT device_vk, status FROM links WHERE code = $1 AND expires_at > $2 FOR UPDATE",
+            "SELECT device_vk, status, binding, wants FROM links WHERE code = $1 AND expires_at > $2 FOR UPDATE",
             &[&code, &core.now()],
         )
         .await?
@@ -178,19 +212,27 @@ pub async fn link_approve(
                 "That code expired. Start again on the new device.",
             )
         })?;
+    if l.get::<_, Option<Vec<u8>>>(3).as_deref() != Some(s.account.as_bytes()) {
+        // L-18: the new device asked to join another account
+        return Err(Error::not_found(
+            "unknown_code",
+            "That code expired. Start again on the new device.",
+        ));
+    }
     if l.get::<_, String>(1) != "waiting" {
         return Err(Error::conflict(
             "already_used",
             "That code was already used.",
         ));
     }
-    let vk: Vec<u8> = l.get(0);
-    if !crypto::ct_eq(&vk, &a.device_vk) {
+    let binding: Vec<u8> = l.get::<_, Option<Vec<u8>>>(2).unwrap_or_default();
+    if !crypto::ct_eq(&binding, &a.binding) {
         return Err(Error::forbidden(
             "step_up_mismatch",
             "That approval was for a different device.",
         ));
     }
+    let vk: Vec<u8> = l.get(0);
     let now = core.now();
     tx.execute(
         "UPDATE links SET status = 'approved', account = $2, envelope = $3, expires_at = $4 WHERE code = $1",
@@ -271,7 +313,7 @@ pub async fn enrol(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
     let th = Core::th(&headers)?;
     if !core
         .anon_per_network
-        .take(&Core::network(&headers), core.now())
+        .take(&core.network(&headers)?, core.now())
     {
         return Err(Error::too_many(
             "rate_limited",

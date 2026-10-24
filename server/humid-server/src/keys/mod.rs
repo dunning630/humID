@@ -38,11 +38,18 @@ use crate::unit::{Clock, ms};
 use crate::wire::{self, B64, Id};
 
 /// The keys unit's migrations.
-pub const MIGRATIONS: &[Migration] = &[(
-    1,
-    "init",
-    include_str!("../../migrations/keys/0001_init.sql"),
-)];
+pub const MIGRATIONS: &[Migration] = &[
+    (
+        1,
+        "init",
+        include_str!("../../migrations/keys/0001_init.sql"),
+    ),
+    (
+        2,
+        "review95",
+        include_str!("../../migrations/keys/0002_review95.sql"),
+    ),
+];
 
 /// HSM keys it needs.
 pub const HSM_KEYS: &[KeyRef] = &[KeyRef::KeysStatement, KeyRef::ShareKek, KeyRef::Seal];
@@ -69,6 +76,10 @@ pub const RETENTION: &[TableRule] = &[
         table: "duress_used",
         rule: Rule::Delete("at < $1 - 28800000"),
     },
+    TableRule {
+        table: "policy_seen",
+        rule: Rule::Kept("one row: the highest policy accepted"),
+    },
 ];
 
 struct Fuse {
@@ -87,6 +98,9 @@ pub struct Keys {
     fuses: Mutex<HashMap<Id, Fuse>>,
     /// Wakes the erase timer when a deadline changes.
     pub wake: Notify,
+    /// Tests: refuse duress requests as if keys were down (the queue must retry).
+    #[cfg(any(test, feature = "testkit"))]
+    pub refuse_duress: std::sync::atomic::AtomicBool,
 }
 
 const LOCKED: fn() -> Error = || {
@@ -118,6 +132,8 @@ impl Keys {
             kem,
             fuses: Mutex::new(HashMap::new()),
             wake: Notify::new(),
+            #[cfg(any(test, feature = "testkit"))]
+            refuse_duress: std::sync::atomic::AtomicBool::new(false),
         });
         let c = me.db.conn().await?;
         let orphans = c
@@ -204,8 +220,16 @@ impl Keys {
             th: None,
             now: self.now(),
             p256_only_until: p.device_policy.p256_only_until,
+            mode: None,
         };
         let checked = proofs::check_step_up(&signed.proof, &signed.body, &d, &e)?;
+        // The proof's own signed mode (CORE.md §8–9): a duress session changes nothing real
+        // here, whatever core says (a compromised core can't relay a coerced arm, delete or
+        // close). Releases follow the owner's duress decision (SERVER.md §13): for now as
+        // ordinary, with an armed vault already erased by the duress sign-in.
+        if checked.mode == 1 && kind != "release" {
+            return Err(Error::busy());
+        }
         if !proof_hash.is_some_and(|h| crypto::ct_eq(h, &checked.proof_hash)) {
             return Err(Error::forbidden(
                 "not_vouched",
@@ -287,25 +311,19 @@ impl Keys {
         let c = self.db.conn().await?;
         let Some(r) = c
             .query_opt(
-                "SELECT state, erased_at FROM checkin WHERE account = $1",
+                "SELECT state, erased_at, window_ms, max_window_ms FROM checkin WHERE account = $1",
                 &[&account.as_bytes()],
             )
             .await?
         else {
-            return Ok(k::CheckinStatus {
-                state: "off".into(),
-                deadline: None,
-                erases_at: None,
-                erased_at: None,
-            });
+            return Ok(k::CheckinStatus::off());
         };
         drop(c);
         if r.get::<_, String>(0) == "erased" {
             return Ok(k::CheckinStatus {
                 state: "erased".into(),
-                deadline: None,
-                erases_at: None,
                 erased_at: r.get(1),
+                ..k::CheckinStatus::off()
             });
         }
         let now = self.now();
@@ -322,6 +340,8 @@ impl Keys {
                 deadline: Some(deadline),
                 erases_at: Some(erases_at),
                 erased_at: None,
+                window_ms: r.get(2),
+                max_window_ms: r.get(3),
             }),
             None => {
                 self.erase(account).await?;
@@ -505,15 +525,16 @@ async fn store(State(keys): St, body: Body) -> Reply {
         return Err(LOCKED());
     }
     let wrapped = keys.wrap(&f.account, &f.object, &share)?;
+    // L-7: the fuse lock is held from the state check to the insert, so an upload racing an
+    // arm is either resealed by the arm or fused here, never left out of the erase
     let fuses = keys.fuses.lock().await;
-    let (stored, fused) = match (st.state.as_str(), fuses.get(&f.account)) {
-        ("armed", Some(fz)) => (
+    let (stored, fused) = match fuses.get(&f.account) {
+        Some(fz) => (
             Keys::fuse_seal(&fz.key, &f.account, &f.object, &wrapped)?,
             true,
         ), // sealed while armed: in the fuse from the start
-        _ => (wrapped, false),
+        None => (wrapped, false),
     };
-    drop(fuses);
     let c = keys.db.conn().await?;
     let n = c
         .execute(
@@ -521,6 +542,7 @@ async fn store(State(keys): St, body: Body) -> Reply {
             &[&f.object.as_bytes(), &f.account.as_bytes(), &stored, &fused, &keys.now()],
         )
         .await?;
+    drop(fuses);
     if n != 1 {
         return Err(Error::conflict(
             "share_exists",
@@ -580,6 +602,12 @@ async fn release(State(keys): St, Path(id): Path<String>, body: Body) -> Reply {
     let now = keys.now();
     let mut c = keys.db.conn().await?;
     let tx = c.transaction().await?;
+    // L-6: releases of one account one at a time, so the hourly cap holds under concurrency
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(encode($1, 'hex'), 7))",
+        &[&f.account.as_bytes()],
+    )
+    .await?;
     let n: i64 = tx
         .query_one(
             "SELECT count(*) FROM releases WHERE account = $1 AND at > $2",
@@ -866,6 +894,10 @@ async fn checkin(State(keys): St, body: Body) -> Reply {
 
 /// Erase now: a duress sign-in from this account, checked here, each acted on once.
 async fn duress(State(keys): St, body: Body) -> Reply {
+    #[cfg(any(test, feature = "testkit"))]
+    if keys.refuse_duress.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(Error::unavailable("down", "keys is down (test)"));
+    }
     let r: k::Duress = read(body).await?;
     let p = &keys.policy.policy;
     let f: k::DuressFacts =

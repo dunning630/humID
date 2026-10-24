@@ -1000,6 +1000,7 @@ mod tests {
             device: [1; 32],
             nonce: [2; 32],
             at: NOW,
+            mode: 0,
             device_sig: vec![3; 10],
             live_p256: vec![4; 10],
             live_mldsa: None,

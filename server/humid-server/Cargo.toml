@@ -29,7 +29,7 @@ name = "humid-server-anon"
 path = "src/bin/anon.rs"
 
 [dependencies]
-# All HumID cryptography: the one HUMID-PQ2 suite (branch v5-core, merged into v5-server).
+# All HumID cryptography: the one HUMID-PQ2 suite (crates/humid-pq2, a workspace member).
 humid-pq2 = { path = "../../crates/humid-pq2" }
 # HTP/2, the app transport (docs/v5/HTP2.md): terminated inside core and anon.
 humid-htp = { path = "../../crates/humid-htp" }
@@ -74,9 +74,10 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 [dev-dependencies]
 humid-server = { path = ".", features = ["testkit"] }
 # cross-checks: the server parses exactly what the phone's core emits (share requests)
-humid-core = { path = "../../crates/humid-core" }
+humid-core = { path = "../../crates/humid-core", features = ["software-gate"] }
 # the app's HTP/2 client, driven directly by the transport tests
 humid-link = { path = "../../crates/humid-link" }
 
+# shared lints (clippy -D warnings in CI); unsafe is forbidden in the crate root (lib.rs)
 [lints]
 workspace = true

@@ -39,15 +39,13 @@ async fn go() -> humid_server::Result<()> {
     );
     humid_server::retention::spawn(db.clone(), core::RETENTION, s.clock.clone(), 600_000);
     ledger::spawn_checkpoints(db, s.hsm.clone(), s.clock.clone(), 60_000);
-    let sweeper = c.clone();
+    // duress erases (retried until keys acts), deferred ledger entries, erased vaults
+    let jobs = c.clone();
     tokio::spawn(async move {
-        let mut t = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut t = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             t.tick().await;
-            if let Err(e) = core::checkin::sweep_erased(&sweeper).await {
-                tracing::warn!(error = %e, "check-in sweep");
-            }
-            let _ = sweeper.redact_closed().await;
+            jobs.jobs().await;
         }
     });
     // HTP/2 ends here: front forwards opaque calls; /v1/* answers only what the endpoint

@@ -93,7 +93,7 @@ pub enum Body<'a> {
     /// Typed parts: an optional live proof, the JSON object, named binary fields.
     Parts {
         /// The step-up proof.
-        proof: Option<Proof>,
+        proof: Option<Box<Proof>>,
         /// The JSON object (without the binary fields).
         json: &'a [u8],
         /// Binary fields, sent as bytes rather than base64.
@@ -108,7 +108,7 @@ impl Body<'_> {
             Body::Parts { proof, json, blobs } => {
                 let mut ps = vec![];
                 if let Some(p) = proof {
-                    ps.push(Part::Proof(Box::new(p.clone())));
+                    ps.push(Part::Proof(p.clone()));
                 }
                 if !json.is_empty() {
                     ps.push(Part::Json(json.to_vec()));

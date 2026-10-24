@@ -63,15 +63,14 @@ pub fn start(config_path: &Path, role: Role) -> Result<Started> {
     )?);
     let mode = policy.policy.mode;
     crate::stubs::check(role, mode)?;
-    if mode == Mode::Production {
-        if let Some(db) = &cfg.database {
-            if !crate::config::database_is_local(&db.url) {
-                return Err(Error::forbidden(
-                    "database_not_local",
-                    "In production the database must be on a Unix socket or loopback (replication carries it between sites).",
-                ));
-            }
-        }
+    if mode == Mode::Production
+        && let Some(db) = &cfg.database
+        && !crate::config::database_is_local(&db.url)
+    {
+        return Err(Error::forbidden(
+            "database_not_local",
+            "In production the database must be on a Unix socket or loopback (replication carries it between sites).",
+        ));
     }
     let hsm = hsm::open(&cfg.hsm, mode, &cfg.data_dir, keys_for(role))?;
     let identity = Identity::load(&cfg.tls.cert, &cfg.tls.key, &cfg.tls.ca)?;
@@ -114,6 +113,23 @@ pub async fn database(s: &Started, unit: &str, migrations: &[crate::db::Migratio
         .ok_or_else(|| Error::bad("bad_config", "this unit needs [database]"))?;
     let db = Db::connect(&d.url, d.pool, None)?;
     db.migrate(unit, migrations).await?;
+    // M-7: the forward-only rule against the unit's replicated database as well as its file
+    policy::accept_db(&db, &s.policy).await?;
+    // L-2: "logged before release" across sites needs synchronous replication
+    if s.policy.policy.mode == Mode::Production && (unit == "core" || unit == "keys") {
+        let c = db.conn().await?;
+        let sc: String = c.query_one("SHOW synchronous_commit", &[]).await?.get(0);
+        let names: String = c
+            .query_one("SHOW synchronous_standby_names", &[])
+            .await?
+            .get(0);
+        if sc != "remote_apply" || names.trim().is_empty() {
+            return Err(Error::forbidden(
+                "replication_not_synchronous",
+                "In production core and keys need synchronous_commit = remote_apply and a synchronous standby.",
+            ));
+        }
+    }
     Ok(db)
 }
 
@@ -184,10 +200,10 @@ pub fn init_logging() {
 pub fn config_arg(role: Role) -> std::path::PathBuf {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--config" {
-            if let Some(p) = args.next() {
-                return p.into();
-            }
+        if a == "--config"
+            && let Some(p) = args.next()
+        {
+            return p.into();
         }
     }
     format!("/etc/humid/{}.toml", role.as_str()).into()

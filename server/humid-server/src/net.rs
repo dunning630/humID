@@ -54,6 +54,10 @@ pub const CLIENT_NET: &str = "x-humid-client-net";
 
 /// Largest request body any unit reads (a document upload).
 pub const MAX_BODY: usize = 72 << 20;
+/// Open connections per listener.
+pub const MAX_CONNECTIONS: usize = 4096;
+/// A request body must arrive within this long.
+pub const BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Serve `router` on `listener` with `tls_cfg`. `callers`: the roles allowed to connect
 /// (empty = the public outer listener: no client certificate). Runs until the task is
@@ -66,13 +70,24 @@ pub async fn serve(
     public: bool,
 ) {
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_cfg);
+    // L-17: a cap on open connections, and a back-off when accept fails (EMFILE and the like)
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
-        let Ok((sock, addr)) = listener.accept().await else {
-            continue;
+        let Ok(permit) = slots.clone().acquire_owned().await else {
+            return;
+        };
+        let (sock, addr) = match listener.accept().await {
+            Ok(x) => x,
+            Err(e) => {
+                tracing::warn!(error = %e, "accept failed; backing off");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
         };
         let acceptor = acceptor.clone();
         let router = router.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let tls = match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 acceptor.accept(sock),
@@ -287,11 +302,15 @@ pub fn decode<R: DeserializeOwned>(status: u16, body: &[u8]) -> Result<R> {
 /// `too_large`.
 pub async fn body_bytes(body: Body, max: usize) -> Result<bytes::Bytes> {
     let limited = http_body_util::Limited::new(body, max);
-    match limited.collect().await {
-        Ok(c) => Ok(c.to_bytes()),
-        Err(_) => Err(Error::TooLarge(
+    match tokio::time::timeout(BODY_TIMEOUT, limited.collect()).await {
+        Ok(Ok(c)) => Ok(c.to_bytes()),
+        Ok(Err(_)) => Err(Error::TooLarge(
             "too_large",
             "That request is too large.".into(),
+        )),
+        Err(_) => Err(Error::bad(
+            "too_slow",
+            "That request took too long to send.",
         )),
     }
 }

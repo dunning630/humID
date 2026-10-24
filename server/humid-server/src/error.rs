@@ -235,7 +235,9 @@ impl From<deadpool_postgres::PoolError> for Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::bad("bad_json", format!("Malformed request: {e}"))
+        // L-14: the detail goes to the debug log, never to the caller
+        tracing::debug!(error = %e, "malformed request");
+        Error::bad("bad_json", "Malformed request.")
     }
 }
 

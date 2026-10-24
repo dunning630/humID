@@ -31,6 +31,8 @@ use crate::wire::{self, B64, Id};
 pub const CHUNK: i64 = 1 << 20;
 /// A download ticket lasts this long after its last use.
 pub const TICKET_MS: i64 = 60 * ms::SECOND;
+/// Downloads open at once per session.
+pub const TICKETS_PER_SESSION: i64 = 4;
 
 /// `POST /v1/objects`.
 #[derive(Deserialize, Serialize)]
@@ -89,6 +91,9 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
         .step_up(&tx, &s, &r.signed, "POST", "/v1/objects")
         .await?;
     let a = s.account.as_bytes();
+    // L-6: one upload at a time per account, so two can't both pass the quota check
+    tx.execute("SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE", &[&a])
+        .await?;
     let used: i64 = tx
         .query_one(
             "SELECT COALESCE(sum(size), 0)::bigint FROM objects WHERE account = $1",
@@ -125,6 +130,23 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
             "That document id is already in use.",
         ));
     }
+    let facts = keys_api::UploadFacts {
+        account: s.account,
+        object: u.object,
+        envelope_hash: B64(env_hash.to_vec()),
+        manifest_hash: u.manifest_hash.clone(),
+        proof_hash: B64(checked.proof_hash.to_vec()),
+    };
+    let store = keys_api::Store {
+        statement: core.statement("upload", &facts)?,
+        cert,
+        signed: r.signed,
+        sealed_share: r.sealed_share,
+    };
+    // keys checks the holder's proof itself; if it refuses, this transaction rolls back. The
+    // ledger entry comes after, in this same transaction, so the public log's lock is never
+    // held across the call (M-1).
+    let _: serde_json::Value = core.keys.post("/v1/shares", &[], &store).await?;
     let e = ledger::append(
         &tx,
         now,
@@ -134,22 +156,6 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
         Vouch::Holder(&checked.proof_hash),
     )
     .await?;
-    let facts = keys_api::UploadFacts {
-        account: s.account,
-        object: u.object,
-        envelope_hash: B64(env_hash.to_vec()),
-        manifest_hash: u.manifest_hash.clone(),
-        proof_hash: B64(checked.proof_hash.to_vec()),
-        ledger_seq: e.seq,
-    };
-    let store = keys_api::Store {
-        statement: core.statement("upload", &facts)?,
-        cert,
-        signed: r.signed,
-        sealed_share: r.sealed_share,
-    };
-    // keys checks the holder's proof itself; if it refuses, this transaction rolls back
-    let _: serde_json::Value = core.keys.post("/v1/shares", &[], &store).await?;
     tx.commit().await?;
     super::created(&serde_json::json!({ "object": u.object, "rev": rev, "ledger": e }))
 }
@@ -222,6 +228,20 @@ pub async fn open(
         Vouch::Holder(&checked.proof_hash),
     )
     .await?;
+    // L-12: a few downloads at a time per session
+    let open_tickets: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM download_tickets WHERE session = $1 AND expires_at >= $2",
+            &[&s.token_hash, &now],
+        )
+        .await?
+        .get(0);
+    if open_tickets >= TICKETS_PER_SESSION {
+        return Err(Error::too_many(
+            "too_many_downloads",
+            "Finish the documents you're opening first.",
+        ));
+    }
     let ticket = crypto::random::<32>()?;
     tx.execute(
         "INSERT INTO download_tickets (ticket, session, object, expires_at) VALUES ($1, $2, $3, $4)",
@@ -262,7 +282,8 @@ pub async fn open(
                 &[&ticket.as_slice()],
             )
             .await?;
-            ledger::append(
+            // deferred while a duress session is live: "vault_erased" would give it away
+            ledger::append_or_defer(
                 &tx,
                 core.now(),
                 &s.account,
@@ -272,6 +293,14 @@ pub async fn open(
             )
             .await?;
             tx.commit().await?;
+            if s.duress {
+                // H-1: a duress session never learns why (an erased vault, a locked one):
+                // every refusal is the same "not available right now"
+                return Err(Error::unavailable(
+                    "not_available",
+                    "This document isn't available right now. Try again later.",
+                ));
+            }
             Err(e)
         }
     }
@@ -304,13 +333,17 @@ pub async fn chunk(
             "This download needs a new live check.",
         ));
     }
-    if n < 0 {
-        return Err(Error::bad("bad_chunk", "No such chunk."));
-    }
+    // L-13: no overflow for a huge n (checked, then bounded by Postgres' int)
+    let from = n
+        .checked_mul(CHUNK)
+        .and_then(|v| v.checked_add(1))
+        .filter(|_| n >= 0)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| Error::bad("bad_chunk", "No such chunk."))?;
     let row = c
         .query_one(
             "SELECT substring(envelope FROM $3::int FOR $4::int), size FROM objects WHERE id = $1 AND account = $2",
-            &[&object.as_bytes(), &s.account.as_bytes(), &i32::try_from(n * CHUNK + 1).map_err(|_| Error::bad("bad_chunk", "No such chunk."))?, &i32::try_from(CHUNK).unwrap_or(i32::MAX)],
+            &[&object.as_bytes(), &s.account.as_bytes(), &from, &i32::try_from(CHUNK).unwrap_or(i32::MAX)],
         )
         .await?;
     let bytes: Vec<u8> = row.get(0);
@@ -333,6 +366,9 @@ pub async fn update(
     body: Body,
 ) -> Reply {
     let s = core.session(&headers).await?;
+    // H-2: a duress session changes nothing real (an ordinary one under lockdown may: an
+    // index entry is the holder's own label)
+    Core::not_duress(&s)?;
     let object = path_id(&id)?;
     let r: Approved = read(body, SMALL).await?;
     let u: app::ObjectChange = wire::parse(&r.signed.body)?;
@@ -437,15 +473,6 @@ pub async fn remove(
         .get(0);
     tx.execute("INSERT INTO object_tombstones (id, account, rev, deleted_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET rev = $3", &[&object.as_bytes(), &a, &rev, &core.now()])
         .await?;
-    ledger::append(
-        &tx,
-        core.now(),
-        &s.account,
-        "object.deleted",
-        &serde_json::json!({ "object": object }),
-        Vouch::Holder(&checked.proof_hash),
-    )
-    .await?;
     let st = core.statement(
         "delete",
         &keys_api::ActionFacts {
@@ -467,6 +494,16 @@ pub async fn remove(
             },
         )
         .await?;
+    // then the entry, in this transaction (M-1: no log lock across the call to keys)
+    ledger::append(
+        &tx,
+        core.now(),
+        &s.account,
+        "object.deleted",
+        &serde_json::json!({ "object": object }),
+        Vouch::Holder(&checked.proof_hash),
+    )
+    .await?;
     tx.commit().await?;
     ok(&serde_json::json!({ "deleted": object, "rev": rev }))
 }
@@ -535,16 +572,25 @@ pub struct Entry {
     pub leaf: i64,
 }
 
+/// Ledger entries after `since`. A duress session is never served an entry that names duress
+/// or what it caused (H-1, `ledger::HIDDEN_IN_DURESS`): new ones are deferred while it is
+/// live, older ones are left out of what it reads. The phone's core knows it is in a decoy
+/// session, so the decoy view tolerates the gap in the chain.
 async fn entries_since(
     c: &impl deadpool_postgres::GenericClient,
-    account: &Id,
+    s: &super::Session,
     since: i64,
     limit: i64,
 ) -> Result<Vec<Entry>> {
+    let hidden: Vec<&str> = if s.duress {
+        ledger::HIDDEN_IN_DURESS.to_vec()
+    } else {
+        vec![]
+    };
     let rows = c
         .query(
-            "SELECT seq, body, prev, hash, leaf_index FROM ledger_entries WHERE account = $1 AND seq > $2 ORDER BY seq LIMIT $3",
-            &[&account.as_bytes(), &since, &limit],
+            "SELECT seq, body, prev, hash, leaf_index FROM ledger_entries WHERE account = $1 AND seq > $2 AND NOT (type = ANY($4)) ORDER BY seq LIMIT $3",
+            &[&s.account.as_bytes(), &since, &limit, &hidden],
         )
         .await?;
     Ok(rows
@@ -608,7 +654,7 @@ pub async fn sync(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body)
         changed,
         deleted,
         resync,
-        ledger: entries_since(&c, &s.account, r.ledger_seq, 500).await?,
+        ledger: entries_since(&c, &s, r.ledger_seq, 500).await?,
         devices_rev,
         devices,
         nonces: core.nonces(&c, &s.token_hash, &s.device).await?,
@@ -641,7 +687,7 @@ pub async fn ledger_events(
     let s = core.session(&headers).await?;
     let c = core.db.conn().await?;
     ok(
-        &serde_json::json!({ "account": s.account, "entries": entries_since(&c, &s.account, q.since, q.limit.unwrap_or(300).clamp(1, 1000)).await? }),
+        &serde_json::json!({ "account": s.account, "entries": entries_since(&c, &s, q.since, q.limit.unwrap_or(300).clamp(1, 1000)).await? }),
     )
 }
 
@@ -661,9 +707,14 @@ pub async fn ledger_inclusion(
 ) -> Reply {
     let s = core.session(&headers).await?;
     let c = core.db.conn().await?;
+    let hidden: Vec<&str> = if s.duress {
+        ledger::HIDDEN_IN_DURESS.to_vec()
+    } else {
+        vec![]
+    };
     let row = match q.seq {
-        Some(seq) => c.query_opt("SELECT seq, hash, leaf_index FROM ledger_entries WHERE account = $1 AND seq = $2", &[&s.account.as_bytes(), &seq]).await?,
-        None => c.query_opt("SELECT seq, hash, leaf_index FROM ledger_entries WHERE account = $1 ORDER BY seq DESC LIMIT 1", &[&s.account.as_bytes()]).await?,
+        Some(seq) => c.query_opt("SELECT seq, hash, leaf_index FROM ledger_entries WHERE account = $1 AND seq = $2 AND NOT (type = ANY($3))", &[&s.account.as_bytes(), &seq, &hidden]).await?,
+        None => c.query_opt("SELECT seq, hash, leaf_index FROM ledger_entries WHERE account = $1 AND NOT (type = ANY($2)) ORDER BY seq DESC LIMIT 1", &[&s.account.as_bytes(), &hidden]).await?,
     }
     .ok_or_else(|| Error::not_found("not_in_log", "No such entry."))?;
     let leaf: i64 = row.get(2);

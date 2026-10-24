@@ -181,6 +181,106 @@ pub async fn append<D: Serialize>(
     })
 }
 
+/// Entry types a duress session must never read: they would tell whoever forced the unlock
+/// that the duress gesture was used (H-1). While a duress session of the account is live,
+/// new ones wait in `deferred_entries`; a duress session is served older ones redacted.
+pub const HIDDEN_IN_DURESS: &[&str] = &[
+    "session.duress",
+    "duress.cleared",
+    "access.denied",
+    "checkin.erased",
+];
+
+/// Whether a duress session of `account` is live (signed in, not idle, not expired).
+///
+/// # Errors
+/// Database failure.
+pub async fn duress_live(
+    c: &impl deadpool_postgres::GenericClient,
+    account: &Id,
+    now: i64,
+) -> Result<bool> {
+    Ok(c
+        .query_opt(
+            "SELECT 1 FROM sessions WHERE account = $1 AND duress AND revoked_at IS NULL AND expires_at > $2 AND last_used_at > $3 LIMIT 1",
+            &[&account.as_bytes(), &now, &(now - super::SESSION_IDLE_MS)],
+        )
+        .await?
+        .is_some())
+}
+
+/// Append `kind`, or, if it is one a duress session must not see and one is live, keep it in
+/// `deferred_entries` until none is ([`flush_deferred`]). Returns the entry when appended.
+///
+/// # Errors
+/// Database failure.
+pub async fn append_or_defer(
+    tx: &Transaction<'_>,
+    now: i64,
+    account: &Id,
+    kind: &str,
+    detail: &serde_json::Value,
+    vouch: Vouch<'_>,
+) -> Result<Option<Appended>> {
+    if HIDDEN_IN_DURESS.contains(&kind) && duress_live(tx, account, now).await? {
+        let proof: Option<&[u8]> = match vouch {
+            Vouch::Holder(h) => Some(&h[..]),
+            Vouch::Server => None,
+        };
+        tx.execute(
+            "INSERT INTO deferred_entries (account, type, detail, at, proof_hash) VALUES ($1, $2, $3, $4, $5)",
+            &[&account.as_bytes(), &kind, detail, &now, &proof],
+        )
+        .await?;
+        return Ok(None);
+    }
+    append(tx, now, account, kind, detail, vouch)
+        .await
+        .map(Some)
+}
+
+/// Append the deferred entries of every account no duress session of which is live any more.
+/// Returns how many were appended. Run by core's job loop (and tests).
+///
+/// # Errors
+/// Database failure.
+pub async fn flush_deferred(core: &super::Core) -> Result<usize> {
+    let now = core.now();
+    let c = core.db.conn().await?;
+    let accounts = c
+        .query("SELECT DISTINCT account FROM deferred_entries", &[])
+        .await?;
+    drop(c);
+    let mut n = 0;
+    for r in accounts {
+        let account = Id::from_slice(&r.get::<_, Vec<u8>>(0))?;
+        let mut c = core.db.conn().await?;
+        let tx = c.transaction().await?;
+        if duress_live(&tx, &account, now).await? {
+            continue;
+        }
+        let mut rows = tx
+            .query(
+                "DELETE FROM deferred_entries WHERE account = $1 RETURNING id, type, detail, at, proof_hash",
+                &[&account.as_bytes()],
+            )
+            .await?;
+        rows.sort_by_key(|r| r.get::<_, i64>(0));
+        for e in &rows {
+            let kind: String = e.get(1);
+            let detail: serde_json::Value = e.get(2);
+            let ph: Option<[u8; 32]> = e
+                .get::<_, Option<Vec<u8>>>(4)
+                .and_then(|v| v.try_into().ok());
+            let vouch = ph.as_ref().map_or(Vouch::Server, Vouch::Holder);
+            append(&tx, e.get(3), &account, &kind, &detail, vouch).await?;
+            n += 1;
+        }
+        tx.commit().await?;
+    }
+    Ok(n)
+}
+
 async fn add_leaf(tx: &Transaction<'_>, idx: i64, leaf: &[u8; 64]) -> Result<()> {
     let put = "INSERT INTO tlog_nodes (level, idx, hash) VALUES ($1, $2, $3)";
     tx.execute(put, &[&0i32, &idx, &leaf.as_slice()]).await?;
@@ -227,7 +327,7 @@ pub fn tree_hash(n: &mut dyn Nodes, lo: u64, hi: u64) -> Result<[u8; 64]> {
     if len == 0 {
         return empty_root();
     }
-    if len.is_power_of_two() && lo % len == 0 {
+    if len.is_power_of_two() && lo.is_multiple_of(len) {
         return Ok(n.node(len.trailing_zeros(), lo / len));
     }
     let k = largest_pow2_below(len);

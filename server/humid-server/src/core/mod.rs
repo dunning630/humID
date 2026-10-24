@@ -35,11 +35,18 @@ use crate::unit::{Clock, ms};
 use crate::wire::{B64, Id};
 
 /// Core's migrations, from empty.
-pub const MIGRATIONS: &[Migration] = &[(
-    1,
-    "init",
-    include_str!("../../migrations/core/0001_init.sql"),
-)];
+pub const MIGRATIONS: &[Migration] = &[
+    (
+        1,
+        "init",
+        include_str!("../../migrations/core/0001_init.sql"),
+    ),
+    (
+        2,
+        "review95",
+        include_str!("../../migrations/core/0002_review95.sql"),
+    ),
+];
 
 /// HSM keys core needs before it starts.
 pub const HSM_KEYS: &[KeyRef] = &[
@@ -47,6 +54,7 @@ pub const HSM_KEYS: &[KeyRef] = &[
     KeyRef::Ledger,
     KeyRef::CardTag,
     KeyRef::Seal,
+    KeyRef::Session,
 ];
 
 /// Session lifetimes.
@@ -57,6 +65,9 @@ pub const SESSION_MAX_MS: i64 = 8 * ms::HOUR;
 pub const NONCE_POOL: i64 = 8;
 /// A pool nonce lives this long.
 pub const NONCE_MS: i64 = 15 * ms::MINUTE;
+/// Step-up actions per account per hour (L-19: one scripted account can't grow the public log
+/// without bound).
+pub const ACTIONS_PER_ACCOUNT_HOUR: u32 = 600;
 
 /// Retention for every core table (SERVER.md §5). `$1` is now (ms).
 pub const RETENTION: &[TableRule] = &[
@@ -147,6 +158,32 @@ pub const RETENTION: &[TableRule] = &[
         table: "duress",
         rule: Rule::Delete("at < $1 - 1209600000"),
     },
+    TableRule {
+        table: "used_challenges",
+        rule: Rule::Delete("expires_at < $1"),
+    },
+    TableRule {
+        table: "duress_pending",
+        rule: Rule::Kept("until keys acts on the duress sign-in (auth::deliver_duress)"),
+    },
+    TableRule {
+        table: "deferred_entries",
+        rule: Rule::Kept(
+            "until no duress session of the account is live, then appended (ledger::flush_deferred)",
+        ),
+    },
+    TableRule {
+        table: "erase_sweeps",
+        rule: Rule::Delete("erased_at < $1 - 2592000000"),
+    },
+    TableRule {
+        table: "live_check_days",
+        rule: Rule::Delete("day < $1 / 86400000 - 2"),
+    },
+    TableRule {
+        table: "policy_seen",
+        rule: Rule::Kept("one row: the highest policy accepted"),
+    },
 ];
 
 /// The core unit.
@@ -169,6 +206,10 @@ pub struct Core {
     pub recovery_per_network: Sketch,
     /// Anonymous link and enrolment requests per network.
     pub anon_per_network: Sketch,
+    /// Calls per signed-in session (`limits.calls_per_minute`, M-4).
+    pub calls_per_session: Sketch,
+    /// Step-up actions per account (L-19).
+    pub actions_per_account: Sketch,
 }
 
 /// A signed-in session, as core verified it.
@@ -186,6 +227,8 @@ pub struct Session {
     pub duress: bool,
     /// The account is locked down.
     pub lockdown: bool,
+    /// A duress session's copy of Check-in, as it stood at its sign-in (H-1).
+    pub checkin_view: Option<crate::api::keys::CheckinStatus>,
 }
 
 impl Core {
@@ -204,6 +247,8 @@ impl Core {
             signin_per_network: Sketch::new(l.signin_failures_per_network, 5 * ms::MINUTE),
             recovery_per_network: Sketch::new(l.recovery_starts_per_network_hour, ms::HOUR),
             anon_per_network: Sketch::new(120, ms::MINUTE),
+            calls_per_session: Sketch::new(l.calls_per_minute, ms::MINUTE),
+            actions_per_account: Sketch::new(ACTIONS_PER_ACCOUNT_HOUR, ms::HOUR),
             db,
             hsm,
             policy,
@@ -218,15 +263,26 @@ impl Core {
         self.clock.now()
     }
 
-    /// The client network front reported (availability limits only).
-    #[must_use]
-    pub fn network(headers: &HeaderMap) -> String {
-        headers
+    /// The client network front reported (availability limits only). In production a call
+    /// without one is refused, so a front that forgets it can't put every caller into one
+    /// shared bucket (M-4); in development (the Funnel deployment, tests) it is
+    /// `dev:unknown`, and per-account limits do the work.
+    ///
+    /// # Errors
+    /// `no_client_network` (production).
+    pub fn network(&self, headers: &HeaderMap) -> Result<String> {
+        match headers
             .get(CLIENT_NET)
             .and_then(|v| v.to_str().ok())
-            .filter(|s| s.len() <= 64)
-            .unwrap_or("unknown")
-            .to_string()
+            .filter(|s| !s.is_empty() && s.len() <= 64)
+        {
+            Some(n) => Ok(n.to_string()),
+            None if self.policy.policy.mode == crate::unit::Mode::Production => Err(Error::bad(
+                "no_client_network",
+                "This call came without its client network.",
+            )),
+            None => Ok("dev:unknown".into()),
+        }
     }
 
     /// The HTP transcript this call came in (front binds sessions to it).
@@ -263,7 +319,7 @@ impl Core {
         let c = self.db.conn().await?;
         let row = c
             .query_opt(
-                "SELECT s.account, s.device, s.th, s.duress, a.lockdown_at IS NOT NULL
+                "SELECT s.account, s.device, s.th, s.duress, a.lockdown_at IS NOT NULL, s.checkin_view
                    FROM sessions s JOIN accounts a ON a.id = s.account JOIN devices d ON d.id = s.device
                   WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2 AND s.last_used_at > $3
                     AND a.status = 'active' AND d.revoked_at IS NULL",
@@ -275,6 +331,12 @@ impl Core {
         if !crypto::ct_eq(&s_th, &th) {
             // a token replayed in another HTP session (or by a front that stole it) is refused
             return Err(unauth());
+        }
+        if !self.calls_per_session.take(&hex::encode(h), now) {
+            return Err(Error::too_many(
+                "rate_limited",
+                "Too many requests. Wait a minute.",
+            ));
         }
         c.execute(
             "UPDATE sessions SET last_used_at = $2 WHERE token_hash = $1",
@@ -288,6 +350,11 @@ impl Core {
             th: s_th,
             duress: row.get(3),
             lockdown: row.get(4),
+            checkin_view: row
+                .get::<_, Option<serde_json::Value>>(5)
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| Error::internal(format!("checkin view: {e}")))?,
         })
     }
 
@@ -334,6 +401,15 @@ impl Core {
         if signed.proof.device != s.device {
             return Err(Error::bad_proof());
         }
+        if !self
+            .actions_per_account
+            .take(&s.account.to_string(), self.now())
+        {
+            return Err(Error::too_many(
+                "rate_limited",
+                "That's a lot of changes in an hour. Try again later.",
+            ));
+        }
         let (cert, d) = self.device(tx, &s.account, &s.device).await?;
         let e = proofs::Expect {
             method,
@@ -341,6 +417,8 @@ impl Core {
             th: Some(&s.th),
             now: self.now(),
             p256_only_until: self.policy.policy.device_policy.p256_only_until,
+            // a duress session's proofs carry the duress mode, an ordinary one's don't
+            mode: Some(u8::from(s.duress)),
         };
         let checked = proofs::check_step_up(&signed.proof, &signed.body, &d, &e)?;
         let n = tx
@@ -408,6 +486,35 @@ impl Core {
             return Err(Error::busy());
         }
         Ok(())
+    }
+
+    /// Refuse any real change from a duress session (H-2). Ordinary sessions of a locked-down
+    /// account still may: the holder must be able to check in and veto a recovery.
+    ///
+    /// # Errors
+    /// `busy`.
+    pub fn not_duress(s: &Session) -> Result<()> {
+        if s.duress {
+            return Err(Error::busy());
+        }
+        Ok(())
+    }
+
+    /// One round of core's background work: duress erases to deliver, deferred ledger entries
+    /// to append, erased vaults to clean up, closed accounts to redact. Errors are logged.
+    pub async fn jobs(&self) {
+        if let Err(e) = auth::deliver_duress(self).await {
+            tracing::warn!(error = %e, "duress delivery");
+        }
+        if let Err(e) = ledger::flush_deferred(self).await {
+            tracing::warn!(error = %e, "deferred ledger entries");
+        }
+        if let Err(e) = checkin::sweep_erased(self).await {
+            tracing::warn!(error = %e, "check-in sweep");
+        }
+        if let Err(e) = self.redact_closed().await {
+            tracing::warn!(error = %e, "redaction");
+        }
     }
 
     /// Mark a single-use statement from another unit as used.

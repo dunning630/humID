@@ -37,8 +37,12 @@ pub const MAX_WITNESSES: usize = 5;
 pub const MAX_OPEN_PER_ACCOUNT: i64 = 3;
 /// Unbound (anonymous) recoveries in all.
 pub const MAX_UNBOUND: i64 = 10_000;
-/// A request collects proofs for this long.
+/// A request collects proofs for this long (once a proof bound it to an account).
 pub const COLLECT_MS: i64 = 7 * ms::DAY;
+/// A request no proof has bound yet goes after this long (M-5).
+pub const UNBOUND_MS: i64 = ms::HOUR;
+/// Unbound requests at once per network bucket (IPv4 /24, IPv6 /48).
+pub const MAX_UNBOUND_PER_BUCKET: i64 = 32;
 /// Request codes (80 bits).
 pub const CODE_LEN: usize = 16;
 
@@ -103,6 +107,9 @@ pub async fn set_mode(State(core): State<Arc<Core>>, headers: HeaderMap, body: B
         .step_up(&tx, &s, &r.signed, "PUT", "/v1/recovery/mode")
         .await?;
     let a = s.account.as_bytes();
+    // L-6: the first statement has no row to lock yet; the account row serialises them
+    tx.execute("SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE", &[&a])
+        .await?;
     let prev = tx
         .query_opt(
             "SELECT version, hash FROM recovery_mode WHERE account = $1 FOR UPDATE",
@@ -431,7 +438,7 @@ pub async fn start(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
     let r: StartReq = read(body, SMALL).await?;
     MlDsaPublic::from_bytes(&r.device_vk)?;
     KemPublic::from_bytes(&r.kem_pk)?;
-    let net = Core::network(&headers);
+    let net = core.network(&headers)?;
     let now = core.now();
     if !core.recovery_per_network.take(&net, now) {
         return Err(Error::too_many(
@@ -439,8 +446,24 @@ pub async fn start(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             "Too many recoveries started from this network. Try again later.",
         ));
     }
+    // M-5: a request no proof has bound yet lives an hour (not a week), and each /24 or /48
+    // holds only a few, so no handful of networks can fill the global cap for everyone
+    let bucket = super::devices::bucket_of(&net);
     let c = core.db.conn().await?;
-    let unbound: i64 = c.query_one("SELECT count(*) FROM recovery_requests WHERE account IS NULL AND status = 'collecting'", &[]).await?.get(0);
+    let row = c
+        .query_one(
+            "SELECT count(*) FILTER (WHERE network = $2), count(*) FROM recovery_requests
+              WHERE account IS NULL AND status = 'collecting' AND created_at > $1",
+            &[&(now - UNBOUND_MS), &bucket],
+        )
+        .await?;
+    let (in_bucket, unbound): (i64, i64) = (row.get(0), row.get(1));
+    if in_bucket >= MAX_UNBOUND_PER_BUCKET {
+        return Err(Error::too_many(
+            "rate_limited",
+            "Too many recoveries started from this network. Try again later.",
+        ));
+    }
     if unbound >= MAX_UNBOUND {
         return Err(Error::busy());
     }
@@ -457,14 +480,14 @@ pub async fn start(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
         .execute(
             "INSERT INTO recovery_requests (id, ref, code, device_vk, kem_pk, platform, status, created_at, expires_at, network)
              VALUES ($1, $2, $3, $4, $5, $6, 'collecting', $7, $8, $9) ON CONFLICT DO NOTHING",
-            &[&id.as_slice(), &reference, &code, &r.device_vk.0, &r.kem_pk.0, &platform, &now, &(now + COLLECT_MS), &net],
+            &[&id.as_slice(), &reference, &code, &r.device_vk.0, &r.kem_pk.0, &platform, &now, &(now + UNBOUND_MS), &bucket],
         )
         .await?;
     if n != 1 {
         return Err(Error::conflict("code_in_use", "Start again."));
     }
     super::created(
-        &serde_json::json!({ "request": B64(id.to_vec()), "code": code, "expires_at": now + COLLECT_MS }),
+        &serde_json::json!({ "request": B64(id.to_vec()), "code": code, "expires_at": now + UNBOUND_MS }),
     )
 }
 
@@ -541,6 +564,12 @@ async fn bind_and_evaluate(
         Some(_) => {}
         None => {
             require_hardened(tx, account).await?;
+            // L-6: one binding at a time per account, so the per-account cap holds
+            tx.execute(
+                "SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE",
+                &[&account.as_bytes()],
+            )
+            .await?;
             let open: i64 = tx
                 .query_one("SELECT count(*) FROM recovery_requests WHERE account = $1 AND status IN ('collecting', 'waiting')", &[&account.as_bytes()])
                 .await?
@@ -551,9 +580,10 @@ async fn bind_and_evaluate(
                     "There are already recoveries waiting for this HumID.",
                 ));
             }
+            // bound: it now collects for the full week
             tx.execute(
-                "UPDATE recovery_requests SET account = $2 WHERE id = $1",
-                &[&request, &account.as_bytes()],
+                "UPDATE recovery_requests SET account = $2, expires_at = GREATEST(expires_at, $3) WHERE id = $1",
+                &[&request, &account.as_bytes(), &(now + COLLECT_MS)],
             )
             .await?;
             let reference: String = tx
@@ -811,8 +841,11 @@ async fn status_of(core: &Core, request: &[u8]) -> Reply {
     }
     let kinds = kinds_of(&c, request, account.as_ref()).await?;
     let mut pieces = vec![];
-    if status == "waiting" && release_at.is_some_and(|t| now >= t) {
-        if let Some(a) = &account {
+    if status == "waiting"
+        && release_at.is_some_and(|t| now >= t)
+        && let Some(a) = &account
+    {
+        {
             if mode_of(&c, a).await? == HARDENED {
                 status = "released".into();
                 pieces = c
@@ -905,6 +938,9 @@ pub async fn cancel(
     body: Body,
 ) -> Reply {
     let s = core.session(&headers).await?;
+    // H-2: a duress session can't veto (or use up) a real recovery. An ordinary session of a
+    // locked-down account still can: that is what the veto is for.
+    Core::not_duress(&s)?;
     if reference.len() != 16 || !reference.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::bad("bad_ref", "Unknown recovery."));
     }

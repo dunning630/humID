@@ -204,11 +204,27 @@ async fn device_link_then_removal() {
     let tablet = phone.sibling().unwrap();
     let mut new = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
-    let l: Value = new
-        .core("POST", "/v1/links", &json!({ "device_vk": B64(tablet.device.public().to_bytes()), "kem_pk": B64(once.public().to_bytes()), "platform": "tablet" }))
+    let (jr, start) = join(&tablet, &phone.account_id(), &once);
+    let l: Value = new.core("POST", "/v1/links", &start).await.unwrap();
+    let code = l["code"].as_str().unwrap().to_string();
+    assert_eq!(code, jr.code, "the 100-bit code humid-core shows");
+    // the approving phone gets the request itself, to check in its own core
+    let got: Value = app
+        .core("GET", &format!("/v1/links/{code}"), &json!({}))
         .await
         .unwrap();
-    let code = l["code"].as_str().unwrap().to_string();
+    assert_eq!(got["request"], start["request"]);
+    // another account sees nothing (L-18)
+    let stranger = Phone::new().unwrap();
+    let mut st = App::new(&c).await.unwrap();
+    st.register(&stranger).await.unwrap();
+    assert_eq!(
+        err_code(
+            st.core::<_, Value>("GET", &format!("/v1/links/{code}"), &json!({}))
+                .await
+        ),
+        "unknown_code"
+    );
 
     // before approval it can't enrol
     let enrol = json!({ "enrolment": tablet.enrolment(&new.th).unwrap(), "evidence": { "via": "link", "code": code } });
@@ -221,7 +237,7 @@ async fn device_link_then_removal() {
     );
 
     // the existing phone approves it with a live check
-    let approve = json!({ "device_vk": B64(tablet.device.public().to_bytes()), "envelope": B64(vec![1u8; 2000]) });
+    let approve = approval(&jr, vec![1u8; 2000]);
     let path = format!("/v1/links/{code}/approve");
     let signed = app.sign(&phone, "POST", &path, &approve).unwrap();
     let _: Value = app
@@ -671,6 +687,10 @@ async fn duress_sign_in_erases_an_armed_vault_and_locks_down() {
     // forced unlock: the duress gesture
     let mut forced = App::new(&c).await.unwrap();
     forced.login(&phone, 1).await.unwrap();
+    // the erase goes to keys after the reply (queued in the sign-in's transaction)
+    humid_server::core::auth::deliver_duress(&c.core)
+        .await
+        .unwrap();
     // looks ordinary, but the vault is erased and sensitive changes are "busy"
     assert_eq!(
         c.keys.status(&phone.account_id()).await.unwrap().state,
@@ -789,7 +809,7 @@ async fn messaging_post_tokens_relay_tick_ack() {
     let boxid = vec![0xABu8; 16];
     let ack_token = vec![7u8; 32];
     let ack_hash = humid_server::anon::relay::token_hash(b"ack", &ack_token).unwrap();
-    let dep = json!({ "token": tokens[0], "box": B64(boxid.clone()), "ack_hash": B64(ack_hash), "wire": B64(vec![0u8; 4096]) });
+    let dep = json!({ "tokens": [tokens[0]], "box": B64(boxid.clone()), "ack_hash": B64(ack_hash), "wire": B64(vec![0u8; 4096]) });
     let _: Value = anon_app
         .anon("POST", "/v1/relay/deposit", &dep)
         .await
@@ -817,10 +837,11 @@ async fn messaging_post_tokens_relay_tick_ack() {
         .await
         .unwrap();
     // and what front relays for them is the same size too (one size class)
-    let seen = c.tap.seen.lock().unwrap();
-    let (a, b) = (&seen[seen.len() - 2], &seen[seen.len() - 1]);
-    assert_eq!((a.0.len(), a.1.len()), (b.0.len(), b.1.len()));
-    drop(seen);
+    {
+        let seen = c.tap.seen.lock().unwrap();
+        let (a, b) = (&seen[seen.len() - 2], &seen[seen.len() - 1]);
+        assert_eq!((a.0.len(), a.1.len()), (b.0.len(), b.1.len()));
+    }
     let r1: Value = serde_json::from_slice(&raw1.1).unwrap();
     assert_eq!(r1["got"].as_array().unwrap().len(), 1);
     assert_eq!(

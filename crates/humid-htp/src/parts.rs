@@ -7,7 +7,7 @@
 //!        | 03 ‖ lp(proof)                    a step-up live proof (below)
 //!
 //! proof  = header(0x0303) ‖ lp(method) ‖ lp(path) ‖ th (64) ‖ u64 seq ‖ device (32) ‖ nonce (32)
-//!          ‖ u64 at ‖ lp(device_sig) ‖ lp(live_p256) ‖ lp(live_mldsa | "") ‖ lp(signed body)
+//!          ‖ u64 at ‖ u8 mode ‖ lp(device_sig) ‖ lp(live_p256) ‖ lp(live_mldsa | "") ‖ lp(signed body)
 //! ```
 //!
 //! The endpoint checks a proof's method, path, `th` and `seq` against the request that carries
@@ -55,6 +55,8 @@ pub struct Proof {
     pub nonce: [u8; 32],
     /// When the check happened (ms).
     pub at: u64,
+    /// The session mode the device key and chip signed: 0 normal, 1 duress.
+    pub mode: u8,
     /// The device key's signature.
     pub device_sig: Vec<u8>,
     /// The secure chip's P-256 signature.
@@ -86,6 +88,7 @@ impl Proof {
         o.extend_from_slice(&self.device);
         o.extend_from_slice(&self.nonce);
         o.extend_from_slice(&self.at.to_be_bytes());
+        o.push(self.mode);
         lp(&mut o, &self.device_sig);
         lp(&mut o, &self.live_p256);
         lp(&mut o, self.live_mldsa.as_deref().unwrap_or(&[]));
@@ -110,12 +113,16 @@ impl Proof {
             device: r.array().map_err(e)?,
             nonce: r.array().map_err(e)?,
             at: r.u64().map_err(e)?,
+            mode: r.array::<1>().map_err(e)?[0],
             device_sig: r.lp(MAX_SIG).map_err(e)?.to_vec(),
             live_p256: r.lp(MAX_SIG).map_err(e)?.to_vec(),
             live_mldsa: Some(r.lp(MAX_SIG).map_err(e)?.to_vec()).filter(|v| !v.is_empty()),
             body: r.lp(MAX_SIGNED_BODY).map_err(e)?.to_vec(),
         };
         r.finish().map_err(e)?;
+        if p.mode > 1 {
+            return Err(Code::BadFrame);
+        }
         Ok(p)
     }
 }
@@ -209,6 +216,7 @@ mod tests {
             device: [2; 32],
             nonce: [3; 32],
             at: 4,
+            mode: 0,
             device_sig: vec![5; 4640],
             live_p256: vec![6; 71],
             live_mldsa: None,

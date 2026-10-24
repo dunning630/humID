@@ -87,6 +87,10 @@ impl Cluster {
             T0,
             policy::unit_keys_from(core_hsm.as_ref(), keys_hsm.as_ref(), anon_hsm.as_ref())?,
         );
+        // every simulated phone opens its HTP/2 session from one test network at the same
+        // instant of a manual clock; front's per-network handshake limit isn't what a flow
+        // test probes (a test that does sets it in `tweak`)
+        p.limits.handshakes_per_minute = 10_000;
         tweak(&mut p);
         let bytes = serde_json::to_vec(&p).map_err(|e| Error::internal(e.to_string()))?;
         let sig = policy::sign(&root, &bytes)?;
@@ -284,9 +288,21 @@ impl Tap {
     fn wrap(self: Arc<Self>, r: axum::Router) -> axum::Router {
         let me = self;
         r.layer(axum::middleware::from_fn(
-            move |req: axum::extract::Request, next: axum::middleware::Next| {
+            move |mut req: axum::extract::Request, next: axum::middleware::Next| {
                 let me = me.clone();
                 async move {
+                    // every simulated phone connects from 127.0.0.1: stand its own address in
+                    // for the socket's, as the socket would give it on a real network
+                    let stand_in = req
+                        .headers()
+                        .get(TEST_PEER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<std::net::IpAddr>().ok());
+                    if let Some(ip) = stand_in
+                        && let Some(p) = req.extensions_mut().get_mut::<net::Peer>()
+                    {
+                        p.addr.set_ip(ip);
+                    }
                     if req.uri().path() != "/htp/v2/call" {
                         return next.run(req).await;
                     }
@@ -322,14 +338,23 @@ impl Tap {
     }
 }
 
+/// Test-only header: the address a simulated phone stands in for (the testkit's front only).
+pub const TEST_PEER: &str = "x-test-peer";
+
+/// The address every [`App`] connects from unless a test moves it.
+pub const DEFAULT_NET: &str = "v4:192.0.2.1";
+
 /// The phone's transport: HTTPS to front's outer listener (TLS 1.3, a PQ group), the way the
 /// app's platform TLS stack will reach it.
+#[derive(Clone)]
 pub struct OuterTransport {
     client: hyper_util::client::legacy::Client<
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         http_body_util::Full<bytes::Bytes>,
     >,
     base: String,
+    /// The address this phone stands in for (`v4:…`), sent as [`TEST_PEER`].
+    pub peer: Arc<std::sync::Mutex<String>>,
 }
 
 impl OuterTransport {
@@ -364,6 +389,7 @@ impl OuterTransport {
         Ok(Self {
             client,
             base: format!("https://{addr}"),
+            peer: Arc::new(std::sync::Mutex::new(DEFAULT_NET.into())),
         })
     }
 
@@ -374,10 +400,16 @@ impl OuterTransport {
         body: Vec<u8>,
     ) -> std::result::Result<Vec<u8>, humid_link::NetError> {
         use http_body_util::BodyExt;
+        let peer = self
+            .peer
+            .lock()
+            .map(|p| p.trim_start_matches("v4:").to_string())
+            .unwrap_or_default();
         let req = axum::http::Request::builder()
             .method(method)
             .uri(format!("{}{path}", self.base))
             .header("content-type", crate::htp::CONTENT_TYPE)
+            .header(TEST_PEER, peer)
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .map_err(|_| humid_link::NetError)?;
         let resp = self
@@ -401,39 +433,29 @@ impl humid_link::Transport for OuterTransport {
         body: Vec<u8>,
     ) -> impl std::future::Future<Output = std::result::Result<Vec<u8>, humid_link::NetError>> + Send
     {
-        let client = self.client.clone();
-        let base = self.base.clone();
-        async move {
-            OuterTransport { client, base }
-                .send("POST", "/htp/v2/call", body)
-                .await
-        }
+        let me = self.clone();
+        async move { me.send("POST", "/htp/v2/call", body).await }
     }
     fn keys(
         &mut self,
     ) -> impl std::future::Future<Output = std::result::Result<Vec<u8>, humid_link::NetError>> + Send
     {
-        let client = self.client.clone();
-        let base = self.base.clone();
-        async move {
-            OuterTransport { client, base }
-                .send("GET", "/htp/v2/keys", vec![])
-                .await
-        }
+        let me = self.clone();
+        async move { me.send("GET", "/htp/v2/keys", vec![]).await }
     }
 }
 
 /// The app's link to one unit through front.
 pub type Link = humid_link::Link<OuterTransport>;
 
-fn link(c: &Cluster, unit: humid_htp::Unit) -> Result<Link> {
+fn link(c: &Cluster, unit: humid_htp::Unit, t: OuterTransport) -> Result<Link> {
     let root = humid_pq2::DualVerifyingKey::from_bytes(&c.root.to_bytes())?;
     let clock = c.clock.clone();
     Ok(humid_link::Link::new(
         unit,
         root,
         crate::htp::statement_key_of,
-        OuterTransport::new(c.front_addr, &c.front_identity.ca)?,
+        t,
         Box::new(move || u64::try_from(clock.now()).unwrap_or(0)),
     ))
 }
@@ -473,10 +495,16 @@ pub struct App<'a> {
     pub token: Option<Vec<u8>>,
     /// Unused step-up nonces.
     pub nonces: Vec<Vec<u8>>,
+    /// The network this phone connects from: front takes it from the socket, and the
+    /// testkit's front stands this address in for 127.0.0.1 (IPv4 only).
+    pub net: String,
+    /// The session mode its proofs carry (`1` after a duress sign-in), as the phone's core does.
+    pub mode: u8,
     core: tokio::sync::Mutex<Link>,
     anon: tokio::sync::Mutex<Link>,
     /// Request ids reserved for proofs made by [`App::sign`] (by proof `seq`).
     reserved: std::sync::Mutex<std::collections::BTreeMap<u64, u32>>,
+    peer: Arc<std::sync::Mutex<String>>,
 }
 
 impl<'a> App<'a> {
@@ -486,8 +514,10 @@ impl<'a> App<'a> {
     /// # Errors
     /// The handshake failed.
     pub async fn new(c: &'a Cluster) -> Result<Self> {
-        let mut core = link(c, humid_htp::Unit::Core)?;
-        let anon = link(c, humid_htp::Unit::Anon)?;
+        let t = OuterTransport::new(c.front_addr, &c.front_identity.ca)?;
+        let peer = t.peer.clone();
+        let mut core = link(c, humid_htp::Unit::Core, t.clone())?;
+        let anon = link(c, humid_htp::Unit::Anon, t)?;
         core.connect().await.map_err(link_err)?;
         let th = core.th().ok_or_else(|| Error::internal("no session"))?;
         Ok(Self {
@@ -495,9 +525,12 @@ impl<'a> App<'a> {
             th: th.to_vec(),
             token: None,
             nonces: vec![],
+            net: DEFAULT_NET.into(),
+            mode: 0,
             core: tokio::sync::Mutex::new(core),
             anon: tokio::sync::Mutex::new(anon),
             reserved: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            peer,
         })
     }
 
@@ -518,9 +551,8 @@ impl<'a> App<'a> {
         Ok((l.handshakes(), l.resumptions()))
     }
 
-    /// Split a JSON body into typed parts: a top-level `signed` becomes the binary proof, the
-    /// [`BLOBS`] fields bytes; everything else stays JSON.
-
+    /// Send one request through the link: a JSON body is split into typed parts (a top-level
+    /// `signed` becomes the binary proof, the [`BLOBS`] fields bytes; the rest stays JSON).
     async fn send(
         &self,
         unit: humid_htp::Unit,
@@ -530,6 +562,9 @@ impl<'a> App<'a> {
         extra: &[(humid_htp::msg::HeaderName, &[u8])],
     ) -> Result<(u16, Vec<u8>)> {
         let m = humid_htp::msg::Method::parse(method).ok_or_else(|| Error::internal("method"))?;
+        if let Ok(mut p) = self.peer.lock() {
+            p.clone_from(&self.net);
+        }
         let mut l = match unit {
             humid_htp::Unit::Core => self.core.lock().await,
             humid_htp::Unit::Anon => self.anon.lock().await,
@@ -673,6 +708,7 @@ impl<'a> App<'a> {
         let r: crate::core::auth::LoginReply = self.core("POST", "/v1/auth/login", &l).await?;
         self.token = Some(r.token.0);
         self.nonces = r.nonces.into_iter().map(|n| n.0).collect();
+        self.mode = duress;
         Ok(())
     }
 
@@ -703,7 +739,7 @@ impl<'a> App<'a> {
             g.insert(st.seq, st.rid);
         }
         let b = serde_json::to_vec(body).map_err(|e| Error::internal(e.to_string()))?;
-        phone.step_up(
+        phone.step_up_mode(
             method,
             path,
             &self.th,
@@ -711,6 +747,7 @@ impl<'a> App<'a> {
             &nonce,
             self.c.clock.now(),
             &b,
+            self.mode,
         )
     }
 
@@ -741,7 +778,7 @@ mod humid_link_body {
     #[derive(Default)]
     pub struct Owned {
         pub parts: bool,
-        pub proof: Option<humid_htp::parts::Proof>,
+        pub proof: Option<Box<humid_htp::parts::Proof>>,
         pub json: Vec<u8>,
         pub blobs: Vec<(String, Vec<u8>)>,
     }
@@ -791,7 +828,7 @@ mod humid_link_body {
             {
                 rid = Some(r);
             }
-            out.proof = Some(humid_htp::parts::Proof {
+            out.proof = Some(Box::new(humid_htp::parts::Proof {
                 method: s.proof.method,
                 path: s.proof.path,
                 th: th_a,
@@ -799,11 +836,12 @@ mod humid_link_body {
                 device: s.proof.device.0,
                 nonce: n_a,
                 at: u64::try_from(s.proof.at).unwrap_or(0),
+                mode: s.proof.mode,
                 device_sig: s.proof.device_sig.0,
                 live_p256: s.proof.live_p256.0,
                 live_mldsa: s.proof.live_mldsa.map(|b| b.0),
                 body: s.body.0,
-            });
+            }));
             out.parts = true;
         }
         for name in BLOBS {

@@ -271,6 +271,7 @@ fn unit_body(head: &RequestHead, body: &[u8], th: &[u8; 64]) -> std::result::Res
                                 device: Id(p.device),
                                 nonce: B64(p.nonce.to_vec()),
                                 at: i64::try_from(p.at).map_err(|_| Code::BadFrame)?,
+                                mode: p.mode,
                                 device_sig: B64(p.device_sig),
                                 live_p256: B64(p.live_p256),
                                 live_mldsa: p.live_mldsa.map(B64),

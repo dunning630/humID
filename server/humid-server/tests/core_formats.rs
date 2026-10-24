@@ -64,6 +64,34 @@ fn the_server_parses_and_binds_humid_cores_share_request() {
 }
 
 #[test]
+fn the_server_parses_humid_cores_join_request_and_its_code() {
+    use humid_core::soft_gate::{SoftGate, SoftMode};
+    use humid_core::store::MemStore;
+    let mut new = humid_core::Core::new(
+        SoftGate::new(SoftMode::PublicTarget, 8),
+        MemStore::default(),
+    )
+    .unwrap();
+    let started = new.begin_join([7; 32]).unwrap();
+    let parsed = crypto::JoinRequest::parse(&started.request).unwrap();
+    assert_eq!(parsed.account, [7; 32]);
+    assert_eq!(
+        parsed.code,
+        started.code.replace('-', ""),
+        "the 100-bit code both screens show"
+    );
+    let core_req = humid_core::JoinRequest::decode(&started.request).unwrap();
+    assert_eq!(parsed.binding, core_req.binding().unwrap());
+    assert_eq!(parsed.device_id, core_req.device_id());
+    // a swapped join key no longer verifies (humid-core review H1, on the server's side too)
+    let mut forged = started.request.clone();
+    let at = humid_pq2::encoding::HEADER_LEN + 32 + humid_pq2::MLDSA_VK_LEN + 5;
+    forged[at] ^= 1;
+    assert!(crypto::JoinRequest::parse(&forged).is_err());
+    assert!(crypto::JoinRequest::parse(&started.request[1..]).is_err());
+}
+
+#[test]
 fn an_upload_share_is_bound_to_the_manifest_hash() {
     // the phone seals with binding = manifest hash (CORE.md §6.3); the server opens with it
     let ks = crypto::KemSecret::generate().unwrap();
