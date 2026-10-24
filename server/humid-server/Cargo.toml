@@ -10,7 +10,7 @@ description = "HumID 5.0 server: the front, core, keys and anon units (docs/v5/S
 [features]
 # Test support (a simulated phone, an in-process cluster, the app's HTP/2 link). Never in a
 # release build.
-testkit = ["dep:humid-link"]
+testkit = ["dep:humid-link", "humid-attest/testkit"]
 
 [[bin]]
 name = "humid-server-front"
@@ -35,13 +35,17 @@ humid-pq2 = { path = "../../crates/humid-pq2" }
 humid-htp = { path = "../../crates/humid-htp" }
 # The app core's HTP/2 client: the testkit's simulated phone drives every flow through it.
 humid-link = { path = "../../crates/humid-link", optional = true }
+# Phone attestation: Android key attestation, App Attest and its per-check assertions, Google's
+# status list (the port of packages/attest).
+humid-attest = { path = "../../crates/humid-attest" }
 
 # HTTP: axum's router over hyper 1; TLS accepted by hand so the unit can read the peer certificate.
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "client-legacy", "service"] }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "aws-lc-rs"] }
+# native-tokio: the system's roots, for the one outbound fetch (Google's attestation status list)
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "aws-lc-rs", "native-tokio"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 bytes = "1"

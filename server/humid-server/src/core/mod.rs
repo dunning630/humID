@@ -6,6 +6,7 @@
 //! "logged before release" is one commit. Front only carries requests; nothing here takes
 //! front's word for anything the holder could have signed.
 
+pub mod attest;
 pub mod auth;
 pub mod checkin;
 pub mod devices;
@@ -45,6 +46,11 @@ pub const MIGRATIONS: &[Migration] = &[
         2,
         "review95",
         include_str!("../../migrations/core/0002_review95.sql"),
+    ),
+    (
+        3,
+        "attest",
+        include_str!("../../migrations/core/0003_attest.sql"),
     ),
 ];
 
@@ -184,6 +190,14 @@ pub const RETENTION: &[TableRule] = &[
         table: "policy_seen",
         rule: Rule::Kept("one row: the highest policy accepted"),
     },
+    TableRule {
+        table: "device_attestations",
+        rule: Rule::Kept("with its device (revoked devices keep theirs, like their certificate)"),
+    },
+    TableRule {
+        table: "attest_status",
+        rule: Rule::Kept("one row: the newest signed copy of Google's status list"),
+    },
 ];
 
 /// The core unit.
@@ -210,6 +224,8 @@ pub struct Core {
     pub calls_per_session: Sketch,
     /// Step-up actions per account (L-19).
     pub actions_per_account: Sketch,
+    /// Phone attestation: enrolment, per-check App Attest, Google's status list.
+    pub attest: attest::Attest,
 }
 
 /// A signed-in session, as core verified it.
@@ -232,17 +248,37 @@ pub struct Session {
 }
 
 impl Core {
-    /// A core unit.
-    #[must_use]
+    /// A core unit, trusting only the vendors' attestation roots.
+    ///
+    /// # Errors
+    /// `bad_policy`.
     pub fn new(
         db: Db,
         hsm: Arc<dyn Hsm>,
         policy: Arc<SignedPolicy>,
         clock: Clock,
         keys: UnitClient,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>> {
+        Self::with_trust(db, hsm, policy, clock, keys, humid_attest::Trust::pinned())
+    }
+
+    /// A core unit trusting `trust` for phone attestations. In production only the vendors'
+    /// roots are accepted (`test_root_in_production` otherwise).
+    ///
+    /// # Errors
+    /// `test_root_in_production`, `bad_policy`.
+    pub fn with_trust(
+        db: Db,
+        hsm: Arc<dyn Hsm>,
+        policy: Arc<SignedPolicy>,
+        clock: Clock,
+        keys: UnitClient,
+        trust: humid_attest::Trust,
+    ) -> Result<Arc<Self>> {
         let l = &policy.policy.limits;
-        Arc::new(Self {
+        let attest = attest::Attest::new(&policy.policy, trust)?;
+        Ok(Arc::new(Self {
+            attest,
             signin_per_identity: Sketch::new(l.signin_failures_per_identity, 5 * ms::MINUTE),
             signin_per_network: Sketch::new(l.signin_failures_per_network, 5 * ms::MINUTE),
             recovery_per_network: Sketch::new(l.recovery_starts_per_network_hour, ms::HOUR),
@@ -254,7 +290,7 @@ impl Core {
             policy,
             clock,
             keys,
-        })
+        }))
     }
 
     /// Now.
@@ -433,6 +469,15 @@ impl Core {
                 "That approval was already used, or has expired. Try again.",
             ));
         }
+        // iOS: this check's App Attest assertion, counter strictly increasing (in `tx`)
+        self.attest
+            .per_check(
+                tx,
+                &s.device,
+                signed.proof.app_attest.as_deref(),
+                &checked.live_digest,
+            )
+            .await?;
         Ok((checked, cert))
     }
 
@@ -503,6 +548,16 @@ impl Core {
     /// One round of core's background work: duress erases to deliver, deferred ledger entries
     /// to append, erased vaults to clean up, closed accounts to redact. Errors are logged.
     pub async fn jobs(&self) {
+        if let Err(e) = attest::load_status(self).await {
+            tracing::warn!(error = %e, "attestation status list");
+        }
+        match attest::reverify_due(self).await {
+            Ok((_, removed)) if removed > 0 => {
+                tracing::warn!(removed, "devices removed by scheduled attestation re-check");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "attestation re-check"),
+        }
         if let Err(e) = auth::deliver_duress(self).await {
             tracing::warn!(error = %e, "duress delivery");
         }

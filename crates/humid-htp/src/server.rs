@@ -1036,6 +1036,7 @@ mod tests {
             live_p256: vec![4; 10],
             live_mldsa: None,
             body: b"{}".to_vec(),
+            app_attest: None,
         }
     }
 

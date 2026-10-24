@@ -23,12 +23,6 @@ pub struct Stub {
 pub const STUBS: &[Stub] = &[
     Stub {
         units: &[Role::Core],
-        what: "verifying Android key attestation and Apple App Attest (and per-check assertions)",
-        waiting_on: "the Rust port of packages/attest",
-        blocks_production: true,
-    },
-    Stub {
-        units: &[Role::Core],
         what: "verifying a document envelope's account signature server-side",
         waiting_on: "the humid-core envelope v2 format",
         blocks_production: false,
@@ -101,5 +95,20 @@ mod tests {
                 "stub_in_production"
             );
         }
+    }
+
+    #[test]
+    fn phone_attestation_is_no_longer_a_stub() {
+        assert!(
+            !STUBS.iter().any(|s| s.what.contains("attestation")),
+            "attestation is built (crates/humid-attest, core/attest.rs)"
+        );
+        // what still blocks production in core is the HSM backend alone
+        let core: Vec<_> = STUBS
+            .iter()
+            .filter(|s| s.blocks_production && s.units.contains(&Role::Core))
+            .map(|s| s.what)
+            .collect();
+        assert_eq!(core, ["the PKCS#11 HSM backend"]);
     }
 }

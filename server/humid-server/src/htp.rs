@@ -275,6 +275,7 @@ fn unit_body(head: &RequestHead, body: &[u8], th: &[u8; 64]) -> std::result::Res
                                 device_sig: B64(p.device_sig),
                                 live_p256: B64(p.live_p256),
                                 live_mldsa: p.live_mldsa.map(B64),
+                                app_attest: p.app_attest.map(B64),
                             },
                             body: B64(p.body),
                         };

@@ -67,6 +67,10 @@ pub mod label {
     pub const CODE: &str = "HUMID-PQ2 key-code";
     /// A stateless sign-in challenge (KMAC under the HSM `session` key).
     pub const LOGIN_CHALLENGE: &str = "HUMID-PQ2 login-challenge";
+    /// What a phone's platform attestation is bound to at enrolment (core/attest.rs).
+    pub const ATTEST_CHALLENGE: &str = "HUMID-PQ2 attest-challenge";
+    /// Core's signature over its cached copy of Google's attestation status list.
+    pub const ATTEST_STATUS: &str = "HUMID-PQ2 attestation-status";
 }
 
 /// Server object types (`0x02xx`, proposed for the PQ2.md registry: see SERVER.md §13).

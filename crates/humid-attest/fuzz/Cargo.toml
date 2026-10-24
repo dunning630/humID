@@ -1,0 +1,22 @@
+[package]
+name = "humid-attest-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+humid-attest = { path = ".." }
+
+# Its own workspace: cargo-fuzz builds it with nightly sanitizers, apart from the rest.
+[workspace]
+
+[[bin]]
+name = "decoders"
+path = "fuzz_targets/decoders.rs"
+test = false
+doc = false
+bench = false

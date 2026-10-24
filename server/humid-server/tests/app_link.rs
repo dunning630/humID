@@ -236,6 +236,7 @@ async fn the_link_pins_resumes_and_keeps_its_nonce_pool() {
         live_p256: signed.proof.live_p256.0.clone(),
         live_mldsa: None,
         body: body.to_vec(),
+        app_attest: None,
     };
     let calls_before = c.tap.seen.lock().unwrap().len();
     let r = l

@@ -63,6 +63,9 @@ pub struct Cluster {
     pub anon_htp: Arc<crate::htp::Endpoint>,
     /// What a front in the attacker's hands sees and does to calls (see [`Tap`]).
     pub tap: Arc<Tap>,
+    /// The test attestation PKI core trusts besides the vendors' roots (development policy
+    /// only: a production core refuses it, `test_root_in_production`).
+    pub pki: Arc<humid_attest::testkit::TestPki>,
     schemas: Vec<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -131,13 +134,15 @@ impl Cluster {
         let front_to_keys =
             UnitClient::new(&id_front, Role::Keys, &format!("https://{keys_addr}"))?;
 
-        let core = Core::new(
+        let pki = Arc::new(humid_attest::testkit::TestPki::new(T0));
+        let core = Core::with_trust(
             core_db,
             core_hsm.clone(),
             signed.clone(),
             clock.clone(),
             core_to_keys.clone(),
-        );
+            pki.trust(),
+        )?;
         let htp_cfg = |unit| {
             let mut c = humid_htp::server::Config::new(unit);
             // tests move the clock by days: sessions end only when a test ends them
@@ -206,6 +211,7 @@ impl Cluster {
             core_htp,
             anon_htp,
             tap,
+            pki,
             core_to_keys,
             front_to_keys,
             front_identity: id_front,
@@ -220,6 +226,15 @@ impl Cluster {
             schemas: vec![s1, s2, s3],
             tasks: vec![t1, t2, t3, t4],
         })
+    }
+
+    /// Give core a copy of Google's status list (`{"entries": …}` JSON) fetched now, as the
+    /// fetcher would.
+    ///
+    /// # Errors
+    /// Core's refusal.
+    pub async fn status_list(&self, json: &str) -> Result<()> {
+        crate::core::attest::store_status(&self.core, json.as_bytes(), self.clock.now()).await
     }
 
     /// Drop the test schemas.
@@ -841,6 +856,7 @@ mod humid_link_body {
                 live_p256: s.proof.live_p256.0,
                 live_mldsa: s.proof.live_mldsa.map(|b| b.0),
                 body: s.body.0,
+                app_attest: s.proof.app_attest.map(|b| b.0),
             }));
             out.parts = true;
         }

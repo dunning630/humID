@@ -147,6 +147,10 @@ pub struct StepUp {
     /// The chip's ML-DSA signature, where it has one.
     #[serde(default)]
     pub live_mldsa: Option<B64>,
+    /// iOS: the App Attest assertion for this check, over
+    /// [`app_attest_client_data_hash`] of the live digest (core checks it, with its counter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_attest: Option<B64>,
 }
 
 /// A request a holder signed: the proof and the exact body bytes it covers.
@@ -170,6 +174,9 @@ pub struct Checked {
     pub th: Vec<u8>,
     /// The signed session mode (`1` = duress).
     pub mode: u8,
+    /// What the chip signed (`H("HUMID-PQ2 live", [ticket])`): the per-check App Attest
+    /// assertion covers it.
+    pub live_digest: [u8; 64],
 }
 
 /// The ticket bytes: `lp(method, path, th, u64 seq, device, nonce, u64 at, u8 mode)`.
@@ -298,6 +305,7 @@ pub fn check_step_up(p: &StepUp, body: &[u8], device: &Device, e: &Expect<'_>) -
         nonce: p.nonce.0.clone(),
         th: p.th.0.clone(),
         mode: p.mode,
+        live_digest: live_digest(label::LIVE, &t)?,
     })
 }
 
@@ -351,6 +359,9 @@ pub struct Login {
     /// The chip's ML-DSA signature, where it has one.
     #[serde(default)]
     pub live_mldsa: Option<B64>,
+    /// iOS: the App Attest assertion for this check (as [`StepUp::app_attest`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_attest: Option<B64>,
 }
 
 /// The device key's sign-in message.
@@ -456,34 +467,41 @@ pub enum Attestation {
     },
 }
 
-/// What the attestation proved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Proven {
-    /// Nothing (development).
-    Unattested,
+/// What a platform attestation is bound to at enrolment:
+/// `H("HUMID-PQ2 attest-challenge", [th, device_vk])[0..32]`.
+///
+/// It names the session (so an attestation can't be replayed into another enrolment) and the
+/// **new device's ML-DSA key** (CORE.md §5.3's "attested model": the secure chip vouches for a
+/// live key made for exactly the device key the join request names, and the account-signed
+/// certificate binds that live key to that device key). Android: the KeyMint
+/// `attestationChallenge`; iOS: App Attest's `clientDataHash` is
+/// `SHA-256(challenge ‖ live P-256 SPKI)`.
+///
+/// # Errors
+/// Never in practice.
+pub fn attest_challenge(th: &[u8], device_vk: &[u8]) -> Result<[u8; 32]> {
+    let h = crypto::hash(label::ATTEST_CHALLENGE, &[th, device_vk])?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h[..32]);
+    Ok(out)
 }
 
-impl Proven {
-    /// As stored.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        "unattested"
-    }
+/// What an iPhone's per-check App Attest assertion covers: `SHA-256(live digest)`, where the
+/// live digest is what the chip signs for that check (`H("HUMID-PQ2 live", [ticket])` for a
+/// step-up, `H("HUMID-PQ2 live-login", […])` for a sign-in). So the assertion is bound to the
+/// one request the chip approved, and its counter to that device's App Attest key.
+#[must_use]
+pub fn app_attest_client_data_hash(live_digest: &[u8; 64]) -> [u8; 32] {
+    humid_attest::sha256(&[live_digest])
 }
 
 /// Check an enrolment: the certificate (under the account key), the device key's possession,
-/// the chip's signature, that the certificate was made in this session (`th`), and the
-/// attestation as the policy requires.
+/// the chip's signature, and that the certificate was made in this session (`th`). The
+/// platform attestation is core's ([`crate::core::attest`]), checked against this device key.
 ///
 /// # Errors
-/// `bad_device_cert`, `bad_proof`, `bad_live_proof`, `session_changed`, `attestation_required`,
-/// or `not_implemented` for a real attestation (its verification isn't ported yet).
-pub fn check_enrolment(
-    en: &Enrolment,
-    account: Option<&Id>,
-    th: &[u8],
-    attestation_required: bool,
-) -> Result<(Device, Proven)> {
+/// `bad_device_cert`, `bad_proof`, `bad_live_proof`, `session_changed`.
+pub fn check_enrolment(en: &Enrolment, account: Option<&Id>, th: &[u8]) -> Result<Device> {
     let d = en.cert.verify(account)?;
     if !crypto::ct_eq(&en.cert.enrol_th, th) {
         return Err(Error::forbidden(
@@ -505,22 +523,7 @@ pub fn check_enrolment(
             "The device's secure chip didn't sign this enrolment.",
         ));
     }
-    let proven = match &en.attestation {
-        Attestation::None if attestation_required => {
-            return Err(Error::forbidden(
-                "attestation_required",
-                "This server accepts only phones whose secure chip proves itself.",
-            ));
-        }
-        Attestation::None => Proven::Unattested,
-        Attestation::AndroidKey { .. } | Attestation::AppleAppAttest { .. } => {
-            return Err(Error::NotImplemented {
-                what: "verifying Android key attestation and Apple App Attest",
-                waiting_on: "the Rust port of packages/attest (pinned roots, revocation list, per-check assertions)",
-            });
-        }
-    };
-    Ok((d, proven))
+    Ok(d)
 }
 
 /// The duress sign-in, as keys receives it to erase an armed vault.
@@ -754,30 +757,26 @@ mod tests {
         let phone = Phone::new().unwrap();
         let th = [3u8; 64];
         let en = phone.enrolment(&th).unwrap();
-        check_enrolment(&en, None, &th, false).unwrap();
+        check_enrolment(&en, None, &th).unwrap();
         assert_eq!(
-            check_enrolment(&en, None, &[4u8; 64], false)
-                .unwrap_err()
-                .code(),
+            check_enrolment(&en, None, &[4u8; 64]).unwrap_err().code(),
             "session_changed"
-        );
-        assert_eq!(
-            check_enrolment(&en, None, &th, true).unwrap_err().code(),
-            "attestation_required"
-        );
-        let mut real = en.clone();
-        real.attestation = Attestation::AndroidKey { chain: vec![] };
-        assert_eq!(
-            check_enrolment(&real, None, &th, true).unwrap_err().code(),
-            "not_implemented"
         );
         let mut nopop = en;
         nopop.device_pop = B64(vec![0; 10]);
         assert_eq!(
-            check_enrolment(&nopop, None, &th, false)
-                .unwrap_err()
-                .code(),
+            check_enrolment(&nopop, None, &th).unwrap_err().code(),
             "bad_proof"
         );
+    }
+
+    #[test]
+    fn the_attestation_challenge_names_the_session_and_the_device_key() {
+        let a = Phone::new().unwrap();
+        let b = Phone::new().unwrap();
+        let vk = |p: &Phone| p.device.public().to_bytes();
+        let c = attest_challenge(&[1; 64], &vk(&a)).unwrap();
+        assert_ne!(c, attest_challenge(&[2; 64], &vk(&a)).unwrap());
+        assert_ne!(c, attest_challenge(&[1; 64], &vk(&b)).unwrap());
     }
 }

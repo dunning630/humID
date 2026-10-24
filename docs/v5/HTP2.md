@@ -275,7 +275,11 @@ Binary fields travel as bytes: no base64 (the audit's ×1.33 and 6.2 KB per proo
 ```
 proof = header(0x0303) ‖ lp(method) ‖ lp(path) ‖ th (64) ‖ u64 seq ‖ device (32) ‖ nonce (32) ‖ u64 at
         ‖ u8 mode ‖ lp(device_sig) ‖ lp(live_p256) ‖ lp(live_mldsa | "") ‖ lp(signed body ≤ 256 KiB)
+        ‖ lp(app_attest | "" ≤ 1 KiB)
 ```
+
+`app_attest` is an iPhone's App Attest assertion for this check, over `SHA-256(H("HUMID-PQ2 live", [ticket]))`
+(SERVER.md §2.3, §2.7); empty on Android.
 
 The phone makes it inside one biometric prompt, over SERVER.md §2.3's ticket:
 
