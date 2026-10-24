@@ -148,12 +148,9 @@ pub async fn register(State(core): State<Arc<Core>>, headers: HeaderMap, body: B
         return Err(Error::bad_proof());
     }
     let p = &core.policy.policy;
-    let (d, proven) = proofs::check_enrolment(
-        &r.enrolment,
-        Some(&account),
-        &th,
-        p.device_policy.attestation_required,
-    )?;
+    let d = proofs::check_enrolment(&r.enrolment, Some(&account), &th)?;
+    let attested = core.attest.enrolment(&r.enrolment, &d, &th, core.now())?;
+    let proven = attested.proven();
     let mut c = core.db.conn().await?;
     let tx = c.transaction().await?;
     if p.registration == Registration::Pass {
@@ -183,7 +180,8 @@ pub async fn register(State(core): State<Arc<Core>>, headers: HeaderMap, body: B
         &[&account.as_bytes(), &r.account_vk.0, &r.kem_pk.0, &now],
     )
     .await?;
-    insert_device(&tx, &core, &r.enrolment, &d, proven.as_str(), "register").await?;
+    insert_device(&tx, &core, &r.enrolment, &d, &proven, "register").await?;
+    core.attest.store(&tx, &d.id, &attested, now).await?;
     let pop_hash = proofs::proof_hash(&r.pop)?;
     // the account-key binding goes into the public log at creation (V5.md: pinned at creation)
     #[derive(Serialize)]
@@ -210,7 +208,7 @@ pub async fn register(State(core): State<Arc<Core>>, headers: HeaderMap, body: B
         &account,
         &d.id,
         "register",
-        proven.as_str(),
+        &proven,
         &proofs::proof_hash(&r.enrolment.device_pop)?,
     )
     .await?;
@@ -345,6 +343,21 @@ pub async fn login(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             core.policy.policy.device_policy.p256_only_until,
         )
         .map(|ph| (cert, ph)),
+        Err(e) => Err(e),
+    };
+    // the device's platform proof at every sign-in: iOS, this check's App Attest assertion;
+    // Android, its chain against Google's status list today (a revoked chain removes it)
+    let checked = match checked {
+        Ok(x) => {
+            let digest = proofs::live_digest(
+                label::LIVE_LOGIN,
+                &proofs::live_login_message(&l.th, &l.account, &l.device, &l.challenge)?,
+            )?;
+            core.attest
+                .sign_in(&core, &tx, &l.device, l.app_attest.as_deref(), &digest)
+                .await
+                .map(|()| x)
+        }
         Err(e) => Err(e),
     };
     let (cert, proof_hash) = match checked {

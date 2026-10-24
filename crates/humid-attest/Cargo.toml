@@ -1,0 +1,30 @@
+[package]
+name = "humid-attest"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Phone attestation checks for the HumID 5.0 server: Android key attestation, Apple App Attest (attestations and per-check assertions), Google's attestation status list. Port of packages/attest (4.x)."
+
+[features]
+# A test PKI that makes attestations shaped exactly like a phone's, under a test root. Never in
+# a release build; even when compiled in, a production trust store refuses its root.
+testkit = ["dep:rcgen", "dep:time"]
+
+[dependencies]
+# Signature checks (ECDSA P-256/P-384, RSA PKCS#1) and SHA-256: the server's TLS stack already
+# links aws-lc-rs, so this adds no new crypto implementation.
+aws-lc-rs = "1.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "crypto"], optional = true }
+time = { version = "0.3", optional = true }
+
+[dev-dependencies]
+humid-attest = { path = ".", features = ["testkit"] }
+base64 = "0.22"
+proptest = "1.5"
+
+[lints]
+workspace = true

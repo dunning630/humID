@@ -111,7 +111,7 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
     let mut t = App::new(&c).await.unwrap();
     let en = thief.enrolment(&t.th).unwrap();
     assert!(
-        proofs::check_enrolment(&en, Some(&acct), &t.th, false).is_ok(),
+        proofs::check_enrolment(&en, Some(&acct), &t.th).is_ok(),
         "the certificate itself is valid: only the evidence can stop it"
     );
 
