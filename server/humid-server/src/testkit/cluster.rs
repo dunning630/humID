@@ -39,6 +39,8 @@ pub struct Cluster {
     pub core_hsm: Arc<SoftHsm>,
     /// The policy.
     pub policy: Arc<SignedPolicy>,
+    /// The identity root's public key (what apps pin).
+    pub root: DualPublic,
     /// Front's client to core.
     pub to_core: UnitClient,
     /// Front's client to anon.
@@ -158,6 +160,7 @@ impl Cluster {
             anon,
             core_hsm,
             policy: signed,
+            root: rk,
             schemas: vec![s1, s2, s3],
             tasks: vec![t1, t2, t3],
         })

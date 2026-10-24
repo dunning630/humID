@@ -379,6 +379,8 @@ pub async fn remove(
     body: Body,
 ) -> Reply {
     let s = core.session(&headers).await?;
+    // a duress session changes nothing real (whoever forced the unlock can't destroy documents)
+    Core::not_locked(&s)?;
     let object = path_id(&id)?;
     let r: Approved = read(body, SMALL).await?;
     let u: app::ObjectChange = wire::parse(&r.signed.body)?;
@@ -427,28 +429,27 @@ pub async fn remove(
         Vouch::Holder(&checked.proof_hash),
     )
     .await?;
-    if !s.duress {
-        let st = core.statement(
-            "delete",
-            &keys_api::ActionFacts {
-                account: s.account,
-                object: Some(object),
-                proof_hash: B64(checked.proof_hash.to_vec()),
+    let st = core.statement(
+        "delete",
+        &keys_api::ActionFacts {
+            account: s.account,
+            object: Some(object),
+            proof_hash: B64(checked.proof_hash.to_vec()),
+        },
+    )?;
+    // keys destroys the share before core commits: no envelope without its share, ever
+    let _: serde_json::Value = core
+        .keys
+        .post(
+            &format!("/v1/shares/{object}/delete"),
+            &[],
+            &keys_api::HolderAction {
+                statement: st,
+                cert,
+                signed: r.signed,
             },
-        )?;
-        let _: serde_json::Value = core
-            .keys
-            .post(
-                &format!("/v1/shares/{object}/delete"),
-                &[],
-                &keys_api::HolderAction {
-                    statement: st,
-                    cert,
-                    signed: r.signed,
-                },
-            )
-            .await?;
-    }
+        )
+        .await?;
     tx.commit().await?;
     ok(&serde_json::json!({ "deleted": object, "rev": rev }))
 }

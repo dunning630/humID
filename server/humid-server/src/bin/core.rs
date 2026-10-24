@@ -13,6 +13,20 @@ async fn main() {
 }
 
 async fn go() -> humid_server::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("dev-setup") {
+        let dir = args
+            .get(2)
+            .ok_or_else(|| humid_server::Error::bad("usage", "dev-setup <dir> [database-url]"))?;
+        let db = args
+            .get(3)
+            .map_or("host=/run/postgresql dbname=humid_dev", String::as_str);
+        humid_server::devsetup::write(std::path::Path::new(dir), db)?;
+        println!(
+            "Development setup written to {dir} (software HSMs; development policy). Start each unit with --config {dir}/<unit>.toml"
+        );
+        return Ok(());
+    }
     let s = run::start(&run::config_arg(Role::Core), Role::Core)?;
     let db = run::database(&s, "core", core::MIGRATIONS).await?;
     let keys = run::client(&s, Role::Keys)?;

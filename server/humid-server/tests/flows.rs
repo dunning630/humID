@@ -670,6 +670,39 @@ async fn duress_sign_in_erases_an_armed_vault_and_locks_down() {
             .code_str(),
         "busy"
     );
+    // nothing real changes in a duress session: no deletes, no messages, no uploads
+    let path = format!("/v1/objects/{}", doc.id);
+    let s = forced
+        .sign(&phone, "DELETE", &path, &json!({ "object": doc.id }))
+        .unwrap();
+    assert_eq!(
+        err_code(
+            forced
+                .core::<_, Value>("DELETE", &path, &json!({ "signed": s }))
+                .await
+        ),
+        "busy"
+    );
+    let s = forced
+        .sign(
+            &phone,
+            "POST",
+            "/v1/live/attest",
+            &json!({ "action": "post-tokens", "blinded": [B64(vec![1; 256])] }),
+        )
+        .unwrap();
+    assert_eq!(
+        err_code(
+            forced
+                .core::<_, Value>("POST", "/v1/live/attest", &json!({ "signed": s }))
+                .await
+        ),
+        "busy"
+    );
+    assert_eq!(err_code(upload(&mut forced, &phone, 64).await), "busy");
+    // the lockdown is real and silent: it isn't shown in /me
+    let me: Value = forced.core("GET", "/v1/me", &json!({})).await.unwrap();
+    assert!(me.get("lockdown").is_none());
     app.refill().await.unwrap();
     assert_eq!(
         err_code(open(&mut app, &phone, &doc.id).await),

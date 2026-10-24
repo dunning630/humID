@@ -574,6 +574,9 @@ pub async fn clear_duress(State(core): State<Arc<Core>>, headers: HeaderMap, bod
 /// answers with an account-free statement for anon (M1: anon mints nothing on front's word).
 pub async fn live_attest(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body) -> Reply {
     let s = core.session(&headers).await?;
+    if s.duress {
+        return Err(Error::busy()); // a duress session sends nothing (audit M-1)
+    }
     let r: Approved = read(body, ENVELOPE).await?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]

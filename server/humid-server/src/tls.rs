@@ -319,6 +319,41 @@ impl DevCa {
     }
 }
 
+/// PEM text for one DER object.
+#[must_use]
+pub fn pem(label: &str, der: &[u8]) -> String {
+    use base64::Engine;
+    let b = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for line in b.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(line).unwrap_or_default());
+        out.push('\n');
+    }
+    out.push_str(&format!("-----END {label}-----\n"));
+    out
+}
+
+impl Identity {
+    /// Write `<name>.pem` (chain), `<name>.key` (PKCS#8, mode 0600) and `ca.pem` into `dir`.
+    ///
+    /// # Errors
+    /// The files can't be written.
+    pub fn write(&self, dir: &std::path::Path, name: &str) -> Result<()> {
+        let chain: String = self.chain.iter().map(|c| pem("CERTIFICATE", c)).collect();
+        let w = |p: std::path::PathBuf, s: &str| {
+            std::fs::write(&p, s).map_err(|e| Error::internal(format!("{}: {e}", p.display())))
+        };
+        w(dir.join(format!("{name}.pem")), &chain)?;
+        w(dir.join("ca.pem"), &pem("CERTIFICATE", &self.ca))?;
+        let key = dir.join(format!("{name}.key"));
+        let _ = std::fs::remove_file(&key);
+        crate::hsm::write_private(
+            &key,
+            pem("PRIVATE KEY", self.key.secret_pkcs8_der()).as_bytes(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

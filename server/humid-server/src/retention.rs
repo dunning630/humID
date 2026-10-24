@@ -37,6 +37,8 @@ pub async fn run(db: &Db, rules: &[TableRule], now: i64) -> Result<Vec<(&'static
         let mut total = 0u64;
         loop {
             let c = db.conn().await?;
+            // `$1` is now (ms): typed bigint, or Postgres infers int4 from `$1 - 86400000`
+            let cond = cond.replace("$1", "($1::bigint)");
             let sql = format!(
                 "DELETE FROM {t} WHERE ctid IN (SELECT ctid FROM {t} WHERE {cond} LIMIT {BATCH})",
                 t = r.table

@@ -24,6 +24,7 @@ pub mod config;
 pub mod core;
 pub mod crypto;
 pub mod db;
+pub mod devsetup;
 pub mod error;
 pub mod front;
 pub mod hsm;
