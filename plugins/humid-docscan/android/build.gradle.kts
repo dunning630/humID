@@ -19,12 +19,24 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    // The scanner's screens and models come from Google Play services, on the phone.
-    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    // the camera: CameraX, from the same session for preview, analysis and the still
+    val camerax = "1.5.2"
+    implementation("androidx.camera:camera-core:$camerax")
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
+    // PDF417: zxing-cpp, the same engine as the app's own reader, on the phone, no usage reporting
+    implementation("io.github.zxing-cpp:android:3.0.2")
     implementation(project(":tauri-android"))
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 }

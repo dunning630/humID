@@ -12,7 +12,7 @@ name: CI
 #      smoke-test, back up, restore, update, test the admin console and its jobs
 #      (tests/windows/admin-console.ps1), uninstall
 #   5. the app in Chromium: "Scan an ID" and "Take a photo" with a fake camera, getting
-#      set up, offline mode, managing the server, Check-in, the phone's document scanner (tests/browser/idscan.mjs, guided.mjs, photo.mjs, scanfeedback.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs, docscan.mjs)
+#      set up, offline mode, managing the server, Check-in, the native camera's events (tests/browser/idscan.mjs, nativecam.mjs, photo.mjs, scanfeedback.mjs, setup.mjs, offline.mjs, admin.mjs, checkin.mjs)
 #   6. zizmor on the workflows (codeql.yml runs CodeQL)
 # The `changes` job decides what changed, by path. Desktop apps are paused for 5.0, so
 # no desktop app is compiled.
@@ -343,24 +343,18 @@ jobs:
           grep -v '^{"t"' photo.log | tail -60
           echo "::error::$(grep -v '^{"t"' photo.log | grep -E 'Error|expected|actual|assert|readable|waiting for|photo.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/photo" }
-      - name: The camera says what it is doing (Looking, Hold steady, Reading, Verifying, Done; the 10 s offer, the 30 s stop; worker)
+      - name: The camera says what it is doing (Looking, Hold steady, Reading, Verifying, Done; the 8 s offer, the 40 s stop)
         run: |
           node tests/browser/scanfeedback.mjs > scanfeedback.log 2>&1 && { grep -v '^{"t"' scanfeedback.log; exit 0; }
           grep -v '^{"t"' scanfeedback.log | tail -60
           echo "::error::$(grep -v '^{"t"' scanfeedback.log | grep -E 'Error|expected|actual|assert|waiting for|scanfeedback.mjs:' | head -8 | tr '\n' ' ')"; exit 1
         env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/scanfeedback" }
-      - name: Guided scan (fixed outline per document, plain-word guidance, auto and manual capture, crop to the outline, takePhoto stand-in; fake camera)
+      - name: The native document camera, from the screen's side (plugin stand-in; Focusing only on real AF, tap ring only when taken, Move back, bytes once)
         run: |
-          node tests/browser/guided.mjs > guided.log 2>&1 && { grep -v '^{"t"' guided.log; exit 0; }
-          grep -v '^{"t"' guided.log | tail -60
-          echo "::error::$(grep -v '^{"t"' guided.log | grep -E 'Error|expected|actual|assert|waiting for|guided.mjs:' | head -8 | tr '\n' ' ')"; exit 1
-        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/guided" }
-      - name: The phone's document scanner (Android; license and passport read from the scanned page, back out, scan again, no scanner falls back to the camera)
-        run: |
-          node tests/browser/docscan.mjs > docscan.log 2>&1 && { grep -v '^{"t"' docscan.log; exit 0; }
-          grep -v '^{"t"' docscan.log | tail -60
-          echo "::error::$(grep -v '^{"t"' docscan.log | grep -E 'Error|expected|actual|assert|waiting for|docscan.mjs:' | head -8 | tr '\n' ' ')"; exit 1
-        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/docscan" }
+          node tests/browser/nativecam.mjs > nativecam.log 2>&1 && { grep -v '^{"t"' nativecam.log; exit 0; }
+          grep -v '^{"t"' nativecam.log | tail -60
+          echo "::error::$(grep -v '^{"t"' nativecam.log | grep -E 'Error|expected|actual|assert|waiting for|nativecam.mjs:' | head -8 | tr '\n' ' ')"; exit 1
+        env: { NODE_NO_WARNINGS: "1", SHOTS: "idscan-shots/nativecam" }
       - name: Payment cards and Wallet passes (front and back read by the camera, masked, no copying; pass signatures)
         run: |
           node tests/browser/cards.mjs > cards.log 2>&1 && { grep -v '^{"t"' cards.log; exit 0; }

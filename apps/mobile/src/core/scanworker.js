@@ -1,20 +1,15 @@
-// The scan worker: looks for the document and for barcodes in small grey pictures, and
-// reads PDF417 barcodes (zxing-cpp, WebAssembly), all off the main thread, so the
-// camera view and the buttons stay smooth while the analysis runs. Everything stays
-// on this device: the worker gets small pictures in memory and answers with corners.
-// It never logs, stores or sends a picture. Started by core/analyzer.js (the live looks and
-// barcode reads) and core/scanjobs.js (the clean scan of a page).
-import { createCore } from "./scancore.js";
-import { toGray } from "./docfind.js";
+// The scan worker: the clean scan of a page (core/scanclean.js) and PDF417 reads (zxing-cpp,
+// WebAssembly), off the main thread, so the screen stays smooth. Everything stays on this
+// device: the worker gets pictures in memory and answers with pixels or text. It never logs,
+// stores or sends a picture. Started by core/scanjobs.js. (5.0: the live camera analysis that
+// ran here is native now, plugins/humid-docscan.)
 import { cleanScan } from "./scanclean.js";
 
-const core = createCore();
 /* global __HUMID_SCAN_DIR__ */
 // The barcode engine sits in a content-hashed directory beside the app bundle (build.mjs).
 const SCAN_DIR = typeof __HUMID_SCAN_DIR__ !== "undefined" ? __HUMID_SCAN_DIR__ : "scan";
 const asset = (p) => `/assets/${p}`;
 let zx = null;
-let canvas = null;
 
 async function barcodes() {
   zx ||= (async () => {
@@ -29,25 +24,10 @@ async function barcodes() {
   return zx;
 }
 
-/** A picture in whichever form it came: a bitmap (drawn here, off the main thread) or grey bytes. */
-function grayOf(m) {
-  if (m.gray) return { w: m.gray.w, h: m.gray.h, g: new Uint8ClampedArray(m.gray.buf) };
-  const b = m.bitmap;
-  if (!canvas || canvas.width !== b.width || canvas.height !== b.height) canvas = new OffscreenCanvas(b.width, b.height);
-  const g = canvas.getContext("2d", { willReadFrequently: true });
-  g.drawImage(b, 0, 0);
-  b.close?.();
-  return toGray(g.getImageData(0, 0, canvas.width, canvas.height));
-}
-
 self.onmessage = async (e) => {
   const m = e.data;
   try {
-    if (m.op === "look") {
-      self.postMessage({ id: m.id, ok: true, ...core.look(grayOf(m), { shape: m.shape, prior: m.prior, bar: m.bar }) });
-    } else if (m.op === "locate") {
-      self.postMessage({ id: m.id, ok: true, spots: core.locate(grayOf(m)) });
-    } else if (m.op === "read") {
+    if (m.op === "read") {
       const zxr = await barcodes();
       const img = new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h);
       const r = await zxr.readBarcodes(img, { formats: ["PDF417"], tryHarder: m.harder !== false, tryRotate: m.harder !== false, tryInvert: false, textMode: "Plain", maxNumberOfSymbols: 1 });
@@ -58,9 +38,6 @@ self.onmessage = async (e) => {
       self.postMessage({ id: m.id, ok: true, w: out.width, h: out.height, buf: out.data.buffer, paper: out.paper }, [out.data.buffer]);
     } else if (m.op === "warm") {
       await barcodes();
-      self.postMessage({ id: m.id, ok: true });
-    } else if (m.op === "reset") {
-      core.reset();
       self.postMessage({ id: m.id, ok: true });
     }
   } catch (err) {

@@ -2,11 +2,11 @@
 # and a payment card on a dark table, laid at known places relative to the on-screen outline, so
 # the test can say what the guidance must answer and where the crop must land.
 #
-#   pip install pdf417gen pillow && python3 tests/fixtures/id/make-guided.py tests/fixtures/id/guide
+#   pip install pillow numpy && python3 tests/fixtures/id/make-guided.py tests/fixtures/id/guide
 #
 # The outline's place in the video (1080 x 1920, the phone-sized test viewport 412 x 915, object-fit:
-# cover) comes from the layout in styles/app.css (.dc-stage, .dc-frame): the browser test checks the
-# app's own number (__humidGuide.rect) against GUIDE_ID1 / GUIDE_TD3 and says so if the layout moved.
+# cover) comes from the layout in brand/flows.css (.dc-stage, .dc-frame) and core/webcam.js place(),
+# which moves the video so its centre is the frame's (5.0): every frame is centred at y = 960.
 # Each file is one JPEG (a still view) or several (a view that shakes). Test data only.
 import math, os, random, sys
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageChops
@@ -14,9 +14,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageChops
 out = sys.argv[1] if len(sys.argv) > 1 else "."
 here = os.path.dirname(os.path.abspath(__file__))
 W, H = 1080, 1920
-GUIDE_ID1 = (141, 526, 797, 503)   # x, y, w, h in the video's pixels
-GUIDE_TD3 = (141, 497, 797, 561)
-GUIDE_PAGE = (141, 239, 797, 1076)  # 3.0.1: a paper page's outline (1:1.35, standing up)
+GUIDE_ID1 = (141, 709, 797, 503)   # x, y, w, h in the video's pixels
+GUIDE_TD3 = (141, 680, 797, 561)
+GUIDE_PAGE = (141, 422, 797, 1076)  # a paper page's outline (1:1.35, standing up)
 sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 sansb = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 mono = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"

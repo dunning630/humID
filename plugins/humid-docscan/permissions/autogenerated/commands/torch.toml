@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-torch"
+description = "Enables the torch command without any pre-configured scope."
+commands.allow = ["torch"]
+
+[[permission]]
+identifier = "deny-torch"
+description = "Denies the torch command without any pre-configured scope."
+commands.deny = ["torch"]
