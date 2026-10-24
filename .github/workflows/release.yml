@@ -228,7 +228,7 @@ jobs:
       # No caches in a signing job: nothing a CI run left behind flows into a signed build.
       # setup-node v4 has no automatic cache, and none is configured (zizmor assumes v5's default)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0  # zizmor: ignore[cache-poisoning]
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: npm ci --ignore-scripts # no dependency install scripts in the job that holds the signing keys
       - run: npm test
         env: { NODE_NO_WARNINGS: "1" }

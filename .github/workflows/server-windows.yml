@@ -55,7 +55,7 @@ jobs:
         with: { persist-credentials: false }
       # setup-node v4 has no automatic cache, and none is configured (zizmor assumes v5's default)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0  # zizmor: ignore[cache-poisoning]
-        with: { node-version: 22 } # no cache: this job builds what gets released
+        with: { node-version: 24 } # no cache: this job builds what gets released
       - run: npm ci --ignore-scripts # no dependency install scripts (esbuild's binary comes from its optional dependency)
       - name: A release key is pinned (the console refuses unsigned updates; see release-keys.mjs)
         if: github.ref_type == 'tag' || inputs.publish

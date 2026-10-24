@@ -27,7 +27,7 @@ The next build is specified in [docs/V5.md](docs/V5.md) (HumID 5.0: post-quantum
 
 ## Try it on your machine
 
-Needs Node 22.
+Needs Node 24 (LTS).
 
 ```bash
 npm install

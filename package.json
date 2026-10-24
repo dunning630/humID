@@ -17,6 +17,9 @@
     "tauri": "npm run tauri -w @humid/mobile --",
     "sizes": "HUMID_META=1 npm run build -w @humid/mobile >/dev/null && node tools/sizes.mjs apps/mobile/dist"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
     "@cloudflare/blindrsa-ts": "^0.4.6",
     "@hpke/core": "^1.9.0",

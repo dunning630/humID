@@ -4,7 +4,7 @@
 # TODO(PC-21): pin both base images by digest (FROM image:tag@sha256:…, as
 # services/Dockerfile notes). The registries weren't reachable when this was
 # written; Dependabot (docker ecosystem) keeps digests current once they're set.
-FROM node:22-alpine AS app
+FROM node:24-alpine AS app
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY packages ./packages

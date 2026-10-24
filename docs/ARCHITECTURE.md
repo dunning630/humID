@@ -143,7 +143,7 @@ biometric proof. Full specification: [PROTOCOL.md](PROTOCOL.md).
 
 ## 3. Server — `services/`
 
-Each service is a few hundred lines of plain Node 22 with its own SQLite
+Each service is a few hundred lines of plain Node 24 with its own SQLite
 database (`node:sqlite`). esbuild bundles each into one file of 115–175 KB.
 Each runs as a distroless, non-root, read-only container with all Linux
 capabilities dropped.
