@@ -345,7 +345,8 @@ const RECOVERY_OVERCLAIM = [
   [/A server can't flip it quietly/i, "only as far as each device has seen (V74B-01)"],
   [/lp\(account id, mode, version, epoch\)/, "the statement names the one before it (prev)"],
 ];
-const RECOVERY_DOCS = ["docs/RECOVERY.md", "docs/CONTINUITY.md", ".changeset/recovery-modes.md", ".changeset/recovery-mode-chain.md"];
+// (the 4.x changesets, recovery-modes and recovery-mode-chain among them, are archived in docs/CHANGELOG-4.x.md)
+const RECOVERY_DOCS = ["docs/RECOVERY.md", "docs/CONTINUITY.md", "docs/CHANGELOG-4.x.md"];
 
 test("recovery-mode copy says no more than the code keeps (V74B-02)", () => {
   const hits = [];
@@ -357,8 +358,8 @@ test("recovery-mode copy says no more than the code keeps (V74B-02)", () => {
     for (const [re, why] of RECOVERY_OVERCLAIM) if (re.test(line)) hits.push(`${f}:${i + 1}: ${why}: ${line.trim().slice(0, 100)}`);
   });
   assert.deepEqual(hits, []);
-  // and the changeset title says the limit
-  assert.match(docText(".changeset/recovery-mode-chain.md"), /rolled back below what each device has seen/);
+  // and the change note says the limit
+  assert.match(docText("docs/CHANGELOG-4.x.md"), /## recovery-mode-chain\n\n[^\n]*\n\nThe recovery mode can't be deleted or rolled back below what each device has seen/);
   // RECOVERY.md states the piece-making rule and its per-device limit
   const rec = docText("docs/RECOVERY.md");
   assert.match(rec, /### When a phone makes recovery pieces/);

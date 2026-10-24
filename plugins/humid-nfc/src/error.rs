@@ -1,4 +1,4 @@
-use serde::{ser::Serializer, Serialize};
+use serde::{Serialize, ser::Serializer};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -21,7 +21,10 @@ impl std::fmt::Display for Error {
         match self {
             Error::Cancelled => write!(f, "Chip reading cancelled."),
             Error::Unavailable(r) => write!(f, "{r}"),
-            Error::Lost => write!(f, "Lost contact with the chip. Hold the document still against the reader and try again."),
+            Error::Lost => write!(
+                f,
+                "Lost contact with the chip. Hold the document still against the reader and try again."
+            ),
             Error::NoSession => write!(f, "No chip reading session is open."),
             Error::Platform(m) => write!(f, "{m}"),
             #[cfg(mobile)]

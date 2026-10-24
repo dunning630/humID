@@ -5,10 +5,10 @@ plugins {
 
 android {
     namespace = "app.humid.gate"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
-        minSdk = 30 // Android 11: biometric-only, time-bound Keystore keys
+        minSdk = 37 // Android 17 (HumID 5.0 floor)
         consumerProguardFiles("consumer-rules.pro")
     }
 

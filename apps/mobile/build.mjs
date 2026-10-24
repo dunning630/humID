@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 import { brotliCompressSync, gzipSync, constants as Z } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { join, extname, relative } from "node:path";
+import { frozenPrototypeSafe } from "./frozen-prototype.mjs";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const out = process.env.HUMID_OUT_DIR ? `${process.env.HUMID_OUT_DIR.replace(/\/$/, "")}/` : here("./dist/");
@@ -125,7 +126,9 @@ for (const [dir, files] of [[OCR_DIR, ocrFiles], [SCAN_DIR, scanFiles]]) {
 
 /* ---------- the bundles ---------- */
 const common = {
-  plugins: [noDemoGate],
+  // frozenPrototypeSafe: the native shells freeze Object.prototype (tauri.conf.json); it
+  // rewrites the few library assignments that would then throw (frozen-prototype.mjs).
+  plugins: [noDemoGate, frozenPrototypeSafe],
   bundle: true,
   format: "esm",
   target: ["safari16", "chrome110"],

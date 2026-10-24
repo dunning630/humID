@@ -100,18 +100,12 @@ Keys: HKDF-SHA3-256 from the backup key with labels `HUMID-BACKUP-v1 …`. Fixed
 1 MiB pieces (64 KiB to 16 MiB allowed). Any store with
 `put/get/has/list` works: a folder, a USB drive, the HumID vault, S3.
 
-## Try it (development CLI)
+## Trying it
 
-Uses a demo identity in place of a live check. Not for real data.
-
-```bash
-node tools/humid-backup.mjs init    D:/humid-backup --label "Parker's PC"   # prints the sheet
-node tools/humid-backup.mjs backup  D:/humid-backup C:/Users/parker
-node tools/humid-backup.mjs backup  D:/humid-backup C:/Users/parker --parent latest
-node tools/humid-backup.mjs list    D:/humid-backup
-node tools/humid-backup.mjs restore D:/humid-backup latest C:/restored             # HumID + sheet
-node tools/humid-backup.mjs restore D:/humid-backup latest C:/restored2 --with sheet,contact --sensitive
-```
+The development CLI that stood in for the app (`tools/humid-backup.mjs`, a demo
+identity in place of a live check) was removed for HumID 5.0. The format and its
+rules are exercised by `tests/backup.test.js`; `@humid/backup` (`createRepo`,
+`backup`, `restore`, with `@humid/backup/fs` for a folder) is the API it used.
 
 ## What is not built yet
 

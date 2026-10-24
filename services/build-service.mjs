@@ -15,7 +15,7 @@ await esbuild.build({
   outfile: `${dir}dist/server.mjs`,
   bundle: true,
   platform: "node",
-  target: "node22",
+  target: "node24",
   format: "esm",
   minify: false, // keep stack traces readable in logs
   sourcemap: false,

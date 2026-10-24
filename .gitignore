@@ -1,9 +1,9 @@
 node_modules/
 apps/mobile/dist/
-apps/mobile/src-tauri/target/
+# Cargo build output at any depth: the root workspace builds into /target/, but a crate or plugin built on its own still writes its own target/
+target/
 apps/mobile/src-tauri/gen/
 services/*/dist/
-plugins/humid-gate/target/
 plugins/humid-gate/ios/.build/
 plugins/humid-gate/android/.tauri/
 plugins/humid-gate/ios/.tauri/
@@ -11,11 +11,9 @@ plugins/humid-gate/ios/.tauri/
 .DS_Store
 deploy/windows/out/
 deploy/linux/out/
-plugins/humid-nfc/target/
 plugins/humid-nfc/ios/.build/
 plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
-plugins/humid-docscan/target/
 plugins/humid-docscan/android/.tauri/
 plugins/humid-docscan/ios/.build/
 plugins/humid-docscan/ios/.tauri/

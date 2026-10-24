@@ -13,7 +13,8 @@ import * as S from "../core/state.js";
 import { serverPinned } from "../core/index.js";
 import { beginJoin, pollJoin, cancelJoin, confirmJoin, rejectJoin, renewLink, addCardToJoin, addChipToJoin, addKeyToJoin, demoChipSource, nfcChipSource, joinRoutes, setJoinMode, HOLDER_ONLY } from "../core/setup.js";
 import { parseCard } from "@humid/recovery";
-import { serverHost, DEMO_BUILD } from "../core/config.js";
+import { serverHost } from "../core/config.js";
+/* global __HUMID_ALLOW_DEMO__ */
 
 const ROUTES = [
   { id: "link", icon: "key", title: "From another device", desc: "A phone that already has your HumID approves this one. Takes a minute." },
@@ -287,7 +288,7 @@ function QuorumWait({ p, st, now }) {
                     <button class="btn primary" disabled={busy || !access} onClick={() => run(() => addChipToJoin(nfcChipSource(access)))}><Icon name="passport" />{nfc.kind === "reader" ? "Read with the card reader" : "Hold to my phone and read"}</button>
                   </>
                 ) : <p class="small t2">At a HumID station: show the operator your recovery code and your passport or ID.</p>}
-                {DEMO_BUILD && (
+                {(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && (
                   <div class="row-x">
                     <input autocorrect="off" spellcheck={false} autocomplete="off" aria-label="Demo passport holder" class="input grow" value={name} onInput={(e) => setName(e.currentTarget.value)} />
                     <button class="btn quiet" disabled={busy} onClick={() => run(() => addChipToJoin(demoChipSource(name)))}>Demo passport</button>
