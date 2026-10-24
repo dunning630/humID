@@ -17,6 +17,8 @@ plugins/humid-nfc/android/.tauri/
 plugins/humid-nfc/ios/.tauri/
 plugins/humid-docscan/target/
 plugins/humid-docscan/android/.tauri/
+plugins/humid-docscan/ios/.build/
+plugins/humid-docscan/ios/.tauri/
 
 # Secrets: never commit signing keys, key stores or environment files (PC-05).
 # deploy/.gitignore also keeps deploy/.env out.

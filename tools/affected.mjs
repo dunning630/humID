@@ -49,6 +49,7 @@ const RULES = [
   [/^plugins\/humid-nfc\/examples\//, [], []],
   [/^plugins\/humid-nfc\//, APPS, []],
   [/^plugins\/humid-docscan\/android\//, ["android"], []],
+  [/^plugins\/humid-docscan\/ios\//, ["ios"], []],
   [/^plugins\/humid-docscan\//, APPS, []],
   [/^apps\/mobile\/src-tauri\/Entitlements\.plist$/, ["macos"], []],
   [/^apps\/mobile\/src-tauri\/Info\.ios\.plist$/, ["ios"], []],
