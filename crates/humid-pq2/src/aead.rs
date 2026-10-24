@@ -36,13 +36,13 @@ fn siv(key: &Secret32) -> Aes256GcmSiv {
     Aes256GcmSiv::new(&Array::from(*key.expose()))
 }
 
-/// Raw AES-256-GCM-SIV: `ciphertext ‖ tag`.
-pub(crate) fn siv_seal(
-    key: &Secret32,
-    nonce: &[u8; NONCE_LEN],
-    aad: &[u8],
-    pt: &[u8],
-) -> Result<Vec<u8>> {
+/// Raw AES-256-GCM-SIV (RFC 8452): returns `ciphertext ‖ tag`. The caller owns the nonce:
+/// use it only under a one-time key or with a counter that never repeats under that key
+/// (humid-core's document chunks and device slots). Everything else uses [`seal_at_rest`].
+///
+/// # Errors
+/// [`Error::Length`] over [`MAX_PLAINTEXT`].
+pub fn siv_seal(key: &Secret32, nonce: &[u8; NONCE_LEN], aad: &[u8], pt: &[u8]) -> Result<Vec<u8>> {
     if pt.len() > MAX_PLAINTEXT {
         return Err(Error::Length);
     }
@@ -54,8 +54,11 @@ pub(crate) fn siv_seal(
     Ok(buf)
 }
 
-/// Raw AES-256-GCM-SIV open of `ciphertext ‖ tag`. Plaintext is wiped on drop.
-pub(crate) fn siv_open(
+/// Open raw AES-256-GCM-SIV `ciphertext ‖ tag`. The plaintext is wiped on drop.
+///
+/// # Errors
+/// [`Error::Decrypt`] if authentication fails; [`Error::Length`] over [`MAX_PLAINTEXT`].
+pub fn siv_open(
     key: &Secret32,
     nonce: &[u8; NONCE_LEN],
     aad: &[u8],
