@@ -73,9 +73,172 @@ pub struct DevicePolicy {
     pub attestation_required: bool,
     /// After this date (ms), a device whose live key is P-256 only is refused.
     pub p256_only_until: i64,
-    /// Oldest Android security patch accepted (YYYYMM), if any.
-    #[serde(default)]
-    pub android_min_patch: Option<u32>,
+    /// Android key attestation rules.
+    pub android: AndroidAttestation,
+    /// Apple App Attest rules.
+    pub ios: IosAttestation,
+}
+
+/// Where an Android live key must live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyStorage {
+    /// StrongBox only: a TEE attestation is a downgrade and refused.
+    Strongbox,
+    /// StrongBox or the TEE.
+    TeeAllowed,
+}
+
+/// Android key attestation rules (crates/humid-attest `android`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidAttestation {
+    /// The HumID app's package name(s).
+    pub packages: Vec<String>,
+    /// SHA-256 of the release signing certificate(s), 64 hex each.
+    pub signing_cert_sha256: Vec<String>,
+    /// Oldest Android accepted, as KeyMint reports it (MMmmpp; 170000 = Android 17).
+    pub min_os_version: u32,
+    /// Oldest security patch accepted (YYYYMM).
+    pub min_patch_level: u32,
+    /// StrongBox required, or the TEE allowed.
+    pub key_storage: KeyStorage,
+    /// How often an enrolled phone's chain is re-checked against Google's status list (hours).
+    pub reverify_hours: u32,
+    /// The oldest copy of Google's status list the server uses (hours); older fails closed.
+    pub status_max_age_hours: u32,
+}
+
+/// Apple App Attest rules (crates/humid-attest `apple`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IosAttestation {
+    /// The Apple developer team id (10 characters).
+    pub team_id: String,
+    /// Allowed App IDs, each `<team_id>.<bundle id>`.
+    pub app_ids: Vec<String>,
+    /// The App Attest environment accepted (production only in production mode).
+    pub environment: humid_attest::Environment,
+    /// Oldest iOS accepted (major version).
+    pub min_os_major: u32,
+}
+
+impl AndroidAttestation {
+    /// The signing-certificate digests as bytes.
+    ///
+    /// # Errors
+    /// `bad_policy` for one that isn't 64 lower-case hex.
+    pub fn signers(&self) -> Result<Vec<[u8; 32]>> {
+        self.signing_cert_sha256
+            .iter()
+            .map(|h| {
+                let mut b = [0u8; 32];
+                if h.len() != 64 || h.bytes().any(|c| c.is_ascii_uppercase()) {
+                    return Err(Error::bad(
+                        "bad_policy",
+                        "a signing_cert_sha256 is 64 lower-case hex",
+                    ));
+                }
+                hex::decode_to_slice(h, &mut b).map_err(|_| {
+                    Error::bad("bad_policy", "a signing_cert_sha256 is 64 lower-case hex")
+                })?;
+                Ok(b)
+            })
+            .collect()
+    }
+
+    /// As humid-attest takes it.
+    ///
+    /// # Errors
+    /// `bad_policy`.
+    pub fn rules(&self) -> Result<humid_attest::AndroidPolicy> {
+        Ok(humid_attest::AndroidPolicy {
+            packages: self.packages.clone(),
+            signers: self.signers()?,
+            min_os_version: self.min_os_version,
+            min_patch_level: self.min_patch_level,
+            strongbox_required: self.key_storage == KeyStorage::Strongbox,
+        })
+    }
+}
+
+impl IosAttestation {
+    /// As humid-attest takes it.
+    #[must_use]
+    pub fn rules(&self) -> humid_attest::ApplePolicy {
+        humid_attest::ApplePolicy {
+            app_ids: self.app_ids.clone(),
+            environment: self.environment,
+            min_os_major: self.min_os_major,
+        }
+    }
+}
+
+impl DevicePolicy {
+    fn validate(&self, production: bool) -> Result<()> {
+        let bad = |m: &str| Err(Error::bad("bad_policy", m.to_string()));
+        let a = &self.android;
+        let signers = a.signers()?;
+        if signers
+            .iter()
+            .any(|s| humid_attest::android::REVOKED_SIGNERS.contains(s))
+        {
+            return bad(
+                "device_policy.android.signing_cert_sha256 names a revoked (leaked) signing key",
+            );
+        }
+        if a.packages.iter().any(|p| p.is_empty() || p.len() > 128)
+            || a.reverify_hours == 0
+            || a.reverify_hours > 24 * 30
+            || a.status_max_age_hours == 0
+            || a.status_max_age_hours > 24 * 14
+        {
+            return bad(
+                "device_policy.android: packages 1-128 characters, reverify_hours 1..=720, status_max_age_hours 1..=336",
+            );
+        }
+        let i = &self.ios;
+        if !i.team_id.is_empty()
+            && (i.team_id.len() != 10
+                || !i
+                    .team_id
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        {
+            return bad("device_policy.ios.team_id is 10 of A-Z 0-9");
+        }
+        for id in &i.app_ids {
+            let ok = id
+                .strip_prefix(&i.team_id)
+                .and_then(|r| r.strip_prefix('.'))
+                .is_some_and(|b| !b.is_empty() && b.len() <= 155);
+            if i.team_id.is_empty() || !ok {
+                return bad("device_policy.ios.app_ids are <team_id>.<bundle id>");
+            }
+        }
+        if production {
+            // the owner's floor: Android 17+ and iOS 26+ only (V5.md, a clean break from 4.x)
+            if a.packages.is_empty() || signers.is_empty() {
+                return bad(
+                    "production needs device_policy.android.packages and signing_cert_sha256",
+                );
+            }
+            if a.min_os_version < humid_attest::android::ANDROID_17 || a.min_patch_level < 202_601 {
+                return bad(
+                    "production needs device_policy.android.min_os_version >= 170000 (Android 17) and a min_patch_level of 2026-01 or later",
+                );
+            }
+            if i.app_ids.is_empty() || i.environment != humid_attest::Environment::Production {
+                return bad(
+                    "production needs device_policy.ios.app_ids and environment = production",
+                );
+            }
+            if i.min_os_major < 26 {
+                return bad("production needs device_policy.ios.min_os_major >= 26");
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A cosigner.
@@ -185,6 +348,7 @@ impl Policy {
     /// `bad_policy` with what's wrong.
     pub fn validate(&self) -> Result<()> {
         let bad = |m: &str| Err(Error::bad("bad_policy", m.to_string()));
+        self.device_policy.validate(self.mode == Mode::Production)?;
         if self.mode == Mode::Production {
             if !self.device_policy.attestation_required {
                 return bad("production needs device_policy.attestation_required = true");
@@ -487,7 +651,22 @@ pub fn development(version: u64, issued_at: i64, unit_keys: UnitKeys) -> Policy 
         device_policy: DevicePolicy {
             attestation_required: false,
             p256_only_until: i64::MAX,
-            android_min_patch: None,
+            android: AndroidAttestation {
+                packages: vec!["app.humid.vault".into()],
+                signing_cert_sha256: vec![hex::encode(humid_attest::android::HUMID_RELEASE_SIGNER)],
+                min_os_version: humid_attest::android::ANDROID_17,
+                min_patch_level: 202_601,
+                key_storage: KeyStorage::TeeAllowed,
+                reverify_hours: 24,
+                status_max_age_hours: 48,
+            },
+            // no Apple team configured: iPhones are refused (not_configured) until it is
+            ios: IosAttestation {
+                team_id: String::new(),
+                app_ids: vec![],
+                environment: humid_attest::Environment::Development,
+                min_os_major: 26,
+            },
         },
         stations: vec![],
         cosigners: vec![],
@@ -628,6 +807,61 @@ mod tests {
     }
 
     #[test]
+    fn device_policy_rules() {
+        let (_, _, mut p) = setup();
+        p.validate().unwrap();
+        let ok = p.clone();
+        // the leaked test signing key can't be listed, in any mode
+        p.device_policy.android.signing_cert_sha256 =
+            vec![hex::encode(humid_attest::android::REVOKED_SIGNERS[0])];
+        assert_eq!(p.validate().unwrap_err().code(), "bad_policy");
+        p = ok.clone();
+        p.device_policy.android.signing_cert_sha256 = vec!["AB".repeat(32)];
+        assert_eq!(p.validate().unwrap_err().code(), "bad_policy", "upper case");
+        p = ok.clone();
+        p.device_policy.ios.team_id = "TEAM123456".into();
+        p.device_policy.ios.app_ids = vec!["OTHER12345.app.humid.vault".into()];
+        assert_eq!(
+            p.validate().unwrap_err().code(),
+            "bad_policy",
+            "an App ID of another team"
+        );
+        // production: Android 17+, a 2026 patch, iOS 26+, App Store builds only
+        let mut prod = ok;
+        prod.mode = Mode::Production;
+        prod.device_policy.attestation_required = true;
+        prod.registration = Registration::Pass;
+        prod.cosigners = vec![Cosigner {
+            name: "witness.example".into(),
+            key: prod.unit_keys.core.clone(),
+        }];
+        prod.device_policy.ios = IosAttestation {
+            team_id: "ABCDE12345".into(),
+            app_ids: vec!["ABCDE12345.app.humid.vault".into()],
+            environment: humid_attest::Environment::Production,
+            min_os_major: 26,
+        };
+        prod.validate().unwrap();
+        for f in [
+            |p: &mut Policy| p.device_policy.android.min_os_version = 160_000,
+            |p: &mut Policy| p.device_policy.android.min_patch_level = 202_512,
+            |p: &mut Policy| p.device_policy.android.signing_cert_sha256.clear(),
+            |p: &mut Policy| p.device_policy.ios.min_os_major = 18,
+            |p: &mut Policy| {
+                p.device_policy.ios.environment = humid_attest::Environment::Development
+            },
+        ] {
+            let mut q = prod.clone();
+            f(&mut q);
+            assert_eq!(q.validate().unwrap_err().code(), "bad_policy");
+        }
+        // unknown fields inside device_policy are refused like anywhere else
+        let mut v = serde_json::to_value(&prod).unwrap();
+        v["device_policy"]["android"]["allow_any_signer"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Policy>(v).is_err());
+    }
+
+    #[test]
     fn production_needs_safe_settings_and_a_pinned_root() {
         let (root, _, mut p) = setup();
         p.mode = Mode::Production;
@@ -638,6 +872,16 @@ mod tests {
             name: "witness.example".into(),
             key: p.unit_keys.core.clone(),
         }];
+        assert_eq!(
+            p.validate().unwrap_err().message(),
+            "production needs device_policy.ios.app_ids and environment = production"
+        );
+        p.device_policy.ios = IosAttestation {
+            team_id: "ABCDE12345".into(),
+            app_ids: vec!["ABCDE12345.app.humid.vault".into()],
+            environment: humid_attest::Environment::Production,
+            min_os_major: 26,
+        };
         p.validate().unwrap();
         let b = serde_json::to_vec(&p).unwrap();
         let s = sign(&root, &b).unwrap();

@@ -8,7 +8,10 @@
 //!
 //! proof  = header(0x0303) ‖ lp(method) ‖ lp(path) ‖ th (64) ‖ u64 seq ‖ device (32) ‖ nonce (32)
 //!          ‖ u64 at ‖ u8 mode ‖ lp(device_sig) ‖ lp(live_p256) ‖ lp(live_mldsa | "") ‖ lp(signed body)
+//!          ‖ lp(app_attest | "")
 //! ```
+//!
+//! `app_attest` is the iPhone's App Attest assertion for this check (empty on Android).
 //!
 //! A proof made in this session must name the `seq` of the request that carries it: the
 //! endpoint refuses a mismatch before the unit sees it, and passes the request's `seq` to the
@@ -66,7 +69,13 @@ pub struct Proof {
     pub live_mldsa: Option<Vec<u8>>,
     /// The exact body bytes the device key signed.
     pub body: Vec<u8>,
+    /// The App Attest assertion for this check (iOS; SERVER.md §2.3), CBOR as the platform
+    /// returns it.
+    pub app_attest: Option<Vec<u8>>,
 }
+
+/// Largest App Attest assertion in a proof (real ones are about 120 bytes).
+pub const MAX_APP_ATTEST: usize = 1024;
 
 fn lp(o: &mut Vec<u8>, b: &[u8]) {
     o.extend_from_slice(&u32::try_from(b.len()).unwrap_or(u32::MAX).to_be_bytes());
@@ -94,6 +103,7 @@ impl Proof {
         lp(&mut o, &self.live_p256);
         lp(&mut o, self.live_mldsa.as_deref().unwrap_or(&[]));
         lp(&mut o, &self.body);
+        lp(&mut o, self.app_attest.as_deref().unwrap_or(&[]));
         o
     }
 
@@ -119,6 +129,7 @@ impl Proof {
             live_p256: r.lp(MAX_SIG).map_err(e)?.to_vec(),
             live_mldsa: Some(r.lp(MAX_SIG).map_err(e)?.to_vec()).filter(|v| !v.is_empty()),
             body: r.lp(MAX_SIGNED_BODY).map_err(e)?.to_vec(),
+            app_attest: Some(r.lp(MAX_APP_ATTEST).map_err(e)?.to_vec()).filter(|v| !v.is_empty()),
         };
         r.finish().map_err(e)?;
         if p.mode > 1 {
@@ -222,6 +233,7 @@ mod tests {
             live_p256: vec![6; 71],
             live_mldsa: None,
             body: b"{}".to_vec(),
+            app_attest: None,
         }
     }
 
@@ -252,5 +264,12 @@ mod tests {
         let mut p = proof_();
         p.live_mldsa = Some(vec![1; 4627]);
         assert_eq!(Proof::decode(&p.encode()).unwrap(), p);
+        p.app_attest = Some(vec![2; 120]);
+        assert_eq!(Proof::decode(&p.encode()).unwrap(), p);
+        p.app_attest = Some(vec![2; MAX_APP_ATTEST + 1]);
+        assert!(
+            Proof::decode(&p.encode()).is_err(),
+            "an assertion over the cap"
+        );
     }
 }

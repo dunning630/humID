@@ -320,13 +320,12 @@ pub async fn enrol(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             "Too many requests from this network.",
         ));
     }
-    let (d, proven) = proofs::check_enrolment(
-        &r.enrolment,
-        None,
-        &th,
-        core.policy.policy.device_policy.attestation_required,
-    )?;
+    let d = proofs::check_enrolment(&r.enrolment, None, &th)?;
     let now = core.now();
+    // the new device's platform proof, bound to this session and to the device key the
+    // certificate (and so the approved join request) names: CORE.md §5.3, "attested model"
+    let attested = core.attest.enrolment(&r.enrolment, &d, &th, now)?;
+    let proven = attested.proven();
     let mut c = core.db.conn().await?;
     let tx = c.transaction().await?;
     let active = tx
@@ -363,14 +362,15 @@ pub async fn enrol(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             "recovery"
         }
     };
-    insert_device(&tx, &core, &r.enrolment, &d, proven.as_str(), via).await?;
+    insert_device(&tx, &core, &r.enrolment, &d, &proven, via).await?;
+    core.attest.store(&tx, &d.id, &attested, now).await?;
     added(
         &tx,
         now,
         &d.account,
         &d.id,
         via,
-        proven.as_str(),
+        &proven,
         &proofs::proof_hash(&r.enrolment.device_pop)?,
     )
     .await?;

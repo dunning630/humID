@@ -160,13 +160,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15; toolchain set below
         with: { toolchain: nightly-2026-10-15 }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with: { key: fuzz, workspaces: "crates/humid-pq2/fuzz\ncrates/humid-core/fuzz\ncrates/humid-htp/fuzz" }
+        with: { key: fuzz, workspaces: "crates/humid-pq2/fuzz\ncrates/humid-core/fuzz\ncrates/humid-htp/fuzz\ncrates/humid-attest/fuzz" }
       - name: cargo-fuzz
         run: cargo +nightly-2026-10-15 install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz every target for 60 s
         run: |
           set -euo pipefail
-          for crate in humid-pq2 humid-core humid-htp; do
+          for crate in humid-pq2 humid-core humid-htp humid-attest; do
             for target in $(cargo +nightly-2026-10-15 fuzz list --fuzz-dir "crates/$crate/fuzz"); do
               echo "::group::$crate/$target"
               cargo +nightly-2026-10-15 fuzz run --fuzz-dir "crates/$crate/fuzz" "$target" -- -max_total_time=60 -rss_limit_mb=4096

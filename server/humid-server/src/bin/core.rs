@@ -36,7 +36,11 @@ async fn go() -> humid_server::Result<()> {
         s.policy.clone(),
         s.clock.clone(),
         keys,
-    );
+    )?;
+    // Google's attestation status list: the newest signed copy from the database, then a
+    // fetch every 6 hours (any core instance may fetch; every instance reloads the newest)
+    core::attest::load_status(&c).await?;
+    core::attest::spawn_status_fetch(c.clone());
     humid_server::retention::spawn(db.clone(), core::RETENTION, s.clock.clone(), 600_000);
     ledger::spawn_checkpoints(db, s.hsm.clone(), s.clock.clone(), 60_000);
     // duress erases (retried until keys acts), deferred ledger entries, erased vaults
