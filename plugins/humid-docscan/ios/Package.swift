@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "tauri-plugin-humid-docscan",
-  platforms: [.iOS(.v17)], // the app itself needs iOS 26 (tauri.conf.json); the camera uses iOS 17+ APIs
+  platforms: [.iOS("26.0")], // the app needs iOS 26 (tauri.conf.json)
   products: [
     .library(name: "tauri-plugin-humid-docscan", type: .static, targets: ["tauri-plugin-humid-docscan"])
   ],
