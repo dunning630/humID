@@ -7,8 +7,8 @@
 // (APP-07: a search typed in the real vault once showed in the duress session).
 // tests/state-reset.test.js checks that every signal is one or the other, on purpose.
 import { signal, computed, batch } from "@preact/signals";
-import { DEMO_BUILD } from "@humid/gate";
 import { loadPrefs, sortItems } from "./prefs.js";
+/* global __HUMID_ALLOW_DEMO__ */
 
 const SESSION = new Map(); // each session signal → its starting value
 /** A signal that resetSession() puts back to `initial`. Arrays start empty each time. */
@@ -106,7 +106,7 @@ export const offline = perSession(null);
 export const offlineReady = signal(false);   // there's an offline copy on this device to open
 
 // Demo mode only in a local development build talking to a server whose policy is "demo".
-export const demoAllowed = computed(() => DEMO_BUILD && server.value?.policy?.devicePolicy === "demo");
+export const demoAllowed = computed(() => (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && server.value?.policy?.devicePolicy === "demo");
 /** Does this server need an access pass to create a HumID? */
 export const passNeeded = computed(() => server.value?.policy?.registration === "pass");
 

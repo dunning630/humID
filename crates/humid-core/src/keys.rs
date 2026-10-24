@@ -13,16 +13,18 @@ pub const SEEDS_LEN: usize = 64;
 pub struct Seeds(pub(crate) Secret<SEEDS_LEN>);
 
 impl Seeds {
-    /// Fresh seeds; `account` reuses an existing account seed (a joining device).
-    pub(crate) fn new(account: Option<&Secret32>) -> Result<Self> {
-        let mut s = Secret::<SEEDS_LEN>::random()?;
-        if let Some(a) = account {
-            let mut both = [0u8; SEEDS_LEN];
-            both[..32].copy_from_slice(a.expose());
-            both[32..].copy_from_slice(&s.expose()[32..]);
-            s = Secret::new(&mut both);
-        }
-        Ok(Self(s))
+    /// Fresh random seeds (a new account's first device; or a joining device, which only
+    /// keeps the device half).
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self(Secret::<SEEDS_LEN>::random()?))
+    }
+
+    /// An existing account seed with this device's seed.
+    pub(crate) fn join(account: &Secret32, device: &[u8]) -> Self {
+        let mut both = zeroize::Zeroizing::new([0u8; SEEDS_LEN]);
+        both[..32].copy_from_slice(account.expose());
+        both[32..].copy_from_slice(device);
+        Self(Secret::new(&mut both))
     }
 
     pub(crate) fn account(&self) -> &[u8] {
@@ -38,15 +40,23 @@ impl Seeds {
     }
 }
 
+/// The device ML-DSA key of a device seed (what a joining device signs its request with).
+pub(crate) fn device_dsa(seeds: &Seeds) -> Result<MlDsaSigningKey> {
+    Ok(MlDsaSigningKey::from_seed(&kdf::<32>(
+        "HUMID-PQ2 device-dsa",
+        &[seeds.device()],
+        &[],
+    )?))
+}
+
 /// Every secret a session holds. All wipe on drop.
 pub(crate) struct SessionKeys {
     pub account_kem: KemSecretKey,
     pub account_dsa: MlDsaSigningKey,
     pub device_dsa: MlDsaSigningKey,
-    pub device_kem: KemSecretKey,
     /// Index entries (synced, so account-level).
     pub index_key: Secret32,
-    /// Device-only records (settings, offline copy, record revisions).
+    /// Device-only records (settings, revisions, the join key, offline copy).
     pub device_records_key: Secret32,
     /// The account seed itself, kept only to seal it to a joining device.
     pub account_seed: Secret32,
@@ -63,8 +73,7 @@ impl SessionKeys {
                 &[a],
                 &[],
             )?),
-            device_dsa: MlDsaSigningKey::from_seed(&kdf::<32>("HUMID-PQ2 device-dsa", &[d], &[])?),
-            device_kem: KemSecretKey::from_seed(&kdf::<96>("HUMID-PQ2 device-kem", &[d], &[])?),
+            device_dsa: device_dsa(seeds)?,
             index_key: kdf::<32>("HUMID-PQ2 index", &[a], &[])?,
             device_records_key: kdf::<32>("HUMID-PQ2 device-records", &[d], &[])?,
             account_seed: seeds.account_seed()?,
@@ -76,7 +85,6 @@ impl SessionKeys {
             account_kem: self.account_kem.public_key().clone(),
             account_dsa: self.account_dsa.verifying_key().clone(),
             device_dsa: self.device_dsa.verifying_key().clone(),
-            device_kem: self.device_kem.public_key().clone(),
         }
     }
 }
@@ -90,9 +98,6 @@ pub struct PublicIdentity {
     pub account_dsa: MlDsaVerifyingKey,
     /// This device's ML-DSA-87 key.
     pub device_dsa: MlDsaVerifyingKey,
-    /// This device's hybrid KEM key: another device seals the account seed and pending
-    /// document slots to it when this device joins.
-    pub device_kem: KemPublicKey,
 }
 
 impl PublicIdentity {

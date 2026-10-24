@@ -1,4 +1,4 @@
-use tauri::{command, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, command};
 
 use crate::models::*;
 use crate::{HumidGateExt, Result};
@@ -15,7 +15,13 @@ pub(crate) async fn enroll<R: Runtime>(
     challenge: Option<String>,
     attest: Option<String>,
 ) -> Result<Enrolled> {
-    app.humid_gate().enroll(EnrollRequest { prompt, challenge, attest }).await
+    app.humid_gate()
+        .enroll(EnrollRequest {
+            prompt,
+            challenge,
+            attest,
+        })
+        .await
 }
 
 #[command]
@@ -26,7 +32,14 @@ pub(crate) async fn release<R: Runtime>(
     challenge: Option<String>,
     attest: Option<String>,
 ) -> Result<Released> {
-    app.humid_gate().release(ReleaseRequest { handle, prompt, challenge, attest }).await
+    app.humid_gate()
+        .release(ReleaseRequest {
+            handle,
+            prompt,
+            challenge,
+            attest,
+        })
+        .await
 }
 
 #[command]
@@ -36,6 +49,8 @@ pub(crate) async fn forget<R: Runtime>(app: AppHandle<R>, handle: Handle) -> Res
 
 /// Android: the accessibility services switched on (APP-09). Other platforms: none.
 #[command]
-pub(crate) async fn enabled_accessibility_services<R: Runtime>(app: AppHandle<R>) -> Result<AccessibilityServices> {
+pub(crate) async fn enabled_accessibility_services<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<AccessibilityServices> {
     app.humid_gate().enabled_accessibility_services().await
 }

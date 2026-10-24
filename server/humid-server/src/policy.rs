@@ -212,7 +212,9 @@ impl Policy {
         if self.checkin.grace_min.iter().any(|m| *m > 24 * 60) {
             return bad("checkin.grace_min must be at most a day");
         }
-        if !(4..=32).contains(&self.messaging.prefix_bits) || self.messaging.prefix_bits % 4 != 0 {
+        if !(4..=32).contains(&self.messaging.prefix_bits)
+            || !self.messaging.prefix_bits.is_multiple_of(4)
+        {
             return bad("messaging.prefix_bits must be a multiple of 4 between 4 and 32");
         }
         if self.messaging.tick_slots == 0 || self.messaging.tick_slots > 64 {

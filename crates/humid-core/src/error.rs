@@ -39,6 +39,13 @@ pub enum CoreError {
     Io,
     /// Refused in a decoy session.
     Decoy,
+    /// This device's hardware can't do the action in one prompt (CORE.md §5).
+    Unsupported,
+    /// The code the person typed doesn't match the other device's.
+    CodeMismatch,
+    /// This device's record revisions are missing, older than its counter or damaged:
+    /// synced records can't be checked for rollback until [`crate::Core::reset_records`].
+    RecordsUnavailable,
 }
 
 impl fmt::Display for CoreError {

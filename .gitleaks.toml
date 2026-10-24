@@ -14,3 +14,10 @@ path = '''(?i)(\.(keystore|jks|p12|pfx|p8)|(^|/)keystore\.properties)$'''
 [[allowlists]]
 description = "local-storage key names"
 regexes = ['''^humid\.[a-z0-9.-]+\.v[0-9]+$''']
+
+# Not secrets: published known-answer test vectors (RFC 8452, NIST CAVS/ACVP, RFC 7748, and
+# vectors derived from a fixed public seed by tools/pq2-noble-vectors.mjs). Their "key" fields
+# are the standards' own example keys. Only these vector files; nothing else under crates/.
+[[allowlists]]
+description = "published crypto test vectors"
+paths = ['''^crates/humid-pq2/tests/vectors/[a-z0-9-]+\.json$''']

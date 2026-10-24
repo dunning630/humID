@@ -254,13 +254,13 @@ pub fn check_step_up(p: &StepUp, body: &[u8], device: &Device, e: &Expect<'_>) -
             "The live check is too old. Try again.",
         ));
     }
-    if let Some(th) = e.th {
-        if !crypto::ct_eq(th, &p.th) {
-            return Err(Error::forbidden(
-                "session_changed",
-                "That approval was made in another session.",
-            ));
-        }
+    if let Some(th) = e.th
+        && !crypto::ct_eq(th, &p.th)
+    {
+        return Err(Error::forbidden(
+            "session_changed",
+            "That approval was made in another session.",
+        ));
     }
     if p.nonce.len() != 32 || p.th.is_empty() {
         return Err(Error::bad_proof());

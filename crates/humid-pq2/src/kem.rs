@@ -127,8 +127,9 @@ impl KemPublicKey {
         m: &[u8; 32],
         eph: &[u8; 32],
     ) -> Result<(KemCiphertext, Secret32)> {
-        let m_arr = Zeroizing::new(Array::from(*m));
-        let (ct, mut ss_k) = self.ek.encapsulate_deterministic(&m_arr);
+        let (ct, mut ss_k) = self.ek.encapsulate_deterministic(<&Array<u8, _>>::from(m));
+        // StaticSecret only takes its scalar by value; the copy moves straight into it and
+        // is wiped with it (x25519-dalek's ZeroizeOnDrop).
         let e = StaticSecret::from(*eph);
         let eph_pub = XPublic::from(&e);
         let ss_x = e.diffie_hellman(&self.x);
@@ -238,7 +239,7 @@ impl KemSecretKey {
         let s = seed.expose();
         let mut ml_seed = Zeroizing::new(ml_kem::Seed::default());
         ml_seed.copy_from_slice(&s[..64]);
-        let dk = MlKemDk::from_seed(*ml_seed);
+        let dk = <MlKemDk as ml_kem::KeyInit>::new(&ml_seed);
         let mut xs = Zeroizing::new([0u8; 32]);
         xs.copy_from_slice(&s[64..]);
         let x = StaticSecret::from(*xs);
@@ -280,6 +281,29 @@ impl KemSecretKey {
         ss_k.zeroize();
         ss
     }
+
+    /// Plain ML-KEM-1024 decapsulation of a raw ciphertext with this key's ML-KEM half
+    /// (self-test known answers only).
+    pub(crate) fn mlkem_decaps_raw(&self, ct: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+        let arr = Array::try_from(ct).map_err(|_| Error::Encoding)?;
+        let mut k = self.dk.decapsulate(&arr);
+        let mut out = Zeroizing::new([0u8; 32]);
+        out.copy_from_slice(&k);
+        k.zeroize();
+        Ok(out)
+    }
+}
+
+/// Plain ML-KEM-1024 encapsulation to raw `ek` with a given `m` (self-test known answers
+/// only; production encapsulation draws `m` from the CSPRNG).
+pub(crate) fn mlkem_encaps_raw(ek: &[u8], m: &[u8; 32]) -> Result<(Vec<u8>, Zeroizing<[u8; 32]>)> {
+    let arr = Array::try_from(ek).map_err(|_| Error::Encoding)?;
+    let ek = MlKemEk::new(&arr).map_err(|_| Error::Encoding)?;
+    let (ct, mut k) = ek.encapsulate_deterministic(<&Array<u8, _>>::from(m));
+    let mut out = Zeroizing::new([0u8; 32]);
+    out.copy_from_slice(&k);
+    k.zeroize();
+    Ok((ct.to_vec(), out))
 }
 
 #[cfg(test)]

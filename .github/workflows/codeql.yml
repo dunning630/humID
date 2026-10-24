@@ -1,0 +1,73 @@
+name: CodeQL
+
+# Static analysis of the JavaScript/TypeScript (app, packages, services, tools) and the Rust
+# workspace, on every PR, on main, and weekly (new queries find old bugs).
+#
+# Code scanning isn't enabled on this private repository yet (it needs GitHub Advanced
+# Security / Code Security). Until it is, results are not uploaded: each run keeps its SARIF
+# as an artifact and lists the results in the job summary. Once it is enabled, set the
+# repository variable HUMID_CODE_SCANNING=true and results go to the Security tab (and PR
+# annotations) instead. Swift and Kotlin come with the device CI (audit 6-build §2).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload results, when code scanning is on
+      actions: read # CodeQL reads the workflow run's metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, rust]
+    env:
+      UPLOAD: ${{ vars.HUMID_CODE_SCANNING == 'true' && 'always' || 'never' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none # both extract from source; nothing is built or run
+          config: |
+            paths-ignore:
+              - node_modules
+              - target
+              - "**/dist"
+              - apps/mobile/vendor
+              - tests/fixtures
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          upload: ${{ env.UPLOAD }}
+          output: sarif
+      - name: Results in the job summary (code scanning off)
+        if: env.UPLOAD == 'never'
+        run: |
+          {
+            echo "### CodeQL ${MATRIX_LANGUAGE}"
+            jq -r '[.runs[].results[]] | length | "\(.) result(s); SARIF in the codeql-'"${MATRIX_LANGUAGE}"' artifact"' sarif/*.sarif
+            jq -r '.runs[].results[] | "- `\(.ruleId)` \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine): \(.message.text | split("\n")[0])"' sarif/*.sarif | head -100
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_LANGUAGE: ${{ matrix.language }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: env.UPLOAD == 'never'
+        with: { name: "codeql-${{ matrix.language }}", path: sarif, retention-days: 30 }

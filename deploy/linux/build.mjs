@@ -5,7 +5,7 @@
 //
 // The same server as HumID Server for Windows (one Node process: the seven services and a
 // local edge), the web app, the self-test, the backup tool, and the `humid` command that
-// installs it as a systemd service. The installer fetches the official Node.js 22 runtime
+// installs it as a systemd service. The installer fetches the official Node.js 24 (LTS) runtime
 // from nodejs.org (checksum verified), so the package stays small and works on x64 and arm64.
 // The version is the Windows server's: one server, two packages.
 import * as esbuild from "esbuild";
@@ -30,7 +30,7 @@ delete env.HUMID_ALLOW_DEMO;
 execFileSync(process.execPath, [join(repo, "apps", "mobile", "build.mjs")], { stdio: "inherit", env: { ...env, HUMID_PRECOMPRESS: "1" } });
 cpSync(join(repo, "apps", "mobile", "dist"), join(pkg, "app"), { recursive: true });
 
-const common = { bundle: true, platform: "node", target: "node22", format: "esm", minify: false, legalComments: "eof", logLevel: "info" };
+const common = { bundle: true, platform: "node", target: "node24", format: "esm", minify: false, legalComments: "eof", logLevel: "info" };
 
 // 2. The server: the same entry point as on Windows.
 await esbuild.build({

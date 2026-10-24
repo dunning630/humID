@@ -31,9 +31,9 @@ proptest! {
     #[test]
     fn transit_in_any_order_once(order in Just((0u64..40).collect::<Vec<_>>()).prop_shuffle()) {
         let k = key();
-        let mut tx = TransitSealer::new(&k, b"chan");
+        let (mut tx, _) = transit_channel(k.duplicate(), b"chan", Role::Initiator).unwrap();
         let recs: Vec<_> = (0..40).map(|i| tx.seal(b"", &[i as u8]).unwrap()).collect();
-        let mut rx = TransitOpener::new(&k, b"chan");
+        let (_, mut rx) = transit_channel(k, b"chan", Role::Responder).unwrap();
         for &s in &order {
             let (seq, ct) = &recs[s as usize];
             prop_assert_eq!(&rx.open(*seq, b"", ct).unwrap()[..], &[s as u8][..]);

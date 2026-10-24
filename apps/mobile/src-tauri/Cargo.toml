@@ -2,10 +2,10 @@
 name = "humid"
 version = "1.0.0"
 description = "HumID Vault"
-edition = "2021"
-rust-version = "1.77"
-license = "UNLICENSED"
-publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [lib]
 name = "humid_lib"
@@ -24,9 +24,5 @@ tauri-plugin-humid-nfc = { path = "../../../plugins/humid-nfc" }
 tauri-plugin-humid-docscan = { path = "../../../plugins/humid-docscan" }
 percent-encoding = "2.3"
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-panic = "abort"
-strip = true
+[lints]
+workspace = true

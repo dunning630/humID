@@ -85,6 +85,9 @@ pub enum HwOutput {
     Derived(Secret32),
     /// The liveness signature(s).
     Live(LiveProof),
+    /// This `Derive` named no hardware key this device has (retired, or another device's);
+    /// the other ops in the prompt still ran.
+    Unavailable,
 }
 
 /// Signature algorithm of a liveness key.
@@ -157,11 +160,15 @@ pub struct GateInfo {
 /// Contract:
 /// * [`authorize`](HardwareGate::authorize) shows **exactly one** biometric prompt (live
 ///   biometric only: no passcode fallback, no reuse of an earlier authentication) and runs
-///   every op inside it, or none. It returns outputs in op order.
+///   every op inside it, or none. It returns outputs in op order. A `Derive` on an input the
+///   hardware doesn't know gives [`HwOutput::Unavailable`] without failing the other ops
+///   (the core tries fallback wraps in the same prompt).
 /// * [`target`](HardwareGate::target) never prompts.
 /// * [`retire`](HardwareGate::retire) makes an input permanently unusable where the platform
 ///   allows it (delete the hardware key it names), so an old wrap can't be reopened.
 /// * Outputs travel as bytes, never text, and the adapter wipes its copies.
+/// * The adapter is moved into the [`Core`](crate::Core) and nothing else keeps a handle to
+///   it: whoever can call `authorize` can compute `HW_n` (review M1).
 pub trait HardwareGate {
     /// What this adapter is.
     fn info(&self) -> GateInfo;

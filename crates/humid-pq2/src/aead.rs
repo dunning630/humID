@@ -4,9 +4,10 @@
 //!   so a repeated nonce under a long-lived key leaks only equality of identical messages.
 //!   Box: `header(type) ‖ nonce (12) ‖ ciphertext ‖ tag (16)`, AAD
 //!   `header(type) ‖ lp(aad parts…)`.
-//! * **In transit:** AES-256-GCM with counter nonces `0x00000000 ‖ u64 seq`, one key per
-//!   direction, each `seq` used once; the receiver keeps a 256-record replay window.
-//!   AAD `header(0x0020) ‖ lp(channel, u64 seq, aad)`.
+//! * **In transit:** AES-256-GCM. [`transit_channel`] derives one key per (channel,
+//!   direction) from a session secret it consumes; nonces are `u32 direction ‖ u64 seq`, each
+//!   `seq` used once; the receiver keeps a 256-record replay window.
+//!   AAD `header(0x0020) ‖ lp(channel, u32 direction, u64 seq, aad)`.
 //! * **Sealed to a public key:** hybrid KEM, then AES-256-GCM-SIV under a one-time key.
 
 use aes_gcm::Aes256Gcm;
@@ -33,7 +34,8 @@ pub const BOX_OVERHEAD: usize = HEADER_LEN + NONCE_LEN + TAG_LEN;
 pub const SEALED_OVERHEAD: usize = HEADER_LEN + MLKEM_CT_LEN + X25519_LEN + TAG_LEN;
 
 fn siv(key: &Secret32) -> Aes256GcmSiv {
-    Aes256GcmSiv::new(&Array::from(*key.expose()))
+    // Borrowed as an Array: no by-value copy of the key on the stack.
+    Aes256GcmSiv::new(<&Array<u8, _>>::from(key.expose()))
 }
 
 /// Raw AES-256-GCM-SIV (RFC 8452): returns `ciphertext ‖ tag`. The caller owns the nonce:
@@ -207,17 +209,57 @@ pub fn open_sealed(
 /// Replay window, in records.
 pub const REPLAY_WINDOW: u64 = 256;
 
-fn transit_nonce(seq: u64) -> [u8; NONCE_LEN] {
+/// Which end of a channel this is. Each direction gets its own key and its own nonce
+/// domain, so the two ends can never produce the same (key, nonce) pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// The side that started the handshake (the phone).
+    Initiator,
+    /// The other side (the server).
+    Responder,
+}
+
+/// Direction tags: the first 4 nonce bytes, and part of the key derivation.
+const I2R: u32 = 0x4932_5201; // "I2R" 1
+const R2I: u32 = 0x5232_4901; // "R2I" 1
+
+impl Role {
+    fn send_dir(self) -> u32 {
+        match self {
+            Role::Initiator => I2R,
+            Role::Responder => R2I,
+        }
+    }
+
+    fn recv_dir(self) -> u32 {
+        match self {
+            Role::Initiator => R2I,
+            Role::Responder => I2R,
+        }
+    }
+}
+
+fn transit_nonce(dir: u32, seq: u64) -> [u8; NONCE_LEN] {
     let mut n = [0u8; NONCE_LEN];
+    n[..4].copy_from_slice(&dir.to_be_bytes());
     n[4..].copy_from_slice(&seq.to_be_bytes());
     n
 }
 
-fn transit_aad(channel: &[u8], seq: u64, extra: &[u8]) -> Result<Vec<u8>> {
+fn transit_aad(channel: &[u8], dir: u32, seq: u64, extra: &[u8]) -> Result<Vec<u8>> {
     aad(
         ObjectType::TRANSIT_RECORD,
-        &[channel, &seq.to_be_bytes(), extra],
+        &[channel, &dir.to_be_bytes(), &seq.to_be_bytes(), extra],
     )
+}
+
+fn transit_key(secret: &Secret32, channel: &[u8], dir: u32) -> Result<Aes256Gcm> {
+    let k = kdf::<32>(
+        "HUMID-PQ2 transit",
+        &[secret.expose()],
+        &[channel, &dir.to_be_bytes()],
+    )?;
+    Ok(gcm_cipher(&k))
 }
 
 /// Raw AES-256-GCM: `ciphertext ‖ tag`.
@@ -258,27 +300,56 @@ pub(crate) fn gcm_open(
 }
 
 pub(crate) fn gcm_cipher(key: &Secret32) -> Aes256Gcm {
-    Aes256Gcm::new(&Array::from(*key.expose()))
+    // Borrowed as an Array: no by-value copy of the key on the stack.
+    Aes256Gcm::new(<&Array<u8, _>>::from(key.expose()))
+}
+
+/// One end of a transit channel: its sealer and opener, from one session secret.
+///
+/// ```text
+/// k_dir  = KDF("HUMID-PQ2 transit", [session_secret], [channel, u32 dir], 32)
+/// nonce  = u32 dir ‖ u64 seq                    dir = I2R (0x49325201) or R2I (0x52324901)
+/// A      = header(0x0020) ‖ lp(channel, u32 dir, u64 seq, extra_aad)
+/// ```
+///
+/// Nonce reuse is impossible by construction: the channel and direction select the key,
+/// the direction is also in the nonce, and `seq` only grows within a sealer. The secret is
+/// consumed, so one call per end per session. Rebuilding a sealer (a reconnect, a restart)
+/// needs a fresh session secret from a new handshake: never persist `seq` and reuse a secret.
+///
+/// # Errors
+/// Never in practice (fixed label).
+pub fn transit_channel(
+    session_secret: Secret32,
+    channel: &[u8],
+    role: Role,
+) -> Result<(TransitSealer, TransitOpener)> {
+    let tx = TransitSealer {
+        cipher: transit_key(&session_secret, channel, role.send_dir())?,
+        channel: channel.to_vec(),
+        dir: role.send_dir(),
+        next: 0,
+    };
+    let rx = TransitOpener {
+        cipher: transit_key(&session_secret, channel, role.recv_dir())?,
+        channel: channel.to_vec(),
+        dir: role.recv_dir(),
+        top: 0,
+        seen: [0; 4],
+    };
+    drop(session_secret);
+    Ok((tx, rx))
 }
 
 /// The sending half of one direction of a channel. Never reuses a nonce: `seq` only grows.
 pub struct TransitSealer {
     cipher: Aes256Gcm,
     channel: Vec<u8>,
+    dir: u32,
     next: u64,
 }
 
 impl TransitSealer {
-    /// A sealer for `channel` (a session id, say) under this direction's key.
-    #[must_use]
-    pub fn new(key: &Secret32, channel: &[u8]) -> Self {
-        Self {
-            cipher: gcm_cipher(key),
-            channel: channel.to_vec(),
-            next: 0,
-        }
-    }
-
     /// The `seq` the next record will use.
     #[must_use]
     pub fn next_seq(&self) -> u64 {
@@ -295,8 +366,11 @@ impl TransitSealer {
         }
         let seq = self.next;
         self.next = seq.checked_add(1).ok_or(Error::Counter)?;
-        let a = transit_aad(&self.channel, seq, extra_aad)?;
-        Ok((seq, gcm_seal(&self.cipher, &transit_nonce(seq), &a, pt)?))
+        let a = transit_aad(&self.channel, self.dir, seq, extra_aad)?;
+        Ok((
+            seq,
+            gcm_seal(&self.cipher, &transit_nonce(self.dir, seq), &a, pt)?,
+        ))
     }
 }
 
@@ -304,6 +378,7 @@ impl TransitSealer {
 pub struct TransitOpener {
     cipher: Aes256Gcm,
     channel: Vec<u8>,
+    dir: u32,
     /// One past the highest `seq` accepted (0 = none yet).
     top: u64,
     /// Bit i set = `top - 1 - i` was accepted.
@@ -311,17 +386,6 @@ pub struct TransitOpener {
 }
 
 impl TransitOpener {
-    /// An opener for `channel` under the peer's sending key.
-    #[must_use]
-    pub fn new(key: &Secret32, channel: &[u8]) -> Self {
-        Self {
-            cipher: gcm_cipher(key),
-            channel: channel.to_vec(),
-            top: 0,
-            seen: [0; 4],
-        }
-    }
-
     fn bit(&self, i: u64) -> bool {
         (self.seen[(i / 64) as usize] >> (i % 64)) & 1 == 1
     }
@@ -358,8 +422,8 @@ impl TransitOpener {
                 return Err(Error::Counter);
             }
         }
-        let a = transit_aad(&self.channel, seq, extra_aad)?;
-        let buf = gcm_open(&self.cipher, &transit_nonce(seq), &a, ct)?;
+        let a = transit_aad(&self.channel, self.dir, seq, extra_aad)?;
+        let buf = gcm_open(&self.cipher, &transit_nonce(self.dir, seq), &a, ct)?;
         if seq >= self.top {
             let next = seq.checked_add(1).ok_or(Error::Counter)?;
             self.shift(next - self.top);
@@ -462,8 +526,8 @@ mod tests {
     #[test]
     fn transit_counter_and_replay() {
         let k = Secret32::random().unwrap();
-        let mut tx = TransitSealer::new(&k, b"session-1");
-        let mut rx = TransitOpener::new(&k, b"session-1");
+        let (mut tx, _) = transit_channel(k.duplicate(), b"session-1", Role::Initiator).unwrap();
+        let (_, mut rx) = transit_channel(k.duplicate(), b"session-1", Role::Responder).unwrap();
         let recs: Vec<_> = (0..300)
             .map(|i| tx.seal(b"hdr", format!("m{i}").as_bytes()).unwrap())
             .collect();
@@ -498,7 +562,7 @@ mod tests {
             Error::Decrypt
         );
         assert!(rx.open(recs[200].0, b"hdr", &recs[200].1).is_ok());
-        let mut rx2 = TransitOpener::new(&k, b"session-2");
+        let (_, mut rx2) = transit_channel(k.duplicate(), b"session-2", Role::Responder).unwrap();
         assert_eq!(
             rx2.open(recs[0].0, b"hdr", &recs[0].1).unwrap_err(),
             Error::Decrypt
@@ -509,13 +573,47 @@ mod tests {
         );
     }
 
+    /// Review H3 (PROBE6): two sealers made from one secret, for the two directions or two
+    /// channels, must never share a keystream.
+    #[test]
+    fn transit_never_reuses_a_keystream() {
+        let k = Secret32::random().unwrap();
+        let (mut a, mut a_rx) = transit_channel(k.duplicate(), b"chan", Role::Initiator).unwrap();
+        let (mut b, mut b_rx) = transit_channel(k.duplicate(), b"chan", Role::Responder).unwrap();
+        let (mut c, _) = transit_channel(k.duplicate(), b"other", Role::Initiator).unwrap();
+        let p1 = [0x41u8; 32];
+        let zero = [0u8; 32];
+        let (s1, c1) = a.seal(b"", &p1).unwrap();
+        let (s2, c2) = b.seal(b"", &zero).unwrap();
+        let (_, c3) = c.seal(b"", &zero).unwrap();
+        assert_eq!(s1, s2);
+        let x12: Vec<u8> = c1[..32].iter().zip(&c2[..32]).map(|(x, y)| x ^ y).collect();
+        let x13: Vec<u8> = c1[..32].iter().zip(&c3[..32]).map(|(x, y)| x ^ y).collect();
+        assert_ne!(x12, p1.to_vec(), "directions share a keystream");
+        assert_ne!(x13, p1.to_vec(), "channels share a keystream");
+        // each direction opens only the other end's records
+        assert_eq!(&b_rx.open(s1, b"", &c1).unwrap()[..], &p1[..]);
+        assert_eq!(&a_rx.open(s2, b"", &c2).unwrap()[..], &zero[..]);
+        let (_, mut wrong) = transit_channel(k, b"chan", Role::Initiator).unwrap();
+        assert_eq!(
+            wrong.open(s1, b"", &c1).unwrap_err(),
+            Error::Decrypt,
+            "own records reflected back"
+        );
+        // the nonce carries the direction
+        assert_ne!(
+            transit_nonce(Role::Initiator.send_dir(), 0),
+            transit_nonce(Role::Responder.send_dir(), 0)
+        );
+    }
+
     #[test]
     fn transit_window_shift_matches_a_model() {
         // Compare the bitmap window against a plain set, over a pseudo-random schedule.
         let k = Secret32::random().unwrap();
-        let mut tx = TransitSealer::new(&k, b"c");
+        let (mut tx, _) = transit_channel(k.duplicate(), b"c", Role::Initiator).unwrap();
         let recs: Vec<_> = (0..1200).map(|_| tx.seal(b"", b"").unwrap()).collect();
-        let mut rx = TransitOpener::new(&k, b"c");
+        let (_, mut rx) = transit_channel(k, b"c", Role::Responder).unwrap();
         let mut accepted = std::collections::BTreeSet::new();
         let mut x: u64 = 12345;
         for _ in 0..4000 {

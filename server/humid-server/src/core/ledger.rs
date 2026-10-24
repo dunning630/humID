@@ -227,7 +227,7 @@ pub fn tree_hash(n: &mut dyn Nodes, lo: u64, hi: u64) -> Result<[u8; 64]> {
     if len == 0 {
         return empty_root();
     }
-    if len.is_power_of_two() && lo % len == 0 {
+    if len.is_power_of_two() && lo.is_multiple_of(len) {
         return Ok(n.node(len.trailing_zeros(), lo / len));
     }
     let k = largest_pow2_below(len);

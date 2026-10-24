@@ -26,10 +26,12 @@
     clippy::similar_names
 )]
 
+mod codes;
 mod core;
 pub mod envelope;
 mod error;
 pub mod gate;
+pub mod join;
 mod keys;
 pub mod ratchet;
 pub mod records;
@@ -38,8 +40,9 @@ pub mod soft_gate;
 pub mod store;
 
 pub use crate::core::{
-    Core, Grant, JoinRequest, OpenHandle, OpenStarted, Opened, SealReceipt, Unlocked,
+    Core, Grant, JoinStarted, OpenHandle, OpenStarted, Opened, SealReceipt, Unlocked,
 };
 pub use envelope::DocMeta;
 pub use error::{CoreError, Result};
+pub use join::JoinRequest;
 pub use keys::PublicIdentity;

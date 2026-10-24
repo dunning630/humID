@@ -148,29 +148,36 @@ impl Wrap {
     }
 }
 
-/// Which wrap to open, given what the slots hold and the rollback floor.
+/// The wraps to try, in order, given what the slots hold and the rollback floor.
 ///
 /// * Only wraps with `n ≥ floor` count: an older one (a restored backup or image) is a
-///   rollback and is refused.
-/// * Of those, the highest `n`. Two valid wraps exist only after a crash between writing
-///   `W_{n+1}` and raising the floor; `W_{n+1}` was written atomically, so it wins.
+///   rollback and is refused. The floor is the counter of the last wrap that opened.
+/// * Highest `n` first. Two candidates exist after every unlock (the wrap that opened and
+///   its successor), and after a crash or a write whose outcome was unknown; the core falls
+///   back to the lower one if the higher one doesn't open (CORE.md §4).
 ///
 /// # Errors
 /// [`CoreError::NotEnrolled`] with no wrap; [`CoreError::Rollback`] if every wrap is below
 /// the floor.
-pub fn plan(slots: &[Option<Wrap>], floor: u64) -> Result<Wrap> {
+pub fn plan(slots: &[Option<Wrap>], floor: u64) -> Result<Vec<Wrap>> {
     let any = slots.iter().any(Option::is_some);
-    slots
+    let mut c: Vec<Wrap> = slots
         .iter()
         .flatten()
         .filter(|w| w.n >= floor)
-        .max_by_key(|w| w.n)
         .cloned()
-        .ok_or(if any {
+        .collect();
+    c.sort_by_key(|w| core::cmp::Reverse(w.n));
+    c.dedup_by_key(|w| w.n);
+    if c.is_empty() {
+        Err(if any {
             CoreError::Rollback
         } else {
             CoreError::NotEnrolled
         })
+    } else {
+        Ok(c)
+    }
 }
 
 #[cfg(test)]
@@ -179,7 +186,7 @@ mod tests {
     use humid_pq2::encoding::HEADER_LEN;
 
     fn seeds() -> Seeds {
-        Seeds::new(None).unwrap()
+        Seeds::new().unwrap()
     }
 
     #[test]
@@ -211,10 +218,12 @@ mod tests {
         let hw = Secret32::random().unwrap();
         let s = seeds();
         let w = |n| Some(Wrap::seal(&hw, n, [1; 32], [2; 32], vec![], &s).unwrap());
-        assert_eq!(plan(&[None, None], 0), Err(CoreError::NotEnrolled));
-        assert_eq!(plan(&[w(4), w(5)], 4).unwrap().n, 5);
-        assert_eq!(plan(&[w(4), None], 4).unwrap().n, 4);
-        assert_eq!(plan(&[w(4), w(3)], 5), Err(CoreError::Rollback));
+        let ns = |r: Result<Vec<Wrap>>| r.map(|v| v.iter().map(|w| w.n).collect::<Vec<_>>());
+        assert_eq!(ns(plan(&[None, None], 0)), Err(CoreError::NotEnrolled));
+        assert_eq!(ns(plan(&[w(4), w(5)], 4)), Ok(vec![5, 4]));
+        assert_eq!(ns(plan(&[w(4), w(5)], 5)), Ok(vec![5]));
+        assert_eq!(ns(plan(&[w(4), None], 4)), Ok(vec![4]));
+        assert_eq!(ns(plan(&[w(4), w(3)], 5)), Err(CoreError::Rollback));
     }
 
     #[test]

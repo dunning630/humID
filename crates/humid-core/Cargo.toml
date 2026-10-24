@@ -1,14 +1,18 @@
 [package]
 name = "humid-core"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-publish = false
-license = "UNLICENSED"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 description = "HumID 5.0 core: holds every key, runs the per-unlock device ratchet, seals and opens three-key documents. The UI gets handles and results, never keys."
 
+[lints]
+workspace = true
+
 [features]
-# The software HardwareGate (tests and simulator builds only; never in a release build).
+# The software HardwareGate and the test-only inspection hooks (tests and simulator builds
+# only; never in a release build).
 software-gate = []
 
 [dependencies]
@@ -19,13 +23,3 @@ zeroize = { version = "1.9", features = ["alloc"] }
 proptest = "1.5"
 # the integration tests drive the core through the software gate
 humid-core = { path = ".", features = ["software-gate"] }
-
-# ML-DSA / ML-KEM are slow unoptimised. (Moves to the root Cargo.toml with the workspace.)
-[profile.dev.package."*"]
-opt-level = 3
-[profile.dev]
-opt-level = 1
-
-# Temporary: builds standalone until the root workspace (crates/*, server/*, plugins/*,
-# apps/mobile/src-tauri) is merged; drop this table then.
-[workspace]

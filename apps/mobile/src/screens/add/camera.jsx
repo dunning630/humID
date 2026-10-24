@@ -43,7 +43,13 @@ import { begin, step as stepFlow, view as viewOf, summarize, docBox, easeBox, ve
 import { tracker, scaleQuad } from "../../core/docfind.js";
 import { locateBarcodes, readBox, fromArea, barAngle } from "../../core/barcodefind.js";
 import { parseAamva, MrzConsensus } from "@humid/idscan";
-import { DEMO_BUILD } from "../../core/config.js";
+
+// Development builds publish what the camera sees (numbers and names, never pictures) on
+// globalThis.__humid* for the browser checks. The flag is written out at every use: esbuild
+// drops a branch only when the define itself is the condition. Through an imported
+// DEMO_BUILD, or even a const in this module, the writes stay in the release chunk as dead
+// code (tests/bundle.test.js checks there are none).
+/* global __HUMID_ALLOW_DEMO__ */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -240,7 +246,7 @@ export function DocCamera(props) {
     L.flow = next;
     setFlow(next);
   };
-  const trace = (name, x) => { if (DEMO_BUILD) { const t = (globalThis.__humidTrace ||= { ev: [] }); t.ev.push([name, Math.round(performance.now()), x]); } };
+  const trace = (name, x) => { if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) { const t = (globalThis.__humidTrace ||= { ev: [] }); t.ev.push([name, Math.round(performance.now()), x]); } };
 
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setToldSaved(false), 2600); return () => clearTimeout(t); }, []);
   useLayoutEffect(() => {
@@ -313,7 +319,7 @@ export function DocCamera(props) {
         // zoomed in, a card fills the frame from about 25 cm: far enough for the camera to focus (core/guide.js zoomFor)
         const z = guided ? zoomFor(tpl, caps) : 1;
         if (z > 1) { try { await L.track.applyConstraints({ advanced: [{ zoom: z }] }); L.zoom = z; } catch { /* not offered */ } }
-        if (DEMO_BUILD) globalThis.__humidZoom = L.zoom;
+        if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidZoom = L.zoom;
         video.current.srcObject = stream;
         await video.current.play().catch(() => {});
         // a preview that came back turned the wrong way for the screen leaves the frame a third of the pixels: ask once more
@@ -336,7 +342,7 @@ export function DocCamera(props) {
     if (L.running.has(name) || L.stop) return;
     L.running.add(name);
     (guided ? guideLoop() : photoLoop())
-      .catch(() => { if (DEMO_BUILD) globalThis.__humidLoopStopped = name; }) // development builds record which loop stopped (a name, never a picture)
+      .catch(() => { if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidLoopStopped = name; }) // development builds record which loop stopped (a name, never a picture)
       .finally(() => L.running.delete(name));
   }
 
@@ -411,7 +417,7 @@ export function DocCamera(props) {
       L.box = verdict.present && !verdict.unsure ? easeBox(L.box, verdict.aligned ? { x: 0, y: 0, w: 1, h: 1, rot: 0 } : docBox(m), 0.55) : null;
       setBox(L.box);
       L.guideNow = { rect, verdict, at: now };
-      if (DEMO_BUILD) globalThis.__humidGuide = { far: L.far, zoom: L.zoom, peak: extra.bestFocus, key: verdict.key, present: verdict.present, aligned: verdict.aligned, ready, steady: verdict.steady, sharp: verdict.sharp, scale: m.scale, dx: m.dx, dy: m.dy, rot: m.rot, flatH: m.flatH, flatV: m.flatV, sides: m.sides, focus: m.focus, motion: m.motion, mean: m.mean, p95: m.p95, sat: m.sat, patch: m.patch, energy: m.energy, ms: Math.round(lastMs), rect, video: [v.videoWidth, v.videoHeight], box: L.box, extra: { bar: bar ? Math.round(bar.across * 100) / 100 : bar, mrz: extra.mrz } }; // development builds: what the guidance sees (numbers, never pictures)
+      if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidGuide = { far: L.far, zoom: L.zoom, peak: extra.bestFocus, key: verdict.key, present: verdict.present, aligned: verdict.aligned, ready, steady: verdict.steady, sharp: verdict.sharp, scale: m.scale, dx: m.dx, dy: m.dy, rot: m.rot, flatH: m.flatH, flatV: m.flatV, sides: m.sides, focus: m.focus, motion: m.motion, mean: m.mean, p95: m.p95, sat: m.sat, patch: m.patch, energy: m.energy, ms: Math.round(lastMs), rect, video: [v.videoWidth, v.videoHeight], box: L.box, extra: { bar: bar ? Math.round(bar.across * 100) / 100 : bar, mrz: extra.mrz } }; // development builds: what the guidance sees (numbers, never pictures)
       if (verdict.aligned && !L.wasAligned) nudge();
       L.wasAligned = verdict.aligned;
       // a license front showing its barcode is the back: say so, and it's read and kept as the back;
@@ -452,7 +458,7 @@ export function DocCamera(props) {
       const spot = { box: { x: win.src.x + sig.box.x * s, y: win.src.y + sig.box.y * s, w: sig.box.w * s, h: sig.box.h * s }, upright: sig.upright };
       const crop = barcodeCrop(v, spot, v.videoWidth, v.videoHeight, 1600);
       const texts = await readBarcodes(imageData(crop), ++L.barTries % 3 === 0);
-      if (DEMO_BUILD) globalThis.__humidCode = { what: "barcode", n: (globalThis.__humidCode?.n || 0) + 1, texts: texts.length, w: crop.width };
+      if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidCode = { what: "barcode", n: (globalThis.__humidCode?.n || 0) + 1, texts: texts.length, w: crop.width };
       if (L.stop || L.busy) return;
       const text = texts.find((t) => parseAamva(t));
       if (text) {
@@ -474,7 +480,7 @@ export function DocCamera(props) {
       if (!ocr) { if (!L.noReader) { L.noReader = true; toast(NO_READER, "warn"); } await sleep(1000); return; }
       const strip = mrzBand(grab(v, rect, 1800), shape);
       const res = L.consensus.add(await ocr.read(strip));
-      if (DEMO_BUILD) globalThis.__humidCode = { what: "mrz", n: (globalThis.__humidCode?.n || 0) + 1, best: !!res.best, valid: !!res.result, stable: res.stable };
+      if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidCode = { what: "mrz", n: (globalThis.__humidCode?.n || 0) + 1, best: !!res.best, valid: !!res.result, stable: res.stable };
       if (L.stop || L.busy) return;
       if (res.stable) {
         L.codeDone = { mrz: res.result, consensus: true, at: Date.now(), side };
@@ -504,7 +510,7 @@ export function DocCamera(props) {
       if (inactive()) continue;
       const t = track.feed(r.look, r.w, r.h);
       L.quad = t.quad ? scaleQuad(t.quad, r.k) : null;
-      if (DEMO_BUILD) globalThis.__humidLook = { ...r.look, quad: L.quad, ms: Math.round(lastMs), where: L.an.where, vw: v.videoWidth, vh: v.videoHeight };
+      if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidLook = { ...r.look, quad: L.quad, ms: Math.round(lastMs), where: L.an.where, vw: v.videoWidth, vh: v.videoHeight };
       const v1 = verdictOf({ ...r.look, found: !!t.quad });
       if (v1.aligned && !prevOk) nudge();
       prevOk = v1.aligned;
@@ -523,7 +529,7 @@ export function DocCamera(props) {
     if (cropped) {
       // the document itself, cut out of the frame's crop: no table round it, at its own proportions (3.1.1)
       const fit = fitDocument(original, { shape });
-      if (DEMO_BUILD) globalThis.__humidFit = { how: fit.how, out: [fit.canvas.width, fit.canvas.height] };
+      if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidFit = { how: fit.how, out: [fit.canvas.width, fit.canvas.height] };
       return { canvas: fit.canvas, uncut: original, fit: fit.how, original, straightened: true, rotate: 0, confidence: 1, changed: true };
     }
     const quad = cornersIn(original, { hint: how === "file" ? null : L.quad, shape: guided ? shape : "full" });
@@ -593,7 +599,7 @@ export function DocCamera(props) {
     }
     const sideNow = known?.side || side;
     const { flipped, ...codes } = readOut;
-    if (DEMO_BUILD) globalThis.__humidDevelop = { how, fit: dev.fit, guided: !!still || guided, source: still?.source, stillW: still?.width, why: still?.why, turned: still?.turned, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, live: !!known, side: sideNow, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
+    if (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) globalThis.__humidDevelop = { how, fit: dev.fit, guided: !!still || guided, source: still?.source, stillW: still?.width, why: still?.why, turned: still?.turned, out: [dev.canvas.width, dev.canvas.height], straightened: dev.straightened, rotate: dev.rotate, confidence: dev.confidence, live: !!known, side: sideNow, png: globalThis.__humidKeepPng ? dev.canvas.toDataURL("image/png") : undefined };
     const result = { ...dev, ...codes, how, side: sideNow };
     const codeWant = read.barcode && read.mrz ? (codes.barcode ? "barcode" : codes.mrz ? "mrz" : "both") : want === "card" || want === "cvv" ? null : want;
     const sum = summarize(kind, codes, sideNow !== side && known?.barcode ? "barcode" : codeWant);

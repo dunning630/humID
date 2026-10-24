@@ -1,0 +1,63 @@
+# One Cargo workspace for all of HumID's Rust: the app shell, its native plugins, the
+# 5.0 core crates (crates/*) and the 5.0 servers (server/*). One Cargo.lock at the root,
+# one target/ directory, one Dependabot entry.
+#
+# crates/ and server/ each hold a .gitkeep: Cargo treats a glob that matches nothing as a
+# literal path and refuses the workspace, and a hidden file keeps the glob matching while
+# not being a member itself. Every directory under them must be a crate.
+#
+# A crate joining here drops its own [workspace] table and moves any [profile.*] section
+# into this file (Cargo ignores profiles outside the root). Members opt into the shared
+# settings with `edition.workspace = true` (etc.) and `[lints] workspace = true`.
+[workspace]
+resolver = "3"
+members = [
+  "apps/mobile/src-tauri",
+  "plugins/*",
+  "crates/*",
+  "server/*",
+]
+# cargo-fuzz crates are built by `cargo fuzz` with nightly sanitizers, each as its own
+# workspace; they are not members.
+exclude = ["crates/*/fuzz"]
+
+[workspace.package]
+edition = "2024"
+# Builds use rust-toolchain.toml (1.99.1). rust-version is the floor the workspace is
+# checked against and what the MSRV-aware resolver (resolver 3) picks dependencies for;
+# 1.97 is the newest stable that could be verified when the workspace was set up. Raise it
+# to the toolchain when convenient.
+rust-version = "1.97"
+license = "UNLICENSED"
+publish = false
+
+# Every member opts in with `[lints] workspace = true`. CI runs clippy with -D warnings,
+# so a warning here fails the build there.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# The app's release profile (moved here from apps/mobile/src-tauri: profiles only take
+# effect at the workspace root). Crate-specific profile overrides (for example the crypto
+# crates' optimised dependencies in debug builds, [profile.dev.package."*"]) go here too.
+# humid-pq2 / humid-core: ML-DSA-87, SLH-DSA-SHA2-256s and ML-KEM-1024 are slow unoptimised
+# (the SLH-DSA KATs take minutes at -O0), so dependencies build optimised in debug and test
+# builds too; our own crates stay at -O1 for debuggability.
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev.package.humid-pq2]
+opt-level = 2
+[profile.dev.package.humid-core]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -19,7 +19,7 @@ use crate::encoding::{HEADER_LEN, ObjectType, Reader, SUITE, header};
 use crate::hash::key_id;
 use crate::kdf::check_label;
 use crate::kem::hex_prefix;
-use crate::rng::{FixedRng, OsRng};
+use crate::rng::OsRng;
 use crate::secret::{Secret, Secret32};
 use crate::{Error, Result, rng};
 
@@ -41,6 +41,16 @@ pub(crate) fn context(sig_type: ObjectType, label: &str) -> Result<Vec<u8>> {
     c.extend_from_slice(&sig_type.to_be_bytes());
     c.extend_from_slice(label.as_bytes());
     Ok(c)
+}
+
+/// Statement types are humid-core's (`0x0100` and up); the suite's own signature types
+/// (`0x0004`, `0x0006`, `0x0008`) can't be named by a caller.
+fn statement(t: ObjectType) -> Result<ObjectType> {
+    if t.0 >= 0x0100 {
+        Ok(t)
+    } else {
+        Err(Error::Label)
+    }
 }
 
 fn encoded<const N: usize>(t: ObjectType, body: &[u8]) -> Vec<u8> {
@@ -70,8 +80,7 @@ impl MlDsaSigningKey {
     /// `ML-DSA.KeyGen_internal(ξ = seed)`.
     #[must_use]
     pub fn from_seed(seed: &Secret32) -> Self {
-        let xi = Zeroizing::new(ml_dsa::B32::from(*seed.expose()));
-        let sk = ml_dsa::SigningKey::<MlDsa87>::from_seed(&xi);
+        let sk = ml_dsa::SigningKey::<MlDsa87>::from_seed(<&ml_dsa::B32>::from(seed.expose()));
         let public = MlDsaVerifyingKey::from_inner(sk.expanded_key().verifying_key());
         Self { sk, public }
     }
@@ -96,42 +105,66 @@ impl MlDsaSigningKey {
     /// # Errors
     /// [`Error::Label`] for a malformed label; [`Error::Rng`] if the generator fails.
     pub fn sign(&self, label: &str, msg: &[u8]) -> Result<MlDsaSignature> {
-        self.sign_typed(ObjectType::MLDSA_SIGNATURE, label, msg)
+        let ctx = context(ObjectType::MLDSA_SIGNATURE, label)?;
+        self.sign_ctx(msg, &ctx).map(MlDsaSignature)
     }
 
     /// As [`MlDsaSigningKey::sign`], with the context naming the statement's own type
     /// (`SUITE ‖ u16 type ‖ label`, PQ2.md §6): for structured statements such as a
-    /// document (`ObjectType::DOC_SIGNED`).
+    /// document (`ObjectType::DOC_SIGNED`). Only statement types (`0x0100` and up) are
+    /// allowed, so a typed signature can never stand in for a suite signature type (the
+    /// half of a dual signature, say).
     ///
     /// # Errors
-    /// As [`MlDsaSigningKey::sign`].
+    /// [`Error::Label`] for a suite type (below `0x0100`) or a malformed label;
+    /// [`Error::Rng`].
     pub fn sign_typed(&self, t: ObjectType, label: &str, msg: &[u8]) -> Result<MlDsaSignature> {
-        let ctx = context(t, label)?;
-        self.sign_ctx(msg, &ctx, None).map(MlDsaSignature)
+        let ctx = context(statement(t)?, label)?;
+        self.sign_ctx(msg, &ctx).map(MlDsaSignature)
     }
 
-    pub(crate) fn sign_ctx(
+    pub(crate) fn sign_ctx(&self, msg: &[u8], ctx: &[u8]) -> Result<Box<[u8; MLDSA_SIG_LEN]>> {
+        mldsa_sign_expanded(self.sk.expanded_key(), msg, ctx)
+    }
+
+    /// Signing with a caller-chosen `rnd` (KATs and the randomness cross-check only).
+    #[cfg(test)]
+    pub(crate) fn sign_ctx_with_rnd(
         &self,
         msg: &[u8],
         ctx: &[u8],
-        rnd: Option<&[u8; 32]>,
+        rnd: &[u8; 32],
     ) -> Result<Box<[u8; MLDSA_SIG_LEN]>> {
-        mldsa_sign_expanded(self.sk.expanded_key(), msg, ctx, rnd)
+        mldsa_sign_with_rnd(self.sk.expanded_key(), msg, ctx, rnd)
     }
 }
 
-/// ML-DSA.Sign with an explicit `rnd` (KATs, cross-checks), or hedged from the CSPRNG.
+/// Hedged ML-DSA.Sign: `rnd` from the platform CSPRNG (FIPS 204 §3.4).
 pub(crate) fn mldsa_sign_expanded(
     esk: &ml_dsa::ExpandedSigningKey<MlDsa87>,
     msg: &[u8],
     ctx: &[u8],
-    rnd: Option<&[u8; 32]>,
 ) -> Result<Box<[u8; MLDSA_SIG_LEN]>> {
-    let sig = match rnd {
-        Some(r) => esk.sign_randomized(msg, ctx, &mut FixedRng(r)),
-        None => esk.sign_randomized(msg, ctx, &mut OsRng),
-    }
-    .map_err(|_| Error::Rng)?;
+    let sig = esk
+        .sign_randomized(msg, ctx, &mut OsRng)
+        .map_err(|_| Error::Rng)?;
+    let mut out = Box::new([0u8; MLDSA_SIG_LEN]);
+    out.copy_from_slice(&sig.encode());
+    Ok(out)
+}
+
+/// ML-DSA.Sign with a given `rnd`: test builds only, so no production path can sign
+/// deterministically (PQ2.md §9.4).
+#[cfg(test)]
+pub(crate) fn mldsa_sign_with_rnd(
+    esk: &ml_dsa::ExpandedSigningKey<MlDsa87>,
+    msg: &[u8],
+    ctx: &[u8],
+    rnd: &[u8; 32],
+) -> Result<Box<[u8; MLDSA_SIG_LEN]>> {
+    let sig = esk
+        .sign_randomized(msg, ctx, &mut crate::rng::FixedRng(rnd))
+        .map_err(|_| Error::Rng)?;
     let mut out = Box::new([0u8; MLDSA_SIG_LEN]);
     out.copy_from_slice(&sig.encode());
     Ok(out)
@@ -205,13 +238,15 @@ impl MlDsaVerifyingKey {
     /// # Errors
     /// [`Error::Verify`] if it does not verify; [`Error::Label`] for a malformed label.
     pub fn verify(&self, label: &str, msg: &[u8], sig: &MlDsaSignature) -> Result<()> {
-        self.verify_typed(ObjectType::MLDSA_SIGNATURE, label, msg, sig)
+        let ctx = context(ObjectType::MLDSA_SIGNATURE, label)?;
+        self.verify_ctx(msg, &ctx, &sig.0[..])
     }
 
     /// Verify a signature made with [`MlDsaSigningKey::sign_typed`].
     ///
     /// # Errors
-    /// As [`MlDsaVerifyingKey::verify`].
+    /// [`Error::Label`] for a suite type (below `0x0100`); otherwise as
+    /// [`MlDsaVerifyingKey::verify`].
     pub fn verify_typed(
         &self,
         t: ObjectType,
@@ -219,7 +254,7 @@ impl MlDsaVerifyingKey {
         msg: &[u8],
         sig: &MlDsaSignature,
     ) -> Result<()> {
-        let ctx = context(t, label)?;
+        let ctx = context(statement(t)?, label)?;
         self.verify_ctx(msg, &ctx, &sig.0[..])
     }
 
@@ -496,7 +531,7 @@ impl DualSigningKey {
     /// [`Error::Label`] for a malformed label; [`Error::Rng`] if the generator fails.
     pub fn sign(&self, label: &str, msg: &[u8]) -> Result<DualSignature> {
         let ctx = context(ObjectType::DUAL_SIGNATURE, label)?;
-        let a = self.mldsa.sign_ctx(msg, &ctx, None)?;
+        let a = self.mldsa.sign_ctx(msg, &ctx)?;
         let b = self.slh.sign_ctx(msg, &ctx)?;
         Ok(DualSignature {
             mldsa: MlDsaSignature(a),
@@ -621,6 +656,47 @@ mod tests {
         assert_eq!(
             vk.verify("HUMID-PQ2 test", b"hello", &junk),
             Err(Error::Verify)
+        );
+    }
+
+    /// Review L1 (PROBE7): the ML-DSA half of a dual signature must not verify through
+    /// `verify_typed(DUAL_SIGNATURE)`, and no suite type can be named.
+    #[test]
+    fn typed_contexts_refuse_suite_types() {
+        let d = DualSigningKey::generate().unwrap();
+        let s = d.sign("HUMID-PQ2 checkpoint", b"root").unwrap().to_bytes();
+        let half = MlDsaSignature::from_raw(&s[HEADER_LEN..HEADER_LEN + MLDSA_SIG_LEN]).unwrap();
+        let vk = d.verifying_key();
+        for t in [
+            ObjectType::DUAL_SIGNATURE,
+            ObjectType::MLDSA_SIGNATURE,
+            ObjectType::SLH_SIGNATURE,
+            ObjectType(0x00ff),
+        ] {
+            assert!(
+                vk.mldsa
+                    .verify_typed(t, "HUMID-PQ2 checkpoint", b"root", &half)
+                    .is_err(),
+                "{t:?}"
+            );
+        }
+        let k = MlDsaSigningKey::generate().unwrap();
+        assert_eq!(
+            k.sign_typed(ObjectType::DUAL_SIGNATURE, "HUMID-PQ2 x", b"m")
+                .unwrap_err(),
+            Error::Label
+        );
+        let ok = k
+            .sign_typed(ObjectType::DOC_SIGNED, "HUMID-PQ2 doc", b"m")
+            .unwrap();
+        k.verifying_key()
+            .verify_typed(ObjectType::DOC_SIGNED, "HUMID-PQ2 doc", b"m", &ok)
+            .unwrap();
+        // a typed signature doesn't pass as a plain one, or vice versa
+        assert!(
+            k.verifying_key()
+                .verify("HUMID-PQ2 doc", b"m", &ok)
+                .is_err()
         );
     }
 

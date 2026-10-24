@@ -1,27 +1,35 @@
 //! The core: the only API the UI may call (CORE.md §1). Opaque handles in, results out;
 //! never key bytes, and no plaintext except a document's bytes streamed to the viewer sink
-//! the caller passes in.
+//! the caller passes in, and the index entries and settings the screen shows.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use humid_pq2::{
-    KemPublicKey, KemSecretKey, MlDsaVerifyingKey, ObjectType, Secret32, ShareDirection,
-    labelled_hash, open_sealed, open_share, seal_share, seal_to,
+    KemPublicKey, KemSecretKey, ObjectType, Secret32, ShareDirection, labelled_hash, open_sealed,
+    open_share, seal_share, seal_to,
 };
+use zeroize::Zeroizing;
 
+use crate::codes;
 use crate::envelope::{
     AnySlot, CHUNK_SIZE, DeviceSlot, DocMeta, PendingSlot, PreparedDoc, ShareRequest,
     account_secret, open_stream, read_head, seal_stream,
 };
 use crate::error::{CoreError, Result};
-use crate::gate::{GateError, HardwareGate, HwOp, HwOutput, LiveProof, Prompt, TargetKind};
-use crate::keys::{PublicIdentity, Seeds, SessionKeys};
+use crate::gate::{
+    GateError, HardwareGate, HwOp, HwOutput, HwTarget, LiveProof, Prompt, TargetKind,
+};
+use crate::join::{JoinGrantBody, JoinKey, JoinRequest};
+use crate::keys::{PublicIdentity, Seeds, SessionKeys, device_dsa};
 use crate::ratchet::{SLOTS, Wrap, plan};
-use crate::records::{Revisions, open_index, open_setting, seal_index, seal_setting};
-use crate::store::DeviceStore;
+use crate::records::{
+    Revisions, Version, check_name, open_index, open_setting, seal_index, seal_setting,
+};
+use crate::store::{DeviceStore, REVS_COUNTER};
 
 const REVS_FILE: &str = "revs";
+const JOIN_KEY_FILE: &str = "join-key";
 
 /// An opaque handle to an open in progress. Single use; gone at lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,9 +44,13 @@ pub struct Unlocked {
     pub live: LiveProof,
     /// The wrap counter now in use.
     pub wrap_counter: u64,
-    /// Whether the ratchet step completed (`W_{n+1}` written, floor raised, `W_n` retired).
-    /// False after a storage failure; the next unlock finishes or retries the step.
+    /// Whether the ratchet step completed (`W_{n+1}` written and read back, floor raised,
+    /// `W_n` retired). False after a storage failure; the next unlock finishes or retries.
     pub advanced: bool,
+    /// Whether synced records can be checked for rollback. False if this device's record
+    /// revisions are missing, rolled back or damaged: index entries then refuse to open
+    /// until [`Core::reset_records`] (CORE.md §7).
+    pub records_ok: bool,
 }
 
 /// What sealing a document returns: all public, to upload.
@@ -70,7 +82,7 @@ pub struct OpenStarted {
     /// The live proof.
     pub live: LiveProof,
     /// When the slot was a pending one: this device's new hardware slot, to upload in its
-    /// place.
+    /// place (never in a decoy session).
     pub adopted_slot: Option<Vec<u8>>,
 }
 
@@ -83,30 +95,24 @@ pub struct Opened {
     pub size: u64,
 }
 
-/// What a joining device publishes (all public), for an existing device to approve.
+/// What a joining device shows and sends (all public).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JoinRequest {
-    /// Its ML-DSA-87 device key.
-    pub device_dsa: MlDsaVerifyingKey,
-    /// Its hybrid KEM key: the account seed and pending slots are sealed to it.
-    pub device_kem: KemPublicKey,
-}
-
-impl JoinRequest {
-    /// The device id.
-    #[must_use]
-    pub fn device_id(&self) -> [u8; 32] {
-        self.device_dsa.key_id()
-    }
+pub struct JoinStarted {
+    /// The self-signed request, to send to the approving device.
+    pub request: Vec<u8>,
+    /// The code to show on this screen; the person types it on the approving device.
+    pub code: String,
 }
 
 /// What approving a new device returns (all public).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
-    /// The account seed sealed to the new device.
+    /// The account seed and granted document list, sealed to the request's join key.
     pub join_seed: Vec<u8>,
     /// One pending slot per document, for the new device.
     pub pending: Vec<Vec<u8>>,
+    /// What the live proof names: `H("HUMID-PQ2 join-binding", [request body])`.
+    pub binding: [u8; 64],
     /// The live proof (from the first prompt).
     pub live: LiveProof,
     /// How many prompts it took (1 unless more documents than one authorization can carry).
@@ -118,7 +124,8 @@ struct Session {
     public: PublicIdentity,
     account_id: [u8; 32],
     device_id: [u8; 32],
-    revs: Revisions,
+    /// `None`: revisions unavailable (missing, rolled back or damaged).
+    revs: Option<Revisions>,
     decoy: bool,
 }
 
@@ -130,19 +137,38 @@ struct OpenTicket {
     binding: [u8; 64],
 }
 
-/// The core. One per process; owns the gate and the store.
+struct Joining {
+    seeds: Seeds,
+    join_kem: KemSecretKey,
+    request: JoinRequest,
+}
+
+/// The core. One per process; owns the gate and the store, and hands neither out
+/// (review M1): the UI layer only ever sees the result types above.
 pub struct Core<G: HardwareGate, S: DeviceStore> {
     gate: G,
     store: S,
     session: Option<Session>,
     tickets: BTreeMap<OpenHandle, OpenTicket>,
-    joining: Option<Seeds>,
+    joining: Option<Joining>,
 }
 
 /// The message a liveness key signs: `H(label, [parts…])` (64 bytes), so a proof made for
 /// one action never stands for another.
 fn live_msg(label: &str, parts: &[&[u8]]) -> Result<Vec<u8>> {
     Ok(labelled_hash(label, parts)?.to_vec())
+}
+
+/// The session mode carried in every live proof made inside a session: `0x00` normal,
+/// `0x01` duress (decoy). Only the servers that verify the proof can tell (review M4).
+fn mode(decoy: bool) -> [u8; 1] {
+    [u8::from(decoy)]
+}
+
+/// The ops one unlock needs at least: `HW_n`, the live signature, and `HW_{n+1}` when the
+/// platform can't know it without the hardware. Fallback derives ride along if they fit.
+fn unlock_ops(symmetric_next: bool) -> usize {
+    2 + usize::from(symmetric_next)
 }
 
 impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
@@ -161,22 +187,26 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         })
     }
 
-    /// The gate (tests inspect prompt counts).
+    /// The gate (tests and the simulator only: whoever holds the gate can compute `HW_n`).
+    #[cfg(any(test, feature = "software-gate"))]
     pub fn gate(&self) -> &G {
         &self.gate
     }
 
-    /// The gate, mutably (tests set failures).
+    /// The gate, mutably (tests and the simulator only).
+    #[cfg(any(test, feature = "software-gate"))]
     pub fn gate_mut(&mut self) -> &mut G {
         &mut self.gate
     }
 
-    /// The store (tests snapshot it).
+    /// The store (tests and the simulator only).
+    #[cfg(any(test, feature = "software-gate"))]
     pub fn store(&self) -> &S {
         &self.store
     }
 
-    /// The store, mutably (tests restore snapshots).
+    /// The store, mutably (tests and the simulator only).
+    #[cfg(any(test, feature = "software-gate"))]
     pub fn store_mut(&mut self) -> &mut S {
         &mut self.store
     }
@@ -220,26 +250,37 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         SLOTS
             .iter()
             .map(|n| match self.store.read(n)? {
-                Some(b) => Wrap::decode(&b).map(Some),
+                // An undecodable slot is ignored, not fatal: the other may still open.
+                Some(b) => Ok(Wrap::decode(&b).ok()),
                 None => Ok(None),
             })
             .collect()
     }
 
-    /// Run one prompt; map outputs back to the derives and the live proof.
+    fn any_wrap(&self) -> Result<bool> {
+        Ok(SLOTS
+            .iter()
+            .map(|n| self.store.read(n))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .iter()
+            .any(Option::is_some))
+    }
+
+    /// Run one prompt. Returns one entry per derive (`None` = the hardware doesn't know
+    /// that input) and the live proof.
     fn authorize(
         &mut self,
         prompt: &Prompt,
         derive: &[&[u8]],
         live: Option<Vec<u8>>,
-    ) -> Result<(Vec<Secret32>, LiveProof)> {
+    ) -> Result<(Vec<Option<Secret32>>, LiveProof)> {
         let mut ops: Vec<HwOp> = derive.iter().map(|i| HwOp::Derive(i.to_vec())).collect();
         let want_live = live.is_some();
         if let Some(m) = live {
             ops.push(HwOp::SignLive(m));
         }
         if ops.len() > self.gate.info().max_ops {
-            return Err(GateError::TooManyOps.into());
+            return Err(CoreError::Unsupported);
         }
         let outs = self.gate.authorize(prompt, &ops)?;
         if outs.len() != ops.len() {
@@ -249,7 +290,8 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         let mut proof = LiveProof::default();
         for (op, out) in ops.iter().zip(outs) {
             match (op, out) {
-                (HwOp::Derive(_), HwOutput::Derived(s)) => hws.push(s),
+                (HwOp::Derive(_), HwOutput::Derived(s)) => hws.push(Some(s)),
+                (HwOp::Derive(_), HwOutput::Unavailable) => hws.push(None),
                 (HwOp::SignLive(_), HwOutput::Live(p)) => proof = p,
                 _ => return Err(GateError::Platform.into()),
             }
@@ -261,6 +303,70 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         Ok((hws, proof))
     }
 
+    /// One prompt for a fresh target: its value, made by the hardware if the platform
+    /// can't know it yet, and the live proof.
+    fn authorize_target(
+        &mut self,
+        prompt: &Prompt,
+        t: &HwTarget,
+        live: Vec<u8>,
+    ) -> Result<(Secret32, LiveProof)> {
+        if let Some(v) = &t.value {
+            let (_, l) = self.authorize(prompt, &[], Some(live))?;
+            return Ok((v.duplicate(), l));
+        }
+        let (mut hws, l) = self.authorize(prompt, &[&t.input], Some(live))?;
+        let hw = hws.pop().flatten().ok_or(GateError::UnknownInput)?;
+        Ok((hw, l))
+    }
+
+    /* --------------------------- record revisions --------------------------- */
+
+    /// Load this device's revisions, checked against the store's counter (review M2).
+    fn load_revs(&mut self, key: &Secret32, device_id: &[u8; 32]) -> Result<Option<Revisions>> {
+        let counter = self.store.counter(REVS_COUNTER)?;
+        match self.store.read(REVS_FILE)? {
+            None if counter == 0 => Ok(Some(Revisions::default())),
+            None => Ok(None),
+            Some(b) => match Revisions::open(key, device_id, &b) {
+                Ok((r, c)) if c == counter => Ok(Some(r)),
+                Ok((r, c)) if c > counter => {
+                    // written, then the counter raise was lost: catch the counter up
+                    self.store.raise_counter(REVS_COUNTER, c)?;
+                    Ok(Some(r))
+                }
+                _ => Ok(None),
+            },
+        }
+    }
+
+    fn save_revs(&mut self) -> Result<()> {
+        let s = self.session.as_ref().ok_or(CoreError::Locked)?;
+        let revs = s.revs.as_ref().ok_or(CoreError::RecordsUnavailable)?;
+        let c = self
+            .store
+            .counter(REVS_COUNTER)?
+            .checked_add(1)
+            .ok_or(CoreError::Format)?;
+        let blob = revs.seal(&s.keys.device_records_key, &s.device_id, c)?;
+        self.store.write(REVS_FILE, &blob)?;
+        self.store.raise_counter(REVS_COUNTER, c)?;
+        Ok(())
+    }
+
+    /// Start this device's record revisions afresh, after the UI has told the person their
+    /// synced records' rollback check is restarting (they were missing or damaged).
+    ///
+    /// # Errors
+    /// [`CoreError::Locked`], [`CoreError::Decoy`], store errors.
+    pub fn reset_records(&mut self) -> Result<()> {
+        self.writable()?;
+        if let Some(s) = self.session.as_mut() {
+            s.revs = Some(Revisions::default());
+        }
+        self.save_revs()
+    }
+
     /* ------------------------------ enrolment ------------------------------ */
 
     fn write_first_wrap(
@@ -269,58 +375,74 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         seeds: &Seeds,
         challenge: &[u8],
     ) -> Result<Unlocked> {
-        if self.read_slots()?.iter().any(Option::is_some) {
+        if self.any_wrap()? {
             return Err(CoreError::AlreadyEnrolled);
         }
         let keys = SessionKeys::derive(seeds)?;
         let public = keys.public();
         let (account_id, device_id) = (public.account_id(), public.device_id());
         let t = self.gate.target(TargetKind::Wrap)?;
+        // Refuse a gate that couldn't unlock in one prompt later (review M3).
+        if self.gate.info().max_ops < unlock_ops(t.value.is_none()) {
+            self.gate.retire(&t.input);
+            return Err(CoreError::Unsupported);
+        }
         let msg = live_msg(
             "HUMID-PQ2 live-enroll",
             &[challenge, &account_id, &device_id],
         )?;
-        let (mut hws, live) = match &t.value {
-            Some(_) => self.authorize(prompt, &[], Some(msg))?,
-            None => self.authorize(prompt, &[&t.input], Some(msg))?,
-        };
-        let hw = match t.value {
-            Some(v) => v,
-            None => hws.pop().ok_or(CoreError::Gate(GateError::Platform))?,
+        let (hw, live) = match self.authorize_target(prompt, &t, msg) {
+            Ok(x) => x,
+            Err(e) => {
+                self.gate.retire(&t.input);
+                return Err(e);
+            }
         };
         let floor = self.store.floor()?;
-        let w = Wrap::seal(&hw, floor, account_id, device_id, t.input, seeds)?;
-        self.store.write(w.slot(), &w.encode())?;
+        let w = Wrap::seal(&hw, floor, account_id, device_id, t.input.clone(), seeds)?;
+        let enc = w.encode();
+        let wrote = self.store.write(w.slot(), &enc);
+        if wrote.is_err() && self.store.read(w.slot()).ok().flatten().as_deref() != Some(&enc[..]) {
+            self.gate.retire(&t.input);
+            return Err(CoreError::Store(crate::store::StoreError::Io));
+        }
         self.store.raise_floor(floor)?;
+        // A fresh device starts its revisions now.
+        let revs = self.load_revs(&keys.device_records_key, &device_id)?;
         self.session = Some(Session {
             keys,
             public: public.clone(),
             account_id,
             device_id,
-            revs: Revisions::default(),
+            revs,
             decoy: false,
         });
+        let records_ok = self.session.as_ref().is_some_and(|s| s.revs.is_some());
         Ok(Unlocked {
             identity: public,
             live,
             wrap_counter: floor,
             advanced: true,
+            records_ok,
         })
     }
 
     /// Set up this device as the first device of a new account. One prompt.
     ///
     /// # Errors
-    /// [`CoreError::AlreadyEnrolled`]; gate and store errors.
+    /// [`CoreError::AlreadyEnrolled`]; [`CoreError::Unsupported`] if this device's hardware
+    /// can't unlock in one prompt; gate and store errors.
     pub fn enroll(&mut self, prompt: &Prompt, challenge: &[u8]) -> Result<Unlocked> {
-        let seeds = Seeds::new(None)?;
+        let seeds = Seeds::new()?;
         self.write_first_wrap(prompt, &seeds, challenge)
     }
 
     /* ------------------------------- unlock -------------------------------- */
 
-    /// Unlock: one prompt computes `HW_n` (and `HW_{n+1}` when the platform needs it), opens
-    /// `W_n`, writes `W_{n+1}` and retires `W_n` (CORE.md §4).
+    /// Unlock: one prompt computes `HW` for the wraps on disk (highest first) and, when the
+    /// platform needs it, `HW_{n+1}`; the highest wrap that opens is `W_n`. Then `W_{n+1}`
+    /// is written, read back and opened in software, and only then is the floor raised and
+    /// `W_n` retired (CORE.md §4).
     ///
     /// # Errors
     /// [`CoreError::NotEnrolled`], [`CoreError::Rollback`], [`CoreError::WrapUnusable`];
@@ -329,88 +451,85 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         self.lock();
         let floor = self.store.floor()?;
         let slots = self.read_slots()?;
-        let cur = plan(&slots, floor)?;
-        // Older wraps left by an interrupted step (or below the floor): retired once this
-        // unlock completes its own step.
-        let stale: Vec<Vec<u8>> = slots
-            .iter()
-            .flatten()
-            .filter(|w| w.n < cur.n)
-            .map(|w| w.hw_input.clone())
-            .collect();
+        let cands = match plan(&slots, floor) {
+            Ok(c) => c,
+            Err(CoreError::NotEnrolled) if self.any_wrap()? => return Err(CoreError::WrapUnusable),
+            Err(e) => return Err(e),
+        };
         let next = self.gate.target(TargetKind::Wrap)?;
+        match self.unlock_with(prompt, challenge, &cands, &slots, &next) {
+            Ok(u) => Ok(u),
+            Err(e) => {
+                // W_{n+1} was never written: its target is safe to retire (review L7).
+                self.gate.retire(&next.input);
+                Err(e)
+            }
+        }
+    }
+
+    fn unlock_with(
+        &mut self,
+        prompt: &Prompt,
+        challenge: &[u8],
+        cands: &[Wrap],
+        slots: &[Option<Wrap>],
+        next: &HwTarget,
+    ) -> Result<Unlocked> {
+        let max = self.gate.info().max_ops;
+        let need_next = next.value.is_none();
+        if max < unlock_ops(need_next) {
+            return Err(CoreError::Unsupported);
+        }
+        // Candidates, highest first, as many as fit beside HW_{n+1} and the live signature.
+        let room = max - usize::from(need_next) - 1;
+        let tried: Vec<&Wrap> = cands.iter().take(room).collect();
+        let top = tried[0];
         let msg = live_msg(
             "HUMID-PQ2 live-unlock",
             &[
                 challenge,
-                &cur.account_id,
-                &cur.device_id,
-                &cur.n.to_be_bytes(),
+                &top.account_id,
+                &top.device_id,
+                &top.n.to_be_bytes(),
             ],
         )?;
-        let derive: Vec<&[u8]> = match &next.value {
-            Some(_) => vec![&cur.hw_input],
-            None => vec![&cur.hw_input, &next.input],
+        let mut derive: Vec<&[u8]> = tried.iter().map(|w| w.hw_input.as_slice()).collect();
+        if need_next {
+            derive.push(&next.input);
+        }
+        let (mut hws, live) = self.authorize(prompt, &derive, Some(msg))?;
+        let hw_next = match &next.value {
+            Some(v) => v.duplicate(),
+            None => hws.pop().flatten().ok_or(GateError::UnknownInput)?,
         };
-        let res = self.authorize(prompt, &derive, Some(msg));
-        let (mut hws, live) = match res {
-            Ok(x) => x,
-            Err(e) => {
-                self.gate.retire(&next.input);
-                return Err(e);
+        // The highest candidate that opens and names the keys it opens to.
+        let mut opened = None;
+        let mut any_hw = false;
+        for (w, hw) in tried.iter().zip(&hws) {
+            let Some(hw) = hw else { continue };
+            any_hw = true;
+            let Ok(seeds) = w.open(hw) else { continue };
+            let Ok(keys) = SessionKeys::derive(&seeds) else {
+                continue;
+            };
+            let p = keys.public();
+            if p.account_id() == w.account_id && p.device_id() == w.device_id {
+                opened = Some(((*w).clone(), seeds, keys));
+                break;
             }
+        }
+        let Some((cur, seeds, keys)) = opened else {
+            return Err(if any_hw {
+                CoreError::WrapUnusable
+            } else {
+                GateError::UnknownInput.into()
+            });
         };
-        let hw_next = match next.value {
-            Some(v) => v,
-            None => hws.pop().ok_or(CoreError::Gate(GateError::Platform))?,
-        };
-        let hw_cur = hws.pop().ok_or(CoreError::Gate(GateError::Platform))?;
-        let seeds = match cur.open(&hw_cur) {
-            Ok(s) => s,
-            Err(e) => {
-                self.gate.retire(&next.input);
-                return Err(e);
-            }
-        };
-        let keys = SessionKeys::derive(&seeds)?;
         let public = keys.public();
-        if public.account_id() != cur.account_id || public.device_id() != cur.device_id {
-            self.gate.retire(&next.input);
-            return Err(CoreError::WrapUnusable);
-        }
+        let (counter, advanced) = self.ratchet_step(&cur, &seeds, slots, next, &hw_next)?;
 
-        // Ratchet: write W_{n+1} into the other slot, raise the floor, retire W_n.
-        let n1 = cur.n.checked_add(1).ok_or(CoreError::Format)?;
-        let mut advanced = false;
-        let mut counter = cur.n;
-        let w1 = Wrap::seal(
-            &hw_next,
-            n1,
-            cur.account_id,
-            cur.device_id,
-            next.input.clone(),
-            &seeds,
-        )?;
-        if self.store.write(w1.slot(), &w1.encode()).is_ok() {
-            // From here W_{n+1} is durable; a crash before the floor rises leaves both, and the
-            // next unlock picks n+1.
-            if self.store.raise_floor(n1).is_ok() {
-                self.gate.retire(&cur.hw_input);
-                for input in &stale {
-                    self.gate.retire(input);
-                }
-                let _ = self.store.delete(cur.slot());
-                advanced = true;
-            }
-            counter = n1;
-        } else {
-            self.gate.retire(&next.input);
-        }
-
-        let revs = match self.store.read(REVS_FILE)? {
-            Some(b) => Revisions::open(&keys.device_records_key, &cur.device_id, &b)?,
-            None => Revisions::default(),
-        };
+        let revs = self.load_revs(&keys.device_records_key, &cur.device_id)?;
+        let records_ok = revs.is_some();
         self.session = Some(Session {
             keys,
             public: public.clone(),
@@ -424,11 +543,65 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
             live,
             wrap_counter: counter,
             advanced,
+            records_ok,
         })
     }
 
+    /// Write `W_{n+1}`, read it back and open it in software, and only then retire what it
+    /// supersedes and raise the floor (review H2). Returns the wrap counter now in use and
+    /// whether the step completed.
+    fn ratchet_step(
+        &mut self,
+        cur: &Wrap,
+        seeds: &Seeds,
+        slots: &[Option<Wrap>],
+        next: &HwTarget,
+        hw_next: &Secret32,
+    ) -> Result<(u64, bool)> {
+        let n1 = cur.n.checked_add(1).ok_or(CoreError::Format)?;
+        let w1 = Wrap::seal(
+            hw_next,
+            n1,
+            cur.account_id,
+            cur.device_id,
+            next.input.clone(),
+            seeds,
+        )?;
+        let enc = w1.encode();
+        let _ = self.store.write(w1.slot(), &enc);
+        let back = self.store.read(w1.slot());
+        let durable = matches!(&back, Ok(Some(b)) if *b == enc)
+            && Wrap::decode(&enc)
+                .and_then(|w| w.open(hw_next))
+                .is_ok_and(|s| s.0.ct_eq(&seeds.0));
+        if !durable {
+            // W_{n+1} isn't usable on disk. Retire its target only if it is certainly not
+            // there (the read succeeded and shows other bytes); an unknown outcome keeps it.
+            if matches!(&back, Ok(b) if b.as_deref() != Some(&enc[..])) {
+                self.gate.retire(&next.input);
+            }
+            return Ok((cur.n, false));
+        }
+        // Lower wraps are superseded now that cur opened. Never retire cur's own input
+        // through another wrap (a planted copy can carry it).
+        for w in slots.iter().flatten() {
+            if w.n < cur.n && w.hw_input != cur.hw_input && w.hw_input != next.input {
+                self.gate.retire(&w.hw_input);
+            }
+        }
+        if self.store.raise_floor(n1).is_ok() {
+            self.gate.retire(&cur.hw_input);
+            let _ = self.store.delete(cur.slot());
+            Ok((n1, true))
+        } else {
+            // Both stay; the next unlock opens W_{n+1} first and finishes the step.
+            Ok((n1, false))
+        }
+    }
+
     /// Switch this session to decoy (duress) mode until lock: nothing is written, sealed,
-    /// granted or sent. One way.
+    /// granted or adopted, and every live proof made from now on carries the duress mode, so
+    /// the key-share service can refuse or answer with a decoy (CORE.md §8). One way.
     ///
     /// # Errors
     /// [`CoreError::Locked`].
@@ -474,15 +647,15 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
                 &prep.manifest.doc_id,
                 &prep.manifest_hash,
                 &envelope_hash,
+                &mode(false),
             ],
         )?;
-        let (mut hws, live) = match &t.value {
-            Some(_) => self.authorize(prompt, &[], Some(msg))?,
-            None => self.authorize(prompt, &[&t.input], Some(msg))?,
-        };
-        let hw = match t.value {
-            Some(v) => v,
-            None => hws.pop().ok_or(CoreError::Gate(GateError::Platform))?,
+        let (hw, live) = match self.authorize_target(prompt, &t, msg) {
+            Ok(x) => x,
+            Err(e) => {
+                self.gate.retire(&t.input);
+                return Err(e);
+            }
         };
         let slot = DeviceSlot::seal(
             &hw,
@@ -515,6 +688,9 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
     /// signs the share request. Send `share_request` with the live proof; pass the sealed
     /// share the key service returns to [`Core::finish_open`].
     ///
+    /// A pending slot (from a join) is opened with this device's join key and, outside a
+    /// decoy session, adopted into a hardware slot in the same prompt.
+    ///
     /// # Errors
     /// [`CoreError::Locked`], [`CoreError::WrongDocument`] for another device's slot; gate
     /// errors.
@@ -525,6 +701,7 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
         challenge: &[u8],
     ) -> Result<OpenStarted> {
         let s = self.session()?;
+        let decoy = s.decoy;
         let slot = AnySlot::decode(slot)?;
         let (doc_id, slot_device, manifest_hash) = slot.ids();
         if slot_device != s.device_id {
@@ -539,28 +716,34 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
             one_time: one_time.public_key().clone(),
         };
         let binding = req.binding()?;
-        let msg = live_msg("HUMID-PQ2 live-open", &[challenge, &binding])?;
+        let msg = live_msg("HUMID-PQ2 live-open", &[challenge, &binding, &mode(decoy)])?;
         let (r_doc, live, adopted_slot) = match slot {
             AnySlot::Device(d) => {
                 let (mut hws, live) = self.authorize(prompt, &[&d.hw_input], Some(msg))?;
-                let hw = hws.pop().ok_or(CoreError::Gate(GateError::Platform))?;
+                let hw = hws.pop().flatten().ok_or(GateError::UnknownInput)?;
                 (d.open(&hw)?, live, None)
             }
             AnySlot::Pending(p) => {
-                // Adopt: open with the device KEM key, re-wrap under this device's hardware.
-                let r_doc = p.open(&self.session()?.keys.device_kem)?;
-                let t = self.gate.target(TargetKind::Document)?;
-                let (mut hws, live) = match &t.value {
-                    Some(_) => self.authorize(prompt, &[], Some(msg))?,
-                    None => self.authorize(prompt, &[&t.input], Some(msg))?,
-                };
-                let hw = match t.value {
-                    Some(v) => v,
-                    None => hws.pop().ok_or(CoreError::Gate(GateError::Platform))?,
-                };
-                let dev =
-                    DeviceSlot::seal(&hw, doc_id, slot_device, manifest_hash, t.input, &r_doc)?;
-                (r_doc, live, Some(dev.encode()))
+                let jk = self.join_key()?.ok_or(CoreError::WrongDocument)?;
+                let r_doc = p.open(&jk.kem())?;
+                if decoy {
+                    // Duress: no new hardware key, nothing to upload (review M4).
+                    let (_, live) = self.authorize(prompt, &[], Some(msg))?;
+                    (r_doc, live, None)
+                } else {
+                    let t = self.gate.target(TargetKind::Document)?;
+                    let (hw, live) = match self.authorize_target(prompt, &t, msg) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            self.gate.retire(&t.input);
+                            return Err(e);
+                        }
+                    };
+                    let dev =
+                        DeviceSlot::seal(&hw, doc_id, slot_device, manifest_hash, t.input, &r_doc)?;
+                    self.adopted(jk, &doc_id)?;
+                    (r_doc, live, Some(dev.encode()))
+                }
             }
         };
         let mut h = [0u8; 8];
@@ -620,42 +803,62 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
 
     /* ---------------------------- adding a device --------------------------- */
 
-    /// On the new device, before it has any wrap: make its device seed (held in memory until
-    /// [`Core::finish_join`] or lock) and return the public keys to show and send.
+    /// On the new device, before it has any wrap: make its device seed and a one-time join
+    /// key (held in memory until [`Core::finish_join`] or lock), and return the self-signed
+    /// request and the code to show. `account_id` is the account to join, as the server
+    /// named it; the grant must match it.
     ///
     /// # Errors
     /// [`CoreError::AlreadyEnrolled`].
-    pub fn begin_join(&mut self) -> Result<JoinRequest> {
-        if self.read_slots()?.iter().any(Option::is_some) {
+    pub fn begin_join(&mut self, account_id: [u8; 32]) -> Result<JoinStarted> {
+        if self.any_wrap()? {
             return Err(CoreError::AlreadyEnrolled);
         }
-        let seeds = Seeds::new(None)?;
-        let keys = SessionKeys::derive(&seeds)?;
-        let req = JoinRequest {
-            device_dsa: keys.device_dsa.verifying_key().clone(),
-            device_kem: keys.device_kem.public_key().clone(),
+        let seeds = Seeds::new()?;
+        let join_kem = KemSecretKey::generate()?;
+        let request = JoinRequest::sign(account_id, &device_dsa(&seeds)?, join_kem.public_key())?;
+        let out = JoinStarted {
+            request: request.encode(),
+            code: request.code()?,
         };
-        self.joining = Some(seeds);
-        Ok(req)
+        self.joining = Some(Joining {
+            seeds,
+            join_kem,
+            request,
+        });
+        Ok(out)
     }
 
-    /// On an existing, unlocked device: approve `joiner`. Seals the account seed to it and
-    /// re-wraps each of this device's `slots` as a pending slot for it. The `HW_doc` of each
-    /// document needs a hardware operation, so this takes `ceil((N + 1) / max_ops)` prompts
-    /// for N documents (CORE.md §5.3, open question 2).
+    /// On an existing, unlocked device: approve the device whose `request` this is, after
+    /// the person typed the code the new device shows (`typed_code`). Refuses unless the
+    /// request is self-signed, names this account, and the code matches (review H1). Seals
+    /// the account seed to the request's join key and re-wraps each of this device's
+    /// `slots` as a pending slot for it.
+    ///
+    /// The first prompt carries the live signature and as many `HW_doc` derives as fit; each
+    /// further prompt carries `max_ops` derives (CORE.md §5.3).
     ///
     /// # Errors
-    /// [`CoreError::Locked`], [`CoreError::Decoy`], [`CoreError::WrongDocument`] for a slot
-    /// that isn't this device's; gate errors (nothing is returned then).
+    /// [`CoreError::Locked`], [`CoreError::Decoy`], [`CoreError::WrongSigner`] for a forged
+    /// request, [`CoreError::CodeMismatch`], [`CoreError::WrongDocument`] for another
+    /// account or a slot that isn't this device's; gate errors (nothing is returned then).
     pub fn grant_device(
         &mut self,
         prompt: &Prompt,
-        joiner: &JoinRequest,
+        request: &[u8],
+        typed_code: &str,
         slots: &[Vec<u8>],
         challenge: &[u8],
     ) -> Result<Grant> {
         let s = self.writable()?;
         let (account_id, device_id) = (s.account_id, s.device_id);
+        let req = JoinRequest::decode(request)?;
+        if req.account_id != account_id {
+            return Err(CoreError::WrongDocument);
+        }
+        if !codes::matches(typed_code, &req.code()?) {
+            return Err(CoreError::CodeMismatch);
+        }
         let mut mine = Vec::with_capacity(slots.len());
         for b in slots {
             match AnySlot::decode(b)? {
@@ -663,24 +866,20 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
                 _ => return Err(CoreError::WrongDocument),
             }
         }
-        let joiner_id = joiner.device_id();
-        let msg = live_msg(
-            "HUMID-PQ2 live-grant",
-            &[
-                challenge,
-                &account_id,
-                &joiner_id,
-                &joiner.device_kem.key_id(),
-            ],
-        )?;
-        let per = self.gate.info().max_ops.saturating_sub(1).max(1);
+        let joiner_id = req.device_id();
+        let binding = req.binding()?;
+        let msg = live_msg("HUMID-PQ2 live-grant", &[challenge, &account_id, &binding])?;
+        let max = self.gate.info().max_ops;
+        if max == 0 {
+            return Err(CoreError::Unsupported);
+        }
         let mut pending = Vec::with_capacity(mine.len());
         let mut live = LiveProof::default();
         let mut prompts = 0;
         let mut first = true;
         let mut rest: &[DeviceSlot] = &mine;
         while first || !rest.is_empty() {
-            let take = rest.len().min(if first { per } else { per + 1 });
+            let take = rest.len().min(if first { max - 1 } else { max });
             let (batch, tail) = rest.split_at(take);
             let inputs: Vec<&[u8]> = batch.iter().map(|d| d.hw_input.as_slice()).collect();
             let (hws, l) = self.authorize(
@@ -693,108 +892,178 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
                 live = l;
             }
             for (d, hw) in batch.iter().zip(hws) {
+                let hw = hw.ok_or(GateError::UnknownInput)?;
                 let r_doc = d.open(&hw)?;
                 pending.push(
-                    PendingSlot::seal(
-                        &joiner.device_kem,
-                        d.doc_id,
-                        joiner_id,
-                        d.manifest_hash,
-                        &r_doc,
-                    )?
-                    .encode(),
+                    PendingSlot::seal(&req.join_kem, d.doc_id, joiner_id, d.manifest_hash, &r_doc)?
+                        .encode(),
                 );
             }
             rest = tail;
             first = false;
         }
         let s = self.session()?;
+        let body = JoinGrantBody {
+            account_seed: s.keys.account_seed.duplicate(),
+            doc_ids: mine.iter().map(|d| d.doc_id).collect(),
+        };
         let join_seed = seal_to(
-            &joiner.device_kem,
+            &req.join_kem,
             ObjectType::JOIN_SEED,
-            &[&account_id, &joiner_id],
-            s.keys.account_seed.expose(),
+            &[&account_id, &joiner_id, &binding],
+            &body.encode()?,
         )?;
         Ok(Grant {
             join_seed,
             pending,
+            binding,
             live,
             prompts,
         })
     }
 
-    /// On the new device: open the account seed sealed to it, check it is `expected_account`
-    /// (from the key code the person compared), and write this device's first wrap. One
-    /// prompt.
+    /// On the new device: open the grant with this join's key, check it is for the account
+    /// the request named, and write this device's first wrap. One prompt. The join key is
+    /// kept (sealed) only while granted documents still wait to be adopted.
     ///
     /// # Errors
     /// [`CoreError::BadHandle`] with no join in progress; [`CoreError::WrongDocument`] if
-    /// the seed isn't for this device or account; gate and store errors.
+    /// the grant isn't for this join or account; gate and store errors.
     pub fn finish_join(
         &mut self,
         prompt: &Prompt,
         join_seed: &[u8],
-        expected_account: &[u8; 32],
         challenge: &[u8],
     ) -> Result<Unlocked> {
-        let mine = self.joining.take().ok_or(CoreError::BadHandle)?;
-        let k = SessionKeys::derive(&mine)?;
-        let device_id = k.device_dsa.verifying_key().key_id();
+        let j = self.joining.take().ok_or(CoreError::BadHandle)?;
+        let device_id = j.request.device_id();
+        let binding = j.request.binding()?;
         let pt = open_sealed(
-            &k.device_kem,
+            &j.join_kem,
             ObjectType::JOIN_SEED,
-            &[expected_account, &device_id],
+            &[&j.request.account_id, &device_id, &binding],
             join_seed,
         )
         .map_err(|_| CoreError::WrongDocument)?;
-        let account = Secret32::from_slice(&pt).map_err(|_| CoreError::WrongDocument)?;
-        let mut both = [0u8; crate::keys::SEEDS_LEN];
-        both[..32].copy_from_slice(account.expose());
-        both[32..].copy_from_slice(mine.device());
-        let seeds = Seeds(humid_pq2::Secret::new(&mut both));
-        if SessionKeys::derive(&seeds)?.public().account_id() != *expected_account {
+        let body = JoinGrantBody::decode(&pt).map_err(|_| CoreError::WrongDocument)?;
+        let seeds = Seeds::join(&body.account_seed, j.seeds.device());
+        if SessionKeys::derive(&seeds)?.public().account_id() != j.request.account_id {
             return Err(CoreError::WrongDocument);
         }
-        self.write_first_wrap(prompt, &seeds, challenge)
+        let u = self.write_first_wrap(prompt, &seeds, challenge)?;
+        if !body.doc_ids.is_empty() {
+            self.save_join_key(&JoinKey {
+                seed: j.join_kem.seed().duplicate(),
+                pending: body.doc_ids,
+            })?;
+        }
+        Ok(u)
+    }
+
+    fn join_key(&self) -> Result<Option<JoinKey>> {
+        let s = self.session()?;
+        match self.store.read(JOIN_KEY_FILE)? {
+            None => Ok(None),
+            Some(b) => {
+                let pt = humid_pq2::open_at_rest(
+                    &s.keys.device_records_key,
+                    ObjectType::JOIN_KEY,
+                    &[&s.device_id],
+                    &b,
+                )?;
+                Ok(Some(JoinKey::decode(&pt)?))
+            }
+        }
+    }
+
+    fn save_join_key(&mut self, k: &JoinKey) -> Result<()> {
+        let s = self.session()?;
+        let b = humid_pq2::seal_at_rest(
+            &s.keys.device_records_key,
+            ObjectType::JOIN_KEY,
+            &[&s.device_id],
+            &k.encode()?,
+        )?;
+        self.store.write(JOIN_KEY_FILE, &b)?;
+        Ok(())
+    }
+
+    /// One granted document now has a hardware slot: once none are left, the join key is
+    /// destroyed, so a captured pending slot no longer opens with anything on this device.
+    fn adopted(&mut self, mut k: JoinKey, doc_id: &[u8; 32]) -> Result<()> {
+        k.pending.retain(|d| d != doc_id);
+        if k.pending.is_empty() {
+            self.store.delete(JOIN_KEY_FILE)?;
+            Ok(())
+        } else {
+            self.save_join_key(&k)
+        }
+    }
+
+    /// How many granted documents still wait for their first open on this device.
+    ///
+    /// # Errors
+    /// [`CoreError::Locked`], store errors.
+    pub fn pending_adoptions(&self) -> Result<usize> {
+        Ok(self.join_key()?.map_or(0, |k| k.pending.len()))
     }
 
     /* ---------------------------- local records ---------------------------- */
 
-    /// Seal an index entry for `item_id` at the next revision.
+    /// Seal an index entry for `item_id`. Pass the entry the vault holds for it now
+    /// (`current`), if any: the new revision is above both it and anything this device has
+    /// seen, and carries this device's id, so two devices' writes are totally ordered
+    /// (review M7).
     ///
     /// # Errors
-    /// [`CoreError::Locked`], [`CoreError::Decoy`], store errors.
-    pub fn seal_index_entry(&mut self, item_id: &[u8], entry: &[u8]) -> Result<Vec<u8>> {
+    /// [`CoreError::Locked`], [`CoreError::Decoy`], [`CoreError::RecordsUnavailable`],
+    /// [`CoreError::WrongDocument`] / [`CoreError::Rollback`] for a bad `current`; store
+    /// errors.
+    pub fn seal_index_entry(
+        &mut self,
+        item_id: &[u8],
+        current: Option<&[u8]>,
+        entry: &[u8],
+    ) -> Result<Vec<u8>> {
         self.writable()?;
         let s = self.session.as_mut().ok_or(CoreError::Locked)?;
-        let rev = s.revs.next(item_id)?;
-        let blob = seal_index(&s.keys.index_key, &s.account_id, item_id, rev, entry)?;
-        s.revs.accept(item_id, rev)?;
-        let revs = s.revs.seal(&s.keys.device_records_key, &s.device_id)?;
-        self.store.write(REVS_FILE, &revs)?;
+        let revs = s.revs.as_mut().ok_or(CoreError::RecordsUnavailable)?;
+        if let Some(cur) = current {
+            let (v, _) = open_index(&s.keys.index_key, &s.account_id, item_id, cur)?;
+            revs.accept(item_id, v)?;
+        }
+        let seen = revs.seen(item_id).map_or(0, |(r, _)| r);
+        let v: Version = (seen.checked_add(1).ok_or(CoreError::Format)?, s.device_id);
+        let blob = seal_index(&s.keys.index_key, &s.account_id, item_id, v, entry)?;
+        revs.accept(item_id, v)?;
+        self.save_revs()?;
         Ok(blob)
     }
 
     /// Open `item_id`'s index entry; refuses one older than this device has seen.
     ///
     /// # Errors
-    /// [`CoreError::Locked`], [`CoreError::WrongDocument`], [`CoreError::Rollback`].
-    pub fn open_index_entry(&mut self, item_id: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
+    /// [`CoreError::Locked`], [`CoreError::RecordsUnavailable`],
+    /// [`CoreError::WrongDocument`], [`CoreError::Rollback`].
+    pub fn open_index_entry(&mut self, item_id: &[u8], blob: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         let s = self.session.as_mut().ok_or(CoreError::Locked)?;
-        let (rev, entry) = open_index(&s.keys.index_key, &s.account_id, item_id, blob)?;
-        s.revs.accept(item_id, rev)?;
-        if !s.decoy {
-            let revs = s.revs.seal(&s.keys.device_records_key, &s.device_id)?;
-            self.store.write(REVS_FILE, &revs)?;
+        let revs = s.revs.as_mut().ok_or(CoreError::RecordsUnavailable)?;
+        let (v, entry) = open_index(&s.keys.index_key, &s.account_id, item_id, blob)?;
+        let before = revs.seen(item_id);
+        revs.accept(item_id, v)?;
+        if !s.decoy && before != Some(v) {
+            self.save_revs()?;
         }
-        Ok(entry.to_vec())
+        Ok(entry)
     }
 
-    /// Store a device-only setting.
+    /// Store a device-only setting. Names are `[a-z0-9-]{1,64}`.
     ///
     /// # Errors
-    /// [`CoreError::Locked`], [`CoreError::Decoy`], store errors.
+    /// [`CoreError::Locked`], [`CoreError::Decoy`], [`CoreError::Format`] for a bad name,
+    /// store errors.
     pub fn set_setting(&mut self, name: &str, value: &[u8]) -> Result<()> {
+        check_name(name)?;
         let s = self.writable()?;
         let b = seal_setting(&s.keys.device_records_key, &s.device_id, name, value)?;
         self.store.write(&format!("setting-{name}"), &b)?;
@@ -804,13 +1073,17 @@ impl<G: HardwareGate, S: DeviceStore> Core<G, S> {
     /// Read a device-only setting.
     ///
     /// # Errors
-    /// [`CoreError::Locked`], crypto and store errors.
-    pub fn setting(&self, name: &str) -> Result<Option<Vec<u8>>> {
+    /// [`CoreError::Locked`], [`CoreError::Format`] for a bad name, crypto and store errors.
+    pub fn setting(&self, name: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        check_name(name)?;
         let s = self.session()?;
         match self.store.read(&format!("setting-{name}"))? {
-            Some(b) => Ok(Some(
-                open_setting(&s.keys.device_records_key, &s.device_id, name, &b)?.to_vec(),
-            )),
+            Some(b) => Ok(Some(open_setting(
+                &s.keys.device_records_key,
+                &s.device_id,
+                name,
+                &b,
+            )?)),
             None => Ok(None),
         }
     }

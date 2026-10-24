@@ -811,8 +811,11 @@ async fn status_of(core: &Core, request: &[u8]) -> Reply {
     }
     let kinds = kinds_of(&c, request, account.as_ref()).await?;
     let mut pieces = vec![];
-    if status == "waiting" && release_at.is_some_and(|t| now >= t) {
-        if let Some(a) = &account {
+    if status == "waiting"
+        && release_at.is_some_and(|t| now >= t)
+        && let Some(a) = &account
+    {
+        {
             if mode_of(&c, a).await? == HARDENED {
                 status = "released".into();
                 pieces = c

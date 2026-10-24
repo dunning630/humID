@@ -1,14 +1,14 @@
 #![no_main]
 //! TransitOpener: an arbitrary sequence of (seq, record) inputs. Never panics; forged records
 //! never open; a genuine record opens at most once.
-use humid_pq2::{Secret32, TransitOpener, TransitSealer};
+use humid_pq2::{Role, Secret32, transit_channel};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let k = Secret32::from_slice(&[7u8; 32]).expect("32 bytes");
-    let mut tx = TransitSealer::new(&k, b"fuzz");
+    let (mut tx, _) = transit_channel(k.duplicate(), b"fuzz", Role::Initiator).expect("channel");
     let real: Vec<_> = (0..4).map(|i| tx.seal(b"", &[i]).expect("seal")).collect();
-    let mut rx = TransitOpener::new(&k, b"fuzz");
+    let (_, mut rx) = transit_channel(k, b"fuzz", Role::Responder).expect("channel");
     let mut opened = [0u8; 4];
     for chunk in data.chunks(9) {
         if chunk.len() < 9 {
