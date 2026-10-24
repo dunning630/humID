@@ -391,7 +391,19 @@ table is in [HARDENING.md](HARDENING.md#20-security-pass-october-2026). In short
   still reads. iOS gives apps no such list. Needs a device to confirm.
 - **iOS backups exclude the WebView's data store.**
 
-## The Android document scanner (apps 2.1.1, narrowed in 2.1.2)
+## The document camera (5.0)
+
+The camera is native (`plugins/humid-docscan`, `humid-docscan@2`): AVFoundation on iPhone, CameraX on
+Android. It holds no keys or secrets. Frames are never written, logged or sent; the analysis reads the
+picture in memory. A photo stays in memory until the camera screen takes it, once, as raw bytes. On
+Android the preview is a `TextureView` inside HumID's window, so `FLAG_SECURE` covers it (check with a
+screenshot on a device); on iPhone the app-switcher cover still applies. The PDF417 reader on Android
+is zxing-cpp, bundled (no Google Play services, no usage reporting); iPhone uses Apple's own readers.
+Every request from the web view is checked in Rust before it reaches the camera (`src/validate.rs`).
+
+The ML Kit document scanner described below was removed in 5.0, with its Play-services dependency.
+
+## The Android document scanner (apps 2.1.1, narrowed in 2.1.2; removed in 5.0)
 
 On Android, **Add ▸ Photo** and **Another card** photograph with the phone's document
 scanner (ML Kit, run by Google Play services; `plugins/humid-docscan`). It runs on the phone

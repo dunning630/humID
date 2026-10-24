@@ -12,10 +12,6 @@
 //                  consistently lighter (or darker) than the outside, as large as
 //                  the picture allows. Then each side is refitted to its own edge
 //                  points, so the corners hold at full resolution.
-//   lookAt         one live look: the corners plus light, focus and steadiness,
-//                  and what to tell the person
-//   tracker        smooths the corners between looks and decides when they've held
-//                  still long enough to take the photo
 //   homography /   the perspective map from a straight rectangle onto the four
 //   warp           corners, and the straightened picture (bilinear)
 //   orientation    which way up the page reads: the direction text lines run
@@ -365,107 +361,6 @@ export function findDocument(im, { minArea = 0.08, prior = null, ratio = null } 
   return out;
 }
 
-/* ---------------- a live look ---------------- */
-
-/** Mean brightness and share of blown-out pixels inside the corners (sampled). */
-function lightInside(im, q) {
-  const c = { x: (q[0].x + q[1].x + q[2].x + q[3].x) / 4, y: (q[0].y + q[1].y + q[2].y + q[3].y) / 4 };
-  let sum = 0, bright = 0, n = 0;
-  for (let i = 0; i < 4; i++) {
-    const p = q[i];
-    for (let k = 1; k <= 6; k++) for (let j = 1; j <= 6; j++) {
-      // points spread over the quarter of the document nearest this corner, kept off the border
-      const fx = 0.15 + 0.7 * (k / 7), fy = 0.15 + 0.7 * (j / 7);
-      const x = Math.round(c.x + (p.x - c.x) * fx * (j % 2 ? 1 : 0.5)), y = Math.round(c.y + (p.y - c.y) * fy * (k % 2 ? 1 : 0.5));
-      if (x < 0 || y < 0 || x >= im.w || y >= im.h) continue;
-      const v = im.g[y * im.w + x];
-      sum += v; if (v >= 253) bright++; n++;
-    }
-  }
-  return { mean: n ? sum / n : 0, glare: n ? bright / n > 0.35 : false };
-}
-
-/**
- * One look through the camera. im: a small grey copy of the whole view.
- *   shape   "id1" | "td3" — a card or passport page of that shape; "full" — any document
- *   prev    the previous look's picture (same size), for steadiness
- *   prior   the previous look's corners, to keep hold of the same document
- * Returns { found, quad, ratio, area, fits, light, glare, sharp, steady, ok, hint }.
- */
-export function lookAt(im, { shape = "full", prev = null, prior = null } = {}) {
-  const doc = findDocument(im, { minArea: 0.03, prior, ratio: PAPER[shape] || null });
-  let motion = 0;
-  if (prev && prev.w === im.w && prev.h === im.h) {
-    let d = 0, k = 0;
-    for (let i = 0; i < im.g.length; i += 7) { d += Math.abs(im.g[i] - prev.g[i]); k++; }
-    motion = d / k;
-  }
-  const steady = !prev || motion < 10;
-  if (!doc) {
-    // Nothing found: is it because there's no light? (a dark view has no edges to find)
-    // Only a really dark view counts (a dark table in good light is not "too dark"): dark on average AND no bright part.
-    const hist = new Uint32Array(256);
-    let sum = 0, n = 0;
-    for (let i = 0; i < im.g.length; i += 11) { sum += im.g[i]; hist[im.g[i]]++; n++; }
-    const mean = n ? sum / n : 0;
-    let acc = 0, p95 = 0;
-    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.95) { p95 = v; break; } }
-    const dim = mean < 28 && p95 < 50;
-    return { found: false, quad: null, steady, motion, ok: false, mean, dim, hint: dim ? "Find a little more light" : shape === "full" ? "Point the camera at the document" : "Point the camera at the card" };
-  }
-  const want = PAPER[shape];
-  const fits = !want || Math.abs(doc.ratio / want - 1) < 0.14;
-  const big = doc.area >= (shape === "full" ? 0.12 : 0.08);
-  const { mean, glare } = lightInside(im, doc.quad);
-  const light = mean >= 45 && mean <= 245;
-  const sharp = doc.crisp >= 0.3;
-  const ok = fits && big && light && sharp && steady;
-  const hint = !fits ? (shape === "td3" ? "Show the passport's photo page" : "That doesn't look like a card. Show just the card")
-    : !big ? "Move a little closer"
-    : glare ? "Glare: tilt the document a little"
-    : !light ? (mean < 45 ? "Find a little more light" : "Too bright: move out of direct light")
-    : !steady ? "Hold still…"
-    : !sharp ? "Hold still while it focuses…"
-    : "Hold still…";
-  return { found: true, quad: doc.quad, ratio: doc.ratio, area: doc.area, cover: doc.cover, crisp: doc.crisp, fits, big, light, glare, sharp, steady, motion, mean, ok, hint };
-}
-
-/**
- * Smooths the corners from look to look (so the outline glides rather than jitters)
- * and decides when to take the photo, calmly: `need` good looks in a row with the
- * corners barely moving, held for at least `hold` ms, and the picture as sharp as it
- * has been during the hold (the camera's focus has settled, not still hunting). A
- * lost document is let go after a few empty looks.
- */
-export function tracker({ need = 5, still = 0.02, lose = 3, hold = 0 } = {}) {
-  let quad = null, raw = null, run = 0, missed = 0, diag = 1, since = 0, sharpest = 0, held = 0;
-  return {
-    /** Feed one look and the picture's size; returns { quad (smoothed), fire }. */
-    feed(look, w, h, now = Date.now()) {
-      diag = Math.hypot(w, h);
-      if (!look.found) {
-        run = 0; since = 0; sharpest = 0; held = 0;
-        if (++missed >= lose) { quad = null; raw = null; }
-        return { quad, fire: false };
-      }
-      missed = 0;
-      const moved = raw ? Math.max(...look.quad.map((p, i) => dist(p, raw[i]))) / diag : 1;
-      raw = look.quad;
-      quad = !quad || moved > 0.08 ? look.quad : quad.map((p, i) => ({ x: p.x * 0.45 + look.quad[i].x * 0.55, y: p.y * 0.45 + look.quad[i].y * 0.55 }));
-      run = look.ok && moved < still ? run + 1 : look.ok ? 1 : 0;
-      if (run <= 1) { since = now; sharpest = 0; }
-      const crisp = look.crisp ?? 1;
-      sharpest = Math.max(sharpest, crisp);
-      held = now - since;
-      const settled = crisp >= sharpest * 0.9;
-      return { quad, fire: run >= need && held >= hold && settled };
-    },
-    get quad() { return quad; },
-    get progress() { return Math.min(1, run / need, hold ? held / hold : 1); },
-    reset() { quad = null; raw = null; run = 0; missed = 0; since = 0; sharpest = 0; held = 0; },
-  };
-}
-
 /* ---------------- straightening ---------------- */
 
 /**
@@ -554,42 +449,6 @@ export function applyHomography(m, x, y) {
   const [a, b, c, d, e, f, g, h] = m;
   const z = g * x + h * y + 1;
   return { x: (a * x + b * y + c) / z, y: (d * x + e * y + f) / z };
-}
-
-/**
- * The same four corners, labelled for a card read lying flat and the right way round:
- * a card held on end (its short sides across) is turned a quarter, then `turn` (0 or 180)
- * more. Matches straightening the card, rotating it a quarter if it stands, then turning
- * it, without ever making the whole card.
- */
-export function relabel(quad, turn = 0) {
-  const across = (dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2;
-  const down = (dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2;
-  let q = down > across ? [quad[3], quad[0], quad[1], quad[2]] : quad;
-  for (let t = ((turn % 360) + 360) % 360; t >= 90; t -= 90) q = [q[3], q[0], q[1], q[2]];
-  return q;
-}
-
-/**
- * What the MRZ reader needs from a live card, without straightening the whole card:
- * the strip of the card the lines sit in, at the size the reader likes (a character about
- * 30 px wide). Returns { width, height (the strip), flatW, flatH (the whole card at that
- * scale), crop, quad (the relabelled corners), box (where the strip lies in the
- * picture: x, y, w, h) }.
- *   shape  "td3" | "id1"     turn  0 or 180     scale  1 normally
- */
-export function bandPlan(quad, shape = "td3", { turn = 0, scale = 1, chars } = {}) {
-  const q = relabel(quad, turn);
-  const share = shape === "td3" ? 0.34 : 0.48;
-  const n = chars || (shape === "td3" ? 44 : 30);
-  const flatW = Math.round(n * 30 * scale), flatH = Math.round(flatW / (PAPER[shape] || PAPER.id1));
-  const y0 = Math.round(flatH * (1 - share));
-  const crop = { x: 0, y: y0, w: flatW, h: flatH - y0 };
-  const m = homography(flatW, flatH, q);
-  const pts = [[0, y0], [flatW, y0], [flatW, flatH], [0, flatH]].map(([x, y]) => applyHomography(m, x, y));
-  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-  const x = Math.min(...xs), y = Math.min(...ys);
-  return { width: crop.w, height: crop.h, flatW, flatH, crop, quad: q, box: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y } };
 }
 
 /** Corners from one picture's pixels to another's (a small analysis copy → the full photo). */
