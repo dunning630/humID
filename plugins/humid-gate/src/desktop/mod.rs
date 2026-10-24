@@ -6,10 +6,10 @@
 // are ignored and `live` is never returned. Servers decide whether to accept
 // such devices (HUMID_DEVICE_POLICY=biometric) or not (attested, the default).
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use tauri::{plugin::PluginApi, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, plugin::PluginApi};
 use zeroize::Zeroizing;
 
 use crate::models::*;
@@ -40,7 +40,11 @@ pub(crate) struct Secret {
 
 impl Secret {
     pub(crate) fn new(bytes: Zeroizing<Vec<u8>>, factor: &str) -> Self {
-        Secret { bytes, detail: Some(json!({ "factor": factor })), handle: Default::default() }
+        Secret {
+            bytes,
+            detail: Some(json!({ "factor": factor })),
+            handle: Default::default(),
+        }
     }
 }
 
@@ -77,7 +81,9 @@ impl<R: Runtime> HumidGate<R> {
     }
 
     pub async fn enroll(&self, req: EnrollRequest) -> Result<Enrolled> {
-        let prompt = req.prompt.unwrap_or_else(|| "Bind your HumID identity to this device".into());
+        let prompt = req
+            .prompt
+            .unwrap_or_else(|| "Bind your HumID identity to this device".into());
         let id = new_id();
         let (handle, s) = blocking(move || {
             let mut s = os::enroll(&id, &prompt)?;

@@ -68,6 +68,10 @@ impl ObjectType {
     pub const JOIN_SEED: Self = Self(0x0106);
     /// humid-core: a document's metadata box (name, type, size), under the document's key.
     pub const DOC_META: Self = Self(0x0107);
+    /// humid-core: a joining device's self-signed request (also its signature context).
+    pub const JOIN_REQUEST: Self = Self(0x0108);
+    /// humid-core: a joined device's per-join KEM key, kept until its pending slots are adopted.
+    pub const JOIN_KEY: Self = Self(0x0109);
     /// humid-core: a vault index entry.
     pub const INDEX_ENTRY: Self = Self(0x0110);
     /// humid-core: sealed device settings.

@@ -352,17 +352,17 @@ fn adding_a_device_one_prompt_each_side() {
             .map(|i| seal(&mut old, &mut ks, &vec![i; 1000 + usize::from(i)]))
             .collect();
 
-        let req = new.begin_join().unwrap();
+        let j = new.begin_join(id.account_id()).unwrap();
         let before = old.gate().prompts;
         let slots: Vec<Vec<u8>> = docs.iter().map(|d| d.slot.clone()).collect();
         let g = old
-            .grant_device(&p(Purpose::AddDevice), &req, &slots, b"ch")
+            .grant_device(&p(Purpose::AddDevice), &j.request, &j.code, &slots, b"ch")
             .unwrap();
         assert_eq!(g.prompts, 1, "5 documents fit one authorization of 8 ops");
         assert_eq!(old.gate().prompts, before + 1);
 
         let u = new
-            .finish_join(&p(Purpose::Enroll), &g.join_seed, &id.account_id(), b"ch")
+            .finish_join(&p(Purpose::Enroll), &g.join_seed, b"ch")
             .unwrap();
         assert_eq!(u.identity.account_id(), id.account_id());
         assert_ne!(u.identity.device_id(), id.device_id());
@@ -407,9 +407,10 @@ fn many_documents_need_more_prompts_and_say_so() {
     let slots: Vec<Vec<u8>> = (0..10u8)
         .map(|i| seal(&mut old, &mut ks, &[i]).slot)
         .collect();
-    let req = new.begin_join().unwrap();
+    let id = old.identity().unwrap();
+    let j = new.begin_join(id.account_id()).unwrap();
     let g = old
-        .grant_device(&p(Purpose::AddDevice), &req, &slots, b"ch")
+        .grant_device(&p(Purpose::AddDevice), &j.request, &j.code, &slots, b"ch")
         .unwrap();
     // 3 derives + live in the first prompt, then 4 per prompt: 3 + 4 + 3
     assert_eq!(g.prompts, 3);
@@ -422,30 +423,43 @@ fn join_seed_is_bound_to_device_and_account() {
     let mut new = core(SoftMode::PublicTarget);
     let mut other = core(SoftMode::PublicTarget);
     let id = old.enroll(&p(Purpose::Enroll), b"ch").unwrap().identity;
-    let req = new.begin_join().unwrap();
-    let _ = other.begin_join().unwrap();
+    let j = new.begin_join(id.account_id()).unwrap();
+    let _ = other.begin_join(id.account_id()).unwrap();
     let g = old
-        .grant_device(&p(Purpose::AddDevice), &req, &[], b"ch")
+        .grant_device(&p(Purpose::AddDevice), &j.request, &j.code, &[], b"ch")
         .unwrap();
     // another joining device can't use it
     assert_eq!(
         other
-            .finish_join(&p(Purpose::Enroll), &g.join_seed, &id.account_id(), b"ch")
+            .finish_join(&p(Purpose::Enroll), &g.join_seed, b"ch")
             .unwrap_err(),
         CoreError::WrongDocument
     );
-    // the right device, but expecting another account (a server substituting keys)
+    // a grant made for another account (by a device of that account) doesn't open as this one
+    let mut stranger = core(SoftMode::PublicTarget);
+    let sid = stranger
+        .enroll(&p(Purpose::Enroll), b"ch")
+        .unwrap()
+        .identity;
     let mut new2 = core(SoftMode::PublicTarget);
-    let req2 = new2.begin_join().unwrap();
-    let g2 = old
-        .grant_device(&p(Purpose::AddDevice), &req2, &[], b"ch")
+    let j2 = new2.begin_join(id.account_id()).unwrap();
+    assert_eq!(
+        stranger
+            .grant_device(&p(Purpose::AddDevice), &j2.request, &j2.code, &[], b"ch")
+            .unwrap_err(),
+        CoreError::WrongDocument
+    );
+    let mut new3 = core(SoftMode::PublicTarget);
+    let j3 = new3.begin_join(sid.account_id()).unwrap();
+    let g3 = stranger
+        .grant_device(&p(Purpose::AddDevice), &j3.request, &j3.code, &[], b"ch")
         .unwrap();
     assert_eq!(
-        new2.finish_join(&p(Purpose::Enroll), &g2.join_seed, &[7u8; 32], b"ch")
+        new2.finish_join(&p(Purpose::Enroll), &g3.join_seed, b"ch")
             .unwrap_err(),
         CoreError::WrongDocument
     );
-    new.finish_join(&p(Purpose::Enroll), &g.join_seed, &id.account_id(), b"ch")
+    new.finish_join(&p(Purpose::Enroll), &g.join_seed, b"ch")
         .unwrap();
 }
 
@@ -457,7 +471,7 @@ fn lock_wipes_everything() {
     let d = seal(&mut c, &mut ks, b"x");
     let st = c.begin_open(&p(Purpose::Open), &d.slot, b"ch").unwrap();
     let mut j = core(SoftMode::PublicTarget);
-    j.begin_join().unwrap();
+    j.begin_join([1; 32]).unwrap();
     assert_eq!(j.held_secrets(), 1);
     j.lock();
     assert_eq!(j.held_secrets(), 0);
@@ -473,7 +487,7 @@ fn lock_wipes_everything() {
     );
     assert_eq!(c.identity().unwrap_err(), CoreError::Locked);
     assert_eq!(
-        c.seal_index_entry(b"i", b"e").unwrap_err(),
+        c.seal_index_entry(b"i", None, b"e").unwrap_err(),
         CoreError::Locked
     );
     assert_eq!(
@@ -488,11 +502,11 @@ fn decoy_session_writes_nothing() {
     let mut ks = KeyService::new();
     c.enroll(&p(Purpose::Enroll), b"ch").unwrap();
     let d = seal(&mut c, &mut ks, b"real");
-    let entry = c.seal_index_entry(b"item", b"Passport").unwrap();
+    let entry = c.seal_index_entry(b"item", None, b"Passport").unwrap();
     c.enter_decoy().unwrap();
     let files_before = c.store().files.clone();
     assert_eq!(
-        c.seal_index_entry(b"item", b"x").unwrap_err(),
+        c.seal_index_entry(b"item", Some(&entry), b"x").unwrap_err(),
         CoreError::Decoy
     );
     assert_eq!(c.set_setting("a", b"b").unwrap_err(), CoreError::Decoy);
@@ -513,14 +527,18 @@ fn decoy_session_writes_nothing() {
         .unwrap_err(),
         CoreError::Decoy
     );
-    let req = core(SoftMode::PublicTarget).begin_join().unwrap();
+    let acct = c.identity().unwrap().account_id();
+    let j = core(SoftMode::PublicTarget).begin_join(acct).unwrap();
     assert_eq!(
-        c.grant_device(&p(Purpose::AddDevice), &req, &[], b"ch")
+        c.grant_device(&p(Purpose::AddDevice), &j.request, &j.code, &[], b"ch")
             .unwrap_err(),
         CoreError::Decoy
     );
     // reading still works, and leaves no trace
-    assert_eq!(c.open_index_entry(b"item", &entry).unwrap(), b"Passport");
+    assert_eq!(
+        &c.open_index_entry(b"item", &entry).unwrap()[..],
+        b"Passport"
+    );
     assert_eq!(open(&mut c, &ks, &d.slot, &d.envelope).unwrap(), b"real");
     assert_eq!(c.store().files, files_before);
 }
@@ -529,10 +547,12 @@ fn decoy_session_writes_nothing() {
 fn index_rollback_refused_across_lock() {
     let mut c = core(SoftMode::PublicTarget);
     c.enroll(&p(Purpose::Enroll), b"ch").unwrap();
-    let v1 = c.seal_index_entry(b"item", b"Passport").unwrap();
-    let v2 = c.seal_index_entry(b"item", b"Passport, renamed").unwrap();
+    let v1 = c.seal_index_entry(b"item", None, b"Passport").unwrap();
+    let v2 = c
+        .seal_index_entry(b"item", Some(&v1), b"Passport, renamed")
+        .unwrap();
     assert_eq!(
-        c.open_index_entry(b"item", &v2).unwrap(),
+        &c.open_index_entry(b"item", &v2).unwrap()[..],
         b"Passport, renamed"
     );
     c.lock();
@@ -549,7 +569,7 @@ fn index_rollback_refused_across_lock() {
     c.set_setting("duress", b"two-finger").unwrap();
     c.lock();
     c.unlock(&p(Purpose::Unlock), b"ch").unwrap();
-    assert_eq!(c.setting("duress").unwrap().unwrap(), b"two-finger");
+    assert_eq!(&c.setting("duress").unwrap().unwrap()[..], b"two-finger");
     assert_eq!(c.setting("none").unwrap(), None);
 }
 

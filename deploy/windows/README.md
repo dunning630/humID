@@ -33,7 +33,7 @@ good one keeps the server key, rollback) and uninstalls. The zip is attached to 
 | `Install HumID Server.cmd`, `Uninstall HumID Server.cmd` | Double-click launchers that ask for administrator rights. |
 | `README.txt` | Instructions for the person installing it. |
 
-The installer downloads the official Node.js 22 runtime from nodejs.org and
+The installer downloads the official Node.js 24 (LTS) runtime from nodejs.org and
 checks it against nodejs.org's SHA-256 list before installing it.
 
 ## How it runs

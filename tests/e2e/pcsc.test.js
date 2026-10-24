@@ -2,7 +2,8 @@
 // native desktop transport (tauri-plugin-humid-nfc, PC/SC), through a real
 // pcscd, to a simulated passport chip inserted in a virtual reader.
 // Runs when pcscd with vsmartcard's vpcd is up and the bridge is built:
-//   cargo build --example apdu-bridge --features pcsc-linux   (plugins/humid-nfc)
+//   cargo build -p tauri-plugin-humid-nfc --example apdu-bridge --features pcsc-linux
+// (one Cargo workspace at the repository root, so the binary lands in the root target/).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -17,7 +18,7 @@ import { testCsca, testPassport } from "../support/passport.js";
 import { simulatedChip } from "../support/chip.js";
 import { insertCard } from "../support/vicc.js";
 
-const BRIDGE = fileURLToPath(new URL("../../plugins/humid-nfc/target/debug/examples/apdu-bridge", import.meta.url));
+const BRIDGE = fileURLToPath(new URL("../../target/debug/examples/apdu-bridge", import.meta.url));
 const vpcdUp = () => new Promise((r) => { const s = net.connect(35963, "127.0.0.1"); s.on("connect", () => { s.destroy(); r(true); }); s.on("error", () => r(false)); });
 const ready = existsSync(BRIDGE) && (await vpcdUp());
 if (!ready && process.env.HUMID_REQUIRE_PCSC === "1") throw new Error("pcscd with vpcd, or the apdu-bridge example, isn't available");

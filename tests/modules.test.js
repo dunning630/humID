@@ -61,10 +61,47 @@ test("envelopes route to the suite that sealed them", async () => {
   assert.throws(() => unpack(new Uint8Array(20)), /Not a HumID envelope/);
 });
 
-test("the native shell doesn't freeze Object.prototype (the UI's signals library assigns valueOf, so a frozen prototype leaves the app blank)", async () => {
+test("the native shell freezes Object.prototype, and release builds can't reach loopback (V5 narrow web view)", async () => {
   const { readFile } = await import("node:fs/promises");
   const conf = JSON.parse(await readFile(new URL("../apps/mobile/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
-  assert.notEqual(conf.app.security.freezePrototype, true);
+  const sec = conf.app.security;
+  assert.equal(sec.freezePrototype, true);
+  // the release policy: no loopback anywhere; `tauri dev` (devCsp) may talk to a local server
+  assert.doesNotMatch(sec.csp, /localhost:|127\.0\.0\.1|\[::1\]/);
+  assert.match(sec.csp, /connect-src 'self' ipc: http:\/\/ipc\.localhost /);
+  assert.match(sec.devCsp, /http:\/\/localhost:\*/);
+  assert.equal(sec.devCsp.replace(" http://localhost:* http://127.0.0.1:*", ""), sec.csp, "devCsp is the release csp plus loopback, nothing else");
+  // the navigation guard: loopback only in debug builds
+  const shell = await readFile(new URL("../apps/mobile/src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(shell, /own_origin\(url, cfg!\(debug_assertions\)\)/);
+});
+
+test("the UI's libraries run with Object.prototype frozen, as the native shells run them", async () => {
+  // Built the way apps/mobile/build.mjs builds them, then run in a fresh realm whose
+  // Object.prototype is frozen first (Tauri's freezePrototype init script). Without the
+  // rewrites in apps/mobile/frozen-prototype.mjs they throw ("Cannot assign to read only
+  // property"). Rendering needs a DOM, so the whole app is covered by the browser checks
+  // (tools/dev.mjs freezes the prototype as the shells do); here, compat's forwardRef copies
+  // a props object with an own `constructor` key through Preact's copy loop, as a vnode copy
+  // (re-render, Suspense) does.
+  const esbuild = await import("esbuild");
+  const vm = await import("node:vm");
+  const { frozenPrototypeSafe } = await import("../apps/mobile/frozen-prototype.mjs");
+  const entry = `
+    import { signal, computed } from "@preact/signals-core";
+    import qrcode from "qrcode-generator";
+    import { forwardRef } from "preact/compat";
+    const s = signal(41); const c = computed(() => s.value + 1);
+    const q = qrcode(0, "M"); q.addData("HUMID"); q.make();
+    const F = forwardRef((props) => props);
+    const copied = F({ id: "x", constructor: undefined, ref: null });
+    globalThis.out = { sum: +c, text: String(s), json: JSON.stringify({ c }), url: q.createDataURL(2, 0).slice(0, 22), props: { id: copied.id, own: Object.keys(copied).sort().join() } };`;
+  const bundle = async (plugins) => (await esbuild.build({ stdin: { contents: entry, resolveDir: new URL("../apps/mobile/", import.meta.url).pathname }, bundle: true, write: false, format: "iife", plugins, logLevel: "silent" })).outputFiles[0].text;
+  const run = (code) => { const ctx = vm.createContext({}); vm.runInContext("'use strict'; Object.freeze(Object.prototype);", ctx); vm.runInContext(code, ctx); return ctx.out; };
+  const plain = await bundle([]), safe = await bundle([frozenPrototypeSafe]);
+  assert.throws(() => run(`"use strict";${plain}`), /read only property/, "the plain libraries break under a frozen prototype (the test can see the problem)");
+  const out = run(`"use strict";${safe}`);
+  assert.deepEqual({ ...out, props: { ...out.props } }, { sum: 42, text: "41", json: '{"c":42}', url: "data:image/gif;base64,", props: { id: "x", own: "constructor,id" } });
 });
 
 test("service request logs name the route, never the ids or codes in the path", async () => {

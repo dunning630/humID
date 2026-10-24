@@ -21,8 +21,9 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; worker-src 'self'; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'",
-      "freezePrototype": false
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; worker-src 'self'; connect-src 'self' ipc: http://ipc.localhost https:; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; worker-src 'self'; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "freezePrototype": true
     }
   },
   "bundle": {
@@ -44,10 +45,10 @@
       "entitlements": "Entitlements.plist"
     },
     "iOS": {
-      "minimumSystemVersion": "16.0"
+      "minimumSystemVersion": "26.0"
     },
     "android": {
-      "minSdkVersion": 30
+      "minSdkVersion": 37
     },
     "linux": {
       "deb": {

@@ -1,45 +1,36 @@
 name: Publish server images
 
-# On main: build the service images a change touches and publish them to
+# On main, when server code changed: build every service image and publish it to
 # GitHub's container registry (private to this repo's owner):
-#   ghcr.io/dunning630/humid-{edge,gateway,identity,vault,ledger}:latest and :<commit>
+#   ghcr.io/dunning630/humid-{edge,gateway,identity,vault,ledger,...}:latest and :<commit>
 # A server then updates with:  cd deploy && docker compose pull && docker compose up -d
+#
+# 5.0: every image is rebuilt together (the per-file change map, tools/affected.mjs, is
+# gone); the paths below are what any image is built from.
 
 on:
   push:
     branches: [main]
+    paths:
+      - "packages/**"
+      - "services/**"
+      - "apps/mobile/**"
+      - "plugins/*/Cargo.toml"
+      - "package.json"
+      - "package-lock.json"
+      - ".dockerignore"
+      - ".github/workflows/images.yml"
   workflow_dispatch: # publish all images
 
 permissions:
   contents: read
 
 jobs:
-  plan:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    outputs:
-      matrix: ${{ steps.a.outputs.matrix }}
-      any: ${{ steps.a.outputs.any }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: { fetch-depth: 0, persist-credentials: false }
-      - id: a
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          BASE=HEAD~1
-          if [ "$EVENT" = "workflow_dispatch" ]; then BASE=none; fi
-          OUT=$(node tools/affected.mjs "$BASE")
-          echo "matrix=$(echo "$OUT" | jq -c .serviceMatrix)" >> "$GITHUB_OUTPUT"
-          echo "any=$(echo "$OUT" | jq '.services | length > 0')" >> "$GITHUB_OUTPUT"
-
   publish:
-    needs: plan
-    if: needs.plan.outputs.any == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      matrix:
+        service: [gateway, identity, vault, ledger, recovery, access, keyshare, relay, edge]
     runs-on: ubuntu-22.04
     permissions:
       contents: read

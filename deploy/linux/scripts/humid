@@ -26,7 +26,7 @@ ROOT=/var/lib/humid
 ETC=/etc/humid
 UNIT=/etc/systemd/system/humid.service
 DROPIN=/etc/systemd/system/humid.service.d
-NODE_MAJOR=22
+NODE_MAJOR=24
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '\033[36m-> %s\033[0m\n' "$*"; }

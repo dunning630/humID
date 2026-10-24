@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import qrcode from "qrcode-generator";
 import { qrPayload, parseQr } from "@humid/recovery";
-import { DEMO_BUILD } from "@humid/gate";
 import { Icon } from "../brand/icons.jsx";
 import * as S from "../core/state.js";
 import { IN_APP } from "../core/config.js";
 import { setDemoHolder, demoChipHint } from "../core/nfc.js";
 import { watchPlace, formatCoords, formatAccuracy, REASONS } from "../core/place.js";
 import { Toggle } from "./kit.jsx";
+/* global __HUMID_ALLOW_DEMO__ */
 
 /** A 12- or 16-character code to read from one screen and type on another. */
 export function CodeBox({ code, label }) {
@@ -274,13 +274,15 @@ export function ChipAccess({ onChange, title = "Details from the document", init
         <div class="field"><label for="doc-can">6-digit card access number</label><input autocorrect="off" spellcheck={false} id="doc-can" class="input code" inputMode="numeric" autocomplete="off" maxLength={7} value={can} onInput={(e) => setCan(e.currentTarget.value)} />
           <span class="hint">Printed on the front of most European and many other ID cards.</span></div>
       )}
-      {DEMO_SIM && <DemoChipFill onFill={(h) => { setMode("mrz"); setNum(h.number); setBirth(`19${h.birth.slice(0, 2)}-${h.birth.slice(2, 4)}-${h.birth.slice(4)}`); setExpiry(`20${h.expiry.slice(0, 2)}-${h.expiry.slice(2, 4)}-${h.expiry.slice(4)}`); }} />}
+      {(typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && DEMO_SIM && <DemoChipFill onFill={(h) => { setMode("mrz"); setNum(h.number); setBirth(`19${h.birth.slice(0, 2)}-${h.birth.slice(2, 4)}-${h.birth.slice(4)}`); setExpiry(`20${h.expiry.slice(0, 2)}-${h.expiry.slice(2, 4)}-${h.expiry.slice(4)}`); }} />}
       <p class="small muted">{note}</p>
     </div>
   );
 }
 
-const DEMO_SIM = DEMO_BUILD && typeof globalThis.__TAURI_INTERNALS__?.invoke !== "function";
+// The flag is also written at the use above: esbuild drops the component only when the
+// define itself guards it (a release build carries no demo chip filler).
+const DEMO_SIM = (typeof __HUMID_ALLOW_DEMO__ !== "undefined" && __HUMID_ALLOW_DEMO__ === true) && typeof globalThis.__TAURI_INTERNALS__?.invoke !== "function";
 
 /** Development builds in a browser: pick the demo passport holder and fill in their details. */
 function DemoChipFill({ onFill }) {

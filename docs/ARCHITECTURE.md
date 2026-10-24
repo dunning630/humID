@@ -143,7 +143,7 @@ biometric proof. Full specification: [PROTOCOL.md](PROTOCOL.md).
 
 ## 3. Server — `services/`
 
-Each service is a few hundred lines of plain Node 22 with its own SQLite
+Each service is a few hundred lines of plain Node 24 with its own SQLite
 database (`node:sqlite`). esbuild bundles each into one file of 115–175 KB.
 Each runs as a distroless, non-root, read-only container with all Linux
 capabilities dropped.
@@ -208,17 +208,10 @@ on the head.
 
 ## Releasing one piece at a time
 
-`tools/affected.mjs` maps changed files to the app platforms and service
-images they affect. CI builds and tests only those. Examples:
-
-| Change | Rebuilds |
-|---|---|
-| `services/vault/**` | `humid-vault` image only |
-| `services/recovery/**` | `humid-recovery` image only |
-| `packages/audit/**` | ledger image + edge (web app) + all apps |
-| `packages/recovery/**` | recovery image + edge + all apps |
-| `plugins/humid-gate/ios/**` | iOS app only |
-| `docs/**` | nothing |
+CI's `changes` job decides, by path, whether a change touches the apps (both
+mobile platforms are compiled together) or the server (every service image is
+rebuilt and the stack booted); docs-only changes build neither. Images are
+published on merge to main.
 
 Services talk only through HTTP contracts, so each image is replaced on its
 own: `docker compose pull vault && docker compose up -d vault`. Schemas

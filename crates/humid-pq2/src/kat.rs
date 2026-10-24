@@ -31,7 +31,7 @@ use crate::kdf::{kdf_into, kmac256};
 use crate::kem::{KemCiphertext, KemSecretKey};
 use crate::rng::FixedRng;
 use crate::secret::{Secret, Secret32};
-use crate::sign::{MlDsaSigningKey, SlhSigningKey, mldsa_sign_expanded, slh_sign};
+use crate::sign::{MlDsaSigningKey, SlhSigningKey, mldsa_sign_with_rnd, slh_sign};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -208,8 +208,7 @@ fn mldsa87_siggen_deterministic_and_hedged() {
             hedged += 1;
             a::<32>(&t["rnd"])
         };
-        let sig =
-            mldsa_sign_expanded(&sk, &h(&t["message"]), &h(&t["context"]), Some(&rnd)).unwrap();
+        let sig = mldsa_sign_with_rnd(&sk, &h(&t["message"]), &h(&t["context"]), &rnd).unwrap();
         assert_eq!(&sig[..], &h(&t["signature"])[..], "{}", tc(t));
         // and the verifying key it implies verifies it
         let vk = crate::sign::MlDsaVerifyingKey::from_raw(&h(&t["pk"])).unwrap();
@@ -314,7 +313,7 @@ fn kmac_bits(key: &[u8], msg: &[u8], custom: &[u8], bits: usize, xof: bool) -> V
     let mut bp = le(136);
     bp.extend(le(key.len() as u64 * 8));
     bp.extend_from_slice(key);
-    while bp.len() % 136 != 0 {
+    while !bp.len().is_multiple_of(136) {
         bp.push(0);
     }
     c.update(&bp);
@@ -343,7 +342,7 @@ fn kmac256_acvp() {
         let same = got[..] == want[..bits / 8];
         let expected = t["testPassed"].as_bool().unwrap_or(true);
         assert_eq!(same, expected, "{}", tc(t));
-        if bits % 8 == 0 {
+        if bits.is_multiple_of(8) {
             // the suite's own KMAC agrees
             let mut o = vec![0u8; bits / 8];
             kmac256(&key, &msg, &custom, &mut o, xof).unwrap();
@@ -545,9 +544,9 @@ fn noble_mlkem_mldsa_x25519_slh() {
         assert_eq!(&k.verifying_key().raw()[..], &h(&t["pk"])[..]);
         let (msg, ctx) = (h(&t["msg"]), h(&t["ctx"]));
         // the hedged path, with noble's rnd: the randomness is used identically
-        let s = k.sign_ctx(&msg, &ctx, Some(&a(&t["rnd"]))).unwrap();
+        let s = k.sign_ctx_with_rnd(&msg, &ctx, &a(&t["rnd"])).unwrap();
         assert_eq!(&s[..], &h(&t["sigHedged"])[..]);
-        let s = k.sign_ctx(&msg, &ctx, Some(&[0u8; 32])).unwrap();
+        let s = k.sign_ctx_with_rnd(&msg, &ctx, &[0u8; 32]).unwrap();
         assert_eq!(&s[..], &h(&t["sigDeterministic"])[..]);
         k.verifying_key()
             .verify_ctx(&msg, &ctx, &h(&t["sigHedged"]))
@@ -669,4 +668,46 @@ fn self_test_constants_are_nist_vectors() {
         crate::selftest::MLDSA_PK_SHA3
     );
     let _ = FixedRng(&[]);
+}
+
+/// The self-test's embedded answers (selftest.bin) are NIST's: re-read them against the
+/// ACVP fixtures, field by field.
+#[test]
+fn self_test_binary_is_nist_vectors() {
+    let bin = include_bytes!("selftest.bin");
+    let mut r = humid_pq2_reader(bin);
+    let mut f = || r.lp(64 * 1024).unwrap().to_vec();
+    let fields: Vec<Vec<u8>> = (0..14).map(|_| f()).collect();
+    let enc = acvp("acvp", "ML-KEM-encapDecap-FIPS203");
+    let (_, t) = cases(&enc, |g| {
+        g["parameterSet"] == "ML-KEM-1024" && g["function"] == "encapsulation"
+    })
+    .next()
+    .unwrap();
+    assert_eq!(fields[0], h(&t["ek"]));
+    assert_eq!(fields[1], h(&t["m"]));
+    assert_eq!(fields[2], h(&t["c"]));
+    assert_eq!(fields[3], h(&t["k"]));
+    let sg = acvp("acvp", "ML-DSA-sigGen-FIPS204");
+    let (_, t) = cases(&sg, |g| {
+        g["parameterSet"] == "ML-DSA-87" && g["deterministic"] == true
+    })
+    .next()
+    .unwrap();
+    assert_eq!(fields[4], h(&t["pk"]));
+    assert_eq!(fields[5], h(&t["message"]));
+    assert_eq!(fields[6], h(&t["context"]));
+    assert_eq!(fields[7], h(&t["signature"]));
+    let sv = acvp("acvp-pq2", "SLH-DSA-sigVer-FIPS205");
+    let (_, t) = cases(&sv, |g| g["parameterSet"] == "SLH-DSA-SHA2-256s")
+        .find(|(_, t)| t["testPassed"] == true)
+        .unwrap();
+    assert_eq!(fields[10], h(&t["pk"]));
+    assert_eq!(fields[11], h(&t["message"]));
+    assert_eq!(fields[12], h(&t["context"]));
+    assert_eq!(fields[13], h(&t["signature"]));
+}
+
+fn humid_pq2_reader(b: &[u8]) -> crate::encoding::Reader<'_> {
+    crate::encoding::Reader::new(b)
 }
