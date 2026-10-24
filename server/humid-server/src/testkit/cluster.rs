@@ -208,6 +208,8 @@ pub struct App<'a> {
     pub nonces: Vec<Vec<u8>>,
     /// The client network front would report.
     pub net: String,
+    /// The session mode its proofs carry (`1` after a duress sign-in), as the phone's core does.
+    pub mode: u8,
     seq: u64,
 }
 
@@ -223,6 +225,7 @@ impl<'a> App<'a> {
             token: None,
             nonces: vec![],
             net: "v4:192.0.2.1".into(),
+            mode: 0,
             seq: 0,
         })
     }
@@ -330,6 +333,7 @@ impl<'a> App<'a> {
         let r: crate::core::auth::LoginReply = self.core("POST", "/v1/auth/login", &l).await?;
         self.token = Some(r.token.0);
         self.nonces = r.nonces.into_iter().map(|n| n.0).collect();
+        self.mode = duress;
         Ok(())
     }
 
@@ -350,7 +354,7 @@ impl<'a> App<'a> {
             .ok_or_else(|| Error::internal("no nonce left in the test pool"))?;
         self.seq += 1;
         let b = serde_json::to_vec(body).map_err(|e| Error::internal(e.to_string()))?;
-        phone.step_up(
+        phone.step_up_mode(
             method,
             path,
             &self.th,
@@ -358,6 +362,7 @@ impl<'a> App<'a> {
             &nonce,
             self.c.clock.now(),
             &b,
+            self.mode,
         )
     }
 

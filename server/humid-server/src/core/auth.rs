@@ -12,6 +12,7 @@ use super::{Core, ENVELOPE, Reply, SESSION_MAX_MS, SMALL, ok, read, token_hash};
 use crate::api::{anon as anon_api, app, keys as keys_api};
 use crate::crypto::{self, KemPublic, MlDsaPublic, label};
 use crate::error::{Error, Result};
+use crate::hsm::KeyRef;
 use crate::policy::Registration;
 use crate::proofs::{self, DuressProof, Enrolment, Login, Signed};
 use crate::unit::ms;
@@ -247,32 +248,43 @@ pub struct ChallengeReq {
     pub device: Id,
 }
 
-/// A single-use sign-in challenge (2 minutes). An unknown account or device gets the same
-/// answer, so the challenge says nothing about who exists.
+/// How long a sign-in challenge is good for.
+pub const CHALLENGE_MS: i64 = 2 * ms::MINUTE;
+
+/// `challenge = u64 issued_at ‖ 16 random ‖ KMAC(session key, account, device, issued_at, random)`.
+fn challenge_tag(core: &Core, account: &Id, device: &Id, head: &[u8]) -> Result<[u8; 32]> {
+    core.hsm.mac(
+        KeyRef::Session,
+        label::LOGIN_CHALLENGE,
+        &[account.as_bytes(), device.as_bytes(), head],
+    )
+}
+
+/// A single-use sign-in challenge (2 minutes). Stateless (H-3): it is a MAC under the HSM
+/// `session` key over the account, the device and the time, so asking for challenges stores
+/// nothing and can't use up anyone's: there is no per-device cap left to exhaust. Single use
+/// is enforced when one signs someone in. An unknown account or device gets the same answer.
 pub async fn challenge(State(core): State<Arc<Core>>, body: Body) -> Reply {
     let r: ChallengeReq = read(body, SMALL).await?;
-    let c = core.db.conn().await?;
     let now = core.now();
-    let open: i64 = c
-        .query_one(
-            "SELECT count(*) FROM nonces WHERE kind = 'login' AND device = $1 AND expires_at >= $2",
-            &[&r.device.as_bytes(), &now],
-        )
-        .await?
-        .get(0);
-    if open >= 4 {
-        return Err(Error::too_many(
-            "rate_limited",
-            "Too many sign-in attempts. Wait a moment.",
-        ));
+    let mut head = now.to_be_bytes().to_vec();
+    head.extend_from_slice(&crypto::random::<16>()?);
+    let tag = challenge_tag(&core, &r.account, &r.device, &head)?;
+    head.extend_from_slice(&tag);
+    ok(&serde_json::json!({ "challenge": B64(head), "expires_at": now + CHALLENGE_MS }))
+}
+
+/// Check a challenge's MAC and age (not its single use).
+fn challenge_ok(core: &Core, l: &Login, now: i64) -> bool {
+    let c = &l.challenge.0;
+    if c.len() != 56 {
+        return false;
     }
-    let n = crypto::random::<32>()?;
-    c.execute(
-        "INSERT INTO nonces (nonce, kind, account, device, expires_at) VALUES ($1, 'login', $2, $3, $4)",
-        &[&n.as_slice(), &r.account.as_bytes(), &r.device.as_bytes(), &(now + 2 * ms::MINUTE)],
-    )
-    .await?;
-    ok(&serde_json::json!({ "challenge": B64(n.to_vec()), "expires_at": now + 2 * ms::MINUTE }))
+    let at = i64::from_be_bytes(c[..8].try_into().unwrap_or([0; 8]));
+    if at > now + 5 * ms::SECOND || now - at > CHALLENGE_MS {
+        return false;
+    }
+    challenge_tag(core, &l.account, &l.device, &c[..24]).is_ok_and(|t| crypto::ct_eq(&t, &c[24..]))
 }
 
 /// What a sign-in answers (the same shape for an ordinary and a duress sign-in).
@@ -289,68 +301,105 @@ pub struct LoginReply {
 }
 
 /// Sign in. Core checks the device key's and the chip's signatures itself and issues the
-/// session (front never decides who is signed in). A duress sign-in locks the account down
-/// silently, doubles recovery waits, and has keys erase an armed Check-in vault — all after
-/// checking the signed duress bit, never on front's word (M2). The answer looks the same.
+/// session (front never decides who is signed in).
+///
+/// **Throttling never refuses a valid proof (H-3, CHECKIN.md).** The proof is checked first.
+/// Only a failure an attacker can't produce for someone else is counted against the identity:
+/// a well-formed challenge for this very device whose signatures then don't verify. Junk
+/// (no valid challenge) is counted against the network only. So knowing an account id gets
+/// nobody anywhere, and a holder's valid sign-in, which is all a check-in needs, always works.
+///
+/// A duress sign-in locks the account down silently, doubles recovery waits (including those
+/// already waiting), records the duress sign-in for keys, and answers exactly as an ordinary
+/// sign-in does. The erase request goes to keys **after** the reply, from a durable queue
+/// retried until keys acts on it (M-3), so neither the answer nor its timing differs (H-1).
 pub async fn login(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body) -> Reply {
     let l: Login = read(body, SMALL).await?;
     let th = Core::th(&headers)?;
     let now = core.now();
-    let net = Core::network(&headers);
-    let id_key = l.account.to_string();
-    if core.signin_per_identity.peek(&id_key, now)
-        >= core.policy.policy.limits.signin_failures_per_identity
-        || core.signin_per_network.peek(&net, now)
-            >= core.policy.policy.limits.signin_failures_per_network
-    {
-        return Err(Error::too_many(
-            "rate_limited",
-            "Too many failed sign-ins. Wait a few minutes.",
-        ));
-    }
-    let fail = |e: Error| {
-        core.signin_per_identity.take(&id_key, now);
+    let net = core.network(&headers)?;
+    let lim = &core.policy.policy.limits;
+    let fail_network = |e: Error| {
         core.signin_per_network.take(&net, now);
         e
     };
-    if !crypto::ct_eq(&l.th, &th) {
-        return Err(fail(Error::bad_proof()));
+    if !crypto::ct_eq(&l.th, &th) || !challenge_ok(&core, &l, now) {
+        // nothing here ties the attempt to the account it names
+        if core.signin_per_network.peek(&net, now) >= lim.signin_failures_per_network {
+            return Err(Error::too_many(
+                "rate_limited",
+                "Too many failed sign-ins. Wait a few minutes.",
+            ));
+        }
+        return Err(fail_network(Error::bad_proof()));
     }
+    let id_key = l.account.to_string();
     let mut c = core.db.conn().await?;
     let tx = c.transaction().await?;
-    let used = tx
+    // the proof, before any limit
+    let checked = match core.device(&tx, &l.account, &l.device).await {
+        Ok((cert, d)) => proofs::check_login(
+            &l,
+            &d,
+            now,
+            core.policy.policy.device_policy.p256_only_until,
+        )
+        .map(|ph| (cert, ph)),
+        Err(e) => Err(e),
+    };
+    let (cert, proof_hash) = match checked {
+        Ok(x) => x,
+        Err(e) => {
+            // a valid challenge for this device, and signatures that don't verify: only someone
+            // who can reach this device's sign-in can make these; the limit slows guessing
+            let over =
+                core.signin_per_identity.peek(&id_key, now) >= lim.signin_failures_per_identity;
+            core.signin_per_identity.take(&id_key, now);
+            core.signin_per_network.take(&net, now);
+            if over {
+                return Err(Error::too_many(
+                    "rate_limited",
+                    "Too many failed sign-ins. Wait a few minutes.",
+                ));
+            }
+            return Err(e);
+        }
+    };
+    let ch = crypto::sha3_512(&l.challenge);
+    let fresh = tx
         .execute(
-            "DELETE FROM nonces WHERE nonce = $1 AND kind = 'login' AND account = $2 AND device = $3 AND expires_at >= $4",
-            &[&l.challenge.0, &l.account.as_bytes(), &l.device.as_bytes(), &now],
+            "INSERT INTO used_challenges (hash, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            &[&ch.as_slice(), &(now + CHALLENGE_MS + ms::MINUTE)],
         )
         .await?;
-    if used != 1 {
-        return Err(fail(Error::bad_proof()));
+    if fresh != 1 {
+        return Err(Error::forbidden(
+            "challenge_used",
+            "That sign-in was already used. Try again.",
+        ));
     }
-    let (cert, d) = core
-        .device(&tx, &l.account, &l.device)
-        .await
-        .map_err(fail)?;
-    let proof_hash = proofs::check_login(
-        &l,
-        &d,
-        now,
-        core.policy.policy.device_policy.p256_only_until,
-    )
-    .map_err(fail)?;
     let token = crypto::random::<32>()?;
     let th_ = token_hash(&token)?;
     let duress = l.duress == 1;
+    // a duress session is shown Check-in as it is now, and only its own check-ins move it
+    // every sign-in asks keys where Check-in stands (CHECKIN.md), so a duress sign-in takes
+    // the same time; only a duress session keeps the answer, as its own copy
+    let checkin = checkin_now(&core, &l.account).await;
+    let view = if duress {
+        Some(serde_json::to_value(checkin).map_err(|e| Error::internal(e.to_string()))?)
+    } else {
+        None
+    };
     tx.execute(
-        "INSERT INTO sessions (token_hash, account, device, th, created_at, last_used_at, expires_at, duress) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)",
-        &[&th_.as_slice(), &l.account.as_bytes(), &l.device.as_bytes(), &th, &now, &(now + SESSION_MAX_MS), &duress],
+        "INSERT INTO sessions (token_hash, account, device, th, created_at, last_used_at, expires_at, duress, checkin_view) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)",
+        &[&th_.as_slice(), &l.account.as_bytes(), &l.device.as_bytes(), &th, &now, &(now + SESSION_MAX_MS), &duress, &view],
     )
     .await?;
     // one account holds at most N sessions: past that, its own least recently used goes
     tx.execute(
         "UPDATE sessions SET revoked_at = $3 WHERE token_hash IN (
             SELECT token_hash FROM sessions WHERE account = $1 AND revoked_at IS NULL ORDER BY last_used_at DESC OFFSET $2)",
-        &[&l.account.as_bytes(), &i64::from(core.policy.policy.limits.sessions_per_account), &now],
+        &[&l.account.as_bytes(), &i64::from(lim.sessions_per_account), &now],
     )
     .await?;
     tx.execute(
@@ -366,7 +415,25 @@ pub async fn login(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
         .await?;
         tx.execute("INSERT INTO duress (account, at, proof_hash) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", &[&l.account.as_bytes(), &now, &proof_hash.as_slice()])
             .await?;
-        ledger::append(
+        // L-3: recoveries already waiting wait twice as long from now
+        tx.execute(
+            "UPDATE recovery_requests SET release_at = $2 + 2 * GREATEST(release_at - $2, 0), expires_at = GREATEST(expires_at, $2 + 2 * GREATEST(release_at - $2, 0) + $3)
+              WHERE account = $1 AND status = 'waiting' AND release_at IS NOT NULL",
+            &[&l.account.as_bytes(), &now, &super::recovery::COLLECT_MS],
+        )
+        .await?;
+        let proof = serde_json::to_value(DuressProof {
+            cert,
+            login: l.clone(),
+        })
+        .map_err(|e| Error::internal(e.to_string()))?;
+        tx.execute(
+            "INSERT INTO duress_pending (proof_hash, account, proof, created_at, next_at) VALUES ($1, $2, $3, $4, $4) ON CONFLICT DO NOTHING",
+            &[&proof_hash.as_slice(), &l.account.as_bytes(), &proof, &now],
+        )
+        .await?;
+        // the duress session is live from this transaction on, so this waits until it ends
+        ledger::append_or_defer(
             &tx,
             now,
             &l.account,
@@ -384,22 +451,14 @@ pub async fn login(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
     };
     tx.commit().await?;
     if duress {
-        // keys erases an armed vault on the duress sign-in itself, which it checks again
-        let st = core.statement("duress", &keys_api::DuressFacts { account: l.account })?;
-        let req = keys_api::Duress {
-            statement: st,
-            proof: DuressProof {
-                cert,
-                login: l.clone(),
-            },
-        };
-        if let Err(e) = core
-            .keys
-            .post::<_, serde_json::Value>("/v1/duress", &[], &req)
-            .await
-        {
-            tracing::warn!(error = %e, "keys didn't act on a duress sign-in"); // the answer must look ordinary
-        }
+        // after the reply: the erase must not show in the answer or its timing
+        let c2 = core.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if let Err(e) = deliver_duress(&c2).await {
+                tracing::warn!(error = %e, "duress delivery will be retried");
+            }
+        });
     }
     ok(&LoginReply {
         token: B64(token.to_vec()),
@@ -407,6 +466,86 @@ pub async fn login(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
         nonces,
         me,
     })
+}
+
+/// Where Check-in stands at keys, for a duress session's frozen copy. If keys can't be asked,
+/// the copy is "off" (an unreachable keys unit answers no ordinary session either).
+async fn checkin_now(core: &Core, account: &Id) -> keys_api::CheckinStatus {
+    let off = keys_api::CheckinStatus::off;
+    let Ok(st) = core.statement(
+        "checkin",
+        &keys_api::CheckinFacts {
+            account: *account,
+            action: "status".into(),
+            proof_hash: None,
+            objects: vec![],
+        },
+    ) else {
+        return off();
+    };
+    let req = keys_api::Checkin {
+        statement: st,
+        cert: None,
+        signed: None,
+    };
+    core.keys
+        .post::<_, keys_api::CheckinStatus>("/v1/checkin", &[], &req)
+        .await
+        .unwrap_or_else(|_| off())
+}
+
+/// Deliver queued duress sign-ins to keys (M-3): each is retried, with back-off, until keys
+/// acts on it or says it already did. Returns how many were delivered. Run after a duress
+/// sign-in's reply and by core's job loop.
+///
+/// # Errors
+/// The database is unavailable.
+pub async fn deliver_duress(core: &Core) -> Result<usize> {
+    let now = core.now();
+    let c = core.db.conn().await?;
+    let rows = c
+        .query(
+            "SELECT proof_hash, account, proof, attempts FROM duress_pending WHERE next_at <= $1 ORDER BY created_at LIMIT 50",
+            &[&now],
+        )
+        .await?;
+    let mut delivered = 0;
+    for r in rows {
+        let ph: Vec<u8> = r.get(0);
+        let account = Id::from_slice(&r.get::<_, Vec<u8>>(1))?;
+        let proof: DuressProof = serde_json::from_value(r.get(2))
+            .map_err(|e| Error::internal(format!("queued duress proof: {e}")))?;
+        let attempts: i32 = r.get(3);
+        let req = keys_api::Duress {
+            statement: core.statement("duress", &keys_api::DuressFacts { account })?,
+            proof,
+        };
+        let done = match core
+            .keys
+            .post::<_, serde_json::Value>("/v1/duress", &[], &req)
+            .await
+        {
+            Ok(_) => true,
+            Err(e) if e.code_str() == "already_used" => true,
+            Err(e) => {
+                tracing::warn!(error = %e, attempts, "keys didn't take a duress sign-in yet");
+                false
+            }
+        };
+        if done {
+            c.execute("DELETE FROM duress_pending WHERE proof_hash = $1", &[&ph])
+                .await?;
+            delivered += 1;
+        } else {
+            let wait = (ms::SECOND << attempts.clamp(0, 6)).min(ms::MINUTE);
+            c.execute(
+                "UPDATE duress_pending SET attempts = attempts + 1, next_at = $2 WHERE proof_hash = $1",
+                &[&ph, &(now + wait)],
+            )
+            .await?;
+        }
+    }
+    Ok(delivered)
 }
 
 /// `POST /v1/auth/logout`.
@@ -490,15 +629,6 @@ pub async fn close(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
     }
     tx.execute("UPDATE recovery_requests SET status = 'cancelled', closed_at = $2 WHERE account = $1 AND status IN ('collecting', 'waiting')", &[&a, &now])
         .await?;
-    ledger::append(
-        &tx,
-        now,
-        &s.account,
-        "account.closed",
-        &serde_json::json!({}),
-        Vouch::Holder(&checked.proof_hash),
-    )
-    .await?;
     let st = core.statement(
         "close",
         &keys_api::ActionFacts {
@@ -507,6 +637,8 @@ pub async fn close(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             proof_hash: B64(checked.proof_hash.to_vec()),
         },
     )?;
+    // keys first, then the ledger entry (M-1: the public log's lock is never held across a
+    // call to another unit); if keys refuses, nothing here commits
     let _: serde_json::Value = core
         .keys
         .post(
@@ -519,6 +651,15 @@ pub async fn close(State(core): State<Arc<Core>>, headers: HeaderMap, body: Body
             },
         )
         .await?;
+    ledger::append(
+        &tx,
+        now,
+        &s.account,
+        "account.closed",
+        &serde_json::json!({}),
+        Vouch::Holder(&checked.proof_hash),
+    )
+    .await?;
     tx.commit().await?;
     ok(&serde_json::json!({ "closed": true }))
 }
@@ -557,7 +698,8 @@ pub async fn clear_duress(State(core): State<Arc<Core>>, headers: HeaderMap, bod
         &[&s.account.as_bytes()],
     )
     .await?;
-    ledger::append(
+    // deferred while a duress session is live: that session must not learn of it
+    ledger::append_or_defer(
         &tx,
         core.now(),
         &s.account,
@@ -569,6 +711,9 @@ pub async fn clear_duress(State(core): State<Arc<Core>>, headers: HeaderMap, bod
     tx.commit().await?;
     ok(&serde_json::json!({ "cleared": true }))
 }
+
+/// Live checks for post tokens per account per day (each buys up to the policy's batch).
+pub const LIVE_CHECKS_PER_DAY: i32 = 32;
 
 /// `POST /v1/live/attest`: the holder approved these blinded values with a live check. Core
 /// answers with an account-free statement for anon (M1: anon mints nothing on front's word).
@@ -599,6 +744,23 @@ pub async fn live_attest(State(core): State<Arc<Core>>, headers: HeaderMap, body
     let (checked, _) = core
         .step_up(&tx, &s, &r.signed, "POST", "/v1/live/attest")
         .await?;
+    // M-6: each live check buys post tokens, and each token a relay deposit; a day's cap per
+    // account bounds what one account can put in the relay
+    let day = core.now().div_euclid(ms::DAY);
+    let n: i32 = tx
+        .query_one(
+            "INSERT INTO live_check_days (account, day, n) VALUES ($1, $2, 1)
+             ON CONFLICT (account, day) DO UPDATE SET n = live_check_days.n + 1 RETURNING n",
+            &[&s.account.as_bytes(), &day],
+        )
+        .await?
+        .get(0);
+    if n > LIVE_CHECKS_PER_DAY {
+        return Err(Error::too_many(
+            "rate_limited",
+            "You've sent a lot of messages today. Try again tomorrow.",
+        ));
+    }
     tx.commit().await?;
     let facts = anon_api::LiveCheckFacts {
         action: w.action,

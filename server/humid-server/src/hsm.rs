@@ -40,6 +40,8 @@ pub enum KeyRef {
     AnonStatement,
     /// Every unit's at-rest seal (wrap).
     Seal,
+    /// Core's sign-in challenges (KMAC): stateless, so nobody can use up a device's challenges.
+    Session,
 }
 
 /// What a key may be used for.
@@ -57,7 +59,7 @@ pub enum Mechanism {
 
 impl KeyRef {
     /// Every key.
-    pub const ALL: [KeyRef; 8] = [
+    pub const ALL: [KeyRef; 9] = [
         KeyRef::IdentityRoot,
         KeyRef::CoreStatement,
         KeyRef::Ledger,
@@ -66,6 +68,7 @@ impl KeyRef {
         KeyRef::ShareKek,
         KeyRef::AnonStatement,
         KeyRef::Seal,
+        KeyRef::Session,
     ];
 
     /// The label (PKCS#11 `CKA_LABEL`).
@@ -80,6 +83,7 @@ impl KeyRef {
             KeyRef::ShareKek => "share-kek",
             KeyRef::AnonStatement => "anon-statement",
             KeyRef::Seal => "seal",
+            KeyRef::Session => "session",
         }
     }
 
@@ -92,7 +96,7 @@ impl KeyRef {
             }
             KeyRef::IdentityRoot | KeyRef::Ledger => Mechanism::Dual,
             KeyRef::ShareKek | KeyRef::Seal => Mechanism::Wrap,
-            KeyRef::CardTag => Mechanism::Mac,
+            KeyRef::CardTag | KeyRef::Session => Mechanism::Mac,
         }
     }
 
@@ -173,8 +177,8 @@ fn wrong(k: KeyRef, want: Mechanism) -> Result<()> {
 /// The software HSM. Development and tests only.
 pub struct SoftHsm {
     master: Secret32,
-    mldsa: [OnceLock<MlDsaSecret>; 8],
-    dual: [OnceLock<DualSecret>; 8],
+    mldsa: [OnceLock<MlDsaSecret>; 9],
+    dual: [OnceLock<DualSecret>; 9],
 }
 
 const SOFT_HSM_FILE: &str = "soft-hsm.key";

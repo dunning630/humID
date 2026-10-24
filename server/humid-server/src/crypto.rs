@@ -65,6 +65,8 @@ pub mod label {
     pub const FUSE: &str = "HUMID-PQ2 checkin-fuse";
     /// Link and recovery codes.
     pub const CODE: &str = "HUMID-PQ2 key-code";
+    /// A stateless sign-in challenge (KMAC under the HSM `session` key).
+    pub const LOGIN_CHALLENGE: &str = "HUMID-PQ2 login-challenge";
 }
 
 /// Server object types (`0x02xx`, proposed for the PQ2.md registry: see SERVER.md §13).
@@ -455,6 +457,84 @@ pub fn open_upload_share(
     })
 }
 
+/// A joining device's self-signed request (humid-core `JoinRequest`, CORE.md §5.3, type
+/// `0x0108`): `body = header(0x0108) ‖ account_id (32) ‖ device ML-DSA-87 pk (2592) ‖ join KEM
+/// pk (1613) ‖ nonce (32)`, then the device key's typed signature over `body`. Parsing checks
+/// the signature, so the device key in it is the one that made the request.
+pub struct JoinRequest {
+    /// The account it asks to join.
+    pub account: [u8; 32],
+    /// The device key (PQ2 encoding), what its enrolment certificate must certify.
+    pub device_vk: Vec<u8>,
+    /// Its id.
+    pub device_id: [u8; 32],
+    /// The one-time join KEM key (the account seed is sealed to it).
+    pub join_kem: KemPublic,
+    /// `H("HUMID-PQ2 join-binding", [body])`: what the approving live check signs.
+    pub binding: [u8; 64],
+    /// The 20-character code both screens show (first 100 bits of `H("HUMID-PQ2 join-code", [body])`).
+    pub code: String,
+}
+
+/// humid-core's join-request labels.
+pub const JOIN_REQUEST_LABEL: &str = "HUMID-PQ2 join-request";
+const JOIN_CODE_LABEL: &str = "HUMID-PQ2 join-code";
+const JOIN_BINDING_LABEL: &str = "HUMID-PQ2 join-binding";
+/// Characters in a join code (100 bits).
+pub const JOIN_CODE_LEN: usize = 20;
+
+/// Crockford base32 of the first 100 bits of `h` (humid-core `codes::code`, ungrouped).
+fn code100(h: &[u8; 64]) -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut acc: u128 = 0;
+    for &b in &h[..13] {
+        acc = (acc << 8) | u128::from(b);
+    }
+    acc >>= 4;
+    (0..JOIN_CODE_LEN)
+        .rev()
+        .map(|i| ALPHABET[((acc >> (5 * i)) & 31) as usize] as char)
+        .collect()
+}
+
+impl JoinRequest {
+    /// Parse and verify.
+    ///
+    /// # Errors
+    /// `bad_join_request` for malformed bytes or a signature that doesn't verify.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let bad = || Error::bad("bad_join_request", "That isn't a valid join request.");
+        let body_len =
+            pq2::encoding::HEADER_LEN + 32 + pq2::MLDSA_VK_LEN + pq2::KEM_PUBLIC_KEY_LEN + 32;
+        if bytes.len() != body_len + pq2::MLDSA_SIG_LEN {
+            return Err(bad());
+        }
+        let (body, sig) = bytes.split_at(body_len);
+        let mut r = pq2::encoding::Reader::new(body);
+        r.header(ObjectType::JOIN_REQUEST).map_err(|_| bad())?;
+        let account = r.array::<32>().map_err(|_| bad())?;
+        let raw_vk = r.take(pq2::MLDSA_VK_LEN).map_err(|_| bad())?;
+        let mut vk_enc = pq2::encoding::header(ObjectType::MLDSA_VERIFYING_KEY).to_vec();
+        vk_enc.extend_from_slice(raw_vk);
+        let vk = pq2::MlDsaVerifyingKey::from_bytes(&vk_enc).map_err(|_| bad())?;
+        let join_kem = KemPublic::from_bytes(r.take(pq2::KEM_PUBLIC_KEY_LEN).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
+        let _nonce = r.array::<32>().map_err(|_| bad())?;
+        r.finish().map_err(|_| bad())?;
+        let sig = pq2::MlDsaSignature::from_raw(sig).map_err(|_| bad())?;
+        vk.verify_typed(ObjectType::JOIN_REQUEST, JOIN_REQUEST_LABEL, body, &sig)
+            .map_err(|_| bad())?;
+        Ok(Self {
+            account,
+            device_id: vk.key_id(),
+            device_vk: vk_enc,
+            join_kem,
+            binding: hash(JOIN_BINDING_LABEL, &[body])?,
+            code: code100(&hash(JOIN_CODE_LABEL, &[body])?),
+        })
+    }
+}
+
 /// Seal a share to the phone's one-time key (the release direction).
 ///
 /// # Errors
@@ -479,7 +559,29 @@ pub fn seal_release_share(
 /// Test support: what a phone does (seal for upload, open a release).
 #[cfg(any(test, feature = "testkit"))]
 pub mod phone {
-    use super::{KemPublic, KemSecret, Result, Secret32, pq2};
+    use super::{KemPublic, KemSecret, MlDsaSecret, ObjectType, Result, Secret32, pq2};
+
+    /// A join request as humid-core's `begin_join` makes it (device key, join key, account).
+    ///
+    /// # Errors
+    /// Signing failure.
+    pub fn join_request(
+        account: &[u8; 32],
+        device: &MlDsaSecret,
+        join: &KemPublic,
+    ) -> Result<Vec<u8>> {
+        let mut body = pq2::encoding::header(ObjectType::JOIN_REQUEST).to_vec();
+        body.extend_from_slice(account);
+        body.extend_from_slice(device.0.verifying_key().raw());
+        body.extend_from_slice(&join.to_bytes());
+        body.extend_from_slice(&super::random::<32>()?);
+        let sig =
+            device
+                .0
+                .sign_typed(ObjectType::JOIN_REQUEST, super::JOIN_REQUEST_LABEL, &body)?;
+        body.extend_from_slice(sig.raw());
+        Ok(body)
+    }
 
     /// Seal a share for upload.
     ///

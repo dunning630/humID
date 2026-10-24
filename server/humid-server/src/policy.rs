@@ -320,28 +320,73 @@ pub fn verify(bytes: &[u8], sig: &[u8], root: &DualPublic, now: i64) -> Result<S
             "The policy is dated in the future.",
         ));
     }
-    if policy.mode == Mode::Production {
-        match BUILT_IN_ROOT_ID {
-            Some(pin) if crypto::ct_eq(pin.as_bytes(), hex::encode(root.id()).as_bytes()) => {}
-            Some(_) => {
-                return Err(Error::forbidden(
-                    "root_mismatch",
-                    "The identity root isn't the one this build pins.",
-                ));
-            }
-            None => {
-                return Err(Error::forbidden(
-                    "no_root_pin",
-                    "A production policy needs a build with the identity root pinned (HUMID_IDENTITY_ROOT_ID).",
-                ));
-            }
-        }
-    }
+    check_root_pin(BUILT_IN_ROOT_ID, root, policy.mode)?;
     Ok(SignedPolicy {
         policy,
         bytes: bytes.to_vec(),
         sig: sig.to_vec(),
     })
+}
+
+/// The build's root pin (M-7). A build with a pin accepts **only** that root, in every mode:
+/// otherwise the unsigned `server.toml` could point `identity_root` at another key and sign
+/// a development policy (attestation off, open registration, no recovery floor) for a
+/// production build. A build without one may run development policies only.
+///
+/// # Errors
+/// `root_mismatch`, `no_root_pin`.
+pub fn check_root_pin(pin: Option<&str>, root: &DualPublic, mode: Mode) -> Result<()> {
+    match pin {
+        Some(pin) if crypto::ct_eq(pin.as_bytes(), hex::encode(root.id()).as_bytes()) => Ok(()),
+        Some(_) => Err(Error::forbidden(
+            "root_mismatch",
+            "The identity root isn't the one this build pins.",
+        )),
+        None if mode == Mode::Production => Err(Error::forbidden(
+            "no_root_pin",
+            "A production policy needs a build with the identity root pinned (HUMID_IDENTITY_ROOT_ID).",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Check the forward-only rule against the unit's own (replicated) database too, and record
+/// the policy there (M-7: a wiped or restored data directory alone can't roll it back). The
+/// file and the database must agree: a unit refuses to start when the database has seen a
+/// newer policy than the one it was given.
+///
+/// # Errors
+/// `policy_rollback`; database failure.
+pub async fn accept_db(db: &crate::db::Db, p: &SignedPolicy) -> Result<()> {
+    let hash = crypto::sha3_512(&p.bytes);
+    let version = i64::try_from(p.policy.version)
+        .map_err(|_| Error::bad("bad_policy", "The policy version is too large."))?;
+    let mut c = db.conn().await?;
+    let tx = c.transaction().await?;
+    let seen = tx
+        .query_opt(
+            "SELECT version, hash FROM policy_seen WHERE one FOR UPDATE",
+            &[],
+        )
+        .await?;
+    if let Some(r) = &seen {
+        let (v, h): (i64, Vec<u8>) = (r.get(0), r.get(1));
+        if version < v || (version == v && !crypto::ct_eq(&h, &hash)) {
+            return Err(Error::forbidden(
+                "policy_rollback",
+                format!(
+                    "Policy version {version} isn't newer than version {v} this unit's database already accepted."
+                ),
+            ));
+        }
+    }
+    tx.execute(
+        "INSERT INTO policy_seen (one, version, hash) VALUES (true, $1, $2) ON CONFLICT (one) DO UPDATE SET version = $1, hash = $2",
+        &[&version, &hash.as_slice()],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// The highest policy a unit has accepted, kept in `<data_dir>/policy.state` as
@@ -602,5 +647,31 @@ mod tests {
         } else {
             assert_eq!(e.code(), "root_mismatch");
         }
+    }
+
+    #[test]
+    fn a_pinned_build_accepts_only_its_root_in_every_mode() {
+        let (root, _, _) = setup();
+        let rk = root.dual_public(KeyRef::IdentityRoot).unwrap();
+        let other = SoftHsm::ephemeral()
+            .unwrap()
+            .dual_public(KeyRef::IdentityRoot)
+            .unwrap();
+        let pin = hex::encode(rk.id());
+        for mode in [Mode::Development, Mode::Production] {
+            check_root_pin(Some(&pin), &rk, mode).unwrap();
+            assert_eq!(
+                check_root_pin(Some(&pin), &other, mode).unwrap_err().code(),
+                "root_mismatch",
+                "{mode:?}: server.toml can't swap the root of a pinned build"
+            );
+        }
+        assert!(check_root_pin(None, &other, Mode::Development).is_ok());
+        assert_eq!(
+            check_root_pin(None, &other, Mode::Production)
+                .unwrap_err()
+                .code(),
+            "no_root_pin"
+        );
     }
 }

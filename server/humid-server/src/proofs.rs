@@ -137,6 +137,9 @@ pub struct StepUp {
     pub nonce: B64,
     /// When the check happened (ms).
     pub at: i64,
+    /// The session mode (CORE.md §8–9): `0` normal, `1` duress (decoy). Signed by the device
+    /// key and the chip, so keys learns it from the holder's own proof, never from core.
+    pub mode: u8,
     /// The device key's signature.
     pub device_sig: B64,
     /// The secure chip's P-256 signature.
@@ -165,12 +168,15 @@ pub struct Checked {
     pub nonce: Vec<u8>,
     /// The session transcript.
     pub th: Vec<u8>,
+    /// The signed session mode (`1` = duress).
+    pub mode: u8,
 }
 
-/// The ticket bytes.
+/// The ticket bytes: `lp(method, path, th, u64 seq, device, nonce, u64 at, u8 mode)`.
 ///
 /// # Errors
 /// Never in practice.
+#[allow(clippy::too_many_arguments)] // one field per thing the proof binds
 pub fn ticket(
     method: &str,
     path: &str,
@@ -179,6 +185,7 @@ pub fn ticket(
     device: &Id,
     nonce: &[u8],
     at: i64,
+    mode: u8,
 ) -> Result<Vec<u8>> {
     crypto::lp(&[
         method.as_bytes(),
@@ -188,6 +195,7 @@ pub fn ticket(
         device.as_bytes(),
         nonce,
         &at.to_be_bytes(),
+        &[mode],
     ])
 }
 
@@ -230,6 +238,8 @@ pub struct Expect<'a> {
     pub now: i64,
     /// After this date a P-256-only device is refused.
     pub p256_only_until: i64,
+    /// The session mode the proof must carry, when the unit knows the session (core does).
+    pub mode: Option<u8>,
 }
 
 /// Check a step-up over `body` against `device`'s keys. Freshness, the action, the device
@@ -262,10 +272,12 @@ pub fn check_step_up(p: &StepUp, body: &[u8], device: &Device, e: &Expect<'_>) -
             "That approval was made in another session.",
         ));
     }
-    if p.nonce.len() != 32 || p.th.is_empty() {
+    if p.nonce.len() != 32 || p.th.is_empty() || p.mode > 1 || e.mode.is_some_and(|m| m != p.mode) {
         return Err(Error::bad_proof());
     }
-    let t = ticket(&p.method, &p.path, &p.th, p.seq, &p.device, &p.nonce, p.at)?;
+    let t = ticket(
+        &p.method, &p.path, &p.th, p.seq, &p.device, &p.nonce, p.at, p.mode,
+    )?;
     if !device
         .vk
         .verifies(label::STEP_UP, &step_up_message(&t, body)?, &p.device_sig)
@@ -285,6 +297,7 @@ pub fn check_step_up(p: &StepUp, body: &[u8], device: &Device, e: &Expect<'_>) -
         proof_hash: proof_hash(&p.device_sig)?,
         nonce: p.nonce.0.clone(),
         th: p.th.0.clone(),
+        mode: p.mode,
     })
 }
 
@@ -382,7 +395,8 @@ pub fn check_login(l: &Login, device: &Device, now: i64, p256_only_until: i64) -
     if l.account != device.account
         || l.device != device.id
         || l.duress > 1
-        || l.challenge.len() != 32
+        || l.challenge.is_empty()
+        || l.challenge.len() > 64
     {
         return Err(Error::bad_proof());
     }
@@ -545,6 +559,7 @@ mod tests {
             th: Some(th),
             now,
             p256_only_until: i64::MAX,
+            mode: Some(0),
         }
     }
 
@@ -659,6 +674,24 @@ mod tests {
             )
             .is_err()
         );
+        // the signed mode must be the session's: a duress session's proofs carry 1
+        let mut e = expect("GET", "/v1/objects/x", &th, 1000);
+        e.mode = Some(1);
+        assert_eq!(
+            check_step_up(&s.proof, &s.body, &d, &e).unwrap_err().code(),
+            "bad_proof"
+        );
+        let mut flipped = s.proof.clone();
+        flipped.mode = 1;
+        assert_eq!(
+            check_step_up(&flipped, &s.body, &d, &e).unwrap_err().code(),
+            "bad_proof",
+            "the mode is signed: front can't flip it"
+        );
+        let ds = phone
+            .step_up_mode("GET", "/v1/objects/x", &th, 3, &nonce, 1000, b"{}", 1)
+            .unwrap();
+        assert_eq!(check_step_up(&ds.proof, &ds.body, &d, &e).unwrap().mode, 1);
         // P-256 only after the cut-off date
         let mut e = expect("GET", "/v1/objects/x", &th, 1000);
         e.p256_only_until = 500;

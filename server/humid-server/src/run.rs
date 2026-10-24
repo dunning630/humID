@@ -113,6 +113,23 @@ pub async fn database(s: &Started, unit: &str, migrations: &[crate::db::Migratio
         .ok_or_else(|| Error::bad("bad_config", "this unit needs [database]"))?;
     let db = Db::connect(&d.url, d.pool, None)?;
     db.migrate(unit, migrations).await?;
+    // M-7: the forward-only rule against the unit's replicated database as well as its file
+    policy::accept_db(&db, &s.policy).await?;
+    // L-2: "logged before release" across sites needs synchronous replication
+    if s.policy.policy.mode == Mode::Production && (unit == "core" || unit == "keys") {
+        let c = db.conn().await?;
+        let sc: String = c.query_one("SHOW synchronous_commit", &[]).await?.get(0);
+        let names: String = c
+            .query_one("SHOW synchronous_standby_names", &[])
+            .await?
+            .get(0);
+        if sc != "remote_apply" || names.trim().is_empty() {
+            return Err(Error::forbidden(
+                "replication_not_synchronous",
+                "In production core and keys need synchronous_commit = remote_apply and a synchronous standby.",
+            ));
+        }
+    }
     Ok(db)
 }
 

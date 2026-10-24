@@ -95,10 +95,9 @@ pub mod keys {
         pub envelope_hash: B64,
         /// The manifest hash the share is bound to.
         pub manifest_hash: B64,
-        /// The holder proof core checked.
+        /// The holder proof core checked. (`object.sealed` is written after keys stores
+        /// the share, in the same transaction: M-1.)
         pub proof_hash: B64,
-        /// The `object.sealed` ledger entry.
-        pub ledger_seq: i64,
     }
 
     /// `POST /v1/shares`.
@@ -204,6 +203,27 @@ pub mod keys {
         /// When it erased (ms).
         #[serde(default)]
         pub erased_at: Option<i64>,
+        /// The armed window (ms).
+        #[serde(default)]
+        pub window_ms: Option<i64>,
+        /// The longest window a check-in may choose (ms).
+        #[serde(default)]
+        pub max_window_ms: Option<i64>,
+    }
+
+    impl CheckinStatus {
+        /// Check-in off.
+        #[must_use]
+        pub fn off() -> Self {
+            Self {
+                state: "off".into(),
+                deadline: None,
+                erases_at: None,
+                erased_at: None,
+                window_ms: None,
+                max_window_ms: None,
+            }
+        }
     }
 
     /// Facts in core's `duress` statement.

@@ -158,8 +158,27 @@ impl Phone {
         at: i64,
         body: &[u8],
     ) -> Result<Signed> {
+        self.step_up_mode(method, path, th, seq, nonce, at, body, 0)
+    }
+
+    /// As [`Phone::step_up`], in session mode `mode` (`1` inside a duress session).
+    ///
+    /// # Errors
+    /// Signing failure.
+    #[allow(clippy::too_many_arguments)] // mirrors every field the phone signs
+    pub fn step_up_mode(
+        &self,
+        method: &str,
+        path: &str,
+        th: &[u8],
+        seq: u64,
+        nonce: &[u8],
+        at: i64,
+        body: &[u8],
+        mode: u8,
+    ) -> Result<Signed> {
         let d = self.device_id();
-        let t = proofs::ticket(method, path, th, seq, &d, nonce, at)?;
+        let t = proofs::ticket(method, path, th, seq, &d, nonce, at, mode)?;
         Ok(Signed {
             proof: StepUp {
                 method: method.into(),
@@ -169,6 +188,7 @@ impl Phone {
                 device: d,
                 nonce: B64(nonce.to_vec()),
                 at,
+                mode,
                 device_sig: B64(self
                     .device
                     .sign(label::STEP_UP, &proofs::step_up_message(&t, body)?)?),

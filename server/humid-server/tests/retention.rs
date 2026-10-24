@@ -8,8 +8,7 @@ use humid_server::retention;
 use humid_server::testkit::Phone;
 use humid_server::testkit::cluster::{App, Cluster};
 use humid_server::unit::ms;
-use humid_server::wire::B64;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[tokio::test]
 async fn every_table_of_every_unit_has_a_rule() {
@@ -58,7 +57,8 @@ async fn short_lived_rows_go_and_kept_ones_stay() {
     // a link that nobody approves
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let tablet = phone.sibling().unwrap();
-    let _: Value = app.core("POST", "/v1/links", &json!({ "device_vk": B64(tablet.device.public().to_bytes()), "kem_pk": B64(once.public().to_bytes()) })).await.unwrap();
+    let (_, start) = join(&tablet, &phone.account_id(), &once);
+    let _: Value = app.core("POST", "/v1/links", &start).await.unwrap();
 
     let count = |t: &'static str| {
         let d = c.core_db().clone();

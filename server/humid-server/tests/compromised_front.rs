@@ -117,7 +117,8 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
 
     // 1. a link it opened itself, never approved by alice
     let once = KemSecret::generate().unwrap();
-    let l: Value = t.core("POST", "/v1/links", &json!({ "device_vk": B64(thief.device.public().to_bytes()), "kem_pk": B64(once.public().to_bytes()) })).await.unwrap();
+    let (_, start) = join(&thief, &acct, &once);
+    let l: Value = t.core("POST", "/v1/links", &start).await.unwrap();
     let r = t
         .core::<_, Value>(
             "POST",
@@ -131,10 +132,13 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
     let tablet = alice.sibling().unwrap();
     let tb = App::new(&c).unwrap();
     let once2 = KemSecret::generate().unwrap();
-    let l2: Value = tb.core("POST", "/v1/links", &json!({ "device_vk": B64(tablet.device.public().to_bytes()), "kem_pk": B64(once2.public().to_bytes()) })).await.unwrap();
+    let (jr2, start2) = join(&tablet, &acct, &once2);
+    let l2: Value = tb.core("POST", "/v1/links", &start2).await.unwrap();
     let code = l2["code"].as_str().unwrap().to_string();
     let path = format!("/v1/links/{code}/approve");
-    let s = a.sign(&alice, "POST", &path, &json!({ "device_vk": B64(tablet.device.public().to_bytes()), "envelope": B64(vec![1; 500]) })).unwrap();
+    let s = a
+        .sign(&alice, "POST", &path, &approval(&jr2, vec![1; 500]))
+        .unwrap();
     let _: Value = a
         .core("POST", &path, &json!({ "signed": s }))
         .await
@@ -509,7 +513,6 @@ async fn an_upload_share_swapped_by_front_is_refused() {
         envelope_hash: B64(env_hash.to_vec()),
         manifest_hash: B64(manifest.to_vec()),
         proof_hash: B64(proofs::proof_hash(&s.proof.device_sig).unwrap().to_vec()),
-        ledger_seq: 1,
     };
     let store = k::Store {
         statement: core_statement(&c, "upload", &facts),
