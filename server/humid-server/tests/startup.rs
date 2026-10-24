@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use humid_server::front::Front;
-use humid_server::hsm::SoftHsm;
+use humid_server::hsm::{Hsm, SoftHsm};
 use humid_server::policy::{self, Policy};
 use humid_server::run;
 use humid_server::testkit::cluster::Cluster;
 use humid_server::tls;
 use humid_server::unit::Role;
-use humid_server::wire::B64;
 use rustls::pki_types::{PrivateKeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -188,21 +187,44 @@ async fn front_requires_a_post_quantum_group_and_serves_the_signed_policy() {
         .unwrap();
     assert!(r.starts_with("HTTP/1.1 200"), "{r}");
     // the signed policy, exactly as the root signed it; the app verifies it against its pin
-    let r = get(client(vec![tls::P384_MLKEM1024]), addr, "/htp/v2/keys")
+    // the key bundle: the signed policy exactly as the root signed it, and each unit's
+    // certified HTP/2 KEM key; the app verifies the whole chain against its pinned root
+    let r = get(client(vec![tls::P384_MLKEM1024]), addr, "/healthz")
         .await
         .unwrap();
-    let body = &r[r.find("\r\n\r\n").unwrap() + 4..];
-    let body = body.split_once("\r\n").map_or(body, |(_, rest)| rest); // chunked length line, if any
-    let start = body.find('{').unwrap();
-    let end = body.rfind('}').unwrap();
-    let v: serde_json::Value = serde_json::from_str(&body[start..=end]).unwrap();
-    let bytes = B64::decode(v["policy"].as_str().unwrap()).unwrap();
-    let sig = B64::decode(v["sig"].as_str().unwrap()).unwrap();
-    policy::verify(&bytes, &sig, &c.root, c.clock.now()).unwrap();
-    // HTP/2 isn't built: a typed refusal, not a panic or a silent fallback
-    let r = get(client(vec![tls::P384_MLKEM1024]), addr, "/htp/v2/keys")
-        .await
-        .unwrap();
-    assert!(r.contains("not_implemented"));
+    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    let mut t = humid_server::testkit::cluster::OuterTransport::new(addr, &id.ca).unwrap();
+    let bundle = humid_link::Transport::keys(&mut t).await.unwrap();
+    let b = humid_htp::cert::Bundle::decode(&bundle).unwrap();
+    policy::verify(&b.policy, &b.policy_sig, &c.root, c.clock.now()).unwrap();
+    let root = humid_pq2::DualVerifyingKey::from_bytes(&c.root.to_bytes()).unwrap();
+    let now = u64::try_from(c.clock.now()).unwrap();
+    for unit in [humid_htp::Unit::Core, humid_htp::Unit::Anon] {
+        let cert = b
+            .verified(&root, unit, now, humid_server::htp::statement_key_of)
+            .unwrap();
+        // and that key really terminates a session behind this front
+        let (hs, hello) = humid_htp::client::Handshake::full(unit, &cert, now).unwrap();
+        let ans = humid_link::Transport::call(&mut t, hello).await.unwrap();
+        assert!(hs.finish(&ans).is_ok(), "{unit:?}");
+    }
+    // a bundle checked against another root is refused: the app stops
+    let other = SoftHsm::ephemeral().unwrap();
+    let other = humid_pq2::DualVerifyingKey::from_bytes(
+        &other
+            .dual_public(humid_server::hsm::KeyRef::IdentityRoot)
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert!(
+        b.verified(
+            &other,
+            humid_htp::Unit::Core,
+            now,
+            humid_server::htp::statement_key_of
+        )
+        .is_err()
+    );
     c.stop().await.unwrap();
 }

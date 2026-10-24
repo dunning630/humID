@@ -91,6 +91,7 @@ pub const ROUTES: &[Route] = &[
     r!("POST", "/v1/pass/spend", Anon, NeverSignedIn),
     r!("GET", "/v1/post-tokens/keys", Anon, NeverSignedIn),
     r!("POST", "/v1/post-tokens", Anon, NeverSignedIn),
+    r!("POST", "/v1/stamps", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/deposit", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/tick", Anon, NeverSignedIn),
     r!("POST", "/v1/relay/ack", Anon, NeverSignedIn),

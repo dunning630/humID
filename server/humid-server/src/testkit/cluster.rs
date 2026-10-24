@@ -2,8 +2,12 @@
 //! listeners (SecP384r1MLKEM1024, ML-DSA-87 certificates from a fresh CA), each with its own
 //! software HSM and its own Postgres schema, and a signed development policy.
 //!
-//! Tests call core and anon **as front would** (front's certificate), and can also call keys
-//! **as core would** or **as front would**, to prove what each unit refuses.
+//! A real front runs on an outer TLS listener in front of them, and the simulated phone ([`App`])
+//! talks to it the way the app will: HTP/2 through `crates/humid-link`, so every flow test
+//! runs over the real protocol end to end (handshake to the certified KEM key, records,
+//! chunks, the nonce pool). Tests can also call units directly **as front would** (front's
+//! certificate: only `/htp/v2/*`, `/tlog/*` and health answer it) and keys **as core would**,
+//! to prove what each unit refuses.
 
 use std::sync::Arc;
 
@@ -51,6 +55,14 @@ pub struct Cluster {
     pub front_to_keys: UnitClient,
     /// Front's identity.
     pub front_identity: Identity,
+    /// Front's outer (public) address.
+    pub front_addr: std::net::SocketAddr,
+    /// Core's HTP/2 endpoint.
+    pub core_htp: Arc<crate::htp::Endpoint>,
+    /// Anon's HTP/2 endpoint.
+    pub anon_htp: Arc<crate::htp::Endpoint>,
+    /// What a front in the attacker's hands sees and does to calls (see [`Tap`]).
+    pub tap: Arc<Tap>,
     schemas: Vec<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -122,10 +134,26 @@ impl Cluster {
             clock.clone(),
             core_to_keys.clone(),
         );
+        let htp_cfg = |unit| {
+            let mut c = humid_htp::server::Config::new(unit);
+            // tests move the clock by days: sessions end only when a test ends them
+            c.idle_ms = u64::MAX / 4;
+            c.max_age_ms = u64::MAX / 4;
+            c.ticket_ms = u64::MAX / 4;
+            c.answer_ms = u64::MAX / 4;
+            c
+        };
+        let core_htp = crate::htp::Endpoint::with_config(
+            Role::Core,
+            core_hsm.clone(),
+            KeyRef::CoreStatement,
+            clock.clone(),
+            htp_cfg(humid_htp::Unit::Core),
+        );
         let (core_addr, t2) = net::spawn(
             any,
             id_core.server_config()?,
-            core.router(),
+            crate::htp::mount(core.router(), &core_htp),
             Role::Core.callers(),
             false,
         )
@@ -138,18 +166,42 @@ impl Cluster {
             2048,
         )
         .await?;
+        let anon_htp = crate::htp::Endpoint::with_config(
+            Role::Anon,
+            anon_hsm.clone(),
+            KeyRef::AnonStatement,
+            clock.clone(),
+            htp_cfg(humid_htp::Unit::Anon),
+        );
         let (anon_addr, t3) = net::spawn(
             any,
             id_anon.server_config()?,
-            anon.router(),
+            crate::htp::mount(anon.router(), &anon_htp),
             Role::Anon.callers(),
             false,
         )
         .await?;
 
+        let to_core = UnitClient::new(&id_front, Role::Core, &format!("https://{core_addr}"))?;
+        let to_anon = UnitClient::new(&id_front, Role::Anon, &format!("https://{anon_addr}"))?;
+        let front = crate::front::Front::new(
+            signed.clone(),
+            clock.clone(),
+            to_core.clone(),
+            to_anon.clone(),
+        );
+        let tap = Arc::new(Tap::default());
+        let outer = outer_config(&id_front)?;
+        let (front_addr, t4) =
+            net::spawn(any, outer, tap.clone().wrap(front.router()), &[], true).await?;
+
         Ok(Self {
-            to_core: UnitClient::new(&id_front, Role::Core, &format!("https://{core_addr}"))?,
-            to_anon: UnitClient::new(&id_front, Role::Anon, &format!("https://{anon_addr}"))?,
+            to_core,
+            to_anon,
+            front_addr,
+            core_htp,
+            anon_htp,
+            tap,
             core_to_keys,
             front_to_keys,
             front_identity: id_front,
@@ -162,7 +214,7 @@ impl Cluster {
             policy: signed,
             root: rk,
             schemas: vec![s1, s2, s3],
-            tasks: vec![t1, t2, t3],
+            tasks: vec![t1, t2, t3, t4],
         })
     }
 
@@ -195,90 +247,367 @@ pub async fn keys_count(c: &Cluster, table: &str) -> i64 {
     c.keys.count_rows(table).await.expect("count")
 }
 
-/// A test client that sits where front sits: it carries the HTP transcript and the session
-/// token as headers, as front will once HTP/2 lands.
+/// What front relays, seen from front: every call and every answer, in the clear as far as
+/// front can see them (the bytes on its side of the outer TLS). A test can also have front
+/// **change** calls (a compromised front), with [`Tap::set_mangle`].
+#[derive(Default)]
+pub struct Tap {
+    /// `(call, answer)` bytes, in order.
+    pub seen: std::sync::Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    mangle: std::sync::Mutex<Option<Mangle>>,
+}
+
+/// A function front applies to each call body before forwarding it.
+pub type Mangle = Box<dyn Fn(&mut Vec<u8>) + Send + Sync>;
+
+impl Tap {
+    /// Have front rewrite calls (until cleared with `None`).
+    pub fn set_mangle(&self, f: Option<Mangle>) {
+        if let Ok(mut g) = self.mangle.lock() {
+            *g = f;
+        }
+    }
+
+    /// Everything front has relayed so far, calls and answers concatenated.
+    #[must_use]
+    pub fn all_bytes(&self) -> Vec<u8> {
+        self.seen
+            .lock()
+            .map(|v| {
+                v.iter()
+                    .flat_map(|(a, b)| [a.clone(), b.clone()].concat())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn wrap(self: Arc<Self>, r: axum::Router) -> axum::Router {
+        let me = self;
+        r.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let me = me.clone();
+                async move {
+                    if req.uri().path() != "/htp/v2/call" {
+                        return next.run(req).await;
+                    }
+                    let (parts, body) = req.into_parts();
+                    let mut bytes = net::body_bytes(body, crate::htp::MAX_CALL)
+                        .await
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
+                    if let Ok(g) = me.mangle.lock()
+                        && let Some(f) = &*g
+                    {
+                        f(&mut bytes);
+                    }
+                    let call = bytes.clone();
+                    let resp = next
+                        .run(axum::extract::Request::from_parts(
+                            parts,
+                            axum::body::Body::from(bytes),
+                        ))
+                        .await;
+                    let (rp, rb) = resp.into_parts();
+                    let out = net::body_bytes(rb, 128 << 20)
+                        .await
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
+                    if let Ok(mut g) = me.seen.lock() {
+                        g.push((call, out.clone()));
+                    }
+                    axum::response::Response::from_parts(rp, axum::body::Body::from(out))
+                }
+            },
+        ))
+    }
+}
+
+/// The phone's transport: HTTPS to front's outer listener (TLS 1.3, a PQ group), the way the
+/// app's platform TLS stack will reach it.
+pub struct OuterTransport {
+    client: hyper_util::client::legacy::Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        http_body_util::Full<bytes::Bytes>,
+    >,
+    base: String,
+}
+
+impl OuterTransport {
+    /// A transport to `addr`, trusting `ca` for front's outer certificate.
+    ///
+    /// # Errors
+    /// A bad CA certificate.
+    pub fn new(
+        addr: std::net::SocketAddr,
+        ca: &rustls::pki_types::CertificateDer<'static>,
+    ) -> Result<Self> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(ca.clone())
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let cfg = rustls::ClientConfig::builder_with_provider(crate::tls::outer_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| Error::internal(e.to_string()))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(cfg)
+            .https_only()
+            .with_server_name_resolver(hyper_rustls::FixedServerNameResolver::new(
+                crate::tls::server_name(Role::Front)?,
+            ))
+            .enable_http1()
+            .build();
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https);
+        Ok(Self {
+            client,
+            base: format!("https://{addr}"),
+        })
+    }
+
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, humid_link::NetError> {
+        use http_body_util::BodyExt;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base))
+            .header("content-type", crate::htp::CONTENT_TYPE)
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .map_err(|_| humid_link::NetError)?;
+        let resp = self
+            .client
+            .request(req)
+            .await
+            .map_err(|_| humid_link::NetError)?;
+        let b = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| humid_link::NetError)?
+            .to_bytes();
+        Ok(b.to_vec())
+    }
+}
+
+impl humid_link::Transport for OuterTransport {
+    fn call(
+        &mut self,
+        body: Vec<u8>,
+    ) -> impl std::future::Future<Output = std::result::Result<Vec<u8>, humid_link::NetError>> + Send
+    {
+        let client = self.client.clone();
+        let base = self.base.clone();
+        async move {
+            OuterTransport { client, base }
+                .send("POST", "/htp/v2/call", body)
+                .await
+        }
+    }
+    fn keys(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::result::Result<Vec<u8>, humid_link::NetError>> + Send
+    {
+        let client = self.client.clone();
+        let base = self.base.clone();
+        async move {
+            OuterTransport { client, base }
+                .send("GET", "/htp/v2/keys", vec![])
+                .await
+        }
+    }
+}
+
+/// The app's link to one unit through front.
+pub type Link = humid_link::Link<OuterTransport>;
+
+fn link(c: &Cluster, unit: humid_htp::Unit) -> Result<Link> {
+    let root = humid_pq2::DualVerifyingKey::from_bytes(&c.root.to_bytes())?;
+    let clock = c.clock.clone();
+    Ok(humid_link::Link::new(
+        unit,
+        root,
+        crate::htp::statement_key_of,
+        OuterTransport::new(c.front_addr, &c.front_identity.ca)?,
+        Box::new(move || u64::try_from(clock.now()).unwrap_or(0)),
+    ))
+}
+
+fn link_err(e: humid_link::LinkError) -> Error {
+    match e {
+        humid_link::LinkError::Offline => Error::unavailable("offline", "No network."),
+        humid_link::LinkError::IdentityChanged => Error::forbidden(
+            "server_identity_changed",
+            "The server doesn't prove the identity this app pins.",
+        ),
+        humid_link::LinkError::Protocol(c) => Error::Upstream {
+            status: c.http_status(),
+            code: c.as_str().into(),
+            message: "The secure channel refused that.".into(),
+        },
+        humid_link::LinkError::Unit { status, code } => Error::Upstream {
+            status,
+            code,
+            message: String::new(),
+        },
+        humid_link::LinkError::NoNonce => Error::internal("no nonce left in the test pool"),
+    }
+}
+
+/// Fields every app body sends as bytes (typed parts) rather than base64 inside JSON.
+const BLOBS: &[&str] = &["envelope", "sealed_share"];
+
+/// A simulated phone's app: one HTP/2 session to core and one to anon, through front.
 pub struct App<'a> {
     /// The cluster.
     pub c: &'a Cluster,
-    /// The HTP transcript hash of this "session".
+    /// The HTP/2 transcript of the core session (what sign-ins and proofs name). Tests may
+    /// overwrite it to make a phone sign for another session.
     pub th: Vec<u8>,
     /// The session token, once signed in.
     pub token: Option<Vec<u8>>,
     /// Unused step-up nonces.
     pub nonces: Vec<Vec<u8>>,
-    /// The client network front would report.
-    pub net: String,
-    seq: u64,
+    core: tokio::sync::Mutex<Link>,
+    anon: tokio::sync::Mutex<Link>,
+    /// Request ids reserved for proofs made by [`App::sign`] (by proof `seq`).
+    reserved: std::sync::Mutex<std::collections::BTreeMap<u64, u32>>,
 }
 
 impl<'a> App<'a> {
-    /// A fresh HTP "session".
+    /// A fresh app: opens its HTP/2 session to core at once (the transcript is needed to
+    /// sign anything); the anonymous session to anon opens on first use.
     ///
     /// # Errors
-    /// Generator failure.
-    pub fn new(c: &'a Cluster) -> Result<Self> {
+    /// The handshake failed.
+    pub async fn new(c: &'a Cluster) -> Result<Self> {
+        let mut core = link(c, humid_htp::Unit::Core)?;
+        let anon = link(c, humid_htp::Unit::Anon)?;
+        core.connect().await.map_err(link_err)?;
+        let th = core.th().ok_or_else(|| Error::internal("no session"))?;
         Ok(Self {
             c,
-            th: crate::crypto::random::<64>()?.to_vec(),
+            th: th.to_vec(),
             token: None,
             nonces: vec![],
-            net: "v4:192.0.2.1".into(),
-            seq: 0,
+            core: tokio::sync::Mutex::new(core),
+            anon: tokio::sync::Mutex::new(anon),
+            reserved: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
     }
 
-    fn headers(&self) -> Vec<(String, String)> {
-        let mut h = vec![
-            (crate::api::headers::TH.to_string(), B64::encode(&self.th)),
-            (net::CLIENT_NET.to_string(), self.net.clone()),
-        ];
-        if let Some(t) = &self.token {
-            h.push((
-                crate::api::headers::AUTHORIZATION.to_string(),
-                format!("Session {}", B64::encode(t)),
-            ));
-        }
-        h
+    /// The core session's HTP/2 session id.
+    pub async fn sid(&self) -> Option<[u8; 16]> {
+        self.core.lock().await.sid()
     }
 
-    /// Call core.
+    /// Lock the app and unlock it again: the core session is resumed from its ticket (a new
+    /// session, the same chain transcript) and the sign-in still holds.
     ///
     /// # Errors
-    /// Core's refusal.
+    /// The resumption failed.
+    pub async fn relock(&self) -> Result<(usize, usize)> {
+        let mut l = self.core.lock().await;
+        l.lock();
+        l.connect().await.map_err(link_err)?;
+        Ok((l.handshakes(), l.resumptions()))
+    }
+
+    /// Split a JSON body into typed parts: a top-level `signed` becomes the binary proof, the
+    /// [`BLOBS`] fields bytes; everything else stays JSON.
+
+    async fn send(
+        &self,
+        unit: humid_htp::Unit,
+        method: &str,
+        path: &str,
+        v: Option<&serde_json::Value>,
+        extra: &[(humid_htp::msg::HeaderName, &[u8])],
+    ) -> Result<(u16, Vec<u8>)> {
+        let m = humid_htp::msg::Method::parse(method).ok_or_else(|| Error::internal("method"))?;
+        let mut l = match unit {
+            humid_htp::Unit::Core => self.core.lock().await,
+            humid_htp::Unit::Anon => self.anon.lock().await,
+        };
+        let mut h: Vec<(humid_htp::msg::HeaderName, &[u8])> = extra.to_vec();
+        if unit == humid_htp::Unit::Core
+            && let Some(t) = &self.token
+        {
+            h.push((humid_htp::msg::HeaderName::Session, t.as_slice()));
+        }
+        let (rid, owned) = match v {
+            Some(v) => humid_link_body::split(self, v)?,
+            None => (None, humid_link_body::Owned::default()),
+        };
+        let blobs: Vec<(&str, &[u8])> = owned
+            .blobs
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect();
+        let body = if owned.parts {
+            humid_link::Body::Parts {
+                proof: owned.proof,
+                json: &owned.json,
+                blobs: &blobs,
+            }
+        } else {
+            humid_link::Body::Raw(&owned.json)
+        };
+        let r = l.call(rid, m, path, body, &h).await.map_err(link_err)?;
+        Ok((r.status, r.body.to_vec()))
+    }
+
+    /// Call core through HTP/2.
+    ///
+    /// # Errors
+    /// Core's refusal, or the channel's.
     pub async fn core<T: Serialize + ?Sized, R: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
         body: &T,
     ) -> Result<R> {
-        let h = self.headers();
-        let hr: Vec<(&str, &str)> = h.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        let bytes = if method == "GET" {
-            vec![]
-        } else {
-            serde_json::to_vec(body).map_err(|e| Error::internal(e.to_string()))?
-        };
-        let (status, out) = self.c.to_core.raw(method, path, &hr, bytes).await?;
+        let v = serde_json::to_value(body).map_err(|e| Error::internal(e.to_string()))?;
+        let v = (method != "GET").then_some(&v);
+        let (status, out) = self
+            .send(humid_htp::Unit::Core, method, path, v, &[])
+            .await?;
         net::decode(status, &out)
     }
 
-    /// Call core, raw bytes back (chunks).
+    /// Call core through HTP/2, raw bytes back (chunks). `extra` may carry the download
+    /// ticket as `("x-humid-ticket", base64url)`.
     ///
     /// # Errors
-    /// Unreachable.
+    /// The channel's refusal.
     pub async fn core_raw(
         &self,
         method: &str,
         path: &str,
         extra: &[(&str, &str)],
     ) -> Result<(u16, bytes::Bytes)> {
-        let h = self.headers();
-        let mut hr: Vec<(&str, &str)> = h.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        hr.extend_from_slice(extra);
-        self.c.to_core.raw(method, path, &hr, vec![]).await
+        let mut h = vec![];
+        let mut keep = vec![];
+        for (k, v) in extra {
+            if *k == crate::api::headers::TICKET {
+                keep.push(B64::decode(v).unwrap_or_else(|_| vec![0]));
+            }
+        }
+        for t in &keep {
+            h.push((humid_htp::msg::HeaderName::DownloadTicket, t.as_slice()));
+        }
+        let (status, out) = self
+            .send(humid_htp::Unit::Core, method, path, None, &h)
+            .await?;
+        Ok((status, bytes::Bytes::from(out)))
     }
 
-    /// Call anon.
+    /// Call anon through the anonymous HTP/2 session.
     ///
     /// # Errors
     /// Anon's refusal.
@@ -288,13 +617,27 @@ impl<'a> App<'a> {
         path: &str,
         body: &T,
     ) -> Result<R> {
-        let bytes = if method == "GET" {
-            vec![]
-        } else {
-            serde_json::to_vec(body).map_err(|e| Error::internal(e.to_string()))?
-        };
-        let (status, out) = self.c.to_anon.raw(method, path, &[], bytes).await?;
+        let v = serde_json::to_value(body).map_err(|e| Error::internal(e.to_string()))?;
+        let v = (method != "GET").then_some(&v);
+        let (status, out) = self
+            .send(humid_htp::Unit::Anon, method, path, v, &[])
+            .await?;
         net::decode(status, &out)
+    }
+
+    /// Call anon, raw bytes back (fixed-size ticks).
+    ///
+    /// # Errors
+    /// The channel's refusal.
+    pub async fn anon_raw<T: Serialize + ?Sized>(
+        &self,
+        method: &str,
+        path: &str,
+        body: &T,
+    ) -> Result<(u16, Vec<u8>)> {
+        let v = serde_json::to_value(body).map_err(|e| Error::internal(e.to_string()))?;
+        self.send(humid_htp::Unit::Anon, method, path, Some(&v), &[])
+            .await
     }
 
     /// Register `phone` as a new account and sign in.
@@ -333,7 +676,8 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    /// A step-up from `phone` for `method path` over `body`, using a pool nonce.
+    /// A step-up from `phone` for `method path` over `body`, using a pool nonce. Its `seq`
+    /// names the request id reserved for it in this app's core session.
     ///
     /// # Errors
     /// No nonce left; signing failure.
@@ -348,13 +692,22 @@ impl<'a> App<'a> {
             .nonces
             .pop()
             .ok_or_else(|| Error::internal("no nonce left in the test pool"))?;
-        self.seq += 1;
+        // tests make one call at a time, so the link is free here
+        let st = self
+            .core
+            .try_lock()
+            .map_err(|_| Error::internal("the app is busy"))?
+            .reserve()
+            .map_err(link_err)?;
+        if let Ok(mut g) = self.reserved.lock() {
+            g.insert(st.seq, st.rid);
+        }
         let b = serde_json::to_vec(body).map_err(|e| Error::internal(e.to_string()))?;
         phone.step_up(
             method,
             path,
             &self.th,
-            self.seq,
+            st.seq,
             &nonce,
             self.c.clock.now(),
             &b,
@@ -378,4 +731,104 @@ impl<'a> App<'a> {
             .collect();
         Ok(())
     }
+}
+
+/// Turning a test's JSON body into what the app sends.
+mod humid_link_body {
+    use super::{App, B64, BLOBS, Error, Result};
+
+    /// An owned typed body.
+    #[derive(Default)]
+    pub struct Owned {
+        pub parts: bool,
+        pub proof: Option<humid_htp::parts::Proof>,
+        pub json: Vec<u8>,
+        pub blobs: Vec<(String, Vec<u8>)>,
+    }
+
+    pub fn split(app: &App<'_>, v: &serde_json::Value) -> Result<(Option<u32>, Owned)> {
+        let Some(obj) = v.as_object() else {
+            return Ok((
+                None,
+                Owned {
+                    json: serde_json::to_vec(v).map_err(|e| Error::internal(e.to_string()))?,
+                    ..Owned::default()
+                },
+            ));
+        };
+        let mut obj = obj.clone();
+        let mut out = Owned::default();
+        let mut rid = None;
+        if let Some(s) = obj.remove("signed") {
+            let s: crate::proofs::Signed =
+                serde_json::from_value(s).map_err(|e| Error::bad("bad_json", e.to_string()))?;
+            let fixed =
+                |b: &[u8], n: usize| -> Option<Vec<u8>> { (b.len() == n).then(|| b.to_vec()) };
+            let (Some(th), Some(nonce)) = (fixed(&s.proof.th, 64), fixed(&s.proof.nonce, 32))
+            else {
+                // a malformed proof can't be sent as binary: let the unit see it as JSON
+                obj.insert(
+                    "signed".into(),
+                    serde_json::to_value(&s).map_err(|e| Error::internal(e.to_string()))?,
+                );
+                return Ok((
+                    None,
+                    Owned {
+                        json: serde_json::to_vec(&obj)
+                            .map_err(|e| Error::internal(e.to_string()))?,
+                        ..Owned::default()
+                    },
+                ));
+            };
+            let mut th_a = [0u8; 64];
+            th_a.copy_from_slice(&th);
+            let mut n_a = [0u8; 32];
+            n_a.copy_from_slice(&nonce);
+            // the request id this proof's seq was reserved under, if it is this app's own
+            // and still unsent; otherwise (a replayed or foreign proof) a fresh request
+            if let Ok(mut g) = app.reserved.lock()
+                && let Some(r) = g.remove(&s.proof.seq)
+            {
+                rid = Some(r);
+            }
+            out.proof = Some(humid_htp::parts::Proof {
+                method: s.proof.method,
+                path: s.proof.path,
+                th: th_a,
+                seq: s.proof.seq,
+                device: s.proof.device.0,
+                nonce: n_a,
+                at: u64::try_from(s.proof.at).unwrap_or(0),
+                device_sig: s.proof.device_sig.0,
+                live_p256: s.proof.live_p256.0,
+                live_mldsa: s.proof.live_mldsa.map(|b| b.0),
+                body: s.body.0,
+            });
+            out.parts = true;
+        }
+        for name in BLOBS {
+            if let Some(serde_json::Value::String(t)) = obj.get(*name) {
+                let b = B64::decode(t)?;
+                obj.remove(*name);
+                out.blobs.push(((*name).to_string(), b));
+                out.parts = true;
+            }
+        }
+        out.json = serde_json::to_vec(&serde_json::Value::Object(obj))
+            .map_err(|e| Error::internal(e.to_string()))?;
+        Ok((rid, out))
+    }
+}
+
+fn outer_config(id: &Identity) -> Result<Arc<rustls::ServerConfig>> {
+    let cfg = rustls::ServerConfig::builder_with_provider(crate::tls::outer_provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| Error::internal(e.to_string()))?
+        .with_no_client_auth()
+        .with_single_cert(
+            id.chain.clone(),
+            rustls::pki_types::PrivateKeyDer::Pkcs8(id.key.clone_key()),
+        )
+        .map_err(|e| Error::internal(e.to_string()))?;
+    Ok(Arc::new(cfg))
 }

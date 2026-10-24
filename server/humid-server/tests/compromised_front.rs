@@ -100,7 +100,7 @@ async fn front_cannot_even_connect_to_keys() {
 #[tokio::test]
 async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let acct = alice.account_id();
     let before = (device_count(&c, &acct).await, ledger_len(&c, &acct).await);
@@ -108,7 +108,7 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
     // The attacker copied alice's account seed and has a phone of its own: its certificate is
     // genuinely signed by alice's account key. That is exactly what 4.x accepted (H1).
     let thief = alice.sibling().unwrap();
-    let mut t = App::new(&c).unwrap();
+    let mut t = App::new(&c).await.unwrap();
     let en = thief.enrolment(&t.th).unwrap();
     assert!(
         proofs::check_enrolment(&en, Some(&acct), &t.th, false).is_ok(),
@@ -129,7 +129,7 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
 
     // 2. a link alice DID approve, but for another device key (her tablet)
     let tablet = alice.sibling().unwrap();
-    let tb = App::new(&c).unwrap();
+    let tb = App::new(&c).await.unwrap();
     let once2 = KemSecret::generate().unwrap();
     let l2: Value = tb.core("POST", "/v1/links", &json!({ "device_vk": B64(tablet.device.public().to_bytes()), "kem_pk": B64(once2.public().to_bytes()) })).await.unwrap();
     let code = l2["code"].as_str().unwrap().to_string();
@@ -203,7 +203,7 @@ async fn enrolment_without_an_approval_is_refused_even_with_a_copied_seed() {
 #[tokio::test]
 async fn core_refuses_an_open_without_the_holders_live_proof() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 100).await.unwrap();
     let acct = alice.account_id();
@@ -252,7 +252,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
     );
     // a proof from a device that isn't enrolled (copied seed, own phone), in alice's session
     let thief = alice.sibling().unwrap();
-    let mut forged = a
+    let forged = a
         .sign(
             &thief,
             "POST",
@@ -267,6 +267,23 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
         ),
         "bad_proof"
     );
+    // the same proof again, in a new request: HTP/2 refuses it before core (its seq names
+    // the request it was made for)
+    assert_eq!(
+        err_code(
+            a.core::<_, Value>("POST", &path, &json!({ "signed": forged.clone() }))
+                .await
+        ),
+        "proof_mismatch"
+    );
+    let mut forged = a
+        .sign(
+            &thief,
+            "POST",
+            &path,
+            &open_body(&alice, &doc.id, &attacker_key),
+        )
+        .unwrap();
     forged.proof.device = alice.device_id(); // claim to be alice's device: the signature doesn't match its key
     assert_eq!(
         err_code(
@@ -294,7 +311,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
         "step_up_stale"
     );
     // a real proof replayed into another HTP session
-    let mut other = App::new(&c).unwrap();
+    let mut other = App::new(&c).await.unwrap();
     other.login(&alice, 0).await.unwrap();
     let mine = a
         .sign(
@@ -372,7 +389,7 @@ async fn send_release(c: &Cluster, object: &Id, r: &Release) -> humid_server::Re
 #[tokio::test]
 async fn keys_refuses_a_release_without_a_valid_holder_proof_even_from_core() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 100).await.unwrap();
     let (other_doc, _) = upload(&mut a, &alice, 100).await.unwrap();
@@ -471,7 +488,7 @@ async fn keys_refuses_a_release_without_a_valid_holder_proof_even_from_core() {
 #[tokio::test]
 async fn an_upload_share_swapped_by_front_is_refused() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     // The phone seals its share; front substitutes one it sealed itself (so it would know it).
     let id = Id::random().unwrap();
@@ -547,7 +564,7 @@ async fn an_upload_share_swapped_by_front_is_refused() {
 #[tokio::test]
 async fn front_cannot_write_or_forge_ledger_events() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let acct = alice.account_id();
     let n0 = ledger_len(&c, &acct).await;
@@ -588,7 +605,7 @@ async fn front_cannot_write_or_forge_ledger_events() {
 #[tokio::test]
 async fn front_cannot_set_off_duress_or_a_lockdown() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let acct = alice.account_id();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
@@ -612,7 +629,7 @@ async fn front_cannot_set_off_duress_or_a_lockdown() {
     }
 
     // front flips the duress bit in an ordinary sign-in: the device key signed d = 0
-    let t = App::new(&c).unwrap();
+    let t = App::new(&c).await.unwrap();
     let ch: Value = t
         .core(
             "POST",
@@ -704,7 +721,7 @@ async fn front_cannot_set_off_duress_or_a_lockdown() {
 #[tokio::test]
 async fn keys_refuses_checkin_changes_without_a_live_proof() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let acct = alice.account_id();
     let s = a
@@ -785,7 +802,7 @@ async fn keys_refuses_checkin_changes_without_a_live_proof() {
 #[tokio::test]
 async fn anon_mints_nothing_on_fronts_word() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let keys: Value = a
         .anon("GET", "/v1/post-tokens/keys", &json!({}))
@@ -845,9 +862,9 @@ async fn anon_mints_nothing_on_fronts_word() {
 #[tokio::test]
 async fn front_cannot_invent_a_session() {
     let (c, alice) = setup().await;
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
-    let mut f = App::new(&c).unwrap();
+    let mut f = App::new(&c).await.unwrap();
     f.token = Some(vec![0; 32]);
     assert_eq!(
         err_code(f.core::<_, Value>("GET", "/v1/me", &json!({})).await),
@@ -881,5 +898,220 @@ async fn front_cannot_invent_a_session() {
     );
     let me: Value = a.core("GET", "/v1/me", &json!({})).await.unwrap();
     assert_eq!(me["devices"].as_array().unwrap().len(), 1);
+    c.stop().await.unwrap();
+}
+
+/* ------------------------- HTP/2: what front can see ------------------------- */
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    needle.len() >= 8 && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+#[tokio::test]
+async fn front_sees_no_body_token_proof_or_path() {
+    let (c, alice) = setup().await;
+    let mut a = App::new(&c).await.unwrap();
+    a.register(&alice).await.unwrap();
+    let (doc, _) = upload(&mut a, &alice, 3000).await.unwrap();
+    let (share, _, _) = open(&mut a, &alice, &doc.id).await.unwrap();
+    assert!(share.ct_eq(&doc.share));
+    let all = c.tap.all_bytes();
+    assert!(!all.is_empty());
+    let token = a.token.clone().unwrap();
+    let secrets: Vec<(&str, Vec<u8>)> = vec![
+        ("the envelope", doc.envelope[..64].to_vec()),
+        ("the session token", token.clone()),
+        ("the token, as base64", B64::encode(&token).into_bytes()),
+        ("the account id", alice.account_id().0.to_vec()),
+        (
+            "the account id, as hex",
+            alice.account_id().to_string().into_bytes(),
+        ),
+        ("the document id, as hex", doc.id.to_string().into_bytes()),
+        (
+            "the device key",
+            alice.device.public().to_bytes()[13..77].to_vec(),
+        ),
+        ("the route", b"/v1/objects".to_vec()),
+        ("the sign-in route", b"/v1/auth/login".to_vec()),
+        ("the transcript", a.th.clone()),
+        ("a JSON field name", b"\"manifest_hash\"".to_vec()),
+    ];
+    for (what, s) in secrets {
+        assert!(!contains(&all, &s), "front saw {what}");
+    }
+    // every frame front relayed is a whole size class, and what it can read is the header
+    for (call, answer) in c.tap.seen.lock().unwrap().iter() {
+        for bytes in [call, answer] {
+            for f in humid_htp::frame::split(bytes).unwrap() {
+                assert!(humid_htp::frame::CLASSES.contains(&f.bytes.len()));
+            }
+        }
+    }
+    c.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn front_cannot_alter_a_request_body_in_flight() {
+    let (c, alice) = setup().await;
+    let mut a = App::new(&c).await.unwrap();
+    a.register(&alice).await.unwrap();
+    let acct = alice.account_id();
+    let n0 = ledger_len(&c, &acct).await;
+    let objects = |c: &Cluster| {
+        let db = c.core_db().clone();
+        async move {
+            db.conn()
+                .await
+                .unwrap()
+                .query_one("SELECT count(*) FROM objects", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        }
+    };
+    // front flips one bit of the upload's record (past the cleartext header); the upload is
+    // the one call in its size class (16 KiB), so front can pick it out by size alone
+    for at in [40usize, 300, 9000] {
+        c.tap.set_mangle(Some(Box::new(move |b: &mut Vec<u8>| {
+            if b.len() >= humid_htp::frame::CLASSES[2] && b[3] == 4 {
+                b[at] ^= 0x20;
+            }
+        })));
+        let r = upload(&mut a, &alice, 500).await;
+        assert!(
+            r.is_err(),
+            "a changed record never reaches core (byte {at})"
+        );
+        c.tap.set_mangle(None);
+        a.refill().await.unwrap();
+    }
+    // front moves a record to another session, or replays an earlier call
+    let mut b = App::new(&c).await.unwrap();
+    b.login(&alice, 0).await.unwrap();
+    let sid_b = b.sid().await.unwrap();
+    c.tap.set_mangle(Some(Box::new(move |v: &mut Vec<u8>| {
+        if v.len() >= 32 && v[3] == 4 {
+            v[8..24].copy_from_slice(&sid_b);
+        }
+    })));
+    assert!(
+        a.core::<_, Value>("GET", "/v1/me", &json!({}))
+            .await
+            .is_err()
+    );
+    c.tap.set_mangle(None);
+    let replay = c.tap.seen.lock().unwrap().last().unwrap().0.clone();
+    let (status, ans) = c
+        .to_core
+        .raw("POST", "/htp/v2/call", &[], replay)
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
+    let f = humid_htp::frame::split(&ans).unwrap();
+    assert!(
+        f.iter()
+            .all(|f| f.header.kind == humid_htp::frame::Kind::Error)
+    );
+    // nothing changed; the honest request still works
+    assert_eq!(objects(&c).await, 0);
+    assert_eq!(ledger_len(&c, &acct).await, n0);
+    a.refill().await.unwrap();
+    upload(&mut a, &alice, 500).await.unwrap();
+    assert_eq!(objects(&c).await, 1);
+    c.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn front_cannot_reach_the_app_routes_without_a_session() {
+    let (c, alice) = setup().await;
+    let mut a = App::new(&c).await.unwrap();
+    a.register(&alice).await.unwrap();
+    let token = B64::encode(a.token.as_ref().unwrap());
+    let th = B64::encode(&a.th);
+    // with front's own certificate, a stolen token and the right transcript: 404, because
+    // /v1/* answers only requests the HTP/2 endpoint opened from a session
+    for (m, p) in [
+        ("GET", "/v1/me"),
+        ("POST", "/v1/sync"),
+        ("POST", "/v1/auth/challenge"),
+    ] {
+        let (status, _) = c
+            .to_core
+            .raw(
+                m,
+                p,
+                &[
+                    ("authorization", &format!("Session {token}")),
+                    ("x-humid-th", &th),
+                ],
+                b"{}".to_vec(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, 404, "{m} {p}");
+    }
+    let (status, _) = c
+        .to_anon
+        .raw("POST", "/v1/relay/tick", &[], b"{}".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(status, 404);
+    // and the session token is useless in another HTP/2 session
+    let mut other = App::new(&c).await.unwrap();
+    other.token = a.token.clone();
+    assert_eq!(
+        err_code(other.core::<_, Value>("GET", "/v1/me", &json!({})).await),
+        "no_session"
+    );
+    // a session token on an anonymous route (messaging never signs in): refused by HTP/2
+    let root = humid_pq2::DualVerifyingKey::from_bytes(&c.root.to_bytes()).unwrap();
+    let t = humid_server::testkit::cluster::OuterTransport::new(c.front_addr, &c.front_identity.ca)
+        .unwrap();
+    let clock = c.clock.clone();
+    let mut l = humid_link::Link::new(
+        humid_htp::Unit::Anon,
+        root,
+        humid_server::htp::statement_key_of,
+        t,
+        Box::new(move || u64::try_from(clock.now()).unwrap()),
+    );
+    let tok = a.token.clone().unwrap();
+    let r = l
+        .call(
+            None,
+            humid_htp::msg::Method::Post,
+            "/v1/relay/tick",
+            humid_link::Body::Raw(b"{}"),
+            &[(humid_htp::msg::HeaderName::Session, &tok)],
+        )
+        .await;
+    assert_eq!(
+        r.err(),
+        Some(humid_link::LinkError::Protocol(
+            humid_htp::Code::AuthNotAllowed
+        ))
+    );
+    c.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unlock_resumes_the_session_and_the_sign_in_survives() {
+    let (c, alice) = setup().await;
+    let mut a = App::new(&c).await.unwrap();
+    a.register(&alice).await.unwrap();
+    let before = a.sid().await.unwrap();
+    let (full, resumed) = a.relock().await.unwrap();
+    assert_eq!(
+        (full, resumed),
+        (1, 1),
+        "one full handshake, then a resumption"
+    );
+    assert_ne!(a.sid().await.unwrap(), before, "a new session (new keys)");
+    let me: Value = a.core("GET", "/v1/me", &json!({})).await.unwrap();
+    assert_eq!(me["account"], json!(alice.account_id()));
+    // a step-up in the resumed session works: its proof names this session's generation
+    a.refill().await.unwrap();
+    upload(&mut a, &alice, 100).await.unwrap();
     c.stop().await.unwrap();
 }

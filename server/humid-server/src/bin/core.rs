@@ -50,5 +50,15 @@ async fn go() -> humid_server::Result<()> {
             let _ = sweeper.redact_closed().await;
         }
     });
-    run::serve_internal(&s, Role::Core, c.router()).await
+    // HTP/2 ends here: front forwards opaque calls; /v1/* answers only what the endpoint
+    // dispatched from an authenticated session.
+    let ep = humid_server::htp::Endpoint::new(
+        Role::Core,
+        s.hsm.clone(),
+        humid_server::hsm::KeyRef::CoreStatement,
+        s.clock.clone(),
+    );
+    humid_server::htp::spawn_ticks(ep.clone());
+    let router = humid_server::htp::mount(c.router(), &ep);
+    run::serve_internal(&s, Role::Core, router).await
 }

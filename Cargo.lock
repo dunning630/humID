@@ -2144,6 +2144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "humid-link"
+version = "0.1.0"
+dependencies = [
+ "humid-htp",
+ "humid-pq2",
+ "zeroize",
+]
+
+[[package]]
 name = "humid-pq2"
 version = "0.1.0"
 dependencies = [
@@ -2181,6 +2190,8 @@ dependencies = [
  "hex",
  "http-body-util",
  "humid-core",
+ "humid-htp",
+ "humid-link",
  "humid-pq2",
  "humid-server",
  "hyper",

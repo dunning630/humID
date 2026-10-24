@@ -1,0 +1,16 @@
+[package]
+name = "humid-link"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The app core's link to the HumID 5.0 server: HTP/2 sessions (pinned key bundle, resumption, one delta /sync, the step-up nonce pool, chunked downloads), with a blocking transport the platform supplies."
+
+[lints]
+workspace = true
+
+[dependencies]
+humid-htp = { path = "../humid-htp" }
+humid-pq2 = { path = "../humid-pq2" }
+zeroize = { version = "1.9", features = ["alloc"] }
