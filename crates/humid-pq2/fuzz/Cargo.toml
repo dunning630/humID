@@ -1,0 +1,57 @@
+[package]
+name = "humid-pq2-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+humid-pq2 = { path = ".." }
+
+# Its own workspace: cargo-fuzz builds it with nightly sanitizers, apart from the rest.
+[workspace]
+
+[[bin]]
+name = "kem_public_key"
+path = "fuzz_targets/kem_public_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kem_ciphertext"
+path = "fuzz_targets/kem_ciphertext.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signatures"
+path = "fuzz_targets/signatures.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "at_rest_box"
+path = "fuzz_targets/at_rest_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_box"
+path = "fuzz_targets/sealed_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transit"
+path = "fuzz_targets/transit.rs"
+test = false
+doc = false
+bench = false
