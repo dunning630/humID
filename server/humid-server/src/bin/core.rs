@@ -50,11 +50,13 @@ async fn go() -> humid_server::Result<()> {
     });
     // HTP/2 ends here: front forwards opaque calls; /v1/* answers only what the endpoint
     // dispatched from an authenticated session.
-    let ep = humid_server::htp::Endpoint::new(
+    let ep = humid_server::htp::Endpoint::with_config(
         Role::Core,
         s.hsm.clone(),
         humid_server::hsm::KeyRef::CoreStatement,
         s.clock.clone(),
+        humid_htp::server::Config::new(humid_htp::Unit::Core),
+        humid_server::htp::max_body_for(&s.policy.policy),
     );
     humid_server::htp::spawn_ticks(ep.clone());
     let router = humid_server::htp::mount(c.router(), &ep);

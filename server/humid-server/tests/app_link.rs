@@ -24,7 +24,7 @@ fn link(c: &Cluster, unit: Unit) -> Link<OuterTransport> {
     Link::new(
         unit,
         root,
-        humid_server::htp::statement_key_of,
+        humid_server::htp::policy_of,
         OuterTransport::new(c.front_addr, &c.front_identity.ca).unwrap(),
         Box::new(move || u64::try_from(clock.now()).unwrap()),
     )
@@ -301,7 +301,7 @@ async fn the_link_pins_resumes_and_keeps_its_nonce_pool() {
         Link::new(
             Unit::Core,
             root,
-            humid_server::htp::statement_key_of,
+            humid_server::htp::policy_of,
             OuterTransport::new(c.front_addr, &c.front_identity.ca).unwrap(),
             Box::new(move || u64::try_from(clock.now()).unwrap()),
         )

@@ -1075,7 +1075,7 @@ async fn front_cannot_reach_the_app_routes_without_a_session() {
     let mut l = humid_link::Link::new(
         humid_htp::Unit::Anon,
         root,
-        humid_server::htp::statement_key_of,
+        humid_server::htp::policy_of,
         t,
         Box::new(move || u64::try_from(clock.now()).unwrap()),
     );

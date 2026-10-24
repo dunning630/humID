@@ -63,6 +63,8 @@ pub struct Cluster {
     pub anon_htp: Arc<crate::htp::Endpoint>,
     /// What a front in the attacker's hands sees and does to calls (see [`Tap`]).
     pub tap: Arc<Tap>,
+    /// Requests anon's router saw with a client-network header (review #97 L-2: none).
+    anon_net: Arc<std::sync::atomic::AtomicUsize>,
     schemas: Vec<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -145,14 +147,20 @@ impl Cluster {
             c.max_age_ms = u64::MAX / 4;
             c.ticket_ms = u64::MAX / 4;
             c.answer_ms = u64::MAX / 4;
+            c.assembly_idle_ms = u64::MAX / 4;
+            // every simulated phone shares one test network (the testkit's front stands in
+            // per-App addresses for limits, but a flow test opens many sessions at once)
+            c.max_sessions_per_net = 10_000;
             c
         };
+        let body_limit = crate::htp::max_body_for(&signed.policy);
         let core_htp = crate::htp::Endpoint::with_config(
             Role::Core,
             core_hsm.clone(),
             KeyRef::CoreStatement,
             clock.clone(),
             htp_cfg(humid_htp::Unit::Core),
+            body_limit,
         );
         let (core_addr, t2) = net::spawn(
             any,
@@ -170,17 +178,32 @@ impl Cluster {
             2048,
         )
         .await?;
+        let anon_net = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let anon_htp = crate::htp::Endpoint::with_config(
             Role::Anon,
             anon_hsm.clone(),
             KeyRef::AnonStatement,
             clock.clone(),
             htp_cfg(humid_htp::Unit::Anon),
+            body_limit,
         );
         let (anon_addr, t3) = net::spawn(
             any,
             id_anon.server_config()?,
-            crate::htp::mount(anon.router(), &anon_htp),
+            {
+                let seen = anon_net.clone();
+                crate::htp::mount(anon.router(), &anon_htp).layer(axum::middleware::from_fn(
+                    move |req: axum::extract::Request, next: axum::middleware::Next| {
+                        let seen = seen.clone();
+                        async move {
+                            if req.headers().contains_key(net::CLIENT_NET) {
+                                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            next.run(req).await
+                        }
+                    },
+                ))
+            },
             Role::Anon.callers(),
             false,
         )
@@ -206,6 +229,7 @@ impl Cluster {
             core_htp,
             anon_htp,
             tap,
+            anon_net,
             core_to_keys,
             front_to_keys,
             front_identity: id_front,
@@ -241,6 +265,12 @@ impl Cluster {
     pub fn core_db(&self) -> &Db {
         &self.core.db
     }
+}
+
+/// How many requests anon's router has seen carrying a client network (assertions only).
+#[must_use]
+pub fn anon_saw_client_net(c: &Cluster) -> usize {
+    c.anon_net.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Rows in one of the keys unit's tables (assertions only).
@@ -454,7 +484,7 @@ fn link(c: &Cluster, unit: humid_htp::Unit, t: OuterTransport) -> Result<Link> {
     Ok(humid_link::Link::new(
         unit,
         root,
-        crate::htp::statement_key_of,
+        crate::htp::policy_of,
         t,
         Box::new(move || u64::try_from(clock.now()).unwrap_or(0)),
     ))
@@ -478,6 +508,14 @@ fn link_err(e: humid_link::LinkError) -> Error {
             message: String::new(),
         },
         humid_link::LinkError::NoNonce => Error::internal("no nonce left in the test pool"),
+        humid_link::LinkError::PolicyRollback => Error::forbidden(
+            "policy_rollback",
+            "The server offered an older policy than this app accepted.",
+        ),
+        humid_link::LinkError::Unknown => Error::unavailable(
+            "outcome_unknown",
+            "The session ended before the answer came: check before trying again.",
+        ),
     }
 }
 
@@ -547,6 +585,10 @@ impl<'a> App<'a> {
     pub async fn relock(&self) -> Result<(usize, usize)> {
         let mut l = self.core.lock().await;
         l.lock();
+        // ids reserved in the old session mean nothing in the new one
+        if let Ok(mut g) = self.reserved.lock() {
+            g.clear();
+        }
         l.connect().await.map_err(link_err)?;
         Ok((l.handshakes(), l.resumptions()))
     }

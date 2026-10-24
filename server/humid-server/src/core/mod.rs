@@ -223,6 +223,9 @@ pub struct Session {
     pub device: Id,
     /// HTP transcript.
     pub th: Vec<u8>,
+    /// The `seq` a live proof in this request must name (the HTP/2 request carrying it;
+    /// review #97 M-1). Only the HTP/2 endpoint sets it; a request without it can't step up.
+    pub seq: Option<u64>,
     /// Signed in with the duress gesture.
     pub duress: bool,
     /// The account is locked down.
@@ -348,6 +351,10 @@ impl Core {
             account: Id::from_slice(&row.get::<_, Vec<u8>>(0))?,
             device: Id::from_slice(&row.get::<_, Vec<u8>>(1))?,
             th: s_th,
+            seq: headers
+                .get(crate::htp::SEQ)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok()),
             duress: row.get(3),
             lockdown: row.get(4),
             checkin_view: row
@@ -419,6 +426,10 @@ impl Core {
             p256_only_until: self.policy.policy.device_policy.p256_only_until,
             // a duress session's proofs carry the duress mode, an ordinary one's don't
             mode: Some(u8::from(s.duress)),
+            // the proof names the HTP/2 request that carries it, and no other
+            seq: Some(s.seq.ok_or_else(|| {
+                Error::forbidden("proof_mismatch", "That approval was for another request.")
+            })?),
         };
         let checked = proofs::check_step_up(&signed.proof, &signed.body, &d, &e)?;
         let n = tx

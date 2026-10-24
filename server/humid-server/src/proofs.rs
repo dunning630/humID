@@ -240,6 +240,9 @@ pub struct Expect<'a> {
     pub p256_only_until: i64,
     /// The session mode the proof must carry, when the unit knows the session (core does).
     pub mode: Option<u8>,
+    /// The `seq` the proof must name: the HTP/2 request that carries it (core gets it from
+    /// its endpoint; keys checks only what core's statement vouches for, so `None`).
+    pub seq: Option<u64>,
 }
 
 /// Check a step-up over `body` against `device`'s keys. Freshness, the action, the device
@@ -270,6 +273,12 @@ pub fn check_step_up(p: &StepUp, body: &[u8], device: &Device, e: &Expect<'_>) -
         return Err(Error::forbidden(
             "session_changed",
             "That approval was made in another session.",
+        ));
+    }
+    if e.seq.is_some_and(|s| s != p.seq) {
+        return Err(Error::forbidden(
+            "proof_mismatch",
+            "That approval was for another request.",
         ));
     }
     if p.nonce.len() != 32 || p.th.is_empty() || p.mode > 1 || e.mode.is_some_and(|m| m != p.mode) {
@@ -560,6 +569,7 @@ mod tests {
             now,
             p256_only_until: i64::MAX,
             mode: Some(0),
+            seq: None,
         }
     }
 
