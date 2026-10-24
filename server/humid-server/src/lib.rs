@@ -18,16 +18,22 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod anon;
+pub mod api;
 pub mod config;
+pub mod core;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod front;
 pub mod hsm;
+pub mod keys;
 pub mod limits;
 pub mod net;
 pub mod policy;
 pub mod proofs;
 pub mod retention;
+pub mod run;
 pub mod statement;
 pub mod stubs;
 pub mod tls;

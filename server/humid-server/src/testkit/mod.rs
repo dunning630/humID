@@ -4,6 +4,8 @@
 //! P-256 key, the account KEM key — and produces the same proofs a phone does
 //! (proofs.rs formats), so tests exercise the units' real checks.
 
+pub mod cluster;
+
 use crate::crypto::{self, KemSecret, MlDsaSecret, P256Key, label};
 use crate::error::Result;
 use crate::proofs::{self, Attestation, DeviceCert, Enrolment, Login, Signed, StepUp};
@@ -175,6 +177,19 @@ impl Phone {
             },
             body: B64(body.to_vec()),
         })
+    }
+
+    /// A signed recovery-mode change body (`ModeBody`), chained to `prev`.
+    ///
+    /// # Errors
+    /// Signing failure.
+    pub fn mode_body(&self, mode: &str, version: u32, prev: &[u8]) -> Result<Vec<u8>> {
+        let msg = crate::core::recovery::mode_message(&self.account_id(), mode, version, prev)?;
+        let st = B64(self.account.sign(label::RECOVERY_MODE, &msg)?);
+        serde_json::to_vec(
+            &serde_json::json!({ "mode": mode, "version": version, "statement": st }),
+        )
+        .map_err(|e| crate::Error::internal(e.to_string()))
     }
 
     /// A recovery-mode statement signed by the account key.
