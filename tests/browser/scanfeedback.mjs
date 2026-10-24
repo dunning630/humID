@@ -2,7 +2,7 @@
 // Checks that:
 //   - the panel is on screen from the first moment ("Point the camera at the document" for a
 //     Photo), is a live region, with the live chips, and buttons that are 44 px or more
-//   - the analysis runs in the worker (development builds say where: __humidLook.where)
+//   - a look is quick (development builds say how long: __humidLook.ms)
 //   - with a passport in view the panel moves on: Hold still / Reading the lines / Captured, ends on
 //     Got it, and the camera closes after it
 //   - with only a table in view, after 8 s the panel says the round button is there to use,
@@ -75,10 +75,10 @@ try {
   assert.deepEqual((await state(page).locator(".dc-chips li").allTextContents()).map((t) => t.trim()), ["Found", "Sharp", "Steady", "Light"], "the live chips for a photo");
   await page.locator(".doccam .dc-frame").first().waitFor({ state: "attached" });
   await page.waitForFunction(() => globalThis.__humidLook, null, { timeout: 15_000 });
-  assert.equal(await page.evaluate(() => globalThis.__humidLook.where), "worker", "the analysis runs in the worker");
+  // 5.0: on phones the native camera measures every frame; the web camera looks every ~150 ms on a small copy
   const ms = await page.evaluate(() => globalThis.__humidLook.ms);
-  assert.ok(ms < 400, `a look takes ${ms} ms`);
-  step(`looking, as a live region, four live chips, analysed in the worker (${ms} ms a look)`);
+  assert.ok(ms < 150, `a look takes ${ms} ms`);
+  step(`looking, as a live region, four live chips (${ms} ms a look)`);
   assert.notEqual(await state(page).getAttribute("data-phase"), "adjust", "a dark table in good light isn't 'too dark'");
 
   await state(page).getByText(/take the photo yourself/i).waitFor({ timeout: 14_000 });

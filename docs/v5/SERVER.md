@@ -44,7 +44,7 @@ The one rule everything below serves:
 
 | Unit | Merges (4.x) | Owns | Never holds | Called by |
 | --- | --- | --- | --- | --- |
-| **front** | edge, gateway | outer TLS; HTP/2 termination; socket-address rate limits; route allow-list; content-free push fan-out to anon | a document key, a share, a device key's private half, any database | the internet |
+| **front** | edge, gateway | outer TLS; HTP/2 pass-through (sessions end in core and anon, [HTP2.md](HTP2.md)); socket-address rate limits; route allow-list; content-free push fan-out to anon | a document key, a share, a device key's private half, any database | the internet |
 | **core** | identity, vault, ledger, recovery | `accounts`, `devices`, `sessions`, `nonces`, `objects`, `ledger_entries`, `tlog_*`, `recovery_*`, `links` | a share; an account or device private key; a passport secret | front only |
 | **keys** | keyshare | `shares` (wrapped by the HSM KEK), `used_proofs`, `checkin`; fuse keys in memory | an envelope, a document name, an account key | core only |
 | **anon** | access, relay | `access_codes`, `blind_keys`, `spent`, `relay_objects`, `push_subs` | any account id or device id | front only |
@@ -126,7 +126,38 @@ A proof is accepted when, checked **by the unit acting on it**:
   ML-DSA live key when it has one; a P-256-only device is refused after the policy's `p256_only_until` date;
 - the device is active (not removed), its account is active, and the account is not in a lockdown that forbids
   this action;
-- (iOS) the App Attest assertion for this check verifies with a strictly increasing counter — *stubbed: see §12*.
+- (iOS) the App Attest assertion for this check (`app_attest` in the proof) verifies under the device's attested
+  App Attest key over `SHA-256(live digest)`, with a counter strictly above the last one core accepted (raised in
+  the action's transaction, so it too is good once). Core checks it on every step-up and every sign-in (§2.7).
+
+### 2.7 Phone attestation (`crates/humid-attest`, `core/attest.rs`)
+
+The Rust port of 4.x `packages/attest`; iOS 26+ and Android 17+ only, a clean break from 4.x.
+
+| When | Android | iOS |
+| --- | --- | --- |
+| Enrolment (`register`, `POST /v1/devices`) | key attestation chain for the certificate's P-256 live key: Google's RSA root or the 2026 "Key Attestation CA1" root (matched by key), every certificate above the leaf in date, a CA, allowed to sign certificates, within its path length; one KeyDescription, on the leaf; TEE or StrongBox on both levels (StrongBox only when the policy says so: a TEE key is then a downgrade); origin generated; purpose SIGN only; EC P-256; biometric only (no PIN or password), per use, not on-body, unlocked device required; locked bootloader and verified boot; Android version and patch level floors; package and release signing certificate (the leaked test key is refused whatever the policy says); no certificate on Google's status list | App Attest attestation: CBOR exactly `fmt`/`attStmt`/`authData`; `x5c` to Apple's App Attestation root, every certificate in date; nonce `SHA-256(authData ‖ clientDataHash)` in the credential certificate; RP id = `SHA-256(<team id>.<bundle id>)` of an allowed App ID; counter 0; AAGUID production (development only on a development server whose policy says so); credential id = key id; COSE key = the certificate's key; iOS version floor |
+| Every sign-in | the stored chain against today's status list: a listed certificate removes the device (its sessions end; `device.removed` with `reason: attestation_revoked`, asserted by the server) | the sign-in's assertion, counter counting up |
+| Every step-up | — | the step-up's assertion, counter counting up |
+| On a schedule (`device_policy.android.reverify_hours`) | the stored chain against today's status list, as at sign-in | — |
+
+**What the attestation is bound to.** `challenge = H("HUMID-PQ2 attest-challenge", [th, device_vk])[0..32]`: the
+enrolment's session and the **new device's ML-DSA key**. Android passes it as KeyMint's `attestationChallenge`; iOS
+passes `clientDataHash = SHA-256(challenge ‖ live P-256 SPKI)` to `attestKey`. So the secure chip vouches for a live
+key made for exactly the device key the certificate names, and for a link enrolment that is the join request's
+device key (CORE.md §5.3, "attested model"): an attacker's own genuine attestation, carried into another device's
+enrolment, fails (`wrong_challenge`).
+
+**Google's status list.** Google serves it unsigned over HTTPS. Core fetches it itself (system roots, the URL is
+fixed in the code) every 6 hours, refuses anything that isn't a status list, and keeps the newest copy in
+`attest_status`, **signed by core's statement key** with its fetch time and forward-only, so the database alone can't
+drop an entry or make an old copy look fresh. Every core instance reloads the newest copy each job round. When the
+policy requires attestation, a missing copy or one older than `status_max_age_hours` fails closed
+(`status_unavailable` / `status_stale`, 503) for Android enrolments and sign-ins; iPhones don't depend on it.
+
+**Trust.** The pinned roots are compiled in (`crates/humid-attest/roots`, the same three as 4.x `roots.js`). A
+production core accepts only them: handed any other root it refuses to start (`test_root_in_production`), and a
+chain ending in one is `untrusted_root`. The testkit's test root exists only behind the `testkit` feature.
 
 `proof_hash = H("HUMID-PQ2 proof-hash", [device_sig])[0..32]` is what the ledger records.
 
@@ -155,29 +186,30 @@ that sign in while it is compromised). "Step-up" means a live proof (§2.3) chec
 
 | Route | Who | Checks itself |
 | --- | --- | --- |
-| `GET /htp/v2/keys` | anyone | — serves the signed policy and the current HTP KEM key with its certificate |
-| `POST /htp/v2/hello`, `POST /htp/v2/call` | anyone | HTP/2 handshake and frames: **stubbed** (HTP/2 not yet specified, §12) |
+| `GET /htp/v2/keys` | anyone | — the key bundle: the signed policy as is and each unit's certified HTP/2 KEM key (HTP2.md §2) |
+| `POST /htp/v2/call` | anyone | frame headers well formed, one unit and session per call; handshakes per network, records per session; forwarded unread to that unit (HTP2.md §3) |
 | `GET /tlog/v2/checkpoint`, `/tlog/v2/consistency` | anyone | rate limited per network (L8); forwarded to core |
 | `POST /tlog/v2/cosign` | a cosigner | forwarded; core checks the cosignature against the policy's cosigner keys |
 | `GET /healthz` | anyone | — |
 
-Inner routes (inside an HTP/2 frame once it lands) map one-to-one onto the core and anon routes below; anything
-not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`).
+Inner routes travel inside HTP/2 records, which only core and anon open. Each unit's endpoint checks them against
+the allow-list (`front::routes::resolve`) before its own code sees them, and the units' `/v1/…` routes answer only
+requests the endpoint dispatched, so front's certificate reaches only `/htp/v2/*`, `/tlog/*` and `/healthz`.
 
 **core (caller: front)**
 
 | Route | Session | Proof core checks itself | Writes in the same transaction |
 | --- | --- | --- | --- |
-| `POST /v1/auth/register` | anonymous | account-key PoP over `lp(th, account_vk, kem_pk)`; device cert; device PoP; live P-256 over the cert; attestation (stub); anon `spent` statement when registration needs a pass | account, device, `account.created` (logs the account-key binding into the public log), `device.added` |
+| `POST /v1/auth/register` | anonymous | account-key PoP over `lp(th, account_vk, kem_pk)`; device cert; device PoP; live P-256 over the cert; platform attestation (§2.7); anon `spent` statement when registration needs a pass | account, device, `account.created` (logs the account-key binding into the public log), `device.added` |
 | `POST /v1/auth/challenge` | anonymous | — (stateless HSM MAC, 2 min; nothing stored; an unknown account gets the same answer) | — |
-| `POST /v1/auth/login` | anonymous | the challenge's MAC and age, then `login_sig` + `live_login`, *before any limit*; revocation of the device; P-256-only date | session, nonce pool, used challenge; on duress: lockdown, every recovery wait doubled (waiting ones too), the session's frozen copy of Check-in, `session.duress` (deferred while a duress session is live), and a `duress_pending` row that a worker delivers to keys **after the reply**, retried until keys acts on it. Every sign-in asks keys where Check-in stands, so answer and timing are the same. A duress session then changes nothing real (§2.6) |
+| `POST /v1/auth/login` | anonymous | the challenge's MAC and age, then `login_sig` + `live_login`, *before any limit*; the device's platform proof (§2.7: iOS assertion; Android chain against Google's status list, a revoked one removes the device); P-256-only date | session, nonce pool, used challenge; on duress: lockdown, every recovery wait doubled (waiting ones too), the session's frozen copy of Check-in, `session.duress` (deferred while a duress session is live), and a `duress_pending` row that a worker delivers to keys **after the reply**, retried until keys acts on it. Every sign-in asks keys where Check-in stands, so answer and timing are the same. A duress session then changes nothing real (§2.6) |
 | `POST /v1/auth/logout` | session | — | session revoked |
 | `POST /v1/auth/nonces` | session | — (tops the pool up to 8; also returned in every signed-in reply) | nonces |
 | `POST /v1/links` | anonymous | humid-core's self-signed join request (`0x0108`, CORE.md §5.3): signature, account, device key, join key; 64 open links per IPv4 /24 or IPv6 /48, 10,000 in all; per-network rate | link (request, binding, 100-bit code) |
 | `GET /v1/links/:code` | session of the account the request names | — (any other account: `unknown_code`) | — |
 | `POST /v1/links/:code/approve` | session of that account | step-up on an existing device over the request's **binding** | link approved for exactly this request, `device.link_approved` |
 | `GET /v1/links/:code/result` | anonymous | — (the 100-bit code is the capability; 10 min) | — |
-| `POST /v1/devices` | anonymous | device cert, device PoP, live signature, attestation (stub), **and the evidence**: an approved link for this device key or a released recovery for this account, consumed in the same transaction (**H1**) | device, `device.added` with its evidence, link consumed / recovery completed |
+| `POST /v1/devices` | anonymous | device cert, device PoP, live signature, platform attestation bound to this device key (§2.7), **and the evidence**: an approved link for this device key or a released recovery for this account, consumed in the same transaction (**H1**) | device, `device.added` with its evidence, link consumed / recovery completed |
 | `DELETE /v1/devices/:id` | session | step-up | device revoked, `device.removed` |
 | `GET /v1/me` | session | — | — |
 | `DELETE /v1/me` | session | step-up | account closed, devices revoked, `account.closed`; then `close` statement to keys |
@@ -427,10 +459,18 @@ dual signature `policy.json.sig` by `identity-root` over the **exact file bytes*
   module path, data directory, unit endpoints. Nothing in it can weaken a check.
 
 Fields: `version`, `issued_at`, `mode` (`development` | `production`), `registration` (`pass` | `open`),
-`device_policy` (`attested_proofs`, `p256_only_until`, `android_min_patch`), `stations`, `cosigners`,
+`device_policy` (`attestation_required`, `p256_only_until`, `android`, `ios`: below), `stations`, `cosigners`,
 `unit_keys` (core/keys/anon statement public keys), `keys_kem_pk`, `checkin` (windows, graces),
 `limits` (quota, share releases per hour, rate limits), `messaging` (epoch minutes, prefix bits, tick slots and
 size, post tokens per check), `recovery` (base delay, duress window, count passport only with a second operator).
+
+`device_policy.android`: `packages` (the app's package names), `signing_cert_sha256` (64 lower-case hex each: the
+release signing certificates; the leaked test key is refused), `min_os_version` (KeyMint's MMmmpp, 170000 = Android
+17), `min_patch_level` (YYYYMM), `key_storage` (`strongbox` | `tee_allowed`), `reverify_hours` (1–720),
+`status_max_age_hours` (1–336). `device_policy.ios`: `team_id` (10 of A–Z 0–9), `app_ids` (`<team_id>.<bundle id>`
+each), `environment` (`production` | `development`), `min_os_major`. Production requires `attestation_required`,
+Android ≥ 17 with a 2026-or-later patch floor, a package and signing certificate, iOS ≥ 26, at least one App ID and
+`environment = production`.
 
 ## 8. Internal TLS
 
@@ -452,8 +492,8 @@ There is no `X-Forwarded-For`, no `TRUST_FORWARDED` mode, no shared bucket, no l
 deleted, audit §3). Keys: IPv4 address, IPv6 /64. Front sends the key to units in `x-humid-client-net` over mTLS;
 units use it only for limits (availability), never for authorisation.
 
-Limits: handshakes 30/min per network; calls `limits.calls_per_minute` per session (core enforces it until HTP/2
-front does); step-up actions 600/hour per account; sign-in failures 20 per network per 5 minutes and, only for a
+Limits: handshakes 30/min per network; calls `limits.calls_per_minute` per session (front per HTP/2 session and core per
+signed-in session); step-up actions 600/hour per account; sign-in failures 20 per network per 5 minutes and, only for a
 valid challenge whose signatures don't verify, 10 per identity (a valid proof is never refused, §2.3); recovery
 starts per network, unbound requests per /24 or /48, and per account once bound; open links per /24 or /48 (**M4**,
 review M-5: no global bucket a handful of networks can fill); relay deposits by post token rather than address
@@ -471,7 +511,7 @@ do the work.
 | --- | --- |
 | **One delta `POST /v1/sync {since}`** replacing the ~13-request unlock: items changed since the phone's object revision (index entries only), tombstones, ledger entries since its head, devices/recovery digests, and a nonce pool top-up | core `sync` |
 | **Step-up nonce pool**: login and every signed-in reply carry up to 8 single-use nonces (15 min), so a sensitive action is one round trip, not two. Freshness comes from `at` (≤ 60 s) and single use, not from a fresh nonce round trip | core `nonces` |
-| **Binary chunked frames**: a document is served in 1 MiB chunks under one approval with a 60 s download ticket; a dropped connection resumes from the next chunk without a new live check. Proofs travel as binary fields, not base64 in JSON (once HTP/2 lands; internal APIs use JSON with base64url until then) | core `objects`, front HTP/2 |
+| **Binary chunked frames**: a document is served in 1 MiB chunks under one approval with a 60 s download ticket; a dropped connection resumes from the next chunk without a new live check. Proofs and blobs travel as binary parts inside HTP/2 (HTP2.md §6); internal unit-to-unit APIs stay JSON with base64url | core `objects`, front HTP/2 |
 | **Content-free push**: the phone registers a push token (anonymously, with a post token) against coarse prefix buckets; a deposit into a bucket queues one batched, jittered "check now" wake. No polling in the background | anon `push` (sender stubbed) |
 | **Constant-rate messaging check**: one fixed-size `tick` per interval covering every prefix the phone follows, with a fixed-size padded reply; the same request is the cover traffic | anon `relay::tick` |
 | **Relay deletes only after acknowledgement**: tick only reads (per-prefix cursors, so a prefix shared with strangers hides nothing from them); `ack` with the per-object ack token (whose SHA3 the sender stored at deposit; only the recipient can derive it from the box key) deletes; unacked objects stay until their 14-day TTL | anon `relay` |
@@ -488,6 +528,11 @@ do the work.
 
 ## 12. Implemented vs stubbed (this branch)
 
+> **Before production:** the anon unit signs blinded passes and post tokens with the `rsa` crate
+> (via `blind-rsa-signatures`), whose private-key operations aren't constant time
+> (RUSTSEC-2023-0071, "Marvin"). It is ignored in deny.toml for development only; replace the
+> signing side with a constant-time implementation before any production deployment.
+
 Stubs never panic: they return `Error::NotImplemented { what, waiting_on }` → HTTP 501 `not_implemented`, and a
 production-mode start refuses while any required stub is in the path.
 
@@ -503,17 +548,21 @@ production-mode start refuses while any required stub is in the path.
 | Core: ledger hash chain, tlog leaves, inclusion/consistency proofs, dual-signed checkpoints, cosignatures | implemented | — |
 | Core: recovery mode, card tags, witness sets, requests, card evidence, witness approvals, wait + veto, release for enrolment | implemented | — |
 | Recovery passport anchor and FIDO security-key evidence | stub | second share operator; Rust ICAO passive auth and CTAP verification |
-| Device attestation (Android key attestation, App Attest) and per-check App Attest assertions | stub (development accepts `none`) | port of `packages/attest` |
+| Device attestation (Android key attestation, App Attest), per-check App Attest assertions, Google's status list at every sign-in and on a schedule (§2.7) | implemented (`crates/humid-attest`, `core/attest.rs`; a development policy may leave attestation off) | — |
 | Keys: sealed share store / release / delete / close, used proofs, hourly cap, Check-in arm / check / disarm / erase on duress | implemented | — |
 | Anon: access codes, RFC 9474 passes, spend statements, post tokens behind core's live-check statement, relay deposit / tick / ack / retract, push subscriptions | implemented | — |
 | Anon: live stamps | stub | partially blind RSA with epoch metadata (stamp v2 design) |
 | Push sender (APNs / FCM) | stub | provider accounts |
 | Front: outer TLS, rate limits, allow-list, key bundle, internal client | implemented | — |
-| Front: HTP/2 handshake and frames | stub | HTP/2 specification (KEM handshake over PQ2 §5, TransitSealer frames, binary TLV) |
+| HTP/2: handshake, resumption, records, chunks, typed bodies and binary proofs; ends in core and anon; front passes it through ([HTP2.md](HTP2.md), `crates/humid-htp`, `src/htp.rs`) | implemented | — |
 | `humid-server-core dev-setup <dir>`: CA, leaves, dev identity root, signed dev policy, soft HSMs, four `*.toml` | implemented (development only) | — |
 
 Tests (`cargo test -p humid-server`; Postgres from `HUMID_TEST_DATABASE_URL`, one schema per test; CI runs them
-against a PostgreSQL 16 service): 48 unit tests; `tests/flows.rs` (10 end-to-end flows over real internal TLS);
+against a PostgreSQL 16 service): 52 unit tests; `tests/attestation.rs` (10: attested registration and link
+enrolment over HTP/2, the join request's key, per-check assertions and counters, revocation at sign-in and on the
+schedule, the status list failing closed, a tampered stored list, and the test root refused by a production core);
+`cargo test -p humid-attest` (30: real Google sample chains and a real iPhone's attestation and assertion, every
+policy refusal, property tests over hostile input); `tests/flows.rs` (10 end-to-end flows over real internal TLS);
 `tests/compromised_front.rs` (10: front's certificate and sessions in the attacker's hands, plus a copied seed);
 `tests/retention.rs` (2); `tests/startup.rs` (2: policy tampering and rollback at start-up, outer TLS requires a PQ
 group); `tests/core_formats.rs` (3: share requests and join requests cross-checked against `crates/humid-core`);
@@ -537,17 +586,17 @@ M-2 is documented (§2.2, §11). Still open:
 
 ## 13. Open questions for the owner
 
-1. **HTP/2.** Front can't carry app traffic until HTP/2 is specified (handshake, binary frames, proofs as TLV).
-   Who writes it, and does it live in PQ2.md or its own doc?
+1. **HTP/2.** Specified in [HTP2.md](HTP2.md) (its own §13 has the protocol's open questions) and built (branch
+   `v5-htp2`).
 2. **Proof formats.** Shares and join requests now follow CORE.md §5.3 and §6.3 exactly (tested against
    humid-core). The step-up ticket now carries humid-core's session mode byte (§2.3). The rest of the step-up,
    sign-in and enrolment proofs are still this server's proposal: CORE.md §9 has per-action live labels
    (`live-open`, `live-seal`, `live-grant`, …) over `[challenge, …, mode]`, while the server checks one ticket shape
    for every route plus the ML-DSA device signature over the body. Proposal: the chip signs
    `H(live-<action>, [ticket, binding…, mode])` with CORE.md's labels and `ticket` (§2.3) as the challenge;
-   `proofs.rs` is the one file to change. The server-side attestation check that the new device's key is the
-   request's (CORE.md §5.3, "attested model") lands with the attestation port (§12): today the enrolment
-   certificate must certify exactly the request's device key, and the attestation itself is a stub.
+   `proofs.rs` is the one file to change. The attestation is now bound to the new device's key (§2.7): the
+   enrolment certificate must certify exactly the request's device key, and the chip's attestation challenge names
+   that key.
 3. **Type codes**: the server uses `0x0200`–`0x0202` for its own at-rest boxes (shares, fused shares, soft-HSM
    key file). Please add a `0x02xx` server block to the PQ2.md registry.
 4. **HSM model** (PKCS#11 v3.2 with ML-DSA and SLH-DSA mechanisms): which device, one per site?
@@ -568,7 +617,23 @@ M-2 is documented (§2.2, §11). Still open:
    release real shares, refuse ("not available right now"), or serve decoy content? The server reads the mode and
    already refuses every write; releases are unchanged until you decide (an armed vault is already erased by the
    duress sign-in, so only decoy-marked documents still open).
-12. **Duress and the ledger.** Entries that would show a duress session what happened are held back while one is
+13. **Phone attestation** (§2.7), decisions taken while the owner was away, to confirm:
+    a. The attestation challenge is `H(attest-challenge, [th, device_vk])`; the app must pass exactly that (Android:
+       `setAttestationChallenge`; iOS: `clientDataHash = SHA-256(challenge ‖ live SPKI)`). Not yet in humid-core.
+    b. The per-check App Attest assertion covers `SHA-256(live digest)` and rides in the HTP/2 proof as a new last
+       field `lp(app_attest | "")` (HTP2.md §6.2). Every iPhone step-up and sign-in needs one: is the extra
+       Secure Enclave call per check acceptable for battery (it adds no prompt)?
+    c. Google's list is fetched by core itself (outbound HTTPS to android.googleapis.com from the core host). If core
+       must have no internet route, a fetcher elsewhere can call `store_status` through an operator tool instead:
+       say which.
+    d. A TEE key is allowed by default (`key_storage = tee_allowed`): StrongBox-only would exclude many Android 17
+       phones. Production may set `strongbox`.
+    e. The scheduled re-check removes a device only for a listed certificate; it doesn't re-apply the patch floor
+       (the certificate can't change when the phone updates). Phones that stop updating stay until re-enrolled.
+    f. Apple's receipt (fraud metric) is required to be present but not verified or exchanged.
+    g. The 2016 issue of Google's RSA root (expired May 2026) is accepted as the same key as the 2022 issue that is
+       pinned, as Google's guidance says; RKP intermediates' dates are checked at enrolment, not on re-checks.
+14. **Duress and the ledger.** Entries that would show a duress session what happened are held back while one is
    live and appended afterwards, so the holder's chain stays complete, and a duress session reads its chain with
    those entries left out (the phone's core knows it is in a decoy session). Alternative: label them in the public
    log by hash only and never serve them to any session. Which do you want?

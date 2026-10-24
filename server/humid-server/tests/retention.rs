@@ -50,7 +50,7 @@ async fn every_table_of_every_unit_has_a_rule() {
 async fn short_lived_rows_go_and_kept_ones_stay() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let (doc, _) = upload(&mut app, &phone, 64).await.unwrap();
     let _ = open(&mut app, &phone, &doc.id).await.unwrap();

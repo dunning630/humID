@@ -221,6 +221,7 @@ impl Keys {
             now: self.now(),
             p256_only_until: p.device_policy.p256_only_until,
             mode: None,
+            seq: None,
         };
         let checked = proofs::check_step_up(&signed.proof, &signed.body, &d, &e)?;
         // The proof's own signed mode (CORE.md §8–9): a duress session changes nothing real

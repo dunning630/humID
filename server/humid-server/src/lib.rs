@@ -4,7 +4,7 @@
 //!
 //! | Unit | Module | Owns |
 //! | --- | --- | --- |
-//! | front | [`front`] | outer TLS, HTP termination (stubbed), rate limits, the route allow-list |
+//! | front | [`front`] | outer TLS, HTP/2 pass-through and the key bundle, rate limits |
 //! | core | [`core`] | accounts, devices, sessions, documents, the ledger and public log, recovery |
 //! | keys | [`keys`] | one sealed key share per document; Check-in |
 //! | anon | [`anon`] | access passes, post tokens, the relay; knows no accounts |
@@ -28,6 +28,7 @@ pub mod devsetup;
 pub mod error;
 pub mod front;
 pub mod hsm;
+pub mod htp;
 pub mod keys;
 pub mod limits;
 pub mod net;

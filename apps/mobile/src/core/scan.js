@@ -9,14 +9,12 @@
 //   MRZ       Tesseract (WebAssembly, in a worker) with an OCR-B model trained
 //             for MRZs (DoubangoTelecom/tesseractMRZ, BSD-3-Clause)
 
-import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad, bandPlan } from "./docfind.js";
+import { warp, outputSize, findDocument, orientation, toGray, shrink, scaleQuad } from "./docfind.js";
 import { cleanScan, lightField, paperShare } from "./scanclean.js";
 import { cleanPixels } from "./scanjobs.js";
-import { findNear } from "./docnear.js";
 import { b64Bytes, bytesB64 } from "./bytes.js";
 import { span } from "./perf.js";
 
-export { createAnalyzer } from "./analyzer.js";
 
 /* global __HUMID_OCR_DIR__, __HUMID_SCAN_DIR__ */
 // The engines live in content-hashed directories next to the app bundle (build.mjs), so
@@ -138,24 +136,6 @@ export function canvas(w, h) {
 }
 const ctx2d = (c) => c.getContext("2d", { willReadFrequently: true });
 
-/**
- * Where an on-screen element (the document frame) falls in the video's own
- * pixels, for a <video> shown with object-fit: cover. pad grows it by a
- * fraction on every side, for documents held a little off-frame.
- */
-export function frameInVideo(video, el, pad = 0) {
-  const vr = video.getBoundingClientRect(), er = el.getBoundingClientRect();
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw || !vh) return null;
-  const scale = Math.max(vr.width / vw, vr.height / vh);
-  const offX = (vr.width - vw * scale) / 2, offY = (vr.height - vh * scale) / 2;
-  let x = (er.left - vr.left - offX) / scale, y = (er.top - vr.top - offY) / scale;
-  let w = er.width / scale, h = er.height / scale;
-  x -= w * pad; y -= h * pad; w *= 1 + 2 * pad; h *= 1 + 2 * pad;
-  const x0 = Math.max(0, x), y0 = Math.max(0, y);
-  return { x: x0, y: y0, w: Math.min(vw, x + w) - x0, h: Math.min(vh, y + h) - y0 };
-}
-
 /** Copy part of a video frame or image into a canvas, at most maxW wide. */
 export function grab(src, rect, maxW = Infinity) {
   const r = rect || { x: 0, y: 0, w: src.videoWidth || src.width, h: src.videoHeight || src.height };
@@ -167,8 +147,6 @@ export function grab(src, rect, maxW = Infinity) {
   return c;
 }
 export const imageData = (c) => ctx2d(c).getImageData(0, 0, c.width, c.height);
-/** A small grey copy of part of a video frame or picture, at most `max` wide. */
-export const grayRegion = (src, rect, max = 560) => toGray(imageData(grab(src, rect, max)));
 
 const b64 = bytesB64;
 const toBlob = (c, type, q) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't encode the photo."))), type, q));
@@ -335,7 +313,7 @@ function cornersInside(c, { hint, shape }) {
   const im = grayOf(c, 640), k = c.width / im.w;
   const prior = hint ? scaleQuad(hint, 1 / k) : null;
   const ratio = { id1: 1.586, td3: 1.42 }[shape] || null;
-  const d = hint ? findNear(im, prior, { ratio, minArea: 0.03 }) : findDocument(im, { minArea: 0.12, prior, ratio });
+  const d = findDocument(im, { minArea: hint ? 0.03 : 0.12, prior, ratio });
   if (d) {
     const q = scaleQuad(d.quad, k);
     if (!hint) return q;
@@ -424,33 +402,6 @@ export function mrzBand(c, shape = "td3", { threshold = false, scale = 1 } = {})
   g.imageSmoothingQuality = "high";
   g.drawImage(c, 0, y, c.width, c.height - y, 0, 0, out.width, out.height);
   return enhance(out, { threshold });
-}
-
-/**
- * The MRZ strip of a card seen live, ready for the reader: only the strip is
- * straightened (a third of the card, at the size the reader likes), straight from the
- * pixels of the video that hold it. Same picture as mrzBand(straighten(card)) at a
- * fraction of the work (no whole-card copy, warp or readback).
- *   quad   the card's corners in the video's pixels, [tl, tr, br, bl]
- *   turn   0, or 180 for a card seen upside down
- */
-export function liveMrzBand(video, quad, shape = "td3", { turn = 0, scale = 1, threshold = false } = {}) {
-  const plan = bandPlan(quad, shape, { turn, scale });
-  const vw = video.videoWidth || video.width, vh = video.videoHeight || video.height;
-  const pad = 3;
-  const x0 = Math.max(0, Math.floor(plan.box.x - pad)), y0 = Math.max(0, Math.floor(plan.box.y - pad));
-  const x1 = Math.min(vw, Math.ceil(plan.box.x + plan.box.w + pad)), y1 = Math.min(vh, Math.ceil(plan.box.y + plan.box.h + pad));
-  const rect = { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
-  // the strip is read at `flatW` across; no need for more pixels than that going in
-  const across = Math.hypot(plan.quad[1].x - plan.quad[0].x, plan.quad[1].y - plan.quad[0].y);
-  const s = Math.min(1, plan.flatW / Math.max(1, across));
-  const c = grab(video, rect, rect.w * s);
-  const k = c.width / rect.w;
-  const q = plan.quad.map((p) => ({ x: (p.x - rect.x) * k, y: (p.y - rect.y) * (c.height / rect.h) }));
-  const out = warp(imageData(c), q, plan.flatW, plan.flatH, plan.crop);
-  const strip = canvas(out.width, out.height);
-  ctx2d(strip).putImageData(enhanceData(new ImageData(out.data, out.width, out.height), { threshold }), 0, 0);
-  return strip;
 }
 
 /* ---------------- scan modes: what the camera is asked to do ---------------- */

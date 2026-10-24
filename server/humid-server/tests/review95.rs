@@ -16,10 +16,10 @@ use serde_json::{Value, json};
 async fn f1_junk_signins_never_lock_the_holder_out() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     for i in 0..30 {
-        let mut m = App::new(&c).unwrap();
+        let mut m = App::new(&c).await.unwrap();
         // ten other networks, then alice's own network (a shared Wi-Fi or CGNAT address)
         m.net = if i < 10 {
             format!("v4:198.51.100.{i}")
@@ -44,9 +44,9 @@ async fn f1_junk_signins_never_lock_the_holder_out() {
 async fn f2_challenges_taken_by_others_never_block_the_holder() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
-    let m = App::new(&c).unwrap();
+    let m = App::new(&c).await.unwrap();
     for _ in 0..12 {
         let _ = m
             .core::<_, Value>(
@@ -68,11 +68,11 @@ async fn f2_challenges_taken_by_others_never_block_the_holder() {
 async fn f3_a_duress_session_cannot_arm_checkin_for_real() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
 
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap(); // duress gesture, Check-in off
     let s = forced
         .sign(
@@ -109,7 +109,7 @@ async fn f3_a_duress_session_cannot_arm_checkin_for_real() {
 async fn f4_a_duress_session_sees_checkin_as_it_was() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let _ = upload(&mut a, &alice, 64).await.unwrap();
     let s = a
@@ -124,7 +124,7 @@ async fn f4_a_duress_session_sees_checkin_as_it_was() {
         .core("POST", "/v1/checkin/arm", &json!({ "signed": s }))
         .await
         .unwrap();
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     humid_server::core::auth::deliver_duress(&c.core)
         .await
@@ -159,10 +159,10 @@ async fn f4_a_duress_session_sees_checkin_as_it_was() {
 async fn f5_a_duress_session_cannot_patch_the_index() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     let path = format!("/v1/objects/{}", doc.id);
     let s = forced
@@ -195,9 +195,9 @@ async fn f5_a_duress_session_cannot_patch_the_index() {
 async fn f8_a_duress_session_reads_nothing_that_names_duress() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     humid_server::core::auth::deliver_duress(&c.core)
         .await

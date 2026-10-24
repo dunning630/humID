@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 async fn register_upload_open_chunks_sync_delete() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
 
     // upload a 2.5 MiB document: core has the envelope, keys the share, neither the other
@@ -137,7 +137,7 @@ impl KeysDb for Cluster {
 async fn a_nonce_is_good_for_one_committed_action() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let (doc, _) = upload(&mut app, &phone, 100).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
@@ -148,8 +148,27 @@ async fn a_nonce_is_good_for_one_committed_action() {
         .core("POST", &path, &json!({ "signed": signed }))
         .await
         .unwrap();
+    // the same proof in a new request: HTP/2 refuses it (its seq names the first request)
     let again = app
         .core::<_, Value>("POST", &path, &json!({ "signed": signed }))
+        .await
+        .unwrap_err();
+    assert_eq!(again.code_str(), "proof_mismatch");
+    // and core keeps its own rule: a nonce acts once, even in a fresh proof for a new request
+    let fresh = app.sign(&phone, "POST", &path, &body).unwrap();
+    let reuse = phone
+        .step_up(
+            "POST",
+            &path,
+            &app.th,
+            fresh.proof.seq,
+            &signed.proof.nonce,
+            c.clock.now(),
+            &serde_json::to_vec(&body).unwrap(),
+        )
+        .unwrap();
+    let again = app
+        .core::<_, Value>("POST", &path, &json!({ "signed": reuse }))
         .await
         .unwrap_err();
     assert_eq!(again.code_str(), "step_up_used");
@@ -160,9 +179,9 @@ async fn a_nonce_is_good_for_one_committed_action() {
 async fn a_session_token_only_works_in_its_own_htp_session() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
-    let mut other = App::new(&c).unwrap();
+    let mut other = App::new(&c).await.unwrap();
     other.token = app.token.clone(); // a front that copied the token into another HTP session
     let e = other
         .core::<_, Value>("GET", "/v1/me", &json!({}))
@@ -178,12 +197,12 @@ async fn a_session_token_only_works_in_its_own_htp_session() {
 async fn device_link_then_removal() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
 
     // the new phone asks to join
     let tablet = phone.sibling().unwrap();
-    let mut new = App::new(&c).unwrap();
+    let mut new = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let (jr, start) = join(&tablet, &phone.account_id(), &once);
     let l: Value = new.core("POST", "/v1/links", &start).await.unwrap();
@@ -197,7 +216,7 @@ async fn device_link_then_removal() {
     assert_eq!(got["request"], start["request"]);
     // another account sees nothing (L-18)
     let stranger = Phone::new().unwrap();
-    let mut st = App::new(&c).unwrap();
+    let mut st = App::new(&c).await.unwrap();
     st.register(&stranger).await.unwrap();
     assert_eq!(
         err_code(
@@ -271,14 +290,14 @@ async fn device_link_then_removal() {
 async fn hardened_recovery_card_and_witness_wait_and_veto() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     // two witnesses
     let w1 = Phone::new().unwrap();
     let w2 = Phone::new().unwrap();
-    let mut aw1 = App::new(&c).unwrap();
+    let mut aw1 = App::new(&c).await.unwrap();
     aw1.register(&w1).await.unwrap();
-    let mut aw2 = App::new(&c).unwrap();
+    let mut aw2 = App::new(&c).await.unwrap();
     aw2.register(&w2).await.unwrap();
 
     // holder-only by default: nothing can be stored
@@ -319,7 +338,7 @@ async fn hardened_recovery_card_and_witness_wait_and_veto() {
 
     // alice loses her phone; a new one starts a recovery
     let newphone = alice.sibling().unwrap();
-    let n = App::new(&c).unwrap();
+    let n = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let r: Value = n
         .core("POST", "/v1/recovery/requests", &json!({ "device_vk": B64(newphone.device.public().to_bytes()), "kem_pk": B64(once.public().to_bytes()) }))
@@ -402,13 +421,13 @@ async fn hardened_recovery_card_and_witness_wait_and_veto() {
 async fn recovery_release_enrols_exactly_the_named_device() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let w1 = Phone::new().unwrap();
     let w2 = Phone::new().unwrap();
-    let mut aw1 = App::new(&c).unwrap();
+    let mut aw1 = App::new(&c).await.unwrap();
     aw1.register(&w1).await.unwrap();
-    let mut aw2 = App::new(&c).unwrap();
+    let mut aw2 = App::new(&c).await.unwrap();
     aw2.register(&w2).await.unwrap();
     let body: Value =
         serde_json::from_slice(&alice.mode_body("hardened", 1, &[0u8; 64]).unwrap()).unwrap();
@@ -436,7 +455,7 @@ async fn recovery_release_enrols_exactly_the_named_device() {
         .unwrap();
 
     let newphone = alice.sibling().unwrap();
-    let n = App::new(&c).unwrap();
+    let n = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let r: Value = n.core("POST", "/v1/recovery/requests", &json!({ "device_vk": B64(newphone.device.public().to_bytes()), "kem_pk": B64(once.public().to_bytes()) })).await.unwrap();
     let (req, code) = (
@@ -463,7 +482,7 @@ async fn recovery_release_enrols_exactly_the_named_device() {
     c.clock.advance(72 * 3_600_000 + 1);
     // a thief with the account seed tries to ride the released request with another device key
     let thief = alice.sibling().unwrap();
-    let mut t = App::new(&c).unwrap();
+    let mut t = App::new(&c).await.unwrap();
     let steal = json!({ "enrolment": thief.enrolment(&t.th).unwrap(), "evidence": { "via": "recovery", "request": req } });
     assert_eq!(
         t.core::<_, Value>("POST", "/v1/devices", &steal)
@@ -489,7 +508,7 @@ async fn recovery_release_enrols_exactly_the_named_device() {
 async fn ledger_chain_and_public_log_proofs_verify() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     for _ in 0..3 {
         upload(&mut app, &phone, 50).await.unwrap();
@@ -560,12 +579,10 @@ async fn ledger_chain_and_public_log_proofs_verify() {
         .unwrap()
     );
     // consistency between two sizes
-    let cons: Value = app
-        .core(
-            "GET",
-            &format!("/tlog/consistency?from=2&to={}", cp.size),
-            &json!({}),
-        )
+    // the public log is public: anyone fetches it from front, outside any session
+    let cons: Value = c
+        .to_core
+        .get(&format!("/tlog/consistency?from=2&to={}", cp.size), &[])
         .await
         .unwrap();
     assert!(!cons["proof"].as_array().unwrap().is_empty());
@@ -576,7 +593,7 @@ async fn ledger_chain_and_public_log_proofs_verify() {
 async fn checkin_arm_check_miss_lock_then_erase() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let (keep, _) = upload(&mut app, &phone, 64).await.unwrap();
     let (gone, _) = upload(&mut app, &phone, 64).await.unwrap();
@@ -652,7 +669,7 @@ async fn checkin_arm_check_miss_lock_then_erase() {
 async fn duress_sign_in_erases_an_armed_vault_and_locks_down() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let (doc, _) = upload(&mut app, &phone, 64).await.unwrap();
     let s = app
@@ -668,7 +685,7 @@ async fn duress_sign_in_erases_an_armed_vault_and_locks_down() {
         .await
         .unwrap();
     // forced unlock: the duress gesture
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&phone, 1).await.unwrap();
     // the erase goes to keys after the reply (queued in the sign-in's transaction)
     humid_server::core::auth::deliver_duress(&c.core)
@@ -735,7 +752,7 @@ async fn duress_sign_in_erases_an_armed_vault_and_locks_down() {
 async fn messaging_post_tokens_relay_tick_ack() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let keys: Value = app
         .anon("GET", "/v1/post-tokens/keys", &json!({}))
@@ -757,7 +774,7 @@ async fn messaging_post_tokens_relay_tick_ack() {
         .await
         .unwrap();
     // the anonymous session takes core's statement to anon (no account crosses)
-    let anon_app = App::new(&c).unwrap();
+    let anon_app = App::new(&c).await.unwrap();
     let req = json!({ "statement": st["statement"], "signed_body": signed_body, "kid": kid });
     let t: Value = anon_app
         .anon("POST", "/v1/post-tokens", &req)
@@ -811,26 +828,20 @@ async fn messaging_post_tokens_relay_tick_ack() {
     let mut slots = vec![json!({ "prefix": prefix, "after": 0 })];
     slots.extend((1..16).map(|i| json!({ "prefix": i, "after": 0 })));
     let tick = json!({ "slots": slots });
-    let raw1 = c
-        .to_anon
-        .raw(
-            "POST",
-            "/v1/relay/tick",
-            &[],
-            serde_json::to_vec(&tick).unwrap(),
-        )
+    let raw1 = anon_app
+        .anon_raw("POST", "/v1/relay/tick", &tick)
         .await
         .unwrap();
-    let raw2 = c
-        .to_anon
-        .raw(
-            "POST",
-            "/v1/relay/tick",
-            &[],
-            serde_json::to_vec(&tick).unwrap(),
-        )
+    let raw2 = anon_app
+        .anon_raw("POST", "/v1/relay/tick", &tick)
         .await
         .unwrap();
+    // and what front relays for them is the same size too (one size class)
+    {
+        let seen = c.tap.seen.lock().unwrap();
+        let (a, b) = (&seen[seen.len() - 2], &seen[seen.len() - 1]);
+        assert_eq!((a.0.len(), a.1.len()), (b.0.len(), b.1.len()));
+    }
     let r1: Value = serde_json::from_slice(&raw1.1).unwrap();
     assert_eq!(r1["got"].as_array().unwrap().len(), 1);
     assert_eq!(

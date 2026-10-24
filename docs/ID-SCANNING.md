@@ -121,13 +121,17 @@ with its photos.
 | `packages/idscan` | MRZ parsing and repair (`findMrz`, `MrzConsensus`), AAMVA (`parseAamva`), chip files (`readDg1`, `readDg2`, `checkIntegrity`), the record (`newRecord`, `applyMrz`, `applyAamva`, `applyChip`, `applyTyped`) |
 | `packages/emrtd` | `readDocument(…, { photo: true })` also reads DG2, with long offsets (READ BINARY B1) for photos over 32 KB. Identity proofs never ask for the photo. |
 | `apps/mobile/src/core/scan.js` | Engines and image handling: zxing-cpp (WebAssembly) for PDF417; Tesseract (WebAssembly, in a worker) with an MRZ-trained OCR-B model ([vendor/ocr](../apps/mobile/vendor/ocr/README.md)); JPEG 2000 chip photos decoded with the PDF.js decoder |
-| `apps/mobile/src/core/docfind.js` | Finding a document in view, the calm capture (`tracker`: steady, held, focus settled), straightening and turning upright |
+| `plugins/humid-docscan` (`humid-docscan@2`) | 5.0: the native camera on phones (below; [README](../plugins/humid-docscan/README.md)) |
+| `apps/mobile/src/core/doccam.js` | The native camera's requests and events; the still's bytes to a canvas |
+| `apps/mobile/src/core/webcam.js` | The web view's camera (development, the browser tests), speaking the same events |
+| `apps/mobile/src/core/lookstate.js` | The guidance every camera follows (ported line by line to Swift and Kotlin) |
+| `apps/mobile/src/core/doctpl.js` | The outlines and the words |
+| `apps/mobile/src/core/docfind.js` | Finding a document in a picture (imported photos, the web camera), straightening and turning upright |
 | `apps/mobile/src/core/barcodefind.js` | Finding barcodes anywhere in view, their tilt, and the spot to hand the reader |
 | `apps/mobile/src/core/scanclean.js` | The clean scan: even light, white paper, crisp ink |
-| `apps/mobile/src/core/scanflow.js`, `scancore.js`, `analyzer.js`, `scanworker.js` | The visible scan state machine; the per-frame analysis; running it in a worker (or here); the worker |
-| `apps/mobile/src/screens/add/camera.jsx` | The camera (`DocCamera`, guided and free-form) and its state card (`ScanState`) |
+| `apps/mobile/src/core/capture.js`, `scanworker.js` | What the camera says (the machine fed by the camera's events); the worker (clean scan, barcode reads of imported photos) |
+| `apps/mobile/src/screens/add/camera.jsx` | The camera screen (`DocCamera`): frame, panel, ring, tap ring, keep / retry |
 | `apps/mobile/src/screens/add/ids.jsx` | The ID flow (`IdFlow`) and the card view (`IdView`) |
-| `apps/mobile/src/core/docscan.js`, `plugins/humid-docscan` | Android: the phone's document scanner takes the photo (below) |
 
 The engines ship in the app (about 5.5 MB in `assets/ocr` and `assets/scan`)
 and load only when someone scans. Running WebAssembly needs
@@ -139,9 +143,16 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 - `node --test tests/idscan.test.js`: ICAO MRZ specimens, OCR noise and
   voting, AAMVA versions (US and Canada), chip reads with the photo (BAC and
   PACE, over 32 KB, JPEG 2000), tampering, and the record.
-- `node --test tests/scanflow.test.js`: the scan state machine and its words, the failures, the
-  time budget, the strip of a card against the whole-card route (lying, standing, upside down),
-  the camera screen's live region, targets and worker, and that nothing is logged.
+- `node --test tests/lookstate.test.js tests/doccam.test.js`: the guidance (golden vectors in
+  `tests/fixtures/guidance.json`, which the Android port runs too) and what the screen says for each
+  event: "Focusing…" only on real autofocus, too close, the code chip, the budget.
+- `node --test tests/scanflow.test.js`: scan modes, the warp maths, the camera screen's live region
+  and targets, and that nothing is logged.
+- `cargo test -p tauri-plugin-humid-docscan`: the plugin's checks on every request (frame, point,
+  photo id, the JPEG it hands over).
+- `plugins/humid-docscan/android/src/test`: `GuidanceTest` (the same golden vectors) and `DocFindTest`
+  (the Kotlin detector against the JS one, `tests/fixtures/docfind-golden.json`).
+- `node tests/browser/nativecam.mjs`: the camera screen with a stand-in for the native plugin.
 - `node --test tests/barcodefind.test.js tests/scanclean.test.js tests/docfind.test.js`:
   the barcode found centred, sideways, upside down, small and far, tilted, on a desk of
   printed text, beside another barcode; no barcode found in text or on an ID's front;
@@ -156,6 +167,40 @@ edge); it allows compiling WebAssembly, not JavaScript `eval`.
 
 The specimen fixtures are marked SPECIMEN / NOT A REAL DOCUMENT and use ICAO's
 fictional Utopia (UTO) or a fictional person.
+
+## The native camera (5.0)
+
+The 4.x camera ran in the web view (`getUserMedia`), and on iPhone the page could not move the
+focus at all: WebKit ignores `focusMode` and `pointsOfInterest`, so every "refocus", the tap ring and
+the frame-centred focus did nothing, while a JavaScript sharpness guess on a 288 px copy said
+"Focusing…" and "Not sharp yet" whenever a plain card looked soft, and after 2.6 s shrank the frame.
+On Android, Chromium never triggers autofocus and tears the preview down for a still. (Audit 5.)
+
+5.0 moves the camera into `plugins/humid-docscan` (`humid-docscan@2`): AVFoundation on iPhone,
+CameraX on Android, under a transparent web view. The camera screen is unchanged in shape (the frame,
+the panel under it, the chips, the ring), and is now driven by the camera's own events:
+
+| | 5.0 |
+|---|---|
+| **Focus** | The camera's real autofocus, on the frame (iPhone: continuous, near range, point on the frame, refocus when the scene changes; Android: a real AF trigger at the frame, kept there). "Focusing…" is said only while the camera's autofocus has been moving for 0.25 s. Never from a guess at sharpness. |
+| **Tap** | A one-shot focus at the tap. The ring shows only when the camera takes the tap, pulses while it focuses and turns mint when the camera says it is in focus. |
+| **Too close** | The zoom is set from the lens's own minimum focus distance (a card fills the frame from beyond it); cards stay on the wide lens (no slow, soft switch to the ultra-wide). If the lens sits at its near limit for 0.6 s while lined up: "Move back a little". The frame never changes size. |
+| **Taken** | Lined up, in focus, not blurred by motion, steady and in good light for 0.3 s, and for a side with a barcode or lines, once they are read (2.5 s at most): a zero-shutter-lag still from the running session, cut out of it natively, a native haptic. The round button focuses first if needed. |
+| **Read** | The PDF417 in the capture pipeline (iPhone `AVCaptureMetadataOutput`; Android zxing-cpp); the MRZ band with Vision on iPhone (none live on Android: the app reads the still). Raw text only: the app parses and checks (`parseAamva`, `MrzConsensus`), as before. |
+| **What the app gets** | Events, the cut-out JPEG as raw bytes (once), a 720 px freeze, the raw barcode text and MRZ lines. Never frames. |
+
+The web view's own camera (`core/webcam.js`) stays for development and the browser tests, with the
+audit's interim fixes: the tap ring only where the page can move the focus (Chrome on Android),
+the video moved so its centre is the frame's (a camera that meters the middle meters the document),
+zoom from `focusDistance.min`, "Move back a little" instead of a smaller frame, and no sharpness gate.
+
+**Check on a phone** (the native code was compiled in CI, not run): see the checklist in the 5.0
+camera pull request. In short: the preview under the page, aligned with the frame; "Focusing…" only
+while the lens moves; the tap ring; a card held too close; the license back's barcode and a
+passport's lines read live; the cut-out; Photo and Page; backgrounding; the light; screenshots blocked
+on Android.
+
+The sections below are how the 4.x camera worked, kept as history.
 
 ## The capture screen, rebuilt (apps 3.1.0)
 

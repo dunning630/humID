@@ -295,6 +295,78 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-capture",
+          "markdownDescription": "Enables the capture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-capture",
+          "markdownDescription": "Denies the capture command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close",
+          "markdownDescription": "Enables the close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close",
+          "markdownDescription": "Denies the close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the focus command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-focus",
+          "markdownDescription": "Enables the focus command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the focus command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-focus",
+          "markdownDescription": "Denies the focus command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the frame command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-frame",
+          "markdownDescription": "Enables the frame command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the frame command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-frame",
+          "markdownDescription": "Denies the frame command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open",
+          "markdownDescription": "Enables the open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open",
+          "markdownDescription": "Denies the open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pause",
+          "markdownDescription": "Enables the pause command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pause",
+          "markdownDescription": "Denies the pause command without any pre-configured scope."
+        },
+        {
           "description": "Enables the probe command without any pre-configured scope.",
           "type": "string",
           "const": "allow-probe",
@@ -307,22 +379,46 @@
           "markdownDescription": "Denies the probe command without any pre-configured scope."
         },
         {
-          "description": "Enables the scan command without any pre-configured scope.",
+          "description": "Enables the resume command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-scan",
-          "markdownDescription": "Enables the scan command without any pre-configured scope."
+          "const": "allow-resume",
+          "markdownDescription": "Enables the resume command without any pre-configured scope."
         },
         {
-          "description": "Denies the scan command without any pre-configured scope.",
+          "description": "Denies the resume command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-scan",
-          "markdownDescription": "Denies the scan command without any pre-configured scope."
+          "const": "deny-resume",
+          "markdownDescription": "Denies the resume command without any pre-configured scope."
         },
         {
-          "description": "Lets the HumID UI open the phone's document scanner for one page and receive the photo.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-scan`",
+          "description": "Enables the take command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-take",
+          "markdownDescription": "Enables the take command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the take command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-take",
+          "markdownDescription": "Denies the take command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the torch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-torch",
+          "markdownDescription": "Enables the torch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the torch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-torch",
+          "markdownDescription": "Denies the torch command without any pre-configured scope."
+        },
+        {
+          "description": "Lets the HumID camera screen run the native document camera: probe, open and close it, move its frame, focus, switch the light, take a photo and receive that photo once.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-open`\n- `allow-frame`\n- `allow-focus`\n- `allow-torch`\n- `allow-capture`\n- `allow-take`\n- `allow-pause`\n- `allow-resume`\n- `allow-close`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets the HumID UI open the phone's document scanner for one page and receive the photo.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-scan`"
+          "markdownDescription": "Lets the HumID camera screen run the native document camera: probe, open and close it, move its frame, focus, switch the light, take a photo and receive that photo once.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-open`\n- `allow-frame`\n- `allow-focus`\n- `allow-torch`\n- `allow-capture`\n- `allow-take`\n- `allow-pause`\n- `allow-resume`\n- `allow-close`"
         }
       ]
     }

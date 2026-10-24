@@ -200,6 +200,23 @@ impl UnitClient {
         headers: &[(&str, &str)],
         body: Vec<u8>,
     ) -> Result<(u16, bytes::Bytes)> {
+        self.raw_limited(method, path, headers, body, MAX_BODY + (8 << 20))
+            .await
+    }
+
+    /// As [`UnitClient::raw`], reading at most `max` bytes of the answer (front forwarding
+    /// HTP/2 answers: review #97 H-1).
+    ///
+    /// # Errors
+    /// `unit_unavailable` if the unit can't be reached; `too_large` for a bigger answer.
+    pub async fn raw_limited(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+        max: usize,
+    ) -> Result<(u16, bytes::Bytes)> {
         let mut b = Request::builder()
             .method(method)
             .uri(format!("{}{path}", self.base));
@@ -230,12 +247,7 @@ impl UnitClient {
             }
         };
         let status = resp.status().as_u16();
-        let body = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::internal(e.to_string()))?
-            .to_bytes();
+        let body = body_bytes(Body::new(resp.into_body()), max).await?;
         Ok((status, body))
     }
 

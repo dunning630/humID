@@ -21,6 +21,144 @@ pub struct Phone {
     pub device: MlDsaSecret,
     /// The secure chip's P-256 key.
     pub chip: P256Key,
+    /// How this phone proves its chip (none: development).
+    pub attest: Option<PhoneAttest>,
+}
+
+/// A simulated phone's platform attestation, made under the testkit's **test root**
+/// (humid-attest `testkit`): accepted only by a development server that trusts that root.
+pub struct PhoneAttest {
+    /// The test PKI.
+    pub pki: std::sync::Arc<humid_attest::testkit::TestPki>,
+    /// Which platform.
+    pub kind: AttestKind,
+}
+
+/// Which platform a simulated phone is.
+pub enum AttestKind {
+    /// Android 17: a key attestation chain with this KeyDescription (its challenge is filled
+    /// in per enrolment).
+    Android(Box<humid_attest::testkit::KeyDesc>),
+    /// iOS 26: an App Attest key, its App ID, and the next assertion counter.
+    Apple {
+        /// The App Attest key.
+        key: humid_attest::testkit::AppAttestKey,
+        /// `<team>.<bundle>`.
+        app_id: String,
+        /// The environment its attestation claims.
+        env: humid_attest::Environment,
+        /// The next counter.
+        counter: std::sync::atomic::AtomicU32,
+    },
+}
+
+impl PhoneAttest {
+    /// An Android 17 StrongBox phone.
+    #[must_use]
+    pub fn android(pki: &std::sync::Arc<humid_attest::testkit::TestPki>) -> Self {
+        Self {
+            pki: pki.clone(),
+            kind: AttestKind::Android(Box::new(humid_attest::testkit::KeyDesc::strongbox(&[]))),
+        }
+    }
+
+    /// An Android phone with this KeyDescription (to make a bad one).
+    #[must_use]
+    pub fn android_with(
+        pki: &std::sync::Arc<humid_attest::testkit::TestPki>,
+        kd: humid_attest::testkit::KeyDesc,
+    ) -> Self {
+        Self {
+            pki: pki.clone(),
+            kind: AttestKind::Android(Box::new(kd)),
+        }
+    }
+
+    /// An iOS 26 phone (App Store build).
+    #[must_use]
+    pub fn apple(pki: &std::sync::Arc<humid_attest::testkit::TestPki>) -> Self {
+        Self::apple_with(pki, humid_attest::Environment::Production)
+    }
+
+    /// An iOS 26 phone whose build is for `env`.
+    #[must_use]
+    pub fn apple_with(
+        pki: &std::sync::Arc<humid_attest::testkit::TestPki>,
+        env: humid_attest::Environment,
+    ) -> Self {
+        Self {
+            pki: pki.clone(),
+            kind: AttestKind::Apple {
+                key: humid_attest::testkit::AppAttestKey::generate(),
+                app_id: humid_attest::testkit::APP_ID.into(),
+                env,
+                counter: std::sync::atomic::AtomicU32::new(1),
+            },
+        }
+    }
+
+    /// The attestation for an enrolment of `device_vk` with live key `live_spki` in session `th`.
+    ///
+    /// # Errors
+    /// Never in practice.
+    pub fn attestation(
+        &self,
+        th: &[u8],
+        device_vk: &[u8],
+        live_spki: &[u8],
+    ) -> Result<Attestation> {
+        let ch = proofs::attest_challenge(th, device_vk)?;
+        Ok(match &self.kind {
+            AttestKind::Android(kd) => {
+                let mut kd = (**kd).clone();
+                kd.challenge = ch.to_vec();
+                let chain = self.pki.android_chain(
+                    &kd,
+                    live_spki,
+                    &humid_attest::testkit::ChainOpts::default(),
+                );
+                Attestation::AndroidKey {
+                    chain: chain.into_iter().map(B64).collect(),
+                }
+            }
+            AttestKind::Apple {
+                key, app_id, env, ..
+            } => {
+                let cdh = humid_attest::apple::enrolment_client_data_hash(&ch, live_spki);
+                Attestation::AppleAppAttest {
+                    object: B64(self.pki.app_attestation(key, &cdh, app_id, *env, "26.0")),
+                }
+            }
+        })
+    }
+
+    /// The App Attest assertion for a check whose live digest is `digest` (iOS; none on Android).
+    #[must_use]
+    pub fn assertion(&self, digest: &[u8; 64]) -> Option<B64> {
+        match &self.kind {
+            AttestKind::Android(_) => None,
+            AttestKind::Apple {
+                key,
+                app_id,
+                counter,
+                ..
+            } => {
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(B64(key.assertion(
+                    app_id,
+                    &proofs::app_attest_client_data_hash(digest),
+                    n,
+                )))
+            }
+        }
+    }
+
+    /// Set the next assertion counter (a test that replays or rolls back).
+    pub fn set_counter(&self, n: u32) {
+        if let AttestKind::Apple { counter, .. } = &self.kind {
+            counter.store(n, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 impl Phone {
@@ -34,7 +172,15 @@ impl Phone {
             account_kem: std::sync::Arc::new(KemSecret::generate()?),
             device: MlDsaSecret::generate()?,
             chip: P256Key::generate(),
+            attest: None,
         })
+    }
+
+    /// This phone, proving its chip with `a`.
+    #[must_use]
+    pub fn with_attest(mut self, a: PhoneAttest) -> Self {
+        self.attest = Some(a);
+        self
     }
 
     /// Another device of the same account (it got the account seed through a link or recovery).
@@ -47,6 +193,7 @@ impl Phone {
             account_kem: self.account_kem.clone(),
             device: MlDsaSecret::generate()?,
             chip: P256Key::generate(),
+            attest: None,
         })
     }
 
@@ -99,11 +246,15 @@ impl Phone {
     pub fn enrolment(&self, th: &[u8]) -> Result<Enrolment> {
         let cert = self.cert(th);
         let m = cert.message()?;
+        let attestation = match &self.attest {
+            Some(a) => a.attestation(th, &self.device.public().to_bytes(), &self.chip.spki())?,
+            None => Attestation::None,
+        };
         Ok(Enrolment {
             device_pop: B64(self.device.sign(label::DEVICE_POP, &m)?),
             live_enrol: B64(self.chip.sign(&proofs::live_digest(label::LIVE_ENROL, &m)?)),
             cert,
-            attestation: Attestation::None,
+            attestation,
             platform: "test".into(),
         })
     }
@@ -129,6 +280,7 @@ impl Phone {
         let (a, d) = (self.account_id(), self.device_id());
         let m = proofs::login_message(th, &a, &d, challenge, duress)?;
         let lm = proofs::live_login_message(th, &a, &d, challenge)?;
+        let digest = proofs::live_digest(label::LIVE_LOGIN, &lm)?;
         Ok(Login {
             th: B64(th.to_vec()),
             account: a,
@@ -136,10 +288,9 @@ impl Phone {
             challenge: B64(challenge.to_vec()),
             duress,
             login_sig: B64(self.device.sign(label::LOGIN, &m)?),
-            live_login: B64(self
-                .chip
-                .sign(&proofs::live_digest(label::LIVE_LOGIN, &lm)?)),
+            live_login: B64(self.chip.sign(&digest)),
             live_mldsa: None,
+            app_attest: self.attest.as_ref().and_then(|x| x.assertion(&digest)),
         })
     }
 
@@ -179,6 +330,7 @@ impl Phone {
     ) -> Result<Signed> {
         let d = self.device_id();
         let t = proofs::ticket(method, path, th, seq, &d, nonce, at, mode)?;
+        let digest = proofs::live_digest(label::LIVE, &t)?;
         Ok(Signed {
             proof: StepUp {
                 method: method.into(),
@@ -192,8 +344,9 @@ impl Phone {
                 device_sig: B64(self
                     .device
                     .sign(label::STEP_UP, &proofs::step_up_message(&t, body)?)?),
-                live_p256: B64(self.chip.sign(&proofs::live_digest(label::LIVE, &t)?)),
+                live_p256: B64(self.chip.sign(&digest)),
                 live_mldsa: None,
+                app_attest: self.attest.as_ref().and_then(|x| x.assertion(&digest)),
             },
             body: B64(body.to_vec()),
         })

@@ -43,5 +43,15 @@ async fn go() -> humid_server::Result<()> {
             let _ = upkeep.prune_codes().await;
         }
     });
-    run::serve_internal(&s, Role::Anon, a.router()).await
+    let ep = humid_server::htp::Endpoint::with_config(
+        Role::Anon,
+        s.hsm.clone(),
+        humid_server::hsm::KeyRef::AnonStatement,
+        s.clock.clone(),
+        humid_htp::server::Config::new(humid_htp::Unit::Anon),
+        humid_server::htp::max_body_for(&s.policy.policy),
+    );
+    humid_server::htp::spawn_ticks(ep.clone());
+    let router = humid_server::htp::mount(a.router(), &ep);
+    run::serve_internal(&s, Role::Anon, router).await
 }

@@ -57,7 +57,7 @@ async fn every_step_up_route_from_a_duress_session_changes_nothing_real() {
     use humid_server::front::routes::{Auth, ROUTES};
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
     // hardened recovery with a request bound to alice, so cancel has something real to veto
@@ -74,7 +74,7 @@ async fn every_step_up_route_from_a_duress_session_changes_nothing_real() {
         .core("PUT", "/v1/recovery/card", &json!({ "signed": s }))
         .await
         .unwrap();
-    let n = App::new(&c).unwrap();
+    let n = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let thief = alice.sibling().unwrap();
     let r: Value = n
@@ -103,7 +103,7 @@ async fn every_step_up_route_from_a_duress_session_changes_nothing_real() {
     let (jr, start) = join(&tablet, &alice.account_id(), &once);
     let _: Value = n.core("POST", "/v1/links", &start).await.unwrap();
 
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     humid_server::core::auth::deliver_duress(&c.core)
         .await
@@ -244,7 +244,7 @@ async fn every_step_up_route_from_a_duress_session_changes_nothing_real() {
 async fn keys_refuses_a_duress_mode_write_even_from_core() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
     let path = format!("/v1/objects/{}", doc.id);
@@ -300,7 +300,7 @@ async fn keys_refuses_a_duress_mode_write_even_from_core() {
 async fn a_duress_erase_survives_keys_being_down() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let _ = upload(&mut a, &alice, 64).await.unwrap();
     let s = a
@@ -316,7 +316,7 @@ async fn a_duress_erase_survives_keys_being_down() {
         .await
         .unwrap();
     c.keys.refuse_duress.store(true, Ordering::SeqCst);
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await; // the after-reply attempt
     assert_eq!(
@@ -358,9 +358,9 @@ async fn a_duress_erase_survives_keys_being_down() {
 async fn the_duress_entry_reaches_the_holder_once_the_duress_session_ends() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     assert_eq!(
         humid_server::core::ledger::flush_deferred(&c.core)
@@ -391,7 +391,7 @@ async fn the_duress_entry_reaches_the_holder_once_the_duress_session_ends() {
 async fn a_duress_session_never_learns_the_vault_was_erased() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let (doc, _) = upload(&mut a, &alice, 64).await.unwrap();
     let s = a
@@ -406,7 +406,7 @@ async fn a_duress_session_never_learns_the_vault_was_erased() {
         .core("POST", "/v1/checkin/arm", &json!({ "signed": s }))
         .await
         .unwrap();
-    let mut forced = App::new(&c).unwrap();
+    let mut forced = App::new(&c).await.unwrap();
     forced.login(&alice, 1).await.unwrap();
     humid_server::core::auth::deliver_duress(&c.core)
         .await
@@ -426,12 +426,12 @@ async fn a_duress_session_never_learns_the_vault_was_erased() {
 async fn bad_signatures_are_limited_but_never_block_a_valid_sign_in() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let thief = Phone::new().unwrap(); // not alice's keys
     let mut last = String::new();
     for i in 0..12 {
-        let mut m = App::new(&c).unwrap();
+        let mut m = App::new(&c).await.unwrap();
         m.net = format!("v4:203.0.113.{i}");
         let ch: Value = m
             .core(
@@ -459,7 +459,7 @@ async fn bad_signatures_are_limited_but_never_block_a_valid_sign_in() {
 async fn a_challenge_signs_in_once() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let alice = Phone::new().unwrap();
-    let mut a = App::new(&c).unwrap();
+    let mut a = App::new(&c).await.unwrap();
     a.register(&alice).await.unwrap();
     let ch: Value = a
         .core(
@@ -518,7 +518,7 @@ async fn f6_a_few_networks_cannot_stop_device_linking() {
     let k = humid_server::crypto::KemSecret::generate().unwrap();
     let mut made = 0i64;
     for net in 0..84 {
-        let mut m = App::new(&c).unwrap();
+        let mut m = App::new(&c).await.unwrap();
         m.net = format!("v4:203.0.113.{net}"); // all in one /24
         let (_, start) = join(
             &alice.sibling().unwrap(),
@@ -533,7 +533,7 @@ async fn f6_a_few_networks_cannot_stop_device_linking() {
         }
     }
     assert_eq!(made, humid_server::core::devices::MAX_OPEN_LINKS_PER_BUCKET);
-    let mut other = App::new(&c).unwrap();
+    let mut other = App::new(&c).await.unwrap();
     other.net = "v4:198.51.100.7".into();
     let (_, start) = join(&alice.sibling().unwrap(), &alice.account_id(), &k);
     let _: Value = other
@@ -547,7 +547,7 @@ async fn f6_a_few_networks_cannot_stop_device_linking() {
 #[tokio::test]
 async fn unbound_recoveries_go_after_an_hour() {
     let c = Cluster::start(|_| {}).await.unwrap();
-    let n = App::new(&c).unwrap();
+    let n = App::new(&c).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
     let d = Phone::new().unwrap();
     let r: Value = n
@@ -579,7 +579,7 @@ async fn post_tokens(c: &Cluster, app: &mut App<'_>, phone: &Phone, n: usize) ->
         .core("POST", "/v1/live/attest", &json!({ "signed": s }))
         .await
         .unwrap();
-    let anon_app = App::new(c).unwrap();
+    let anon_app = App::new(c).await.unwrap();
     let t: Value = anon_app
         .anon(
             "POST",
@@ -606,10 +606,10 @@ async fn post_tokens(c: &Cluster, app: &mut App<'_>, phone: &Phone, n: usize) ->
 async fn f7_a_big_deposit_never_blocks_a_prefix() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let tokens = post_tokens(&c, &mut app, &phone, 9).await;
-    let anon_app = App::new(&c).unwrap();
+    let anon_app = App::new(&c).await.unwrap();
     let mallory_box = {
         let mut b = vec![0xABu8; 16];
         b[15] = 0;
@@ -665,10 +665,10 @@ async fn deposits_cost_by_size_and_the_total_is_in_sql() {
         .await
         .unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let tokens = post_tokens(&c, &mut app, &phone, 16).await;
-    let anon_app = App::new(&c).unwrap();
+    let anon_app = App::new(&c).await.unwrap();
     let ah = humid_server::anon::relay::token_hash(b"ack", &[9u8; 32]).unwrap();
     let d = |t: &[Value], size: usize, b: u8| json!({ "tokens": t, "box": B64(vec![b; 16]), "ack_hash": B64(ah.clone()), "wire": B64(vec![0u8; size]) });
     assert_eq!(
@@ -703,7 +703,7 @@ async fn deposits_cost_by_size_and_the_total_is_in_sql() {
 async fn live_checks_for_post_tokens_are_capped_per_day() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let mut codes = vec![];
     for _ in 0..=humid_server::core::auth::LIVE_CHECKS_PER_DAY {
@@ -747,7 +747,7 @@ async fn calls_per_minute_is_enforced_per_session() {
         .await
         .unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let mut codes = vec![];
     for _ in 0..7 {
@@ -800,7 +800,7 @@ async fn the_policy_high_water_mark_is_in_the_database() {
 async fn a_huge_chunk_number_is_refused() {
     let c = Cluster::start(|_| {}).await.unwrap();
     let phone = Phone::new().unwrap();
-    let mut app = App::new(&c).unwrap();
+    let mut app = App::new(&c).await.unwrap();
     app.register(&phone).await.unwrap();
     let (doc, _) = upload(&mut app, &phone, 64).await.unwrap();
     let (_, _, ticket) = open(&mut app, &phone, &doc.id).await.unwrap();

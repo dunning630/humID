@@ -36,7 +36,11 @@ async fn go() -> humid_server::Result<()> {
         s.policy.clone(),
         s.clock.clone(),
         keys,
-    );
+    )?;
+    // Google's attestation status list: the newest signed copy from the database, then a
+    // fetch every 6 hours (any core instance may fetch; every instance reloads the newest)
+    core::attest::load_status(&c).await?;
+    core::attest::spawn_status_fetch(c.clone());
     humid_server::retention::spawn(db.clone(), core::RETENTION, s.clock.clone(), 600_000);
     ledger::spawn_checkpoints(db, s.hsm.clone(), s.clock.clone(), 60_000);
     // duress erases (retried until keys acts), deferred ledger entries, erased vaults
@@ -48,5 +52,17 @@ async fn go() -> humid_server::Result<()> {
             jobs.jobs().await;
         }
     });
-    run::serve_internal(&s, Role::Core, c.router()).await
+    // HTP/2 ends here: front forwards opaque calls; /v1/* answers only what the endpoint
+    // dispatched from an authenticated session.
+    let ep = humid_server::htp::Endpoint::with_config(
+        Role::Core,
+        s.hsm.clone(),
+        humid_server::hsm::KeyRef::CoreStatement,
+        s.clock.clone(),
+        humid_htp::server::Config::new(humid_htp::Unit::Core),
+        humid_server::htp::max_body_for(&s.policy.policy),
+    );
+    humid_server::htp::spawn_ticks(ep.clone());
+    let router = humid_server::htp::mount(c.router(), &ep);
+    run::serve_internal(&s, Role::Core, router).await
 }

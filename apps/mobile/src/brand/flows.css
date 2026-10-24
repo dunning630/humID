@@ -76,7 +76,15 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 /* The document camera (3.0.3). Always dark, whatever the app's theme: its colours are its own.
    White: looking. Amber: something to change. Mint: lined up, read, kept (the brand's meanings). */
 .doccam { position: fixed; inset: 0; z-index: 55; background: #000; color: #fff; overflow: hidden; animation: fade .2s var(--ease) both; }
-.doccam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; touch-action: manipulation; }
+/* the web camera (development, browser tests): the video is moved so its centre is the frame's (core/webcam.js place()) */
+.doccam video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; touch-action: manipulation; pointer-events: none; }
+.doccam { touch-action: manipulation; }
+/* the native camera (5.0): its preview is under the web view, so everything above it is see-through and only the
+   camera's own layer (and any toast) shows; the dim mask round the frame is the frame's own shadow */
+html.cam-native, html.cam-native body, html.cam-native .doccam { background: transparent !important; }
+html.cam-native body * { visibility: hidden; }
+html.cam-native .doccam, html.cam-native .doccam *, html.cam-native .toasts, html.cam-native .toasts * { visibility: visible; }
+html.cam-native .doccam:not([data-guided]) { background: transparent; }
 .dc-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: calc(var(--safe-t) + 76px) 16px calc(var(--safe-b) + 250px); pointer-events: none; }
 .dc-frame { position: relative; width: min(100%, 560px); aspect-ratio: 1.586; max-height: 100%; border-radius: 16px; transition: opacity .25s var(--ease); }
 .dc-frame[data-shape="td3"] { aspect-ratio: 1.42; }
@@ -88,8 +96,6 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .doccam[data-guided] .dc-frame { border-radius: 14px; box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,255,255,.55); aspect-ratio: 85.6 / 54; transition: box-shadow .2s var(--ease); }
 .doccam[data-guided] .dc-frame[data-shape="td3"] { aspect-ratio: 125 / 88; }
 .doccam[data-guided] .dc-frame[data-shape="page"] { aspect-ratio: 100 / 135; border-radius: 6px; }
-/* too close to focus: a smaller frame, so the document is held farther away (3.1.1) */
-.doccam[data-guided] .dc-frame[data-far] { width: min(70%, 400px); transition: width .3s var(--ease), box-shadow .2s var(--ease); }
 .doccam[data-guided] .dc-frame[data-state="close"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 1.5px rgba(255,185,74,.6); }
 .doccam[data-guided] .dc-frame[data-state="ok"] { box-shadow: 0 0 0 100vmax var(--cam-dim), inset 0 0 0 3px var(--cam-ok), 0 0 26px 2px rgba(111,227,180,.35); }
 .dc-frame .c { position: absolute; width: 30px; height: 30px; border: 3.5px solid #fff; transition: border-color .15s var(--ease), transform .2s var(--ease); }
@@ -118,9 +124,9 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-zone[data-read] { border-style: solid; border-color: var(--cam-ok); background: rgba(111,227,180,.14); }
 .doccam[data-guided]:not([data-phase="aim"]):not([data-phase="adjust"]):not([data-phase="hold"]) .dc-zone { opacity: 0; }
 
-/* the lock box: where the camera sees the document, easing onto the frame as it's lined up */
-.dc-lock { position: absolute; box-sizing: border-box; border: 2px solid var(--cam-warn); border-radius: 12px; background: rgba(255,185,74,.08); transform-origin: 50% 50%; pointer-events: none;
-  transition: left .12s linear, top .12s linear, width .12s linear, height .12s linear, transform .12s linear; }
+/* the document's corners as the camera sees them, until it lines up (5.0: the camera's own quad, smoothed natively) */
+.dc-quad { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 1; }
+.dc-quad polygon { fill: rgba(255,185,74,.08); stroke: var(--cam-warn); stroke-width: 2; stroke-linejoin: round; transition: all .1s linear; }
 /* the hold ring: fills round the frame as it holds still */
 .dc-ring { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .dc-ring path { fill: none; stroke: var(--cam-ok); stroke-width: 5; stroke-linecap: round; transition: stroke-dasharray .14s linear; }
@@ -139,14 +145,20 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
 .dc-stamp svg { display: block; width: 44px; height: 44px; padding: 9px; border-radius: 50%; color: var(--cam-ok-ink); background: var(--cam-ok); box-shadow: 0 0 0 6px rgba(111,227,180,.28), 0 4px 14px rgba(0,0,0,.4); animation: dc-pop .3s var(--ease-out) both; }
 @keyframes dc-pop { from { transform: scale(.4); opacity: 0; } }
 /* tap to focus */
-.dc-focus { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 2px solid var(--cam-warn); border-radius: 12px; animation: dc-focus .9s var(--ease-out) both; }
-@keyframes dc-focus { from { transform: scale(1.5); opacity: 0; } 25% { transform: scale(1); opacity: 1; } to { opacity: 0; } }
+/* tap to focus: only where the camera can, at the tap; it pulses while the camera focuses, turns mint when
+   it is in focus and amber when it couldn't, then fades (the camera's own answer, not a guess) */
+.dc-focus { position: absolute; z-index: 3; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 2px solid #fff; border-radius: 12px; pointer-events: none; animation: dc-focus-in .25s var(--ease-out) both; }
+.dc-focus[data-af="scanning"] { animation: dc-focus-in .25s var(--ease-out) both, dc-focus-pulse .7s var(--ease) .25s infinite alternate; }
+.dc-focus[data-af="focused"] { border-color: var(--cam-ok); animation: dc-focus-out .9s var(--ease-out) .2s both; }
+.dc-focus[data-af="failed"] { border-color: var(--cam-warn); animation: dc-focus-out .9s var(--ease-out) .2s both; }
+@keyframes dc-focus-in { from { transform: scale(1.5); opacity: 0; } }
+@keyframes dc-focus-pulse { to { transform: scale(.88); } }
+@keyframes dc-focus-out { to { opacity: 0; } }
 
 /* the panel: right under the frame, where the eyes already are */
 .dc-panel { box-sizing: border-box; display: grid; gap: 10px; padding: 12px 14px; border-radius: 18px; background: var(--cam-panel); border: 1px solid rgba(255,255,255,.14); font-size: var(--t-sm); color: #fff; text-align: left; pointer-events: auto; transition: border-color .2s var(--ease); }
 .dc-frame > .dc-panel { position: absolute; top: calc(100% + 16px); left: 0; right: 0; }
 .dc-frame[data-shape="page"] > .dc-panel { left: -8%; right: -8%; }
-.doccam[data-guided] .dc-frame[data-far] > .dc-panel { left: -21.4%; right: -21.4%; } /* the smaller frame keeps a full-width panel */
 .doccam > .dc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 128px); width: min(calc(100% - 32px), 460px); }
 .dc-panel[data-tone="warn"] { border-color: rgba(255,185,74,.75); }
 .dc-panel[data-tone="ok"] { border-color: rgba(111,227,180,.7); }
@@ -220,7 +232,8 @@ button.proof-row.linkrow > svg { width: 18px; height: 18px; color: var(--muted);
   .dc-shutter { width: 66px; height: 66px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dc-frame, .dc-frame .c, .dc-lock, .dc-ring path, .dc-chips li, .dc-zone { transition: none; }
+  .dc-frame, .dc-frame .c, .dc-quad polygon, .dc-ring path, .dc-chips li, .dc-zone { transition: none; }
+  .dc-focus, .dc-focus[data-af] { animation: none; }
   .dc-frame .c, .dc-sweep i, .dc-ico[data-spin] svg, .dc-shutter[data-offer], .dc-chips li i, .dc-freeze, .dc-flash, .dc-stamp svg, .dc-fields div, .dc-focus { animation: none; }
   .dc-flash { display: none; }
 }
