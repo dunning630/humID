@@ -20,7 +20,14 @@ all-features = true
 # or that sit in the app's process. Exceptions go here, each with the reason and an issue.
 yanked = "deny"
 unmaintained = "workspace"
-ignore = []
+ignore = [
+  # RUSTSEC-2023-0071 (Marvin: the `rsa` crate's private-key operations aren't constant
+  # time). Pulled in by `blind-rsa-signatures`, which the anon unit uses to sign blinded
+  # access passes and post tokens (RFC 9474), so the server does run private-key operations
+  # on caller-chosen inputs. Accepted for development only: replace the signing side with a
+  # constant-time implementation before any production deployment (SERVER.md §12).
+  { id = "RUSTSEC-2023-0071", reason = "anon unit blind RSA signing; development only, replace before production (SERVER.md §12)" },
+]
 
 [licenses]
 # What the dependency tree uses today, all permissive. A new licence fails CI until it is
@@ -29,8 +36,10 @@ allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-3-Clause",
+  "ISC",
   "MIT",
   "MPL-2.0",
+  "OpenSSL", # aws-lc-sys (rustls's crypto provider), alongside ISC and Apache-2.0
   "Unicode-3.0",
   "Zlib",
 ]

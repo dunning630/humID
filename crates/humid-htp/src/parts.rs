@@ -15,8 +15,9 @@
 //!
 //! A proof made in this session must name the `seq` of the request that carries it: the
 //! endpoint refuses a mismatch before the unit sees it, and passes the request's `seq` to the
-//! unit, which checks it again with method, path, `th`, mode, nonce, time and the signatures.
-//! A proof travels only as a proof part: the endpoint refuses `signed` anywhere else.
+//! unit, which checks it again with method, path, `th`, mode, nonce, time, the signatures and
+//! (on iOS) the App Attest assertion. A proof travels only as a proof part: the endpoint
+//! refuses `signed` anywhere else.
 
 use humid_pq2::encoding::{Reader, header};
 
