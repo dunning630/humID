@@ -9,7 +9,7 @@
 //! | Everyday signatures | [`MlDsaSigningKey`]: ML-DSA-87, hedged |
 //! | Long-lived roots | [`DualSigningKey`]: ML-DSA-87 **and** SLH-DSA-SHA2-256s; [`SlhSigningKey`] alone |
 //! | At rest | [`seal_at_rest`] / [`open_at_rest`]: AES-256-GCM-SIV; [`seal_to`] / [`open_sealed`] to a public key |
-//! | In transit | [`TransitSealer`] / [`TransitOpener`]: AES-256-GCM, counter nonces, replay window |
+//! | In transit | [`transit_channel`] → [`TransitSealer`] / [`TransitOpener`]: AES-256-GCM, a key per channel and direction, direction-tagged counter nonces, replay window |
 //! | Key derivation | [`kdf`]: KMAC256 over length-prefixed inputs |
 //! | Hash | [`sha3_512`], [`shake256`], [`labelled_hash`], [`key_id`] |
 //! | Shares | [`seal_share`] / [`open_share`]: phone ↔ key service, both directions |
@@ -48,8 +48,9 @@ mod sign;
 mod kat;
 
 pub use aead::{
-    BOX_OVERHEAD, MAX_PLAINTEXT, NONCE_LEN, REPLAY_WINDOW, SEALED_OVERHEAD, TAG_LEN, TransitOpener,
-    TransitSealer, open_at_rest, open_sealed, seal_at_rest, seal_to, siv_open, siv_seal,
+    BOX_OVERHEAD, MAX_PLAINTEXT, NONCE_LEN, REPLAY_WINDOW, Role, SEALED_OVERHEAD, TAG_LEN,
+    TransitOpener, TransitSealer, open_at_rest, open_sealed, seal_at_rest, seal_to, siv_open,
+    siv_seal, transit_channel,
 };
 pub use encoding::{ObjectType, SUITE, VERSION};
 pub use error::{Error, Result};

@@ -1,5 +1,6 @@
 //! Randomness: the platform CSPRNG only (V5.md, "Randomness").
 
+#[cfg(test)]
 use core::convert::Infallible;
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -36,11 +37,13 @@ impl TryRng for OsRng {
 
 impl TryCryptoRng for OsRng {}
 
-/// A generator that hands out the given bytes once, then zeros. Lets the hedged ML-DSA
+/// A generator that hands out the given bytes once, then zeros. Test builds only. Lets the hedged ML-DSA
 /// signer take an explicit `rnd` (FIPS 204 §3.4) for known-answer tests and the
 /// randomness cross-check; production signing draws `rnd` from [`fill`].
+#[cfg(test)]
 pub(crate) struct FixedRng<'a>(pub(crate) &'a [u8]);
 
+#[cfg(test)]
 impl TryRng for FixedRng<'_> {
     type Error = Infallible;
 
@@ -65,4 +68,5 @@ impl TryRng for FixedRng<'_> {
     }
 }
 
+#[cfg(test)]
 impl TryCryptoRng for FixedRng<'_> {}

@@ -167,7 +167,10 @@ ctx(type, label) = SUITE ‖ u16(type) ‖ label            (≤ 71 bytes)
 `0x0006` for a stand-alone SLH-DSA signature, `0x0008` for both halves of a dual signature, and a
 humid-core type for core statements (for example `0x0103` for a document). So a signature made
 for one purpose never verifies for another, and half of a dual signature never verifies as a
-stand-alone one.
+stand-alone one. An API that lets callers name the type ("typed" signatures for structured
+statements) accepts only statement types, `0x0100` and up; the suite's own signature types
+(`0x0004`, `0x0006`, `0x0008`) can only be reached through the dedicated sign and verify
+calls.
 
 ### 6.1 ML-DSA-87 (everyday)
 
@@ -239,16 +242,25 @@ A document's 32-byte key share `share_ks` is a sealed box (§7.2):
 `binding` is the manifest hash for an upload and the hash of the signed open request for a
 release. A sealed share is always 1661 bytes; anything else is refused before decryption.
 
-### 7.4 In transit: AES-256-GCM with counter nonces
+### 7.4 In transit: AES-256-GCM, a key per channel and direction
 
-One key per direction (from the session's handshake, outside this suite version's scope; the
-handshake uses §5 and §4.2).
+Both ends of a channel hold a 32-byte `session_secret` (from the session's handshake, outside
+this suite version's scope; the handshake uses §5 and §4.2) and agree on a `channel` id. Each
+direction gets its own key, and the direction is also in the nonce, so no two records ever share
+a (key, nonce) pair: not the two directions, not two channels from one secret.
 
 ```
-nonce(seq) = 00 00 00 00 ‖ u64(seq)
-A          = header(0x0020) ‖ lp(channel, u64(seq), extra_aad)
-record     = AES-256-GCM(key, nonce(seq), A, pt) ‖ tag (16)        seq sent alongside
+dir        = 0x49325201 (initiator → responder) or 0x52324901 (responder → initiator)
+k_dir      = KDF("HUMID-PQ2 transit", [session_secret], [channel, u32(dir)], 32)
+nonce      = u32(dir) ‖ u64(seq)
+A          = header(0x0020) ‖ lp(channel, u32(dir), u64(seq), extra_aad)
+record     = AES-256-GCM(k_dir, nonce, A, pt) ‖ tag (16)              seq sent alongside
 ```
+
+An implementation makes both halves of one end from the secret in one step and then discards it
+(`transit_channel(secret, channel, role)` consumes the secret), so a secret can't seed two
+sealers. A sealer is never rebuilt with a persisted `seq` under the same secret: a reconnect or a
+restart runs a new handshake.
 
 The sender's `seq` starts at 0 and only increases; it stops at 2^64−1. The receiver keeps the
 highest accepted `seq` and a 256-record window; it accepts a record only after its tag verifies,
@@ -268,10 +280,17 @@ them: App Attest, FIDO, X.509).
 2. Decoders check every length before reading, refuse trailing bytes and never panic.
 3. Failure doesn't say why: one error for "didn't authenticate", one for "didn't verify".
 4. Randomness only from the platform CSPRNG. ML-DSA and SLH-DSA always sign hedged in production;
-   deterministic signing exists only for the known-answer tests.
-5. At start, run the power-on self-test (`humid_pq2::self_test`: FIPS 202, SP 800-185, RFC 8452
-   and NIST keyGen answers, a randomness check, and pairwise KEM and signature checks) and refuse to
-   run if it fails.
+   deterministic signing exists only for the known-answer tests and is not compiled into
+   production builds.
+5. At start, run the power-on self-test and refuse to run if it fails. `humid_pq2::self_test`
+   checks one known answer per primitive:
+   - continuous RNG health checks on 1 KiB (repetition count, adaptive proportion, no repeated block);
+   - FIPS 202 (SHA3-512, SHAKE256) and SP 800-185 (KMAC256);
+   - RFC 8452 (AES-256-GCM-SIV), NIST CAVS (AES-256-GCM) and RFC 7748 (X25519);
+   - ML-KEM-1024 keyGen, encapsulation, decapsulation and implicit rejection;
+   - ML-DSA-87 keyGen, and verification of NIST's signature (and refusal of a modified one);
+   - SLH-DSA-SHA2-256s verification (and refusal of a modified signature);
+   - pairwise KEM and ML-DSA checks with fresh keys.
 
 ## 10. Sizes at a glance
 

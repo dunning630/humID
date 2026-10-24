@@ -64,8 +64,21 @@ pub fn labelled_hash(label: &str, parts: &[&[u8]]) -> Result<[u8; 64]> {
 /// where `encoding` is the key's full stand-alone encoding (header included).
 #[must_use]
 pub fn key_id(encoding: &[u8]) -> [u8; 32] {
-    // The label is a constant and an encoding over 4 GiB cannot exist in memory as a key.
-    let full = labelled_hash("HUMID-PQ2 key-id", &[encoding]).unwrap_or([0u8; 64]);
+    // The label is fixed and valid, so the only failure is a part of 4 GiB or more, which
+    // no key encoding is. Hash with the length prefix saturated rather than return a
+    // constant id: two inputs that differ still give different ids.
+    let mut h = Sha3_512::new();
+    Digest::update(&mut h, SUITE);
+    Digest::update(&mut h, 16u32.to_be_bytes());
+    Digest::update(&mut h, b"HUMID-PQ2 key-id");
+    Digest::update(
+        &mut h,
+        u32::try_from(encoding.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
+    Digest::update(&mut h, encoding);
+    let full: [u8; 64] = h.finalize().into();
     let mut id = [0u8; 32];
     id.copy_from_slice(&full[..32]);
     id
@@ -108,5 +121,19 @@ mod tests {
             sha3_512(&want)
         );
         assert_eq!(key_id(b"abc")[..], sha3_512(&want)[..32]);
+    }
+
+    /// Review L6: `key_id` is exactly the first 32 bytes of the labelled hash, and never a
+    /// constant.
+    #[test]
+    fn key_id_matches_labelled_hash() {
+        for n in [0usize, 1, 13, 1613, 2605] {
+            let enc = vec![0x5au8; n];
+            assert_eq!(
+                key_id(&enc)[..],
+                labelled_hash("HUMID-PQ2 key-id", &[&enc]).unwrap()[..32]
+            );
+            assert_ne!(key_id(&enc), [0u8; 32]);
+        }
     }
 }
