@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-humid-htp = { path = ".." }
+humid-htp = { path = "..", features = ["fuzz-hooks"] }
 humid-pq2 = { path = "../../humid-pq2" }
 
 # Its own workspace: cargo-fuzz builds it with nightly sanitizers, apart from the rest.
@@ -53,6 +53,13 @@ bench = false
 [[bin]]
 name = "server_calls"
 path = "fuzz_targets/server_calls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_messages"
+path = "fuzz_targets/sealed_messages.rs"
 test = false
 doc = false
 bench = false

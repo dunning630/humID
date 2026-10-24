@@ -10,6 +10,10 @@ description = "HTP/2: the HumID 5.0 transport between the phone's core and the c
 [lints]
 workspace = true
 
+[features]
+# Seal arbitrary messages under a genuine session's keys (the fuzz targets only).
+fuzz-hooks = []
+
 [dependencies]
 humid-pq2 = { path = "../humid-pq2" }
 zeroize = { version = "1.9", features = ["alloc"] }

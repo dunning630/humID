@@ -118,10 +118,24 @@ impl Cert {
         statement_key
             .verify(label::KEM_CERT, &m, &sig)
             .map_err(|_| Code::BadCert)?;
-        if now + CERT_SKEW_MS < self.not_before || now > self.not_after + CERT_SKEW_MS {
+        if !self.valid_at(now) {
             return Err(Code::BadCert);
         }
         Ok(())
+    }
+
+    /// Whether `now` is within the certificate's dates, ± [`CERT_SKEW_MS`].
+    #[must_use]
+    pub fn valid_at(&self, now: u64) -> bool {
+        now.saturating_add(CERT_SKEW_MS) >= self.not_before
+            && now <= self.not_after.saturating_add(CERT_SKEW_MS)
+    }
+
+    /// Whether the certificate is past half its life at `now`: time to fetch the bundle
+    /// again (the unit has rotated its key by then).
+    #[must_use]
+    pub fn past_half_life(&self, now: u64) -> bool {
+        now >= self.not_before + (self.not_after - self.not_before) / 2
     }
 
     /// The key id hellos name.

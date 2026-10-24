@@ -6,7 +6,11 @@
 //!
 //! * pins the server through the **identity root** built into the app: the key bundle's
 //!   policy must verify under it, and the unit's KEM certificate under the statement key the
-//!   policy names; anything else is a hard stop ([`LinkError::IdentityChanged`]);
+//!   policy names; a signature that fails is a hard stop ([`LinkError::IdentityChanged`]),
+//!   an older policy than one it has seen is refused ([`LinkError::PolicyRollback`]), and the
+//!   policy's mode is surfaced so the app can warn on a non-production server;
+//! * uses a certificate only within its dates, and fetches the bundle again past its half
+//!   life (the unit has a new key by then);
 //! * opens an HTP/2 session, and on the next unlock **resumes** with the ticket instead of a
 //!   full handshake (no certificate check, and the session transcript a sign-in is bound to
 //!   carries over, so no new sign-in either);
@@ -15,8 +19,10 @@
 //!   the prompt opens;
 //! * sends bodies over 1 MiB in chunks and resumes a cut upload or download from the next
 //!   chunk, without a new live check;
-//! * never lets an unauthenticated error change its state: a `session_unknown` from the path
-//!   makes it open a new session, nothing more.
+//! * never lets an unauthenticated error change its state: it first proves the session with
+//!   an authenticated pull of the request's answer, and sends a request again in a new
+//!   session only when it is idempotent (GET), so a forged `session_unknown` can't make a
+//!   request run twice (review #97 M-5).
 //!
 //! The link holds the HTP/2 session keys and the session token; it never holds a document
 //! key, a share or a seed (those stay in humid-core, which hands the link opaque bodies).
@@ -68,6 +74,12 @@ pub enum LinkError {
     },
     /// No step-up nonce left: `/v1/sync` or `/v1/auth/nonces` refills the pool.
     NoNonce,
+    /// The server offered a policy older than one this app has already accepted (or the same
+    /// version with other bytes): refused, like a changed identity, but its own code.
+    PolicyRollback,
+    /// The session ended while a non-idempotent request was outstanding: it may or may not
+    /// have run. The app re-reads its state (`/v1/sync`) before trying again.
+    Unknown,
 }
 
 impl From<Code> for LinkError {
@@ -122,9 +134,31 @@ impl Body<'_> {
     }
 }
 
-/// Which statement key the policy names for a unit, from the policy file's bytes. The
-/// policy's format belongs to the server (SERVER.md §7); the app passes its parser in.
-pub type StatementKeyOf = fn(&[u8], Unit) -> Option<Vec<u8>>;
+/// What the app needs from the policy file: its version (forward-only), whether the server
+/// runs in production mode, and the statement key it names for a unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicyView {
+    /// The policy's version (it only rises).
+    pub version: u64,
+    /// The server runs in production mode (the app warns on anything else).
+    pub production: bool,
+    /// The unit's statement key (ML-DSA-87 encoding).
+    pub statement_key: Vec<u8>,
+}
+
+/// Read a [`PolicyView`] for a unit from the policy file's bytes. The policy's format belongs
+/// to the server (SERVER.md §7); the app passes its parser in.
+pub type PolicyOf = fn(&[u8], Unit) -> Option<PolicyView>;
+
+/// The highest policy a link has accepted: its version and the SHA3-512 of its bytes. The app
+/// persists it ([`Link::policy_seen`]) and restores it at start ([`Link::set_policy_floor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PolicySeen {
+    /// Version.
+    pub version: u64,
+    /// SHA3-512 of the file.
+    pub hash: [u8; 64],
+}
 
 /// The clock the link reads (ms): hello times and ticket expiry.
 pub type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
@@ -146,7 +180,9 @@ pub struct StepUp {
 pub struct Link<T: Transport> {
     unit: Unit,
     root: DualVerifyingKey,
-    key_of: StatementKeyOf,
+    policy_of: PolicyOf,
+    policy_seen: Option<PolicySeen>,
+    production: Option<bool>,
     transport: T,
     clock: Clock,
     cert: Option<Cert>,
@@ -164,14 +200,16 @@ impl<T: Transport> Link<T> {
     pub fn new(
         unit: Unit,
         root: DualVerifyingKey,
-        key_of: StatementKeyOf,
+        policy_of: PolicyOf,
         transport: T,
         clock: Clock,
     ) -> Self {
         Self {
             unit,
             root,
-            key_of,
+            policy_of,
+            policy_seen: None,
+            production: None,
             transport,
             clock,
             cert: None,
@@ -182,6 +220,26 @@ impl<T: Transport> Link<T> {
             handshakes: 0,
             resumptions: 0,
         }
+    }
+
+    /// The highest policy accepted so far (persist it).
+    #[must_use]
+    pub fn policy_seen(&self) -> Option<PolicySeen> {
+        self.policy_seen
+    }
+
+    /// Restore the highest policy accepted in an earlier run: an older one is refused.
+    pub fn set_policy_floor(&mut self, p: PolicySeen) {
+        if self.policy_seen.is_none_or(|q| p.version >= q.version) {
+            self.policy_seen = Some(p);
+        }
+    }
+
+    /// Whether the server runs in production mode (`None` until a bundle was verified). The
+    /// app shows a warning when this is `Some(false)`.
+    #[must_use]
+    pub fn server_is_production(&self) -> Option<bool> {
+        self.production
     }
 
     /// Full handshakes so far.
@@ -240,6 +298,9 @@ impl<T: Transport> Link<T> {
         self.ticket = None;
     }
 
+    /// Fetch and verify the key bundle. Only a bundle whose signatures fail is
+    /// `IdentityChanged`; an answer that isn't a bundle at all (front's error while a unit
+    /// restarts) is `Offline` (review #97 L-3).
     async fn verify_bundle(&mut self) -> Result<Cert, LinkError> {
         let now = (self.clock)();
         let b = self
@@ -247,10 +308,28 @@ impl<T: Transport> Link<T> {
             .keys()
             .await
             .map_err(|_| LinkError::Offline)?;
-        let bundle = Bundle::decode(&b).map_err(|_| LinkError::IdentityChanged)?;
-        bundle
-            .verified(&self.root, self.unit, now, self.key_of)
-            .map_err(|_| LinkError::IdentityChanged)
+        let bundle = Bundle::decode(&b).map_err(|_| LinkError::Offline)?;
+        let policy = bundle
+            .verify_policy(&self.root)
+            .map_err(|_| LinkError::IdentityChanged)?;
+        let view = (self.policy_of)(policy, self.unit).ok_or(LinkError::IdentityChanged)?;
+        let seen = PolicySeen {
+            version: view.version,
+            hash: humid_pq2::sha3_512(policy),
+        };
+        if let Some(floor) = self.policy_seen
+            && (seen.version < floor.version
+                || (seen.version == floor.version && !humid_pq2::ct_eq(&seen.hash, &floor.hash)))
+        {
+            return Err(LinkError::PolicyRollback);
+        }
+        let key = view.statement_key.clone();
+        let cert = bundle
+            .verified(&self.root, self.unit, now, |_, _| Some(key.clone()))
+            .map_err(|_| LinkError::IdentityChanged)?;
+        self.policy_seen = Some(seen);
+        self.production = Some(view.production);
+        Ok(cert)
     }
 
     /// Open a session if none is open: resume with the ticket when there is one, else a
@@ -264,19 +343,44 @@ impl<T: Transport> Link<T> {
             return Ok(());
         }
         let now = (self.clock)();
-        if let Some(t) = self.ticket.take()
-            && let Ok((hs, call)) = Handshake::resume(t, now)
+        if let Some(t) = self.ticket.take() {
+            let keep = Ticket {
+                unit: t.unit,
+                ticket: t.ticket.clone(),
+                expires_at: t.expires_at,
+                secret: t.secret.duplicate(),
+                chain_th: t.chain_th,
+            };
+            if let Ok((hs, call)) = Handshake::resume(t, now) {
+                let ans = match self.transport.call(call).await {
+                    Ok(a) => a,
+                    Err(_) => {
+                        // no answer: the server never saw it, so the ticket is still good
+                        self.ticket = Some(keep);
+                        return Err(LinkError::Offline);
+                    }
+                };
+                if let Ok(mut s) = hs.finish(&ans) {
+                    self.ticket = s.take_ticket();
+                    self.session = Some(s);
+                    self.resumptions += 1;
+                    return Ok(());
+                }
+            }
+        }
+        // a certificate outside its dates is never used; past its half life the unit has a
+        // new key, so fetch the bundle again (and keep the old one if that fails while it is
+        // still valid) (review #97 M-6)
+        if let Some(c) = &self.cert
+            && (!c.valid_at(now) || c.past_half_life(now))
         {
-            let ans = self
-                .transport
-                .call(call)
-                .await
-                .map_err(|_| LinkError::Offline)?;
-            if let Ok(mut s) = hs.finish(&ans) {
-                self.ticket = s.take_ticket();
-                self.session = Some(s);
-                self.resumptions += 1;
-                return Ok(());
+            match self.verify_bundle().await {
+                Ok(c) => self.cert = Some(c),
+                Err(LinkError::Offline) if self.cert.as_ref().is_some_and(|c| c.valid_at(now)) => {}
+                Err(e) => {
+                    self.cert = None;
+                    return Err(e);
+                }
             }
         }
         for attempt in 0..2 {
@@ -339,12 +443,13 @@ impl<T: Transport> Link<T> {
     }
 
     /// One request and its answer, whatever the status. Cut uploads resume from the
-    /// server's ack, cut downloads are pulled from the next chunk. A session the server no
-    /// longer knows is replaced once and the request sent again, unless it was reserved for
-    /// a live proof (the proof names its session: the app asks for a new check).
+    /// server's ack, cut downloads are pulled from the next chunk. An unauthenticated error
+    /// is first checked with an authenticated pull; a session the server really no longer
+    /// knows is replaced once and the request sent again only if it is a GET and carries no
+    /// proof. Anything else that may have run comes back as [`LinkError::Unknown`].
     ///
     /// # Errors
-    /// `Offline`, `Protocol`.
+    /// `Offline`, `Protocol`, `Unknown`.
     pub async fn call(
         &mut self,
         rid: Option<u32>,
@@ -376,6 +481,9 @@ impl<T: Transport> Link<T> {
                     if attempt == 1 || rid.is_some() {
                         return Err(LinkError::Protocol(Code::SessionUnknown));
                     }
+                    if method != Method::Get {
+                        return Err(LinkError::Unknown);
+                    }
                 }
                 r => return r,
             }
@@ -405,6 +513,10 @@ impl<T: Transport> Link<T> {
     }
 
     async fn drive(&mut self, rid: u32, mut call: Vec<u8>) -> Result<Reply, LinkError> {
+        // unauthenticated answers in a row: each is checked with an authenticated pull before
+        // it is believed
+        let mut unauth = 0;
+        let mut probed = false;
         for _ in 0..1024 {
             let ans = self
                 .transport
@@ -416,8 +528,16 @@ impl<T: Transport> Link<T> {
                 .as_mut()
                 .ok_or(LinkError::Protocol(Code::Internal))?;
             let events = match s.receive(&ans) {
-                Ok(e) => e,
-                Err(Code::SessionUnknown) => return Err(LinkError::Protocol(Code::SessionUnknown)),
+                Ok(e) => {
+                    unauth = 0;
+                    e
+                }
+                Err(c) if c.is_session_level() && unauth < UNAUTH_PROBES => {
+                    unauth += 1;
+                    probed = true;
+                    call = s.pull(rid, 0)?;
+                    continue;
+                }
                 Err(c) => return Err(c.into()),
             };
             let mut next = None;
@@ -435,6 +555,12 @@ impl<T: Transport> Link<T> {
                             body,
                         });
                     }
+                    // our probing pull found no kept answer: the request ran (or not) and its
+                    // answer is gone; only the caller can tell what to do next
+                    Event::Refused {
+                        rid: r,
+                        code: Code::RidUnknown,
+                    } if r == rid && probed => return Err(LinkError::Unknown),
                     Event::Refused { rid: r, code } if r == rid || r == 0 => {
                         return Err(code.into());
                     }
@@ -452,6 +578,10 @@ impl<T: Transport> Link<T> {
         Err(LinkError::Protocol(Code::Busy))
     }
 }
+
+/// Authenticated pulls the link sends to check an unauthenticated error before it believes
+/// one.
+pub const UNAUTH_PROBES: usize = 2;
 
 /// The `error` field of a unit's JSON refusal (`{"error":"<code>",…}`, a snake_case code),
 /// without a JSON parser.

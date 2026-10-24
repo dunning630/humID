@@ -8,10 +8,17 @@
 //! can no longer name a session transcript, add a session token or swap a body.
 //!
 //! What the endpoint adds to a dispatched request, from the HTP/2 session itself:
-//! `x-humid-th` (the chain transcript sign-ins and proofs are bound to), `authorization`
-//! from the typed session header, `x-humid-ticket`, and the client network front reported.
-//! Typed bodies become the JSON the unit already reads: binary fields as base64url, the live
-//! proof as `signed`. A proof made in this session must name this request's `seq`.
+//! `x-humid-th` (the chain transcript sign-ins and proofs are bound to), `x-humid-seq` (the
+//! `seq` a live proof in this request must name; core checks it in `check_step_up`),
+//! `authorization` from the typed session header, `x-humid-ticket`, and, for core only, the
+//! client network front reported (anon never learns a client address). Typed bodies become
+//! the JSON the unit already reads: binary fields as base64url, the live proof as `signed`.
+//! A raw body must be a JSON object without `signed`, and a JSON part may not carry `signed`
+//! either: a proof travels only as a typed part.
+//!
+//! Before any body is buffered, a request head must name a route of this unit on the
+//! allow-list, carry a token where the route needs one (and none where it must never have
+//! one), and announce a body no larger than the route allows (review #97 M-2).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -24,9 +31,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use humid_htp::msg::{Encoding, HeaderName, RequestHead};
 use humid_htp::parts::{self, Part};
-use humid_htp::server::{Config, Ready, Server};
+use humid_htp::server::{Config, Ready, Received, Server};
 use humid_htp::{Code, Unit};
-use serde::Deserialize;
 use tower::ServiceExt;
 
 use crate::api::headers;
@@ -37,8 +43,18 @@ use crate::proofs::{Signed, StepUp};
 use crate::unit::{Clock, Role, ms};
 use crate::wire::{B64, Id};
 
-/// Largest call body a unit (or front) reads: a client batches up to 8 MiB of chunks.
+/// Largest call body a unit (or front) reads: a client batches up to 7 MiB of chunks.
 pub const MAX_CALL: usize = 9 << 20;
+/// Largest answer a unit sends front for one call: the per-call answer budget, one fresh
+/// answer per dispatched request, and framing. Front refuses anything bigger.
+pub const MAX_CALL_ANSWER: usize = 96 << 20;
+/// Header the endpoint sets: the `seq` a live proof in this request must name.
+pub const SEQ: &str = "x-humid-seq";
+/// Largest body a request may carry before its session has signed in (registration,
+/// enrolment, a recovery card or a link request: all small).
+pub const PRE_SIGN_IN_BODY: u64 = 256 << 10;
+/// Largest body to anon (a 4 MiB relay deposit, base64 in JSON, with its post tokens).
+pub const ANON_BODY: u64 = 8 << 20;
 /// A KEM certificate is valid this long; the key rotates halfway through.
 pub const CERT_MS: i64 = 24 * ms::HOUR;
 /// Content type of HTP/2 calls and answers.
@@ -57,6 +73,8 @@ pub struct Endpoint {
     clock: Clock,
     server: Mutex<Option<Server>>,
     router: OnceLock<Router>,
+    /// Largest body a signed-in session may send (the policy's document limit).
+    max_body: u64,
 }
 
 fn now_u64(c: &Clock) -> u64 {
@@ -80,11 +98,19 @@ impl Endpoint {
         } else {
             Unit::Core
         };
-        Self::with_config(role, hsm, key, clock, Config::new(unit))
+        Self::with_config(
+            role,
+            hsm,
+            key,
+            clock,
+            Config::new(unit),
+            humid_htp::MAX_BODY,
+        )
     }
 
     /// As [`Endpoint::new`] with other limits (tests stretch session lifetimes so a test can
-    /// move its clock by days).
+    /// move its clock by days) and the largest signed-in body (the policy's object limit,
+    /// with room for the request around it).
     #[must_use]
     pub fn with_config(
         role: Role,
@@ -92,16 +118,23 @@ impl Endpoint {
         key: KeyRef,
         clock: Clock,
         cfg: Config,
+        max_body: u64,
     ) -> Arc<Self> {
         let unit = cfg.unit;
+        let max_body = max_body.min(humid_htp::MAX_BODY);
+        let server = Server::new(cfg).ok().map(|mut s| {
+            s.set_admission(admission(role, max_body));
+            s
+        });
         Arc::new(Self {
             unit,
             role,
             hsm,
             key,
             clock,
-            server: Mutex::new(Server::new(cfg).ok()),
+            server: Mutex::new(server),
             router: OnceLock::new(),
+            max_body,
         })
     }
 
@@ -113,7 +146,9 @@ impl Endpoint {
             .lock()
             .map_err(|_| Error::internal("htp state poisoned"))?;
         if g.is_none() {
-            *g = Some(Server::new(Config::new(self.unit)).map_err(code_err)?);
+            let mut s = Server::new(Config::new(self.unit)).map_err(code_err)?;
+            s.set_admission(admission(self.role, self.max_body));
+            *g = Some(s);
         }
         let s = g.as_mut().ok_or_else(|| Error::internal("htp state"))?;
         let due = s
@@ -157,16 +192,32 @@ impl Endpoint {
     }
 
     /// One call: open, dispatch every complete request to the unit, answer.
-    async fn call(&self, net: &str, body: &[u8]) -> Result<Vec<u8>> {
-        let r = self.with(|s, now| s.receive(body, now))?;
+    async fn call(&self, net: Option<&str>, body: &[u8]) -> Result<Vec<u8>> {
+        let r: Received = self.with(|s, now| s.receive_from(body, net.unwrap_or(""), now))?;
         let mut out = r.frames;
         for ready in r.ready {
             let rid = ready.head.rid;
             let sid = ready.sid;
+            let path = ready.head.path.clone();
+            let had_token = ready.head.header(HeaderName::Session).is_some();
             let answer = match self.check(&ready) {
                 Ok(()) => match self.dispatch(ready, net).await {
                     Ok((status, ctype, bytes)) => {
-                        self.with(|s, now| s.respond(&sid, rid, status, ctype, &bytes, now))?
+                        // a sign-in answered, or a token the unit accepted: the session may
+                        // now send large bodies (and its next ticket says so)
+                        let ok = (200..300).contains(&status);
+                        let signed_in =
+                            ok && (had_token || path.split('?').next() == Some("/v1/auth/login"));
+                        self.with(|s, now| {
+                            let mut f = s.respond(&sid, rid, status, ctype, &bytes, now);
+                            if signed_in
+                                && let Ok(t) = s.mark_signed_in(&sid, now)
+                                && let Ok(v) = f.as_mut()
+                            {
+                                v.extend_from_slice(&t);
+                            }
+                            f
+                        })?
                     }
                     Err(c) => self.with(|s, _| s.refuse(&sid, rid, c))?,
                 },
@@ -193,15 +244,27 @@ impl Endpoint {
         Ok(())
     }
 
-    async fn dispatch(&self, r: Ready, net: &str) -> std::result::Result<(u16, u8, Vec<u8>), Code> {
+    async fn dispatch(
+        &self,
+        r: Ready,
+        net: Option<&str>,
+    ) -> std::result::Result<(u16, u8, Vec<u8>), Code> {
         let router = self.router.get().ok_or(Code::Internal)?.clone();
-        let body = unit_body(&r.head, &r.body, &r.th)?;
+        let body = unit_body(&r.head, &r.body)?;
         let mut b = Request::builder()
             .method(r.head.method.as_str())
             .uri(&r.head.path)
             .header(headers::TH, B64::encode(&r.th))
-            .header(CLIENT_NET, net)
+            .header(SEQ, r.seq.to_string())
             .header("content-type", "application/json");
+        // core's availability limits key on the client network; anon never gets one
+        // (messaging keeps no client address), and a missing one stays missing so core's
+        // production rule (`no_client_network`) decides
+        if self.role == Role::Core
+            && let Some(n) = net
+        {
+            b = b.header(CLIENT_NET, n);
+        }
         if let Some(t) = r.head.header(HeaderName::Session) {
             b = b.header(
                 headers::AUTHORIZATION,
@@ -228,22 +291,26 @@ impl Endpoint {
     }
 }
 
-#[derive(Deserialize)]
-struct Probe {
-    #[serde(default)]
-    signed: Option<serde::de::IgnoredAny>,
+/// A JSON object that doesn't carry `signed` (a proof travels only as a typed part).
+fn object_without_signed(
+    b: &[u8],
+) -> std::result::Result<serde_json::Map<String, serde_json::Value>, Code> {
+    match serde_json::from_slice(b) {
+        Ok(serde_json::Value::Object(m)) if !m.contains_key("signed") => Ok(m),
+        _ => Err(Code::BadFrame),
+    }
 }
 
-/// The JSON body the unit reads. A raw body passes as is, except that a live proof travels
-/// only as a typed part (so the endpoint can check its `seq`): raw JSON with a top-level
-/// `signed` is refused.
-fn unit_body(head: &RequestHead, body: &[u8], th: &[u8; 64]) -> std::result::Result<Vec<u8>, Code> {
-    let _ = th;
+/// The JSON body the unit reads (review #97 M-1). A raw body must be empty or a JSON object
+/// without a `signed` field: no arrays (serde would read one as a struct, field by field), no
+/// proof outside a typed proof part. A JSON part follows the same rule.
+fn unit_body(head: &RequestHead, body: &[u8]) -> std::result::Result<Vec<u8>, Code> {
     match head.enc {
         Encoding::Raw => {
-            if serde_json::from_slice::<Probe>(body).is_ok_and(|p| p.signed.is_some()) {
-                return Err(Code::BadFrame);
+            if body.is_empty() {
+                return Ok(vec![]);
             }
+            object_without_signed(body)?;
             Ok(body.to_vec())
         }
         Encoding::Parts => {
@@ -251,10 +318,7 @@ fn unit_body(head: &RequestHead, body: &[u8], th: &[u8; 64]) -> std::result::Res
             let mut obj = serde_json::Map::new();
             for p in &ps {
                 if let Part::Json(j) = p {
-                    match serde_json::from_slice(j) {
-                        Ok(serde_json::Value::Object(m)) => obj = m,
-                        _ => return Err(Code::BadFrame),
-                    }
+                    obj = object_without_signed(j)?;
                 }
             }
             for p in ps {
@@ -299,11 +363,10 @@ async fn call(State(ep): St, headers: HeaderMap, body: Body) -> Result<Response>
     let net = headers
         .get(CLIENT_NET)
         .and_then(|v| v.to_str().ok())
-        .filter(|s| s.len() <= 64)
-        .unwrap_or("unknown")
-        .to_string();
+        .filter(|s| !s.is_empty() && s.len() <= 64)
+        .map(str::to_string);
     let body = crate::net::body_bytes(body, MAX_CALL).await?;
-    let out = ep.call(&net, &body).await?;
+    let out = ep.call(net.as_deref(), &body).await?;
     Ok((StatusCode::OK, [("content-type", CONTENT_TYPE)], out).into_response())
 }
 
@@ -338,6 +401,35 @@ pub fn mount(app: Router, ep: &Arc<Endpoint>) -> Router {
     full
 }
 
+/// The largest body a signed-in session may send, from the policy: one document envelope
+/// (as bytes in a typed part, or base64 in raw JSON) with its request around it.
+#[must_use]
+pub fn max_body_for(p: &crate::policy::Policy) -> u64 {
+    (p.limits.max_object_bytes / 3 * 4 + (256 << 10)).min(humid_htp::MAX_BODY)
+}
+
+/// The head-time check (review #97 M-2): the route is this unit's, the session rule holds
+/// as far as the head can show it, and the body fits the route.
+fn admission(role: Role, max_body: u64) -> humid_htp::server::Admission {
+    use crate::front::routes::{Auth, resolve};
+    Box::new(move |head: &RequestHead, signed_in: bool| {
+        let route = resolve(head.method.as_str(), &head.path).ok_or(Code::RouteNotFound)?;
+        if route.unit != role {
+            return Err(Code::RouteNotFound);
+        }
+        if route.auth == Auth::NeverSignedIn && head.header(HeaderName::Session).is_some() {
+            return Err(Code::AuthNotAllowed);
+        }
+        // a route that needs a session without a token gets core's own `no_session`; until a
+        // sign-in, no session buffers more than a small body
+        Ok(match role {
+            Role::Anon => ANON_BODY.min(max_body),
+            _ if signed_in => max_body,
+            _ => PRE_SIGN_IN_BODY,
+        })
+    })
+}
+
 /// Drop expired sessions once a minute (and rotate the KEM key when due).
 pub fn spawn_ticks(ep: Arc<Endpoint>) {
     tokio::spawn(async move {
@@ -352,9 +444,91 @@ pub fn spawn_ticks(ep: Arc<Endpoint>) {
 /// The statement key the signed policy names for `unit` (what the app does with the bundle).
 #[must_use]
 pub fn statement_key_of(policy: &[u8], unit: Unit) -> Option<Vec<u8>> {
+    policy_of(policy, unit).map(|v| v.statement_key)
+}
+
+/// What the app reads from the signed policy: version (forward-only), mode, and the
+/// statement key for `unit` (humid-link's [`humid_link::PolicyOf`] for this server).
+#[must_use]
+pub fn policy_of(policy: &[u8], unit: Unit) -> Option<humid_link::PolicyView> {
     let p: crate::policy::Policy = serde_json::from_slice(policy).ok()?;
-    Some(match unit {
-        Unit::Core => p.unit_keys.core.0,
-        Unit::Anon => p.unit_keys.anon.0,
+    Some(humid_link::PolicyView {
+        version: p.version,
+        production: p.mode == crate::unit::Mode::Production,
+        statement_key: match unit {
+            Unit::Core => p.unit_keys.core.0,
+            Unit::Anon => p.unit_keys.anon.0,
+        },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use humid_htp::msg::Method;
+
+    fn head(enc: Encoding, path: &str) -> RequestHead {
+        RequestHead {
+            rid: 1,
+            method: Method::Post,
+            enc,
+            headers: vec![],
+            path: path.into(),
+            body_len: 0,
+            body_hash: [0; 64],
+        }
+    }
+
+    /// Review #97 M-1: a proof travels only as a typed proof part. A raw body in serde's
+    /// array form, a raw body with `signed`, and a JSON part with `signed` are all refused.
+    #[test]
+    fn a_proof_cannot_be_smuggled_past_the_seq_check() {
+        let raw = br#"[{"proof":{}, "body":""}, "AA", "AA"]"#;
+        assert_eq!(
+            unit_body(&head(Encoding::Raw, "/v1/objects"), raw),
+            Err(Code::BadFrame)
+        );
+        let raw = br#"{"signed":{"proof":{},"body":""}}"#;
+        assert_eq!(
+            unit_body(&head(Encoding::Raw, "/v1/objects"), raw),
+            Err(Code::BadFrame)
+        );
+        let j = br#"{"signed":{"proof":{"seq":999},"body":""},"envelope":"AA"}"#.to_vec();
+        let body = parts::encode(&[Part::Json(j)]);
+        assert_eq!(
+            unit_body(&head(Encoding::Parts, "/v1/objects"), &body),
+            Err(Code::BadFrame)
+        );
+        // an object, and an empty body, pass
+        assert!(unit_body(&head(Encoding::Raw, "/v1/sync"), b"{}").is_ok());
+        assert!(unit_body(&head(Encoding::Raw, "/v1/me"), b"").is_ok());
+        assert!(unit_body(&head(Encoding::Raw, "/v1/me"), b"5").is_err());
+    }
+
+    /// Review #97 M-2: the head-time admission refuses unknown routes, another unit's routes,
+    /// a token on a never-signed-in route, and large bodies before a sign-in.
+    #[test]
+    fn admission_runs_on_the_head() {
+        let a = admission(Role::Core, humid_htp::MAX_BODY);
+        assert_eq!(
+            a(&head(Encoding::Raw, "/not/a/route"), false),
+            Err(Code::RouteNotFound)
+        );
+        assert_eq!(
+            a(&head(Encoding::Raw, "/v1/relay/tick"), false),
+            Err(Code::RouteNotFound)
+        );
+        assert_eq!(
+            a(&head(Encoding::Raw, "/v1/sync"), false),
+            Ok(PRE_SIGN_IN_BODY)
+        );
+        assert_eq!(
+            a(&head(Encoding::Raw, "/v1/objects"), true),
+            Ok(humid_htp::MAX_BODY)
+        );
+        let anon = admission(Role::Anon, humid_htp::MAX_BODY);
+        let mut h = head(Encoding::Raw, "/v1/relay/tick");
+        h.headers.push((HeaderName::Session, vec![1]));
+        assert_eq!(anon(&h, false), Err(Code::AuthNotAllowed));
+    }
 }

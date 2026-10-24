@@ -10,7 +10,7 @@ description = "HumID 5.0 server: the front, core, keys and anon units (docs/v5/S
 [features]
 # Test support (a simulated phone, an in-process cluster, the app's HTP/2 link). Never in a
 # release build.
-testkit = ["dep:humid-link"]
+testkit = []
 
 [[bin]]
 name = "humid-server-front"
@@ -33,8 +33,9 @@ path = "src/bin/anon.rs"
 humid-pq2 = { path = "../../crates/humid-pq2" }
 # HTP/2, the app transport (docs/v5/HTP2.md): terminated inside core and anon.
 humid-htp = { path = "../../crates/humid-htp" }
-# The app core's HTP/2 client: the testkit's simulated phone drives every flow through it.
-humid-link = { path = "../../crates/humid-link", optional = true }
+# The app core's HTP/2 client: what the policy file means to the app (`htp::policy_of`), and
+# the testkit's simulated phone drives every flow through it.
+humid-link = { path = "../../crates/humid-link" }
 
 # HTTP: axum's router over hyper 1; TLS accepted by hand so the unit can read the peer certificate.
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -75,8 +76,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 humid-server = { path = ".", features = ["testkit"] }
 # cross-checks: the server parses exactly what the phone's core emits (share requests)
 humid-core = { path = "../../crates/humid-core", features = ["software-gate"] }
-# the app's HTP/2 client, driven directly by the transport tests
-humid-link = { path = "../../crates/humid-link" }
 
 # shared lints (clippy -D warnings in CI); unsafe is forbidden in the crate root (lib.rs)
 [lints]

@@ -1,6 +1,6 @@
 # HTP/2 — HumID Transit Protocol, version 2
 
-Status: **draft for review, 24 October 2026.** Branch `v5-htp2`. Reference implementation:
+Status: **draft for review, 24 October 2026; revised after the PR #97 review (§14).** Branch `v5-htp2`. Reference implementation:
 [`crates/humid-htp`](../../crates/humid-htp) (sans-io client and server), the server side in
 [`server/humid-server/src/htp.rs`](../../server/humid-server/src/htp.rs) and
 [`src/front`](../../server/humid-server/src/front/mod.rs), the app core's client in
@@ -44,7 +44,7 @@ Notation is PQ2.md §1's: `‖` concatenation, big-endian `u16/u32/u64`, `lp(a, 
 identity root (dual: ML-DSA-87 + SLH-DSA-SHA2-256s)       pinned in the app at build time
   └─ policy.json, dual-signed over the exact file bytes   SERVER.md §7; names unit_keys.core / .anon
        └─ unit statement key (ML-DSA-87, in the unit's HSM)
-            └─ KEM certificate (below), at most 3 days valid, re-made daily, rotated at half-life
+            └─ KEM certificate (below): 24 h valid (the format allows at most 3 days), rotated at 12 h
                  └─ the unit's HTP/2 KEM key (hybrid, software, in the unit's memory)
 ```
 
@@ -65,7 +65,10 @@ unit = 1 core, 2 anon
 A decoder refuses another header, an unknown unit, `not_after ≤ not_before`, a validity over 3 days, a KEM
 key that fails FIPS 203's check, and trailing bytes. The client accepts a certificate when the signature
 verifies under the statement key the verified policy names for that unit and
-`not_before − 10 min ≤ now ≤ not_after + 10 min`.
+`not_before − 10 min ≤ now ≤ not_after + 10 min`. The client checks the dates again **every** time it
+uses a cached certificate (`Handshake::full` refuses one outside them with `bad_cert`), and fetches the
+bundle again once the certificate is past half its life, so a stolen KEM key is useful only until its
+certificate ends.
 
 ### 2.3 Key bundle (type `0x0301`), `GET /htp/v2/keys`
 
@@ -76,9 +79,15 @@ bundle = header(0x0301) ‖ lp(policy.json) ‖ lp(policy.json.sig) ‖ u8 n (1.
 Front builds it from the policy file it verified at start-up (the same bytes and signature, unchanged) and
 each unit's `GET /htp/v2/cert`, and caches it for 10 minutes. The policy is at most 256 KiB; its signature
 is PQ2 §6.3's dual signature over `lp(file bytes)` with label `HUMID-PQ2 server-policy`. The app fetches
-the bundle only when it has no certificate for the unit, or when a hello is refused with `key_unknown` or
-`bad_cert`. A bundle that doesn't verify under the pinned root is a **hard stop**: the app shows its
-warning screen and sends nothing.
+the bundle when it has no usable certificate (none, past half its life, or expired), or when a hello is
+refused with `key_unknown` or `bad_cert`. A bundle whose signature doesn't verify under the pinned root is
+a **hard stop**: the app shows its warning screen and sends nothing. An answer that isn't a bundle at all
+(front's error while a unit restarts) is only `Offline`.
+
+The policy is **forward-only on the phone too**: the link keeps the highest version it accepted (and the
+SHA3-512 of its bytes; the app persists both) and refuses a lower version, or the same version with other
+bytes (`PolicyRollback`). It also surfaces the policy's mode, and the app warns on a server that isn't in
+production mode.
 
 ## 3. Frames: what front sees
 
@@ -105,10 +114,16 @@ whole 32-byte header, inside PQ2 §7.4's `A`. Padding must be all zeros after de
 the smallest class that fits, or a higher one for cover.
 
 **Front's check** (`frame::route`) before forwarding: every header is well formed, every frame is exactly
-its class's length, and the call is either one HELLO/RESUME or records of a single session and unit.
-Front then rate-limits (handshakes per client network, records per session) and forwards the bytes
-unchanged to that unit's internal `POST /htp/v2/call`. It sets `x-humid-client-net` from the verified
-socket (SERVER.md §9). It never holds a key that opens them.
+its class's length, a call has at most 64 frames, and the call is either one HELLO/RESUME or records of a
+single session and unit. Front then rate-limits: handshakes per client network and per IPv6 /48;
+records (counted per frame, not per call) per session and per client network. It forwards the bytes
+unchanged to that unit's internal `POST /htp/v2/call`, and reads at most 96 MiB back. For core it sets
+`x-humid-client-net` from the verified socket (SERVER.md §9). Anon never learns a client address. Front
+never holds a key that opens them.
+
+**Cover classes are capped.** A sender pads small messages up to at most class 2 (16 KiB). Bigger frames
+are only as big as their content needs, so a client can't make the server seal a small answer in a 1 MiB
+frame.
 
 ## 4. Handshake
 
@@ -151,7 +166,8 @@ res     = KDF("HUMID-PQ2 htp2-resumption", [master],     [th], 32)
 
 ### 4.2 Resumption (one round trip, no certificate, no sign-in)
 
-When the app locks it drops the session (keys, token stays in the core; §8). The next unlock resumes:
+When the app locks it drops the session keys, the token and the nonce pool, and keeps the ticket (§8).
+The next unlock resumes:
 
 ```
 RESUME  lp(ticket) (≤ 1024) ‖ ek_c (1613) ‖ nonce_c (32) ‖ u64 time_c                         ─────►
@@ -174,6 +190,9 @@ confirm, session, res' as in §4.1 with th_r;   channel = "HTP2" ‖ unit ‖ si
 - `gen` counts sessions in a chain: 0 for the full handshake, +1 per resumption. A live proof's `seq` is
   `u64(gen) << 32 | rid` (§6.2), so a proof made in one session of a chain never matches a request in
   another. `REPLY` with `mode = 0` must have `gen = 0` and vice versa.
+- A ticket also says whether the chain has signed in. After a sign-in the unit sends a new ticket in the
+  same session, and the client keeps it in place of the old one, so the next session may carry large
+  bodies at once (§5.1).
 - Tickets are single use and a chain ends 8 hours after its full handshake. After that, or after a unit
   restart, the phone does a full handshake (and the core signs in again).
 - **There is no 0-RTT data.** Early data under a resumption secret would be replayable. One round trip is
@@ -183,7 +202,8 @@ confirm, session, res' as in §4.1 with th_r;   channel = "HTP2" ‖ unit ‖ si
 
 ```
 ticket = seal_at_rest(ticket_key, 0x0302, [u8 unit],
-                      u8 unit ‖ u32 gen_next ‖ u64 chain_start ‖ u64 expires_at ‖ chain_th (64) ‖ res (32))
+                      u8 unit ‖ u8 signed_in ‖ u32 gen_next ‖ u64 chain_start ‖ u64 expires_at
+                      ‖ chain_th (64) ‖ res (32))
 ```
 
 `ticket_key` is 32 random bytes in the unit's memory (PQ2 §7.1: AES-256-GCM-SIV, random nonce). The ticket
@@ -213,7 +233,7 @@ TICKET   14 ‖ u64 expires_at ‖ lp(ticket ≤ 1024)                          
 
 | Field | Rule |
 | --- | --- |
-| `rid` | ≥ 1, unique in the session; the phone counts up from 1, and may reserve ids ahead (§6.2). The unit remembers the last 1024 above a floor that only rises. A reused id is `rid_reused`. |
+| `rid` | ≥ 1, unique in the session; the phone counts up from 1, and may reserve ids ahead (§6.2). The unit keeps a 16,384-id window above a floor that moves only when an id beyond the window arrives, so an id reserved during a long prompt survives a burst of newer requests. A reused id is `rid_reused`, also when it names a kept answer to another request (the unit compares the head's hash). |
 | `method` | 1 GET, 2 POST, 3 PUT, 4 PATCH, 5 DELETE |
 | `enc` | 0 raw (the unit's JSON, or empty); 1 typed parts (§6) |
 | header names | `1` session token (≤ 64 bytes), `2` download ticket. Ascending, each at most once. Nothing else can be expressed, and in particular not the transcript or the client network, which the unit sets itself. |
@@ -226,15 +246,27 @@ TICKET   14 ‖ u64 expires_at ‖ lp(ticket ≤ 1024)                          
 
 A body of `L` bytes is `n = max(1, ⌈L / 1 MiB⌉)` chunks: every one full except the last, chunk 0 inside the
 REQUEST/RESPONSE, chunks 1… in BODY messages. A full chunk fills one top-class (1 MiB + 8 KiB) frame. A
-call carries at most 8 MiB of chunks.
+call carries at most 7 MiB of chunks (64 frames in all).
 
 - **Upload.** The unit acknowledges every request still being assembled in the call with
   `ACK(rid, next missing)`. A phone whose call was cut sends the request from `next`. Chunks the unit holds
-  are ignored; a REQUEST head sent again identical is accepted and nothing runs twice. At most 4 requests
-  assemble per session, and the unit caps buffered bytes in all (512 MiB): past that, `busy`.
+  are ignored; a REQUEST head sent again identical is accepted and nothing runs twice. Before any of a body
+  is buffered, its **head** must pass the unit's admission check (§5.2: route, session rule, size).
+  Buffers are bounded:
+  - at most 4 requests assemble per session;
+  - a session that hasn't signed in holds at most 1 MiB (anon's 8 MiB, for relay deposits);
+  - a signed-in session holds at most one largest body;
+  - one client network holds at most two largest bodies;
+  - all sessions together hold at most 512 MiB.
+
+  Past any of these the answer is `busy`. An assembly that gets no chunk for 2 minutes, or isn't complete
+  10 minutes after its head, is dropped, whatever other records the session sends.
 - **Download.** The unit keeps each answer for 60 s (8 per session, 4 MiB per session, a quarter of the
-  buffer cap in all). A phone whose answer was cut sends `PULL(rid, from)` and gets the RESPONSE again
-  (`from = 0`) or BODY chunks from `from`. This needs no new request and no new live check. A pull for an
+  buffer cap in all). Each frame of an answer is in the smallest class that fits it, raised to the
+  request's cover class (at most class 2). A phone whose answer was cut sends `PULL(rid, from)` and gets
+  the RESPONSE again (`from = 0`) or BODY chunks from `from`. One call re-sends a kept answer at most once,
+  however many pulls or repeated heads name it, and draws at most 8 MiB out of kept answers in all; past
+  that it gets `in_progress` and pulls again in its next call. This needs no new request and no new live check. A pull for an
   answer still being made is `in_progress`; for one not kept, `rid_unknown`, and the phone repeats the
   request if the route is idempotent. Documents also keep core's own per-chunk route
   (`GET /v1/objects/:id/chunks/:n` under the open's 60 s download ticket, SERVER.md §10), so a download
@@ -242,16 +274,25 @@ call carries at most 8 MiB of chunks.
 
 ### 5.2 Dispatch at the unit
 
-For each complete request the unit's endpoint, before the unit's code sees it:
+For each request **head**, before any of its body is buffered, the unit's endpoint:
 
 1. checks method and path against the route allow-list (`front::routes`, SERVER.md §2.5): `route_not_found`
    otherwise, including any route of another unit;
 2. refuses a session-token header on an anon route that must never sign in (`auth_not_allowed`);
-3. checks a typed body parses, and that a live proof made in this session names this request's `seq`
+3. refuses a body larger than the route allows: 256 KiB before the session has signed in, one document
+   envelope after (`too_large`).
+
+At most 16 requests complete per call; the rest are refused `too_many_in_flight`. For each complete
+request, before the unit's code sees it, the endpoint:
+
+4. checks a typed body parses, and that a live proof made in this session names this request's `seq`
    (`proof_mismatch`);
-4. builds the internal request: `x-humid-th` = the chain transcript, `authorization: Session <token>` from
-   header 1, `x-humid-ticket` from header 2, `x-humid-client-net` from front, and the JSON body (§6.3);
-5. calls the unit's own router **in process**, and seals its status, content type and body as the RESPONSE.
+5. builds the internal request. It sets `x-humid-th` to the chain transcript and `x-humid-seq` to the
+   request's `seq`, which core compares with the proof's own `seq` in `check_step_up`. It adds
+   `authorization: Session <token>` from header 1, `x-humid-ticket` from header 2, and (core only)
+   `x-humid-client-net` from front. Then the JSON body (§6.3);
+6. calls the unit's own router **in process**, and seals its status, content type and body as the RESPONSE.
+   A successful sign-in, or a request the session token authorised, marks the session signed in.
 
 The unit's `/v1/…` routes answer only requests the endpoint dispatched. Over the network, front's
 certificate reaches only `/htp/v2/call`, `/htp/v2/cert`, `/tlog/*` and `/healthz`. So even a front in the
@@ -290,7 +331,7 @@ device_sig = DeviceKey.sign("HUMID-PQ2 step-up", lp(ticket, SHA3-512(signed body
 | method, path | ticket | the unit (it knows the action it is about to take); the endpoint's allow-list first |
 | body | `SHA3-512(signed body)` under the device key; the unit parses the signed body only after checking it, and the upload/open bodies name the hashes of the envelope, manifest and sealed share beside them | the unit (core; keys again on release) |
 | session | `th` = the chain transcript; core also refuses a proof whose `th` isn't the session's (`session_changed`) | endpoint and unit |
-| sequence | `seq = u64(gen) << 32 ‖ rid` (as a 64-bit number) of the request that carries it | endpoint (`proof_mismatch`) |
+| sequence | `seq = u64(gen) << 32 ‖ rid` (as a 64-bit number) of the request that carries it | endpoint, then core against `x-humid-seq` (`proof_mismatch`) |
 | device | `device_id`, the device key, the chip key in the account-signed certificate | the unit (and keys) |
 | single-use nonce | from the session's pool (§7.2), consumed in the action's transaction (`step_up_used`); keys and anon keep a used-proof table | the unit |
 | 60 s | `at`: at most 60 s old, 5 s ahead | the unit |
@@ -306,8 +347,10 @@ because its `rid` is spent. The app asks for a new check.
 
 The endpoint turns a typed body into the JSON the unit already reads (SERVER.md §2.5 bodies): the JSON part's
 fields, each byte field as unpadded base64url under its name, and the proof as
-`"signed": { "proof": {…}, "body": … }`. A raw body with a top-level `signed` field is refused (`bad_frame`):
-a proof travels only as a typed part, so step 3 of §5.2 always sees it.
+`"signed": { "proof": {…}, "body": … }`. A proof travels only as a typed proof part. The endpoint refuses
+(`bad_frame`) a raw body that isn't empty or a JSON object, since serde would read an array as a struct.
+It also refuses a raw body or a JSON part that carries `signed` itself. Even so, core checks `seq` itself
+against `x-humid-seq`, so the binding doesn't depend on the endpoint seeing the proof.
 
 ## 7. Sessions, sign-in, the nonce pool, `/sync`
 
@@ -341,13 +384,21 @@ That is two round trips, against 4.x's thirteen.
 ## 8. The app's client (`crates/humid-link`)
 
 - One `Link` per unit, over a platform `Transport` (HTTPS POST to `/htp/v2/call`, GET `/htp/v2/keys`).
-- Pins the identity root; verifies the bundle once and caches the certificate; refetches only on
-  `key_unknown` / `bad_cert`; a failure to verify is `IdentityChanged` (hard stop).
-- `connect`: resume if a ticket is held, else a full handshake. `lock`: drop the session, the token and the
-  nonces, and keep the ticket. `forget`: drop the ticket too.
+- Pins the identity root. It verifies the bundle and caches the certificate, using it only within its
+  dates. It refetches past half life, or on `key_unknown` / `bad_cert`.
+- Failures: a signature that fails is `IdentityChanged` (hard stop); an older policy is `PolicyRollback`;
+  an answer that isn't a bundle is `Offline`. It keeps the policy floor (`policy_seen` /
+  `set_policy_floor`) and the server's mode (`server_is_production`).
+- `connect`: resume if a ticket is held, else a full handshake; a RESUME that got no answer keeps its
+  ticket. `lock`: drop the session, the token and the nonces, and keep the ticket. `forget`: drop the
+  ticket too.
 - `step_up` reserves `(rid, seq, th, nonce)`; `call(Some(rid), …)` sends the request the proof names.
-- Cut uploads continue from the unit's ACK; cut answers are PULLed. An unauthenticated `session_unknown`
-  makes the link open a new session and send an ordinary request again, never one carrying a proof.
+- Cut uploads continue from the unit's ACK; cut answers are PULLed.
+- An unauthenticated error is never believed at once. The link sends an authenticated `PULL(rid, 0)`, up to
+  twice. If an authenticated answer comes back, the session is alive and that is the answer. Only if the
+  error stands does the link open a new session. Then it sends a GET again; a non-idempotent request comes
+  back as `Unknown` (it may have run; the app re-reads its state). A request carrying a proof is never sent
+  again. So a forged `session_unknown` can't make a request run twice.
 - Holds the HTP/2 session keys (inside humid-htp, wiped on drop) and the session token (wiped on drop). It
   never holds a document key, a share or a seed: humid-core hands it opaque bytes (sealed envelopes, sealed
   shares, share requests) and receives opaque bytes back.
@@ -381,11 +432,11 @@ with their status and JSON code, unchanged.
 | `0x0103` | `route_not_found` | 404 | not on the unit's allow-list |
 | `0x0104` | `body_mismatch` | 400 | body ≠ announced hash |
 | `0x0105` | `auth_not_allowed` | 403 | session token on a never-signed-in route |
-| `0x0106` | `too_many_in_flight` | 429 | over 4 assembling requests |
+| `0x0106` | `too_many_in_flight` | 429 | over 4 assembling requests, or 16 completed in one call |
 | `0x0107` | `unit_unavailable` | 503 | the unit didn't answer front |
 | `0x0108` | `internal` | 500 | bug |
 | `0x010A` | `in_progress` | 409 | answer not ready; pull again |
-| `0x010B` | `proof_mismatch` | 403 | a proof from this session for another request |
+| `0x010B` | `proof_mismatch` | 403 | a proof for another request (also core's own code when `x-humid-seq` differs) |
 
 ## 10. Versioning
 
@@ -401,7 +452,7 @@ version is a new HTP/2 version.
 | --- | --- | --- |
 | **Network / anything before front** | see TLS traffic sizes and times | anything below the outer TLS 1.3 (X25519MLKEM768 required) |
 | **front** (its TLS key, its internal certificate, every byte it relays) | see per call: unit, kind, size class, session id, record counter, and when; link calls of one session; delay, drop, reorder, replay, or cut calls; send unauthenticated ERROR frames; see the KEM ciphertexts and public keys of handshakes; refuse service | read or change a request, a body, a path, a method, a token, a proof or a response (AEAD under keys from two KEM secrets it has neither of); replay a record (window) or a hello (nonce table); move a record to another session (`sid` in the key, the channel and the AAD); make the endpoint run a request twice; reach the units' app routes with its own certificate; open a recorded session after stealing a unit's KEM key (ephemeral KEM); downgrade the version |
-| **A thief of a unit's KEM key** (memory dump of core) | impersonate that unit to phones until the certificate expires (≤ 3 days) or the key rotates; see its sessions from then on | open past sessions; mint a certificate for its own key (needs the HSM statement key); act as the holder (needs the device and the biometric) |
+| **A thief of a unit's KEM key** (memory dump of core) | impersonate that unit to phones until its certificate expires (24 h; phones check the dates on every use and refetch at half life); see its sessions from then on | open past sessions; mint a certificate for its own key (needs the HSM statement key); act as the holder (needs the device and the biometric) |
 | **core itself** | sees the signed-in requests it serves (it is their endpoint) | everything SERVER.md §11 already rules out (keys re-checks every proof) |
 | **A quantum attacker with recorded traffic** | — | break either session secret (ML-KEM-1024 in both, AES-256, SHA3/KMAC) |
 | **Malware on the phone, once** | use the HTP/2 session and token while it runs | make a live proof without the biometric; reuse one (seq, nonce, 60 s); use a ticket after the chain ends (8 h) |
@@ -416,8 +467,15 @@ Residual risks, stated plainly:
 
 - **A compromised front sees session ids**, so it can count a phone's actions and time them. A mitigation
   would be to rotate the `sid` per call. It isn't in v1.
-- **The KEM key is software** (§2.1). Its certificate lifetime (≤ 3 days) bounds what a thief of it can do.
-- **Unauthenticated errors** can make a phone handshake again (denial only).
+- **The KEM key is software** (§2.1). Its certificate lifetime (24 h, enforced on the phone) bounds what a
+  thief of it can do.
+- **Unauthenticated errors** can delay a phone (it checks each with an authenticated pull) and, if they
+  persist, make it handshake again: denial only, never a repeated request.
+- **Endpoint capacity.** A hello never evicts a session that has sent an authenticated record, or one made
+  in the last 30 s. Past the global cap (50,000) or a network's cap (64 sessions, 4,096 remembered hellos),
+  new hellos are refused `busy`. Expiry runs on time-ordered queues, not scans. A determined attacker with
+  many networks can still fill the endpoint for newcomers until sessions idle out (15 min); front's
+  per-network and per-/48 limits make that slow.
 - Resumption reuses the chain transcript, so a session token stolen by phone malware stays good for the
   chain's 8 hours (as in HTP/1, and bounded by core's idle limit).
 
@@ -432,8 +490,13 @@ Residual risks, stated plainly:
   body that doesn't match its hash, a proof for another request id, request-id reuse past the window, the
   kept-answer bound, and client messages travelling the wrong way.
 - Fuzz targets (`crates/humid-htp/fuzz`, cargo-fuzz, one per decoder plus both state machines): `frames`,
-  `messages`, `handshake_bodies`, `parts`, `certs`, `server_calls`, `client_answers`. Each decoder target
-  also checks that whatever decodes re-encodes to the same bytes.
+  `messages`, `handshake_bodies`, `parts`, `certs`, `server_calls`, `client_answers`, and `sealed_messages`.
+  `sealed_messages` seals fuzzer-chosen messages under a genuine session's keys in sequences of calls
+  against one long-lived server, so it reaches assembly, pulls, kept answers and admission. It checks the
+  per-call output, buffer and kept bounds. Each decoder target also checks that whatever decodes
+  re-encodes to the same bytes.
+- `tests/review97.rs` in humid-htp, humid-link and humid-server holds one regression test per finding of
+  the PR #97 review. Each test failed against 932d464 and passes now (§14).
 - `server/humid-server`: every flow test (`tests/flows.rs`, `review95*.rs`, `retention.rs`) runs over real
   HTP/2: the simulated phone talks to a real front on outer TLS, through `humid-link`.
   `tests/compromised_front.rs` adds: front sees no body, token, proof, id, transcript, route or JSON field
@@ -461,3 +524,25 @@ Residual risks, stated plainly:
    `proofs.rs` and §6.2 change; the wire proof already carries every field, `mode` included.
 8. **Large answers kept for pulls.** Answers over 4 MiB per session aren't kept. Downloads use core's
    per-chunk route, so this only affects a future large response on another route. Is that acceptable?
+9. **Endpoint capacity under a wide attacker** (§11): per-network caps assume front's network key (IPv4
+   address, IPv6 /64). Should the endpoint also cap by /48, or admit new sessions only with a cheap
+   proof-of-work when it is nearly full?
+
+## 14. Changes after the PR #97 review
+
+| Finding | Fix | Regression test |
+| --- | --- | --- |
+| H-1 answer amplification | answers in the class that fits, cover ≤ class 2 both ways; one re-send per kept answer per call; 8 MiB answer budget per call; ≤ 64 frames per call; front reads ≤ 96 MiB back | humid-htp `h1_answers_are_not_amplified`, `h1_output_per_call_is_bounded` |
+| M-1 proof `seq` bypass | endpoint passes `x-humid-seq`, core checks it in `check_step_up` (`Expect.seq`); raw bodies must be objects without `signed`; JSON parts may not carry `signed` | humid-server `m1_a_proof_is_bound_to_its_request_in_every_body_shape`, `m1_core_checks_seq_itself`; `htp::tests::a_proof_cannot_be_smuggled_past_the_seq_check` |
+| M-2 buffer squatting | head-time admission (route, session rule, size); per-session, pre-sign-in, per-network and global byte caps; assemblies dropped after 2 min idle / 10 min total | humid-htp `m2_unknown_routes_buffer_nothing`, `m2_assembly_buffer_squatting_is_bounded`; `htp::tests::admission_runs_on_the_head` |
+| M-3 eviction, replay tables | never evict a session that sent a record or is < 30 s old; per-network session and hello caps; time-ordered expiry; front limits handshakes per /48 | humid-htp `m3_hellos_do_not_evict_live_sessions`, `m3_a_fresh_session_is_not_evicted_by_a_hello_flood` |
+| M-4 per-call rate limit | front counts frames, per session and per network; ≤ 16 requests dispatched per call | humid-htp `m4_requests_per_call_are_capped` |
+| M-5 forged `session_unknown` | authenticated pull before believing it; only GETs re-sent; others `Unknown` | humid-link `m5_a_forged_session_unknown_never_runs_a_request_twice` |
+| M-6 expired certificate | `Handshake::full` checks the dates; link refetches at half life | humid-htp `m6_an_expired_certificate_is_refused_by_the_client`; humid-link `m6_the_link_refetches_and_never_uses_an_expired_certificate` |
+| L-1 policy rollback, mode | link keeps a policy floor, refuses older; surfaces production mode | humid-link `l1_policy_is_forward_only` |
+| L-2 client network | passed through only when present; never to anon | humid-server `l2_anon_gets_no_client_address` |
+| L-3 link errors | non-bundle answer is `Offline`; RESUME without an answer keeps the ticket | humid-link `l3_a_transient_error_is_not_identity_changed`, `l3_offline_during_resume_keeps_the_ticket` |
+| L-4 fuzz depth | `sealed_messages` target; world set up once | (fuzz) |
+| L-5 request ids | head hash compared before replaying a kept answer; 16,384-id window | humid-htp `l5_request_id_edge_cases` |
+| L-6 size-class leaks | ERROR and ACK in the request's (capped) class | humid-htp `l6_refusals_use_the_requests_class` |
+| L-7 doc mismatches | this revision | — |

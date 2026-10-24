@@ -44,7 +44,12 @@ pub struct Front {
     /// Anon.
     pub anon: UnitClient,
     handshakes: Sketch,
+    /// Handshakes per IPv6 /48 (an attacker with a /48 has 65,536 /64 buckets: review #97 M-3).
+    handshakes_wide: Sketch,
+    /// Records per HTP/2 session (counted by frames, not calls: review #97 M-4).
     calls: Sketch,
+    /// Records per client network, whatever session ids they name.
+    calls_per_net: Sketch,
     public_reads: Sketch,
     bundle: std::sync::Mutex<Option<(i64, Vec<u8>)>>,
 }
@@ -64,7 +69,9 @@ impl Front {
         let l = &policy.policy.limits;
         Arc::new(Self {
             handshakes: Sketch::new(l.handshakes_per_minute, ms::MINUTE),
+            handshakes_wide: Sketch::new(l.handshakes_per_minute.saturating_mul(16), ms::MINUTE),
             calls: Sketch::new(l.calls_per_minute, ms::MINUTE),
+            calls_per_net: Sketch::new(l.calls_per_minute.saturating_mul(16), ms::MINUTE),
             public_reads: Sketch::new(120, ms::MINUTE),
             policy,
             clock,
@@ -148,6 +155,18 @@ impl Front {
 
 type St = State<Arc<Front>>;
 
+/// The wider network a handshake limit also counts: an IPv6 /48 for a `/64` key, the key
+/// itself otherwise.
+fn wide_network(net: &str) -> String {
+    match net.strip_prefix("v6:") {
+        Some(rest) => {
+            let segs: Vec<&str> = rest.split(':').take(3).collect();
+            format!("v6:{}::/48", segs.join(":"))
+        }
+        None => net.to_string(),
+    }
+}
+
 /// The key bundle (binary; the app verifies it against the identity root it pins).
 async fn keys(State(f): St) -> Result<axum::response::Response> {
     Ok((
@@ -177,20 +196,34 @@ async fn call(State(f): St, req: axum::extract::Request) -> Result<axum::respons
         Ok(r) => r,
         Err(c) => return Ok(refuse(Unit::Core, [0; 16], c)),
     };
-    let (sketch, key) = match kind {
-        Kind::Hello | Kind::Resume => (&f.handshakes, net.clone()),
-        _ => (&f.calls, hex::encode(sid)),
+    let now = f.clock.now();
+    let allowed = match kind {
+        Kind::Hello | Kind::Resume => {
+            f.handshakes.take(&net, now) && f.handshakes_wide.take(&wide_network(&net), now)
+        }
+        _ => {
+            // one token per record, by session and by network (a sid is the caller's choice)
+            let n = u32::try_from(frame::split(&bytes).map_or(1, |v| v.len())).unwrap_or(u32::MAX);
+            f.calls.take_n(&hex::encode(sid), n, now) && f.calls_per_net.take_n(&net, n, now)
+        }
     };
-    if f.limit(sketch, &key).is_err() {
+    if !allowed {
         return Ok(refuse(unit, sid, Code::RateLimited));
     }
+    // anon never learns a client address (messaging metadata); core keys its limits on it
+    let net_header = [(CLIENT_NET, net.as_str())];
+    let hdrs: &[(&str, &str)] = match unit {
+        Unit::Core => &net_header,
+        Unit::Anon => &[],
+    };
     let (status, out) = match f
         .unit(unit)
-        .raw(
+        .raw_limited(
             "POST",
             "/htp/v2/call",
-            &[(CLIENT_NET, &net)],
+            hdrs,
             bytes.to_vec(),
+            crate::htp::MAX_CALL_ANSWER,
         )
         .await
     {
