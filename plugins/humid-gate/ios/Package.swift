@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "tauri-plugin-humid-gate",
-  platforms: [.iOS(.v14)],
+  platforms: [.iOS("26.0")],
   products: [
     .library(name: "tauri-plugin-humid-gate", type: .static, targets: ["tauri-plugin-humid-gate"])
   ],

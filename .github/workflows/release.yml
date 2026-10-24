@@ -417,9 +417,11 @@ jobs:
           SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           test -x "$SDKM" || { echo "::error::no Android SDK on this runner ($SDK)"; exit 1; }
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          # minSdk 37 (Android 17): Tauri links with <triple>37-clang, which needs an NDK whose
+          # sysroot goes to API 37 (r30, "Upgraded the max API to 37"); compileSdk is 37 too.
+          "$SDKM" --install "ndk;30.0.16248370" "platforms;android-37" "build-tools;37.0.0" > /dev/null
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$SDK/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/30.0.16248370" >> "$GITHUB_ENV"
           echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
       - name: Android · generate Gradle project

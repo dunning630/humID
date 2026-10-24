@@ -44,10 +44,10 @@
       "entitlements": "Entitlements.plist"
     },
     "iOS": {
-      "minimumSystemVersion": "16.0"
+      "minimumSystemVersion": "26.0"
     },
     "android": {
-      "minSdkVersion": 30
+      "minSdkVersion": 37
     },
     "linux": {
       "deb": {

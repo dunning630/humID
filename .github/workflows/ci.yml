@@ -130,7 +130,7 @@ jobs:
         if: matrix.platform == 'android'
         id: ndk
         uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
-        with: { ndk-version: r27c }
+        with: { ndk-version: r30 } # sysroot up to API 37 = minSdk (tauri.conf.json)
       - name: Android NDK toolchain on PATH
         if: matrix.platform == 'android'
         env:
@@ -150,8 +150,8 @@ jobs:
         if: matrix.platform == 'android'
         working-directory: apps/mobile/src-tauri
         env:
-          CC_aarch64_linux_android: aarch64-linux-android24-clang
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
+          CC_aarch64_linux_android: aarch64-linux-android37-clang
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android37-clang
         run: ../../../tools/ci-cargo.sh build --target aarch64-linux-android --lib
 
   # The chip reader end to end through real native code: the shared ICAO 9303 reader drives

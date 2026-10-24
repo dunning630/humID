@@ -132,7 +132,7 @@ repository-level secrets from a branch: upgrading is the fix.
   TestFlight and App Store builds use App Attest's production environment;
   Xcode debug builds use development (`HUMID_APP_ATTEST_ENV=development` on a
   test server).
-- **Android:** the app needs Android 11 (API 30) or later. Servers accept only
+- **Android:** the app needs Android 17 (API 37) or later; iPhones need iOS 26 (HumID 5.0 floors). Servers accept only
   apps signed with the official HumID release certificate
   (`HUMID_ANDROID_RELEASE_CERT` in `packages/attest/src/roots.js`), so a
   re-signed or rebuilt copy can't join. If you build and sign your own, add your
