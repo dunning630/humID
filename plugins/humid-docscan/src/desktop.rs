@@ -1,14 +1,17 @@
 // Computers: no native camera. The app uses the web view's own camera (getUserMedia).
 
 use serde::de::DeserializeOwned;
-use tauri::{plugin::PluginApi, AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, plugin::PluginApi};
 
-use crate::models::*;
 use crate::Error;
+use crate::models::*;
 
 const WHY: &str = "The native document camera is only on iPhone and Android.";
 
-pub fn init<R: Runtime, C: DeserializeOwned>(app: &AppHandle<R>, _api: PluginApi<R, C>) -> crate::Result<HumidDocscan<R>> {
+pub fn init<R: Runtime, C: DeserializeOwned>(
+    app: &AppHandle<R>,
+    _api: PluginApi<R, C>,
+) -> crate::Result<HumidDocscan<R>> {
     Ok(HumidDocscan(app.clone()))
 }
 
@@ -20,7 +23,11 @@ fn no<T>() -> crate::Result<T> {
 
 impl<R: Runtime> HumidDocscan<R> {
     pub async fn probe(&self) -> crate::Result<Probe> {
-        Ok(Probe { available: false, reason: Some(WHY.into()), ..Default::default() })
+        Ok(Probe {
+            available: false,
+            reason: Some(WHY.into()),
+            ..Default::default()
+        })
     }
     pub(crate) async fn open(&self, _req: OpenRequest) -> crate::Result<Opened> {
         no()

@@ -139,11 +139,12 @@ class HumidDocscanPlugin: Plugin, AVCaptureVideoDataOutputSampleBufferDelegate, 
       guard let self = self, self.isOn, !self.paused else { return }
       self.sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
     })
-    notes.append(nc.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: .main) { [weak self] n in
-      let why = (n.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber).map { "\($0.intValue)" } ?? "unknown"
+    notes.append(nc.addObserver(forName: .AVCaptureSessionWasInterrupted, object: session, queue: .main) { [weak self] n in
+      let code: Int = (n.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue ?? -1
+      let why: String = code >= 0 ? String(code) : "unknown"
       self?.send(["t": "interrupted", "reason": why])
     })
-    notes.append(nc.addObserver(forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+    notes.append(nc.addObserver(forName: .AVCaptureDeviceSubjectAreaDidChange, object: nil, queue: .main) { [weak self] _ in
       guard let self = self, self.tapAt == nil else { return }
       self.aimAtFrame()
     })

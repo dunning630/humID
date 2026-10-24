@@ -2,8 +2,8 @@
 
 use serde::de::DeserializeOwned;
 use tauri::{
-    plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
+    plugin::{PluginApi, PluginHandle},
 };
 
 use crate::models::*;
@@ -11,7 +11,10 @@ use crate::models::*;
 #[cfg(target_os = "ios")]
 tauri::ios_plugin_binding!(init_plugin_humid_docscan);
 
-pub fn init<R: Runtime, C: DeserializeOwned>(_app: &AppHandle<R>, api: PluginApi<R, C>) -> crate::Result<HumidDocscan<R>> {
+pub fn init<R: Runtime, C: DeserializeOwned>(
+    _app: &AppHandle<R>,
+    api: PluginApi<R, C>,
+) -> crate::Result<HumidDocscan<R>> {
     #[cfg(target_os = "android")]
     let handle = api.register_android_plugin("app.humid.docscan", "HumidDocscanPlugin")?;
     #[cfg(target_os = "ios")]
@@ -29,11 +32,15 @@ impl<R: Runtime> HumidDocscan<R> {
         Ok(self.0.run_mobile_plugin_async("open", req).await?)
     }
     pub(crate) async fn frame(&self, req: FrameRequest) -> crate::Result<()> {
-        self.0.run_mobile_plugin_async::<serde_json::Value>("frame", req).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("frame", req)
+            .await?;
         Ok(())
     }
     pub(crate) async fn focus(&self, req: FocusRequest) -> crate::Result<()> {
-        self.0.run_mobile_plugin_async::<serde_json::Value>("focus", req).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("focus", req)
+            .await?;
         Ok(())
     }
     pub(crate) async fn torch(&self, req: TorchRequest) -> crate::Result<TorchState> {
@@ -46,15 +53,21 @@ impl<R: Runtime> HumidDocscan<R> {
         Ok(self.0.run_mobile_plugin_async("take", req).await?)
     }
     pub(crate) async fn pause(&self) -> crate::Result<()> {
-        self.0.run_mobile_plugin_async::<serde_json::Value>("pause", ()).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("pause", ())
+            .await?;
         Ok(())
     }
     pub(crate) async fn resume(&self) -> crate::Result<()> {
-        self.0.run_mobile_plugin_async::<serde_json::Value>("resume", ()).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("resume", ())
+            .await?;
         Ok(())
     }
     pub(crate) async fn close(&self) -> crate::Result<()> {
-        self.0.run_mobile_plugin_async::<serde_json::Value>("close", ()).await?;
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("close", ())
+            .await?;
         Ok(())
     }
 }

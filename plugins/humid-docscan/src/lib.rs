@@ -19,8 +19,8 @@
 use std::sync::Mutex;
 
 use tauri::{
-    plugin::{Builder, TauriPlugin},
     Manager, Runtime,
+    plugin::{Builder, TauriPlugin},
 };
 
 mod commands;

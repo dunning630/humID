@@ -4,8 +4,8 @@
 
 use base64::Engine;
 
-use crate::models::{Point, Rect, Size};
 use crate::Error;
+use crate::models::{Point, Rect, Size};
 
 /// The largest web view side accepted, in CSS pixels (a big tablet is about 1400).
 pub const MAX_SIDE: f64 = 10_000.0;
@@ -80,7 +80,12 @@ pub fn jpeg(b: &[u8]) -> Result<(), Error> {
     if b.len() < 64 || b.len() > MAX_JPEG {
         return Err(bad("The photo's size isn't valid."));
     }
-    if b[0] != 0xFF || b[1] != 0xD8 || b[2] != 0xFF || b[b.len() - 2] != 0xFF || b[b.len() - 1] != 0xD9 {
+    if b[0] != 0xFF
+        || b[1] != 0xD8
+        || b[2] != 0xFF
+        || b[b.len() - 2] != 0xFF
+        || b[b.len() - 1] != 0xD9
+    {
         return Err(bad("The camera gave back something that isn't a JPEG."));
     }
     Ok(())
@@ -91,7 +96,12 @@ mod tests {
     use super::*;
 
     const V: Size = Size { w: 412.0, h: 915.0 };
-    const R: Rect = Rect { x: 16.0, y: 300.0, w: 380.0, h: 240.0 };
+    const R: Rect = Rect {
+        x: 16.0,
+        y: 300.0,
+        w: 380.0,
+        h: 240.0,
+    };
 
     #[test]
     fn view_sizes() {
@@ -99,10 +109,22 @@ mod tests {
         for s in [
             Size { w: 0.0, h: 915.0 },
             Size { w: 99.0, h: 915.0 },
-            Size { w: 412.0, h: 20_000.0 },
-            Size { w: f64::NAN, h: 915.0 },
-            Size { w: f64::INFINITY, h: 915.0 },
-            Size { w: -412.0, h: 915.0 },
+            Size {
+                w: 412.0,
+                h: 20_000.0,
+            },
+            Size {
+                w: f64::NAN,
+                h: 915.0,
+            },
+            Size {
+                w: f64::INFINITY,
+                h: 915.0,
+            },
+            Size {
+                w: -412.0,
+                h: 915.0,
+            },
         ] {
             assert!(view(&s).is_err(), "{s:?}");
         }
@@ -118,7 +140,10 @@ mod tests {
             Rect { h: 0.0, ..R },
             Rect { w: -380.0, ..R },
             Rect { x: f64::NAN, ..R },
-            Rect { y: f64::NEG_INFINITY, ..R },
+            Rect {
+                y: f64::NEG_INFINITY,
+                ..R
+            },
             Rect { x: 5_000.0, ..R },
             Rect { y: -400.0, ..R },
             Rect { w: 5_000.0, ..R },
@@ -137,7 +162,10 @@ mod tests {
             Point { x: -1.0, y: 400.0 },
             Point { x: 413.0, y: 400.0 },
             Point { x: 200.0, y: 916.0 },
-            Point { x: f64::NAN, y: 1.0 },
+            Point {
+                x: f64::NAN,
+                y: 1.0,
+            },
         ] {
             assert!(point(&p, &V).is_err(), "{p:?}");
         }
@@ -147,7 +175,16 @@ mod tests {
     fn ids() {
         assert!(id("a1b2-C3").is_ok());
         assert!(id(&"x".repeat(40)).is_ok());
-        for s in ["", "../etc", "a b", "a\u{0}b", "é", &"x".repeat(41), "a/b", "a.b"] {
+        for s in [
+            "",
+            "../etc",
+            "a b",
+            "a\u{0}b",
+            "é",
+            &"x".repeat(41),
+            "a/b",
+            "a.b",
+        ] {
             assert!(id(s).is_err(), "{s:?}");
         }
     }

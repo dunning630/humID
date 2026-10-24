@@ -1,4 +1,6 @@
-const COMMANDS: &[&str] = &["probe", "open", "frame", "focus", "torch", "capture", "take", "pause", "resume", "close"];
+const COMMANDS: &[&str] = &[
+    "probe", "open", "frame", "focus", "torch", "capture", "take", "pause", "resume", "close",
+];
 
 fn main() {
     tauri_plugin::Builder::new(COMMANDS)
@@ -8,7 +10,15 @@ fn main() {
 
     // The Swift side: the camera, Vision for the document and the MRZ lines, Core Image for the cut.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
-        for fw in ["AVFoundation", "Vision", "CoreImage", "CoreMedia", "CoreVideo", "Accelerate", "UIKit"] {
+        for fw in [
+            "AVFoundation",
+            "Vision",
+            "CoreImage",
+            "CoreMedia",
+            "CoreVideo",
+            "Accelerate",
+            "UIKit",
+        ] {
             println!("cargo:rustc-link-lib=framework={fw}");
         }
     }
