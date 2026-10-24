@@ -223,7 +223,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
             &alice,
             "DELETE",
             &format!("/v1/objects/{}", doc.id),
-            &json!({ "object": doc.id, "to": B64(attacker_key.public().to_bytes()) }),
+            &open_body(&alice, &doc.id, &attacker_key),
         )
         .unwrap();
     assert_eq!(
@@ -234,11 +234,15 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
         "step_up_mismatch"
     );
     // front swaps the one-time key for its own after the phone signed: the body is covered
-    let mut swapped = a.sign(&alice, "POST", &path, &json!({ "object": doc.id, "to": B64(KemSecret::generate().unwrap().public().to_bytes()) })).unwrap();
-    swapped.body = B64(serde_json::to_vec(
-        &json!({ "object": doc.id, "to": B64(attacker_key.public().to_bytes()) }),
-    )
-    .unwrap());
+    let mut swapped = a
+        .sign(
+            &alice,
+            "POST",
+            &path,
+            &open_body(&alice, &doc.id, &KemSecret::generate().unwrap()),
+        )
+        .unwrap();
+    swapped.body = B64(serde_json::to_vec(&open_body(&alice, &doc.id, &attacker_key)).unwrap());
     assert_eq!(
         err_code(
             a.core::<_, Value>("POST", &path, &json!({ "signed": swapped }))
@@ -253,7 +257,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
             &thief,
             "POST",
             &path,
-            &json!({ "object": doc.id, "to": B64(attacker_key.public().to_bytes()) }),
+            &open_body(&alice, &doc.id, &attacker_key),
         )
         .unwrap();
     assert_eq!(
@@ -277,7 +281,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
             &alice,
             "POST",
             &path,
-            &json!({ "object": doc.id, "to": B64(attacker_key.public().to_bytes()) }),
+            &open_body(&alice, &doc.id, &attacker_key),
         )
         .unwrap();
     c.clock.advance(61_000);
@@ -297,7 +301,7 @@ async fn core_refuses_an_open_without_the_holders_live_proof() {
             &alice,
             "POST",
             &path,
-            &json!({ "object": doc.id, "to": B64(attacker_key.public().to_bytes()) }),
+            &open_body(&alice, &doc.id, &attacker_key),
         )
         .unwrap();
     assert_eq!(
@@ -327,8 +331,7 @@ struct Release {
 
 fn release_parts(c: &Cluster, phone: &Phone, object: &Id, to: &KemSecret) -> Release {
     let th = vec![9u8; 64];
-    let body = serde_json::to_vec(&json!({ "object": object, "to": B64(to.public().to_bytes()) }))
-        .unwrap();
+    let body = serde_json::to_vec(&open_body(phone, object, to)).unwrap();
     let signed = phone
         .step_up(
             "POST",
@@ -445,7 +448,9 @@ async fn keys_refuses_a_release_without_a_valid_holder_proof_even_from_core() {
     // the control: every piece valid, it works — once
     let r = release_parts(&c, &alice, &doc.id, &to);
     let ok = send_release(&c, &doc.id, &r).await.unwrap();
-    let binding = humid_server::crypto::sha3_512(&r.signed.proof.device_sig);
+    let req = share_request(&alice, &doc.id, &doc.manifest_hash, &to);
+    let binding =
+        humid_server::crypto::hash(humid_server::crypto::SHARE_REQUEST_LABEL, &[&req]).unwrap();
     let share = humid_server::crypto::phone::open_release(
         &to,
         alice.account_id().as_bytes(),
@@ -472,6 +477,7 @@ async fn an_upload_share_swapped_by_front_is_refused() {
     let id = Id::random().unwrap();
     let envelope = vec![5u8; 200];
     let env_hash = humid_server::crypto::sha3_512(&envelope);
+    let manifest = manifest_of(&id);
     let kem = keys_kem(&a).await;
     let real = humid_server::crypto::Secret32::random().unwrap();
     let mine = humid_server::crypto::Secret32::random().unwrap();
@@ -479,7 +485,7 @@ async fn an_upload_share_swapped_by_front_is_refused() {
         &kem,
         alice.account_id().as_bytes(),
         id.as_bytes(),
-        &env_hash,
+        &manifest,
         &real,
     )
     .unwrap();
@@ -487,11 +493,11 @@ async fn an_upload_share_swapped_by_front_is_refused() {
         &kem,
         alice.account_id().as_bytes(),
         id.as_bytes(),
-        &env_hash,
+        &manifest,
         &mine,
     )
     .unwrap();
-    let body = json!({ "object": id, "envelope_hash": B64(env_hash.to_vec()), "sealed_share_hash": B64(humid_server::crypto::sha3_512(&sealed_real).to_vec()), "index": B64(vec![7; 64]) });
+    let body = json!({ "object": id, "envelope_hash": B64(env_hash.to_vec()), "manifest_hash": B64(manifest.to_vec()), "sealed_share_hash": B64(humid_server::crypto::sha3_512(&sealed_real).to_vec()), "index": B64(vec![7; 64]) });
     let s = a.sign(&alice, "POST", "/v1/objects", &body).unwrap();
     let r = a.core::<_, Value>("POST", "/v1/objects", &json!({ "signed": s.clone(), "envelope": B64(envelope.clone()), "sealed_share": B64(sealed_front.clone()) })).await;
     assert_eq!(err_code(r), "step_up_mismatch");
@@ -501,6 +507,7 @@ async fn an_upload_share_swapped_by_front_is_refused() {
         account: alice.account_id(),
         object: id,
         envelope_hash: B64(env_hash.to_vec()),
+        manifest_hash: B64(manifest.to_vec()),
         proof_hash: B64(proofs::proof_hash(&s.proof.device_sig).unwrap().to_vec()),
         ledger_seq: 1,
     };

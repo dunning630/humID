@@ -126,7 +126,7 @@ bytes, then parses. Public statement keys are in the signed policy (§7).
 | Statement | From → to | Says | Why it can't be forged by front |
 | --- | --- | --- | --- |
 | `release` | core → keys | account, object, device cert (+ account vk), proof hash, ledger seq + hash of the `object.opened` entry | core's HSM key; and keys re-checks the holder proof and device cert itself |
-| `upload` | core → keys | account, object, device cert, proof hash, envelope hash, ledger seq of `object.sealed` | same |
+| `upload` | core → keys | account, object, device cert, proof hash, envelope and manifest hashes, ledger seq of `object.sealed` | same |
 | `delete`, `close`, `checkin` | core → keys | as above for those actions | same |
 | `duress` | core → keys | account, device cert, the duress sign-in itself | keys re-verifies the duress sign-in signature |
 | `live-check` | core → anon (via front) | *no account id*: action, body hash, proof hash, exp | core's HSM key; anon learns only that a live check approved these blinded values |
@@ -157,7 +157,7 @@ not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`
 | --- | --- | --- | --- |
 | `POST /v1/auth/register` | anonymous | account-key PoP over `lp(th, account_vk, kem_pk)`; device cert; device PoP; live P-256 over the cert; attestation (stub); anon `spent` statement when registration needs a pass | account, device, `account.created` (logs the account-key binding into the public log), `device.added` |
 | `POST /v1/auth/challenge` | anonymous | — (single-use, 2 min, per device cap; an unknown account gets the same answer) | nonce |
-| `POST /v1/auth/login` | anonymous | `login_sig` + `live_login`; revocation of the device; P-256-only date | session, nonce pool; on duress: lockdown + recovery waits doubled + `duress.signaled`, then the `duress` statement to keys |
+| `POST /v1/auth/login` | anonymous | `login_sig` + `live_login`; revocation of the device; P-256-only date | session, nonce pool; on duress: lockdown + recovery waits doubled + `session.duress`, then the `duress` statement to keys; the answer looks the same. A duress session then changes nothing real: device, recovery, upload, delete and post-token routes answer `busy` |
 | `POST /v1/auth/logout` | session | — | session revoked |
 | `POST /v1/auth/nonces` | session | — (tops the pool up to 8; also returned in every signed-in reply) | nonces |
 | `POST /v1/links` | anonymous | — (global cap on open links, per-network limit) | link |
@@ -168,8 +168,8 @@ not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`
 | `DELETE /v1/devices/:id` | session | step-up | device revoked, `device.removed` |
 | `GET /v1/me` | session | — | — |
 | `DELETE /v1/me` | session | step-up | account closed, devices revoked, `account.closed`; then `close` statement to keys |
-| `POST /v1/objects` | session | step-up whose body carries the envelope hash and the sealed share hash (**H2**) | object, `object.sealed`; keys stores the share before commit |
-| `GET /v1/objects/:id` | session | step-up whose body carries the one-time release key | **`object.opened` committed before anything leaves**; then the `release` statement to keys; download ticket |
+| `POST /v1/objects` | session | step-up whose body carries the envelope, manifest and sealed-share hashes (**H2**) | object, `object.sealed`; keys stores the share before commit |
+| `POST /v1/objects/:id/open` | session | step-up whose body carries humid-core's share request (account, document, manifest hash, one-time key) | **`object.opened` committed before anything leaves**; then the `release` statement to keys; download ticket |
 | `GET /v1/objects/:id/chunks/:n` | session | the download ticket from that open (60 s, this session) | — |
 | `PATCH /v1/objects/:id` | session | step-up (**L3**) | index entry, `object.updated` |
 | `DELETE /v1/objects/:id` | session | step-up | object deleted, tombstone, `object.deleted`; `delete` statement to keys |
@@ -182,7 +182,7 @@ not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`
 | `POST /v1/recovery/requests` | anonymous | — (global cap on unbound requests; per-account cap once bound, M4) | request |
 | `GET /v1/recovery/requests/:id` | anonymous | — (the 128-bit id is the capability) | — |
 | `POST /v1/recovery/requests/:id/card` | anonymous | the card's server-keyed tag | evidence, `recovery.evidence` |
-| `POST /v1/recovery/requests/:id/witness` | the witness's own session | the witness's step-up | approval with the sealed share, `recovery.helped` (witness's ledger) and `recovery.evidence` |
+| `GET` / `POST /v1/recovery/help/:code` | the witness's own session | POST: the witness's step-up, and that they are one of this account's witnesses | their piece re-sealed to the new device, `recovery.helped` (witness's ledger) and `recovery.evidence` |
 | `POST /v1/recovery/requests/:id/anchor`, `/key` | anonymous | **stubbed**: passport (needs the second share operator) and FIDO | — |
 | `GET /v1/recovery/alerts` | session | — | — |
 | `POST /v1/recovery/alerts/:ref/cancel` | session | step-up (the veto) | request cancelled, `recovery.cancelled` |
@@ -201,8 +201,8 @@ transaction of the action the holder signed.
 | Route | Checks itself |
 | --- | --- |
 | `GET /v1/kem-key` | — (also in the policy) |
-| `POST /v1/shares` (store) | core `upload` statement; account vk hashes to the account id; device cert under the account key; holder proof for `POST /v1/objects` whose signed body names this object, this envelope hash and this sealed share's hash; opens the share (direction *upload*, binding = envelope hash) with its KEM key |
-| `POST /v1/shares/:id/release` | core `release` statement; device cert; holder proof for `GET /v1/objects/:id`; the proof hash in the statement equals the proof's; one-time key taken from the signed body; hourly cap per account; Check-in not locked/erased; proof never seen before |
+| `POST /v1/shares` (store) | core `upload` statement; account vk hashes to the account id; device cert under the account key; holder proof for `POST /v1/objects` whose signed body names this object, this envelope hash, this manifest hash and this sealed share's hash; opens the share (direction *upload*, binding = manifest hash) with its KEM key |
+| `POST /v1/shares/:id/release` | core `release` statement; device cert; holder proof for `POST /v1/objects/:id/open`; the proof hash in the statement equals the proof's; the share request (and so the one-time key and binding) taken from the signed body; hourly cap per account; Check-in not locked/erased; proof never seen before |
 | `POST /v1/shares/:id/delete` | core `delete` statement + holder proof for `DELETE /v1/objects/:id` |
 | `POST /v1/accounts/:id/close` | core `close` statement + holder proof for `DELETE /v1/me` |
 | `POST /v1/checkin/{status,arm,check,disarm}` | core `checkin` statement + holder proof for the matching app route |
@@ -224,24 +224,28 @@ transaction of the action the holder signed.
 
 ## 3. The key share, both directions (H2)
 
+The formats are humid-core's (CORE.md §6.3); `tests/core_formats.rs` checks the server parses and binds exactly
+what `crates/humid-core` emits.
+
 ```
 UPLOAD                                                       RELEASE (open)
 phone (inside one live check):                               phone (inside one live check):
   share_ks ← random 32 B                                       (eph_sk, eph_pk) ← one-time hybrid KEM key
-  sealed = seal_share(Upload, keys_kem_pk,                      body = { to: eph_pk }
-           account, object, binding = H(envelope), share_ks)    proof = step-up(GET /v1/objects/:id, body)
-  body = { object, envelope_hash, sealed_hash = H(sealed),
-           index }  + envelope + sealed
+  sealed = seal_share(Upload, keys_kem_pk, account,             request = header(0x0012) ‖ account ‖ doc ‖ manifest_hash ‖ eph_pk
+           object, binding = manifest_hash, share_ks)           body = { object, share_request: request }
+  body = { object, envelope_hash, manifest_hash,                proof = step-up(POST /v1/objects/:id/open, body)
+           sealed_hash = H(sealed), index }
+           + envelope + sealed
   proof = step-up(POST /v1/objects, body)
 front: forwards ciphertext only                              front: forwards
-core:  verifies proof; stores envelope; appends              core:  verifies proof; consumes nonce; appends
-       object.sealed; calls keys with the `upload`                  object.opened and COMMITS (synchronously
-       statement + proof + sealed; commits only if                  replicated); then calls keys with the
-       keys stored it                                               `release` statement + proof
+core:  verifies proof; stores envelope; appends              core:  verifies proof; the request names this account,
+       object.sealed; calls keys with the `upload`                  document and stored manifest hash; consumes the
+       statement + proof + sealed; commits only if                  nonce; appends object.opened and COMMITS (synchronously
+       keys stored it                                               replicated); then calls keys with `release` + proof
 keys:  verifies statement, device cert, proof (its body      keys:  verifies statement, device cert, proof, that
-       names this sealed share's hash); open_share(Upload,          proof_hash matches; cap; Check-in; once;
-       kem_sk, …); HSM-wraps it at rest; forgets it                 HSM-unwraps; seal_share(Release, eph_pk,
-                                                                    account, object, binding = H(proof), share)
+       names this sealed share's and manifest's hash);              proof_hash matches; cap; Check-in; once; HSM-unwraps;
+       open_share(Upload, kem_sk, …, manifest_hash);                seal_share(Release, eph_pk, account, object,
+       HSM-wraps it at rest; forgets it                             binding = H("HUMID-PQ2 share-request", [request]), share)
                                                              core → front → phone: envelope chunks + sealed share
 ```
 
@@ -453,12 +457,23 @@ production-mode start refuses while any required stub is in the path.
 | Push sender (APNs / FCM) | stub | provider accounts |
 | Front: outer TLS, rate limits, allow-list, key bundle, internal client | implemented | — |
 | Front: HTP/2 handshake and frames | stub | HTP/2 specification (KEM handshake over PQ2 §5, TransitSealer frames, binary TLV) |
+| `humid-server-core dev-setup <dir>`: CA, leaves, dev identity root, signed dev policy, soft HSMs, four `*.toml` | implemented (development only) | — |
+
+Tests (`cargo test` in `server/humid-server`; Postgres from `HUMID_TEST_DATABASE_URL`, one schema per test):
+46 unit tests; `tests/flows.rs` (10 end-to-end flows over real internal TLS); `tests/compromised_front.rs`
+(10: front's certificate and sessions in the attacker's hands, plus a copied seed); `tests/retention.rs`;
+`tests/startup.rs` (policy tampering and rollback at start-up, outer TLS requires a PQ group);
+`tests/core_formats.rs` (cross-checks against `crates/humid-core`).
 
 ## 13. Open questions for the owner
 
 1. **HTP/2.** Front can't carry app traffic until HTP/2 is specified (handshake, binary frames, proofs as TLV).
    Who writes it, and does it live in PQ2.md or its own doc?
-2. **Proof and certificate formats** (§2.2–2.3) are proposals; humid-core must confirm or change them.
+2. **Proof formats.** Shares now follow CORE.md §6.3 exactly (tested against humid-core). The step-up, sign-in
+   and enrolment proofs (§2.2–2.3) are still this server's proposal: CORE.md §9 has per-action live labels
+   (`live-open`, `live-seal`, …) over `[challenge, …]`, while the server checks one ticket shape for every route
+   plus the ML-DSA device signature over the body. Proposal: the chip signs `H(live-<action>, [ticket, binding…])`
+   with CORE.md's labels and `ticket` (§2.3) as the challenge; `proofs.rs` is the one file to change.
 3. **Type codes**: the server uses `0x0200`–`0x0202` for its own at-rest boxes (shares, fused shares, soft-HSM
    key file). Please add a `0x02xx` server block to the PQ2.md registry.
 4. **HSM model** (PKCS#11 v3.2 with ML-DSA and SLH-DSA mechanisms): which device, one per site?
@@ -469,3 +484,9 @@ production-mode start refuses while any required stub is in the path.
    doesn't count as an independent proof (policy `recovery.passport_counts = false`).
 8. **CI**: the server tests need a Postgres service; add a workflow (two-person review applies), or fold into the
    build workstream's CI?
+9. **Branch and workspace.** This branch is `v5-server` (git refuses `v5/server` beside a branch named `v5`). The
+   crate has a temporary `[workspace]` table and `[profile]` overrides; both move to the root `Cargo.toml` when
+   the workspace lands. It depends on `crates/humid-pq2` (and, for tests, `crates/humid-core`) by path from
+   `v5-core`, merged in.
+10. **Rust version.** Built and tested with stable 1.97; `rust-toolchain.toml` pins 1.99.1, which this box can't
+    download. Nothing here needs more than 1.85.

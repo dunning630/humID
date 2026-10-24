@@ -21,7 +21,7 @@ use super::auth::{Approved, devices_of};
 use super::ledger::{self, Vouch};
 use super::{Core, Reply, SMALL, ok, path_id, read};
 use crate::api::{app, headers as h, keys as keys_api};
-use crate::crypto::{self, KemPublic};
+use crate::crypto;
 use crate::error::{Error, Result};
 use crate::proofs::Signed;
 use crate::unit::ms;
@@ -80,6 +80,9 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
             "The index entry has an invalid size.",
         ));
     }
+    if u.manifest_hash.len() != 64 {
+        return Err(Error::bad("bad_manifest", "A manifest hash is 64 bytes."));
+    }
     let mut c = core.db.conn().await?;
     let tx = c.transaction().await?;
     let (checked, cert) = core
@@ -111,9 +114,9 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
     let now = core.now();
     let n = tx
         .execute(
-            "INSERT INTO objects (id, account, envelope, envelope_hash, size, idx, rev, sealed_by, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) ON CONFLICT DO NOTHING",
-            &[&u.object.as_bytes(), &a, &r.envelope.0, &env_hash.as_slice(), &size, &u.index.0, &rev, &s.device.as_bytes(), &now],
+            "INSERT INTO objects (id, account, envelope, envelope_hash, manifest_hash, size, idx, rev, sealed_by, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) ON CONFLICT DO NOTHING",
+            &[&u.object.as_bytes(), &a, &r.envelope.0, &env_hash.as_slice(), &u.manifest_hash.0, &size, &u.index.0, &rev, &s.device.as_bytes(), &now],
         )
         .await?;
     if n != 1 {
@@ -135,6 +138,7 @@ pub async fn upload(State(core): State<Arc<Core>>, headers: HeaderMap, body: Bod
         account: s.account,
         object: u.object,
         envelope_hash: B64(env_hash.to_vec()),
+        manifest_hash: u.manifest_hash.clone(),
         proof_hash: B64(checked.proof_hash.to_vec()),
         ledger_seq: e.seq,
     };
@@ -182,19 +186,32 @@ pub async fn open(
             "That approval was for a different document.",
         ));
     }
-    KemPublic::from_bytes(&o.to)?;
+    // humid-core's share request names the account, document, manifest and one-time key
+    let req = crypto::ShareRequest::parse(&o.share_request)?;
+    if req.account != s.account.0 || req.doc != object.0 {
+        return Err(Error::forbidden(
+            "step_up_mismatch",
+            "That share request is for a different document.",
+        ));
+    }
     let path = format!("/v1/objects/{object}/open");
     let mut c = core.db.conn().await?;
     let tx = c.transaction().await?;
     let (checked, cert) = core.step_up(&tx, &s, &r.signed, "POST", &path).await?;
-    let size: i64 = tx
+    let row = tx
         .query_opt(
-            "SELECT size FROM objects WHERE id = $1 AND account = $2",
+            "SELECT size, manifest_hash FROM objects WHERE id = $1 AND account = $2",
             &[&object.as_bytes(), &s.account.as_bytes()],
         )
         .await?
-        .ok_or_else(|| Error::not_found("not_found", "No such item in your vault."))?
-        .get(0);
+        .ok_or_else(|| Error::not_found("not_found", "No such item in your vault."))?;
+    let size: i64 = row.get(0);
+    if !crypto::ct_eq(&row.get::<_, Vec<u8>>(1), &req.manifest_hash) {
+        return Err(Error::forbidden(
+            "step_up_mismatch",
+            "That share request is for another version of this document.",
+        ));
+    }
     let now = core.now();
     let entry = ledger::append(
         &tx,

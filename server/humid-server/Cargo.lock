@@ -805,6 +805,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humid-core"
+version = "0.1.0"
+dependencies = [
+ "humid-pq2",
+ "zeroize",
+]
+
+[[package]]
 name = "humid-pq2"
 version = "0.1.0"
 dependencies = [
@@ -837,6 +845,7 @@ dependencies = [
  "deadpool-postgres",
  "hex",
  "http-body-util",
+ "humid-core",
  "humid-pq2",
  "humid-server",
  "hyper",

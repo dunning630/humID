@@ -58,6 +58,7 @@ CREATE TABLE objects (
     account       bytea NOT NULL REFERENCES accounts(id),
     envelope      bytea NOT NULL,                                 -- opaque ciphertext (envelope v2 pending)
     envelope_hash bytea NOT NULL,                                 -- SHA3-512
+    manifest_hash bytea NOT NULL CHECK (length(manifest_hash) = 64), -- CORE.md §6.2: the share is bound to it
     size          bigint NOT NULL,
     idx           bytea NOT NULL,                                 -- encrypted index entry
     rev           bigint NOT NULL,                                -- account object_rev at the last change

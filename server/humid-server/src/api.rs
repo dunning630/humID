@@ -19,20 +19,24 @@ pub mod app {
         pub object: Id,
         /// SHA3-512 of the envelope.
         pub envelope_hash: B64,
+        /// The document's manifest hash (CORE.md §6.2): the upload share is bound to it.
+        pub manifest_hash: B64,
         /// SHA3-512 of the share sealed to the keys unit.
         pub sealed_share_hash: B64,
         /// The encrypted index entry.
         pub index: B64,
     }
 
-    /// `POST /v1/objects/:id/open`: the one-time key the share is to be sealed to.
+    /// `POST /v1/objects/:id/open`: humid-core's share request (CORE.md §6.3, type `0x0012`:
+    /// account, document, manifest hash, one-time KEM key). The share is released sealed to
+    /// that key under `H("HUMID-PQ2 share-request", [request])`.
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct Open {
         /// The object.
         pub object: Id,
-        /// A hybrid KEM public key made for this one open.
-        pub to: B64,
+        /// The share request encoding.
+        pub share_request: B64,
     }
 
     /// `DELETE /v1/objects/:id` and `PATCH /v1/objects/:id`.
@@ -89,6 +93,8 @@ pub mod keys {
         pub object: Id,
         /// SHA3-512 of the envelope core stored.
         pub envelope_hash: B64,
+        /// The manifest hash the share is bound to.
+        pub manifest_hash: B64,
         /// The holder proof core checked.
         pub proof_hash: B64,
         /// The `object.sealed` ledger entry.

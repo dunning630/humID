@@ -141,7 +141,7 @@ async fn a_nonce_is_good_for_one_committed_action() {
     app.register(&phone).await.unwrap();
     let (doc, _) = upload(&mut app, &phone, 100).await.unwrap();
     let once = humid_server::crypto::KemSecret::generate().unwrap();
-    let body = json!({ "object": doc.id, "to": B64(once.public().to_bytes()) });
+    let body = open_body(&phone, &doc.id, &once);
     let path = format!("/v1/objects/{}/open", doc.id);
     let signed = app.sign(&phone, "POST", &path, &body).unwrap();
     let _: Value = app

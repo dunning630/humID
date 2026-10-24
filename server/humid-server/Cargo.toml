@@ -68,6 +68,8 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 humid-server = { path = ".", features = ["testkit"] }
+# cross-checks: the server parses exactly what the phone's core emits (share requests)
+humid-core = { path = "../../crates/humid-core" }
 
 [lints.rust]
 unsafe_code = "forbid"

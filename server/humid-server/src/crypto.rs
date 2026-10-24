@@ -365,15 +365,78 @@ impl KemSecret {
 /// Size of a sealed share (both directions).
 pub const SEALED_SHARE_LEN: usize = pq2::SEALED_SHARE_LEN;
 
-/// Open a share the phone sealed to the keys unit (H2: the upload direction).
+/// A phone's request for one document's share (CORE.md §6.3, type `0x0012`):
+/// `header(0x0012) ‖ account_id (32) ‖ doc_id (32) ‖ manifest_hash (64) ‖ one_time (1613)`.
+/// The share is released sealed to `one_time` under `binding = H("HUMID-PQ2 share-request",
+/// [encoding])`, which is what the phone's live check for the open signed.
+pub struct ShareRequest {
+    /// The account.
+    pub account: [u8; 32],
+    /// The document.
+    pub doc: [u8; 32],
+    /// Its manifest hash (what the upload bound the share to).
+    pub manifest_hash: [u8; 64],
+    /// The one-time hybrid KEM key to seal the share to.
+    pub one_time: KemPublic,
+    /// `H("HUMID-PQ2 share-request", [encoding])`.
+    pub binding: [u8; 64],
+}
+
+/// The share-request binding label (humid-core's).
+pub const SHARE_REQUEST_LABEL: &str = "HUMID-PQ2 share-request";
+
+impl ShareRequest {
+    /// Parse and bind.
+    ///
+    /// # Errors
+    /// `bad_share_request`.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let bad = || Error::bad("bad_share_request", "That isn't a share request.");
+        let mut r = pq2::encoding::Reader::new(bytes);
+        r.header(ObjectType::SHARE_REQUEST).map_err(|_| bad())?;
+        let account = r.array::<32>().map_err(|_| bad())?;
+        let doc = r.array::<32>().map_err(|_| bad())?;
+        let manifest_hash = r.array::<64>().map_err(|_| bad())?;
+        let one_time = KemPublic::from_bytes(r.take(pq2::KEM_PUBLIC_KEY_LEN).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
+        r.finish().map_err(|_| bad())?;
+        let binding = hash(SHARE_REQUEST_LABEL, &[bytes])?;
+        Ok(Self {
+            account,
+            doc,
+            manifest_hash,
+            one_time,
+            binding,
+        })
+    }
+
+    /// Encode (what a phone sends; tests).
+    #[must_use]
+    pub fn encode(
+        account: &[u8; 32],
+        doc: &[u8; 32],
+        manifest_hash: &[u8; 64],
+        one_time: &KemPublic,
+    ) -> Vec<u8> {
+        let mut v = pq2::encoding::header(ObjectType::SHARE_REQUEST).to_vec();
+        v.extend_from_slice(account);
+        v.extend_from_slice(doc);
+        v.extend_from_slice(manifest_hash);
+        v.extend_from_slice(&one_time.to_bytes());
+        v
+    }
+}
+
+/// Open a share the phone sealed to the keys unit (H2: the upload direction). The binding is
+/// the document's manifest hash (CORE.md §6.3).
 ///
 /// # Errors
-/// `bad_share` if it wasn't sealed to this key for this account, object and envelope.
+/// `bad_share` if it wasn't sealed to this key for this account, object and manifest.
 pub fn open_upload_share(
     sk: &KemSecret,
     account: &[u8],
     object: &[u8],
-    envelope_hash: &[u8],
+    manifest_hash: &[u8],
     sealed: &[u8],
 ) -> Result<Secret32> {
     pq2::open_share(
@@ -381,7 +444,7 @@ pub fn open_upload_share(
         &sk.0,
         account,
         object,
-        envelope_hash,
+        manifest_hash,
         sealed,
     )
     .map_err(|_| {

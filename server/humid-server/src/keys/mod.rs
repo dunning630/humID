@@ -483,6 +483,7 @@ async fn store(State(keys): St, body: Body) -> Reply {
     let u: app::Upload = wire::parse(&r.signed.body)?;
     if u.object != f.object
         || !crypto::ct_eq(&u.envelope_hash, &f.envelope_hash)
+        || !crypto::ct_eq(&u.manifest_hash, &f.manifest_hash)
         || !crypto::ct_eq(&u.sealed_share_hash, &crypto::sha3_512(&r.sealed_share))
     {
         return Err(Error::forbidden(
@@ -490,11 +491,13 @@ async fn store(State(keys): St, body: Body) -> Reply {
             "The live check approved a different document or key.",
         ));
     }
+    // bound to the manifest the holder signed (CORE.md §6.3): a share moved onto another
+    // document or version doesn't open
     let share = crypto::open_upload_share(
         &keys.kem,
         f.account.as_bytes(),
         f.object.as_bytes(),
-        &f.envelope_hash,
+        &u.manifest_hash,
         &r.sealed_share,
     )?;
     let st = keys.status(&f.account).await?;
@@ -550,7 +553,14 @@ async fn release(State(keys): St, Path(id): Path<String>, body: Body) -> Reply {
             "That approval was for a different document.",
         ));
     }
-    let to = crypto::KemPublic::from_bytes(&o.to)?;
+    // the share request the holder's device key signed: its one-time key and its binding
+    let req = crypto::ShareRequest::parse(&o.share_request)?;
+    if req.account != f.account.0 || req.doc != object.0 {
+        return Err(Error::forbidden(
+            "step_up_mismatch",
+            "That share request is for a different document.",
+        ));
+    }
     match keys.status(&f.account).await?.state.as_str() {
         "locked" => return Err(LOCKED()),
         "erased" => {
@@ -610,12 +620,11 @@ async fn release(State(keys): St, Path(id): Path<String>, body: Body) -> Reply {
         &[&object.as_bytes(), &now],
     )
     .await?;
-    let binding = crypto::sha3_512(&r.signed.proof.device_sig);
     let sealed = crypto::seal_release_share(
-        &to,
+        &req.one_time,
         f.account.as_bytes(),
         object.as_bytes(),
-        &binding,
+        &req.binding,
         &share,
     )?;
     tx.commit().await?;
