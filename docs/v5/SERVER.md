@@ -528,6 +528,11 @@ do the work.
 
 ## 12. Implemented vs stubbed (this branch)
 
+> **Before production:** the anon unit signs blinded passes and post tokens with the `rsa` crate
+> (via `blind-rsa-signatures`), whose private-key operations aren't constant time
+> (RUSTSEC-2023-0071, "Marvin"). It is ignored in deny.toml for development only; replace the
+> signing side with a constant-time implementation before any production deployment.
+
 Stubs never panic: they return `Error::NotImplemented { what, waiting_on }` → HTTP 501 `not_implemented`, and a
 production-mode start refuses while any required stub is in the path.
 
