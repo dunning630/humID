@@ -74,7 +74,7 @@ pub(crate) fn rng_health(sample: &[u8]) -> Result<()> {
         }
     }
     // Adaptive proportion: in each 512-byte window, the first byte's value at most 41 times.
-    for win in sample.chunks(512).filter(|w| w.len() == 512) {
+    for win in sample.as_chunks::<512>().0 {
         if win
             .iter()
             .fold(0usize, |n, &b| n + usize::from(b == win[0]))
@@ -84,7 +84,7 @@ pub(crate) fn rng_health(sample: &[u8]) -> Result<()> {
         }
     }
     // No repeated 16-byte block.
-    let mut blocks: Vec<&[u8]> = sample.chunks_exact(16).collect();
+    let mut blocks: Vec<&[u8; 16]> = sample.as_chunks::<16>().0.iter().collect();
     blocks.sort_unstable();
     if blocks.windows(2).any(|w| w[0] == w[1]) {
         return Err(Error::Rng);
