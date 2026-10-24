@@ -85,19 +85,32 @@ device_cert_msg = lp(account_id, device_id, device_vk, live_p256_spki, live_mlds
 device_cert_sig = AccountKey.sign("HUMID-PQ2 device-cert", device_cert_msg)
 ```
 
-Core stores both. Keys re-verifies both on every release (so even a compromised core cannot invent a device for
-an account without the account key).
+Core stores both. Keys re-verifies both on every release, so a compromised core alone cannot invent a device for
+an account. It can with a **copied account seed**: the attacker signs a certificate for its own phone and the
+compromised core vouches for it (review M-2; §11). Keys keeping its own device set is tracked in §12.
 
 ### 2.3 Live proofs
 
 ```
-ticket     = lp(METHOD, path, th, u64 seq, device_id, nonce, u64 at_ms)
+ticket     = lp(METHOD, path, th, u64 seq, device_id, nonce, u64 at_ms, u8 mode)
 live_p256  = ECDSA-P256-SHA256 over H("HUMID-PQ2 live", [ticket])        (secure chip, inside the biometric)
 live_mldsa = LiveMlDsa.sign("HUMID-PQ2 live", ticket)                     (where supported)
 device_sig = DeviceKey.sign("HUMID-PQ2 step-up", lp(ticket, SHA3-512(body)))
 login_sig  = DeviceKey.sign("HUMID-PQ2 login",   lp(th, account_id, device_id, challenge, u8 duress))
 live_login = ECDSA-P256-SHA256 over H("HUMID-PQ2 live-login", [lp(th, account_id, device_id, challenge)])
+challenge  = u64 issued_at ‖ 16 random ‖ KMAC(HSM session key, "HUMID-PQ2 login-challenge", [account, device, issued_at ‖ random])
 ```
+
+`mode` is humid-core's session mode (CORE.md §8–9): `0x00` normal, `0x01` duress. It is inside the ticket, so both
+the device key and the chip sign it, and every unit reads it from the holder's own proof. Core requires a session's
+proofs to carry that session's mode; keys refuses any write (store, delete, close, Check-in) whose proof carries
+`0x01`, even if core relays it.
+
+**Sign-in challenges are stateless** (review H-3): a MAC under the HSM `session` key, good for 2 minutes, so asking
+for one stores nothing and nobody can use up another device's challenges. A challenge that signs someone in is
+recorded (`used_challenges`), so it signs in once. Throttling never refuses a valid proof: the proof is checked
+first; junk (no valid challenge) counts against the network only; only a valid challenge with signatures that
+don't verify counts against the identity, and even then a valid proof is never refused.
 
 The secure chip signs the *ticket* (known before the prompt opens); the device key, released by the same check,
 also covers the body (which may only exist after the check: a seed sealed to a new device). The duress bit is only
@@ -126,7 +139,7 @@ bytes, then parses. Public statement keys are in the signed policy (§7).
 | Statement | From → to | Says | Why it can't be forged by front |
 | --- | --- | --- | --- |
 | `release` | core → keys | account, object, device cert (+ account vk), proof hash, ledger seq + hash of the `object.opened` entry | core's HSM key; and keys re-checks the holder proof and device cert itself |
-| `upload` | core → keys | account, object, device cert, proof hash, envelope and manifest hashes, ledger seq of `object.sealed` | same |
+| `upload` | core → keys | account, object, device cert, proof hash, envelope and manifest hashes (`object.sealed` is appended after keys stores the share, in the same transaction) | same |
 | `delete`, `close`, `checkin` | core → keys | as above for those actions | same |
 | `duress` | core → keys | account, device cert, the duress sign-in itself | keys re-verifies the duress sign-in signature |
 | `live-check` | core → anon (via front) | *no account id*: action, body hash, proof hash, exp | core's HSM key; anon learns only that a live check approved these blinded values |
@@ -156,20 +169,20 @@ not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`
 | Route | Session | Proof core checks itself | Writes in the same transaction |
 | --- | --- | --- | --- |
 | `POST /v1/auth/register` | anonymous | account-key PoP over `lp(th, account_vk, kem_pk)`; device cert; device PoP; live P-256 over the cert; attestation (stub); anon `spent` statement when registration needs a pass | account, device, `account.created` (logs the account-key binding into the public log), `device.added` |
-| `POST /v1/auth/challenge` | anonymous | — (single-use, 2 min, per device cap; an unknown account gets the same answer) | nonce |
-| `POST /v1/auth/login` | anonymous | `login_sig` + `live_login`; revocation of the device; P-256-only date | session, nonce pool; on duress: lockdown + recovery waits doubled + `session.duress`, then the `duress` statement to keys; the answer looks the same. A duress session then changes nothing real: device, recovery, upload, delete and post-token routes answer `busy` |
+| `POST /v1/auth/challenge` | anonymous | — (stateless HSM MAC, 2 min; nothing stored; an unknown account gets the same answer) | — |
+| `POST /v1/auth/login` | anonymous | the challenge's MAC and age, then `login_sig` + `live_login`, *before any limit*; revocation of the device; P-256-only date | session, nonce pool, used challenge; on duress: lockdown, every recovery wait doubled (waiting ones too), the session's frozen copy of Check-in, `session.duress` (deferred while a duress session is live), and a `duress_pending` row that a worker delivers to keys **after the reply**, retried until keys acts on it. Every sign-in asks keys where Check-in stands, so answer and timing are the same. A duress session then changes nothing real (§2.6) |
 | `POST /v1/auth/logout` | session | — | session revoked |
 | `POST /v1/auth/nonces` | session | — (tops the pool up to 8; also returned in every signed-in reply) | nonces |
-| `POST /v1/links` | anonymous | — (global cap on open links, per-network limit) | link |
-| `GET /v1/links/:code` | session | — | — |
-| `POST /v1/links/:code/approve` | session | step-up on an existing device | link approved for exactly this device key, `device.link_approved` |
-| `GET /v1/links/:code/result` | anonymous | — (the 60-bit code is the capability; 10 min) | — |
+| `POST /v1/links` | anonymous | humid-core's self-signed join request (`0x0108`, CORE.md §5.3): signature, account, device key, join key; 64 open links per IPv4 /24 or IPv6 /48, 10,000 in all; per-network rate | link (request, binding, 100-bit code) |
+| `GET /v1/links/:code` | session of the account the request names | — (any other account: `unknown_code`) | — |
+| `POST /v1/links/:code/approve` | session of that account | step-up on an existing device over the request's **binding** | link approved for exactly this request, `device.link_approved` |
+| `GET /v1/links/:code/result` | anonymous | — (the 100-bit code is the capability; 10 min) | — |
 | `POST /v1/devices` | anonymous | device cert, device PoP, live signature, attestation (stub), **and the evidence**: an approved link for this device key or a released recovery for this account, consumed in the same transaction (**H1**) | device, `device.added` with its evidence, link consumed / recovery completed |
 | `DELETE /v1/devices/:id` | session | step-up | device revoked, `device.removed` |
 | `GET /v1/me` | session | — | — |
 | `DELETE /v1/me` | session | step-up | account closed, devices revoked, `account.closed`; then `close` statement to keys |
 | `POST /v1/objects` | session | step-up whose body carries the envelope, manifest and sealed-share hashes (**H2**) | object, `object.sealed`; keys stores the share before commit |
-| `POST /v1/objects/:id/open` | session | step-up whose body carries humid-core's share request (account, document, manifest hash, one-time key) | **`object.opened` committed before anything leaves**; then the `release` statement to keys; download ticket |
+| `POST /v1/objects/:id/open` | session | step-up whose body carries humid-core's share request (account, document, manifest hash, one-time key) | **`object.opened` committed before anything leaves**; then the `release` statement to keys; download ticket (4 at once per session). In a duress session every refusal reads `not_available` |
 | `GET /v1/objects/:id/chunks/:n` | session | the download ticket from that open (60 s, this session) | — |
 | `PATCH /v1/objects/:id` | session | step-up (**L3**) | index entry, `object.updated` |
 | `DELETE /v1/objects/:id` | session | step-up | object deleted, tombstone, `object.deleted`; `delete` statement to keys |
@@ -185,11 +198,33 @@ not in the allow-list is a 404 before any unit sees it (`front::routes::resolve`
 | `GET` / `POST /v1/recovery/help/:code` | the witness's own session | POST: the witness's step-up, and that they are one of this account's witnesses | their piece re-sealed to the new device, `recovery.helped` (witness's ledger) and `recovery.evidence` |
 | `POST /v1/recovery/requests/:id/anchor`, `/key` | anonymous | **stubbed**: passport (needs the second share operator) and FIDO | — |
 | `GET /v1/recovery/alerts` | session | — | — |
-| `POST /v1/recovery/alerts/:ref/cancel` | session | step-up (the veto) | request cancelled, `recovery.cancelled` |
-| `POST /v1/duress/clear` | session | step-up, after the cool-off | lockdown cleared, `duress.cleared` |
-| `GET /v1/checkin` | session | — (forwarded to keys) | — |
-| `POST /v1/checkin/arm`, `/check`, `/disarm` | session | step-up (and keys checks it again) | `checkin.armed` / `checkin.disarmed` (never one per check-in) |
-| `POST /v1/live/attest` | session | step-up | — (returns the account-free `live-check` statement for anon) |
+| `POST /v1/recovery/alerts/:ref/cancel` | session (not a duress one) | step-up (the veto) | request cancelled, `recovery.cancelled` |
+| `POST /v1/duress/clear` | session (not a duress one) | step-up, after the cool-off | lockdown cleared, `duress.cleared` (deferred while a duress session is live) |
+| `GET /v1/checkin` | session | — (asked of keys; a duress session is answered from its own copy) | — |
+| `POST /v1/checkin/arm`, `/check`, `/disarm` | session | step-up (and keys checks it again) | keys first, then `checkin.armed` / `checkin.disarmed` (never one per check-in). A duress session's are simulated on its own copy |
+| `POST /v1/live/attest` | session (not a duress one) | step-up; 32 per account per day | — (returns the account-free `live-check` statement for anon) |
+
+### 2.6 A duress session (review H-1, H-2)
+
+A duress sign-in answers exactly as an ordinary one, and the session it opens **changes nothing real and learns
+nothing that names duress**:
+
+- Upload, delete, index changes, device links and removals, recovery setup, help and veto, closing the account,
+  clearing a lockdown and post tokens answer `busy`. Keys refuses any write whose proof carries mode `0x01`,
+  whatever core says.
+- Check-in looks on and working: the session is shown Check-in as it stood at the duress sign-in (stored with the
+  session) and its own arm / check / disarm move only that copy. Keys is never told, so a coerced arm can't erase
+  the vault later.
+- Ledger entries that would give it away (`session.duress`, `duress.cleared`, `access.denied`, `checkin.erased`)
+  are held in `deferred_entries` while a duress session of the account is live and appended once none is (the
+  holder's own devices then see them); older ones are left out of what a duress session reads. A refused open
+  reads `not_available`, never `vault_erased`.
+- The erase request reaches keys after the reply, from `duress_pending`, retried with back-off until keys acts on
+  it (or says it already did).
+- Opens follow the owner's decision on duress releases (§13): today, as an ordinary open.
+
+`tests/review95_more.rs` tries every step-up route in `front::routes::ROUTES` from a duress session and checks both
+databases row by row.
 | `GET /tlog/checkpoint`, `/tlog/consistency`; `POST /tlog/cosign` | front (public) | cosignature | cosignature |
 
 There is **no route** by which front writes a ledger entry (**M3**), marks a link or recovery used (**H1**), sets
@@ -216,8 +251,9 @@ transaction of the action the holder signed.
 | `POST /v1/pass/spend` | the pass's signature; once; returns the `spent` statement core needs |
 | `POST /v1/post-tokens` | core's account-free `live-check` statement for `POST /v1/post-tokens` over exactly these blinded values; proof hash unseen; ≤ 16 tokens per check (**M1**, M-10) |
 | `POST /v1/stamps` | the same statement; **issuance stubbed** (partially blind RSA with epoch metadata pending, §12) |
-| `POST /v1/relay/deposit` | a post token (once), wire size class, caps |
-| `POST /v1/relay/tick` | — fixed-size request (16 prefix slots, each with a cursor), fixed-size padded reply; reads, never deletes |
+| `POST /v1/relay/deposit` | post tokens (once each), one per 16 KiB of the wire size class; box caps before any token is spent; the relay total in SQL (`relay_usage`) |
+| `POST /v1/relay/tick` | — fixed-size request (16 prefix slots, each with a cursor), fixed-size padded reply; reads, never deletes. An object too big for the reply comes back as a stub (id, box, size), so nothing blocks a prefix |
+| `POST /v1/relay/fetch` | — one stubbed object by id and box (never deletes) |
 | `POST /v1/relay/ack` | the ack token whose hash the sender stored with the object; deletes only then (**H-3**) |
 | `POST /v1/relay/retract` | the retract token |
 | `POST /v1/push/subscribe` | a post token; stores a push token against coarse prefix buckets (sender stubbed) |
@@ -298,12 +334,17 @@ batches of 10,000, each batch its own transaction. Every table has a rule; every
 | `accounts` | kept while active; closed accounts kept (public keys for old proofs) | — |
 | `devices` | kept; revoked rows kept with the account (old proofs) | 16 active per account |
 | `sessions` | deleted 1 day after `expires_at` (8 h absolute, 15 min idle) or revocation | 16 live per account (LRU revoked) |
-| `nonces` | deleted at expiry (login 2 min, pool 15 min); used ones at once | 8 unused per session, 4 login challenges per device |
+| `nonces` | deleted at expiry (pool 15 min); used ones at once | 8 unused per session |
+| `used_challenges` | deleted at expiry (sign-in challenges are stateless; only used ones are kept, 3 min) | — |
+| `duress_pending`, `deferred_entries` | until delivered to keys / appended to the ledger | — |
+| `erase_sweeps` | 30 days | one per erase |
+| `live_check_days` | 2 days | 32 live checks for post tokens per account per day |
+| `policy_seen` | one row | — |
 | `objects` | until deleted by the holder or Check-in | per-account byte quota (policy) |
 | `object_tombstones` | 30 days (`/sync` older than that gets `resync: true`) | — |
 | `download_tickets` | deleted at expiry (60 s) | 4 per session |
-| `links` | 1 day after expiry or use | 10,000 open in all |
-| `recovery_requests` | 30 days after close (the ledger keeps the record); unbound ones at 1 day | 3 open per account, 10,000 unbound |
+| `links` | 1 day after expiry or use | 64 open per IPv4 /24 or IPv6 /48; 10,000 in all |
+| `recovery_requests` | 30 days after close (the ledger keeps the record); an unbound one lives 1 hour | 3 open per account; 32 unbound per /24 or /48; 10,000 unbound |
 | `recovery_evidence`, `recovery_approvals` | with their request | — |
 | `recovery_cards`, `recovery_witnesses`, `recovery_mode` | until replaced or account close | 1 card, 1 witness set |
 | `duress` | 14 days after the last signal; at account close | — |
@@ -347,6 +388,7 @@ bound by deriving a per-record KEK, and HMAC/KMAC for keyed tags.
 | `core-statement` | core | ML-DSA-87 | unit statements; HTP KEM key certificate (daily) |
 | `ledger` | core | ML-DSA-87 + SLH-DSA-SHA2-256s | tlog checkpoints, at a fixed cadence (60 s), never per request |
 | `card-tag` | core | KMAC256 key | server-keyed recovery-card lookup tags |
+| `session` | core | KMAC256 key | stateless sign-in challenges (§2.3) |
 | `session` | core | KMAC256 key | session token MACs |
 | `keys-statement` | keys | ML-DSA-87 | certifies keys' KEM key |
 | `share-kek` | keys | AES-256 (KWP) | wraps every share; unwrapped inside the HSM per release |
@@ -369,8 +411,14 @@ registration, station lists, check-in lists, cosigners, keyshare key) is one fil
 dual signature `policy.json.sig` by `identity-root` over the **exact file bytes**
 (`DualSigningKey.sign("HUMID-PQ2 server-policy", lp(bytes))`). No canonicalisation step to get wrong.
 
-- `version` must be greater than the highest version this unit has accepted (stored in its database,
-  `policy_state`); a lower or equal version with different bytes is refused at start-up and on reload.
+- `version` must not be lower than the highest version this unit has accepted, and the same version must have
+  the same bytes. The high-water mark is kept in the unit's replicated database (`policy_seen`, core, keys and
+  anon) **and** in `<data_dir>/policy.state` (front has no database); either one refuses a rollback, so a wiped or
+  restored data directory alone can't bring back an older policy (review M-7). There is no reload path yet: a new
+  policy takes a restart.
+- A build with the identity root pinned (`HUMID_IDENTITY_ROOT_ID` at build time) accepts **only** that root, in
+  every mode, so the unsigned `server.toml` can't point a production build at another root that signs a
+  development policy. A build without a pin runs development policies only.
 - Unknown fields are refused (`serde(deny_unknown_fields)`).
 - The same bytes and signature are served at `GET /htp/v2/keys`, so the app checks exactly what the servers enforce
   and warns on unsafe modes (`mode != production`, `registration: open`, `p256_only_until` in the future, no
@@ -404,13 +452,18 @@ There is no `X-Forwarded-For`, no `TRUST_FORWARDED` mode, no shared bucket, no l
 deleted, audit §3). Keys: IPv4 address, IPv6 /64. Front sends the key to units in `x-humid-client-net` over mTLS;
 units use it only for limits (availability), never for authorisation.
 
-Limits: handshakes 30/min per network, calls 600/min per session, sign-in failures 10/5 min per identity and 20 per
-network, recovery starts per network *and* per account once bound (**M4**: no single global bucket an anonymous
-visitor can drain), relay deposits by post token rather than address (**M-10**). Sketches have fixed memory
-(count-min, as 4.x) or LRU caps; none wipes everything when full (**L4**).
+Limits: handshakes 30/min per network; calls `limits.calls_per_minute` per session (core enforces it until HTP/2
+front does); step-up actions 600/hour per account; sign-in failures 20 per network per 5 minutes and, only for a
+valid challenge whose signatures don't verify, 10 per identity (a valid proof is never refused, §2.3); recovery
+starts per network, unbound requests per /24 or /48, and per account once bound; open links per /24 or /48 (**M4**,
+review M-5: no global bucket a handful of networks can fill); relay deposits by post token rather than address
+(**M-10**), weighted by size, with live checks for tokens capped per account per day (review M-6). Sketches have
+fixed memory (count-min, as 4.x) or LRU caps; none wipes everything when full (**L4**).
 
-The temporary Funnel deployment cannot see client addresses; it runs in `development` mode only, with per-account
-limits doing the work.
+In production a call that reaches core without `x-humid-client-net` is refused (`no_client_network`), so a front
+that forgets it can't put every caller into one bucket (review M-4). The temporary Funnel deployment cannot see
+client addresses; it runs in `development` mode only, where such calls share `dev:unknown` and per-account limits
+do the work.
 
 ## 10. Phone battery: API changes from the audit
 
@@ -429,7 +482,7 @@ limits doing the work.
 | Compromised | Can | Cannot |
 | --- | --- | --- |
 | front | deny service; see which sessions exist and when; act as an account that signs in while compromised, within that session's rights (reads, nothing that needs a step-up) | open a document, see a share, enrol a device (H1), write or forge a ledger entry (M3), lock an account down (M2), mint stamps or post tokens (M1), undo anything (L1) |
-| core | read envelopes (ciphertext), refuse service, lie by omission in `/sync` (caught by the public log), vouch for a revoked device | release a share without the holder's live proof (keys checks it), invent a device (keys checks the account key's certificate), see a share |
+| core | read envelopes (ciphertext), refuse service, lie by omission in `/sync` (caught by the public log), vouch for a revoked device; **with a copied account seed, add a device** (the attacker signs a certificate for its own phone; core vouches for it; keys then releases shares for that phone's genuine live proofs, and a phone that trusts core's device list wraps new documents for it) | release a share without a live proof from a device the account key certified (keys checks both), invent a device without the account seed, relay a coerced change from a duress session (keys reads the signed mode), see a share. Documents sealed before the compromise stay behind each device's own `HW_doc` |
 | keys | refuse or destroy shares (denial) | open anything (no envelope), release a share that a phone can use without core's envelope |
 | anon | refuse service, see message sizes and times by prefix | link anything to an account (it never sees one) |
 
@@ -459,21 +512,42 @@ production-mode start refuses while any required stub is in the path.
 | Front: HTP/2 handshake and frames | stub | HTP/2 specification (KEM handshake over PQ2 §5, TransitSealer frames, binary TLV) |
 | `humid-server-core dev-setup <dir>`: CA, leaves, dev identity root, signed dev policy, soft HSMs, four `*.toml` | implemented (development only) | — |
 
-Tests (`cargo test` in `server/humid-server`; Postgres from `HUMID_TEST_DATABASE_URL`, one schema per test):
-46 unit tests; `tests/flows.rs` (10 end-to-end flows over real internal TLS); `tests/compromised_front.rs`
-(10: front's certificate and sessions in the attacker's hands, plus a copied seed); `tests/retention.rs`;
-`tests/startup.rs` (policy tampering and rollback at start-up, outer TLS requires a PQ group);
-`tests/core_formats.rs` (cross-checks against `crates/humid-core`).
+Tests (`cargo test -p humid-server`; Postgres from `HUMID_TEST_DATABASE_URL`, one schema per test; CI runs them
+against a PostgreSQL 16 service): 48 unit tests; `tests/flows.rs` (10 end-to-end flows over real internal TLS);
+`tests/compromised_front.rs` (10: front's certificate and sessions in the attacker's hands, plus a copied seed);
+`tests/retention.rs` (2); `tests/startup.rs` (2: policy tampering and rollback at start-up, outer TLS requires a PQ
+group); `tests/core_formats.rs` (3: share requests and join requests cross-checked against `crates/humid-core`);
+`tests/review95.rs` (6) and `tests/review95_more.rs` (16): the PR #95 review's probes, each turned into a
+regression that failed before its fix, plus the every-route duress test.
+
+### Tracked from the PR #95 review
+
+Fixed on this branch: H-1, H-2, H-3, M-1, M-3, M-4, M-5, M-6, M-7 (the database high-water mark and the root pin
+in every mode), and lows L-1, L-2, L-3, L-6, L-7, L-8, L-10, L-11, L-12, L-13, L-14, L-16, L-17, L-18, L-19.
+M-2 is documented (§2.2, §11). Still open:
+
+| # | What | Plan |
+| --- | --- | --- |
+| M-2 | Keys trusts core's word for which devices an account has; a copied seed plus a compromised core adds one | keys keeps its own per-account device set: the first device from the registration PoP (relayed in a core statement), later ones only with an endorsement keys checks itself (the approving device's step-up over the new request's binding, or the released recovery's evidence hash); the app checks its device list against signed `device.added` entries, not `/sync` |
+| M-7 | Units don't compare policy versions; statements carry none; `issued_at` has no staleness bound; no reload path | put the policy version in every statement and refuse older ones; a reload endpoint behind the operator's key |
+| L-4 | Uncosigned checkpoints are served as latest; front has no `POST /tlog/v2/cosign` | add the front route (HTP/2 work touches front); serve `final` only when cosigned |
+| L-5 | `keys_kem_pk` isn't in the policy; keys' KEM key isn't rotated | certify it in the policy, rotate monthly with an overlap |
+| L-9 | A share stored by keys whose core commit then fails is orphaned | keys sweeps shares no core object names (core signs the list), or two-phase store |
+| L-15 | Statements have no audience or id; `spent` single use is keyed on statement bytes | add `aud`, `jti` and the policy version; key single use on `facts.spent` |
 
 ## 13. Open questions for the owner
 
 1. **HTP/2.** Front can't carry app traffic until HTP/2 is specified (handshake, binary frames, proofs as TLV).
    Who writes it, and does it live in PQ2.md or its own doc?
-2. **Proof formats.** Shares now follow CORE.md §6.3 exactly (tested against humid-core). The step-up, sign-in
-   and enrolment proofs (§2.2–2.3) are still this server's proposal: CORE.md §9 has per-action live labels
-   (`live-open`, `live-seal`, …) over `[challenge, …]`, while the server checks one ticket shape for every route
-   plus the ML-DSA device signature over the body. Proposal: the chip signs `H(live-<action>, [ticket, binding…])`
-   with CORE.md's labels and `ticket` (§2.3) as the challenge; `proofs.rs` is the one file to change.
+2. **Proof formats.** Shares and join requests now follow CORE.md §5.3 and §6.3 exactly (tested against
+   humid-core). The step-up ticket now carries humid-core's session mode byte (§2.3). The rest of the step-up,
+   sign-in and enrolment proofs are still this server's proposal: CORE.md §9 has per-action live labels
+   (`live-open`, `live-seal`, `live-grant`, …) over `[challenge, …, mode]`, while the server checks one ticket shape
+   for every route plus the ML-DSA device signature over the body. Proposal: the chip signs
+   `H(live-<action>, [ticket, binding…, mode])` with CORE.md's labels and `ticket` (§2.3) as the challenge;
+   `proofs.rs` is the one file to change. The server-side attestation check that the new device's key is the
+   request's (CORE.md §5.3, "attested model") lands with the attestation port (§12): today the enrolment
+   certificate must certify exactly the request's device key, and the attestation itself is a stub.
 3. **Type codes**: the server uses `0x0200`–`0x0202` for its own at-rest boxes (shares, fused shares, soft-HSM
    key file). Please add a `0x02xx` server block to the PQ2.md registry.
 4. **HSM model** (PKCS#11 v3.2 with ML-DSA and SLH-DSA mechanisms): which device, one per site?
@@ -482,11 +556,19 @@ Tests (`cargo test` in `server/humid-server`; Postgres from `HUMID_TEST_DATABASE
 6. **Keys' KEM key in software** (§3): acceptable, given HSMs don't do ML-KEM decapsulation yet?
 7. **Second key-share operator** for the passport piece: same `keys` binary at a partner; until then the passport
    doesn't count as an independent proof (policy `recovery.passport_counts = false`).
-8. **CI**: the server tests need a Postgres service; add a workflow (two-person review applies), or fold into the
-   build workstream's CI?
+8. **CI**: done here: the `rust` job has a PostgreSQL 16 service, so `cargo test --workspace` runs the server
+   tests. The image is pinned by tag only (Docker Hub couldn't be reached to look up a digest); please pin it by
+   digest.
 9. **Branch and workspace.** This branch is `v5-server` (git refuses `v5/server` beside a branch named `v5`). The
-   crate has a temporary `[workspace]` table and `[profile]` overrides; both move to the root `Cargo.toml` when
-   the workspace lands. It depends on `crates/humid-pq2` (and, for tests, `crates/humid-core`) by path from
-   `v5-core`, merged in.
+   crate is a member of the root workspace (its lints and profiles); it depends on `crates/humid-pq2` (and, for
+   tests, `crates/humid-core`) by path from `v5-core`, merged in.
 10. **Rust version.** Built and tested with stable 1.97; `rust-toolchain.toml` pins 1.99.1, which this box can't
     download. Nothing here needs more than 1.85.
+11. **Duress releases.** CORE.md §8 leaves it to the owner: when a live proof carries `mode = 0x01`, does keys
+   release real shares, refuse ("not available right now"), or serve decoy content? The server reads the mode and
+   already refuses every write; releases are unchanged until you decide (an armed vault is already erased by the
+   duress sign-in, so only decoy-marked documents still open).
+12. **Duress and the ledger.** Entries that would show a duress session what happened are held back while one is
+   live and appended afterwards, so the holder's chain stays complete, and a duress session reads its chain with
+   those entries left out (the phone's core knows it is in a decoy session). Alternative: label them in the public
+   log by hash only and never serve them to any session. Which do you want?
