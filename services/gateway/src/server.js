@@ -7,6 +7,7 @@
 // ledger record. If the ledger cannot record the access, the gateway refuses.
 
 import { mkdirSync, readFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createService, env, json, bytes, parseJson, signRequest, internalRequest, roleAgent, clientTls, sealerFromEnv, secretFile, HttpError, b64u, unb64u, logger, isMain } from "@humid/svc";
 import { HtpServer, HtpServerError, createStatics, exportStatics, importStatics } from "@humid/htp/server";
 import { MEDIA_TYPE, HEADER_LEN, DIR, parseHeader, concat, deviceId, identityId, loginMessage, loginPresenceMessage, stepUpMessage, liveMessage, actionBytes, verify, proofHash, STEP_UP_MAX_AGE_MS, STEP_UP_NONCE_MS, CLOCK_SKEW_MS, random, utf8, sha3_256, toHex } from "@humid/htp";
@@ -22,6 +23,7 @@ const RCODE_RE = "[0-9A-HJKMNP-TV-Z]{12}(?:[0-9A-HJKMNP-TV-Z]{4})?";
 const REQ_RE = "[A-Za-z0-9_-]{22}";
 const REF_RE = "[0-9a-f]{16}";
 const KEY_RE = "[0-9a-f]{32}";
+const SREQ_RE = "[0-9a-f]{20}";
 /**
  * Which devices may sign in (HUMID_DEVICE_POLICY):
  *   attested   only phones whose secure chip proves every check is a live biometric
@@ -167,6 +169,18 @@ const ROUTES = [
   { m: "POST", p: re("/msg/relay/put"), h: "relayPut", relay: true, msg: true },
   { m: "POST", p: re("/msg/relay/take"), h: "relayTake", relay: true, msg: true },
   { m: "POST", p: re("/msg/relay/retract"), h: "relayRetract", relay: true, msg: true },
+
+  // Share requests (docs/SHARE.md), when the server runs a share service. The holder makes share
+  // codes, reads what arrived while unlocked, and answers inside a live check on a phone.
+  { m: "POST", p: re("/share/codes"), h: "shareNewCode", auth: true, share: true },
+  { m: "GET", p: re("/share/codes"), to: "share", path: "/internal/codes", auth: true, share: true },
+  { m: "DELETE", p: re(`/share/codes/(${CODE_RE})`), to: "share", path: "/internal/codes/$1", auth: true, share: true, event: "share.code_revoked", detail: (r) => ({ code: r?.code }) },
+  { m: "GET", p: re("/share/inbox"), to: "share", path: "/internal/inbox", auth: true, share: true },
+  { m: "POST", p: re(`/share/requests/(${SREQ_RE})/answer`), h: "shareAnswer", auth: true, guard: true, share: true },
+  // A verifier: any session, usually one that never signs in. Its own limits apply (sharePoll, shareNew).
+  { m: "POST", p: re("/share/lookup"), h: "shareLookup", share: true, verifier: true },
+  { m: "POST", p: re("/share/requests"), h: "shareRequest", share: true, verifier: true },
+  { m: "POST", p: re(`/share/requests/(${SREQ_RE})/result`), to: "share", path: "/internal/requests/$1/result", share: true, verifier: true },
 ];
 
 /**
@@ -237,6 +251,8 @@ export function createGateway({
     keyshare: env("KEYSHARE_URL", "http://keyshare:8086"),
     // the messaging relay (services/relay); without one, messaging is off on this server
     ...(env("RELAY_URL", "") ? { relay: env("RELAY_URL", "") } : {}),
+    // share requests (services/share); without one, share requests are off on this server
+    ...(env("SHARE_URL", "") ? { share: env("SHARE_URL", "") } : {}),
   },
   allowedOrigins = env("HUMID_ALLOWED_ORIGINS", "tauri://localhost,http://tauri.localhost,https://tauri.localhost").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy = env("TRUST_PROXY", "0") === "1",
@@ -286,6 +302,13 @@ export function createGateway({
   msgStatsMin = Number(env("HUMID_MSG_STATS_MIN", "1000")),
   /** Signed-in sessions one account may hold at once (CRYPTO-04): its own oldest makes room. */
   sessionsPerAccount = Number(env("HUMID_SESSIONS_PER_ACCOUNT", "16")),
+  /**
+   * Optional traffic tap for a local console (docs/SHARE.md#the-traffic-console): called with one
+   * plain object per frame in and out, describing what this gateway could see in it: sizes, the
+   * frame header, the route, the caller's ids, proofs, and for each body field whether it was
+   * readable here or sealed. Never a value. Off unless the host passes a function.
+   */
+  traffic = null,
 } = {}) {
   const log = logger("gateway");
   const DEMO_STAMPS = demoStamps === true && devicePolicy === "demo";
@@ -390,8 +413,15 @@ export function createGateway({
   /* ---------- internal calls ---------- */
 
   // Which role each service belongs to, for the certificate the gateway expects when it's on another machine.
-  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys", relay: "core" };
+  const ROLE_OF = { identity: "core", vault: "core", ledger: "core", recovery: "core", access: "core", keyshare: "keys", relay: "core", share: "core" };
   const MESSAGING = !!upstreams.relay;
+  const SHARE = !!upstreams.share;
+  // Verifiers (share requests) poll for an answer from a session that never signs in: their own
+  // per-session budget, and a per-network one for lookups and new requests. Behind a tunnel that
+  // hides addresses, every visitor shares one larger bucket (V76-03).
+  const sharePoll = new Buckets(90, 60_000);
+  const shareNew = new Buckets(30, 60_000);
+  const shareNewShared = new Buckets(300, 60_000);
   const agents = {};
   for (const [svcName, base] of Object.entries(upstreams)) {
     if (!/^https:/.test(base)) continue;
@@ -1191,6 +1221,54 @@ export function createGateway({
     },
   };
 
+  /* ---------- share requests (docs/SHARE.md) ---------- */
+
+  const needShare = () => { if (!SHARE) throw new HttpError(404, "not_found", "No such endpoint"); };
+  /** A verifier's new lookup or request: per network, or one shared bucket when the tunnel hides addresses. */
+  const shareNewAllowed = (s) => (addressUnknown(s.clientIp) ? shareNewShared.take("*") : shareNew.take(rateKey(s.clientIp || "")));
+  Object.assign(handlers, {
+    // A new share code. The app derived the inbox keys and checks the code that comes back.
+    async shareNewCode(s, body) {
+      needShare();
+      const r = await internalJson("share", "POST", "/internal/codes", { claims: claimsFor(s), body });
+      if (r.status !== 201) fail(r);
+      await recordQuietly(s.subject, "share.code_made", { code: r.data.code, by: s.deviceId });
+      return { status: 201, json: { code: r.data.code } };
+    },
+    async shareLookup(s, body) {
+      needShare();
+      if (!shareNewAllowed(s)) throw new HttpError(429, "rate_limited", "Slow down");
+      const r = await internalJson("share", "POST", "/internal/lookup", { claims: { sid: s.sidText.slice(0, 8) }, body });
+      if (r.status !== 200) fail(r);
+      return { status: 200, json: r.data };
+    },
+    // A sealed request arrives. The holder's ledger notes it (never who sent it: the server doesn't know).
+    async shareRequest(s, body) {
+      needShare();
+      if (!shareNewAllowed(s)) throw new HttpError(429, "rate_limited", "Slow down");
+      const r = await internalJson("share", "POST", "/internal/requests", { claims: { sid: s.sidText.slice(0, 8) }, body });
+      if (r.status !== 201) fail(r);
+      const { sub, ...out } = r.data;
+      await recordQuietly(sub, "share.received", { ref: out.id });
+      return { status: 201, json: out };
+    },
+    // The answer: a live check on a phone whose secure chip proves it (like a stamp), written to
+    // the ledger first (fail closed), then released with the holder's proof and the receipt.
+    async shareAnswer(s, body, stepUp, m) {
+      needShare();
+      if (!stepUp) throw new HttpError(403, "step_up_required", "Answering needs a live check on your phone.");
+      if (!(stepUp.live === true && stepUp.assurance === "hardware") && devicePolicy !== "demo") {
+        throw new HttpError(403, "needs_proven_phone", "Answering needs a phone whose secure chip proves a live face or fingerprint check. This device can't.");
+      }
+      const id = m[1];
+      const logged = await record(s.subject, "share.answered", { ref: id, ...proved(s, stepUp) });
+      if (!logged?.receipt) throw new HttpError(503, "audit_unavailable", "Access log is unavailable, so access is refused.");
+      const r = await internal("share", "POST", `/internal/requests/${id}/answer`, { claims: claimsFor(s, { stepUp, receipt: logged.receipt }), body, headers: { "content-type": "application/json" } });
+      if (r.status !== 200) fail({ status: r.status, data: safeJson(r.body) || {} });
+      return { status: 200, json: { id, answered: true, receipt: { seq: logged.seq, hash: logged.hash } } };
+    },
+  });
+
   /** The relay is reached only from a session that never signed in: no account ever touches a mailbox. */
   function relaySession(s) {
     if (s.subject) throw new HttpError(400, "signed_in", "Use the relay from a session that isn't signed in.");
@@ -1212,8 +1290,10 @@ export function createGateway({
     if (!route) throw new HttpError(404, "not_found", "No such endpoint");
     if (route.auth && !s.subject) throw new HttpError(401, "sign_in_required", "Sign in first");
     if (route.msg && !MESSAGING) throw new HttpError(404, "not_found", "No such endpoint");
+    if (route.share && !SHARE) throw new HttpError(404, "not_found", "No such endpoint");
     if (body.length > callCap(route)) throw new HttpError(413, "too_large", "Request body is too large for this endpoint.");
-    if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
+    if (route.verifier) { if (!sharePoll.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down"); }
+    else if (!s.subject && meta.m !== "GET" && !route.relay && !anonLimit.take(s.sidText)) throw new HttpError(429, "rate_limited", "Slow down");
 
     // Step-up: a fresh biometric signature over exactly this request, by this session's device key.
     let stepUp = null;

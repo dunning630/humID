@@ -46,6 +46,9 @@ const EVENT_TYPES = new Set([
   "recovery.mode_set",
   // a device reported that Android or iOS destroyed its biometric keys (ledger 1.6, LIVE-06)
   "device.keys_invalidated",
+  // share requests (ledger 1.7, docs/SHARE.md): a code made or turned off, a request arrived, an answer
+  // given inside a live check. Never what was asked, by whom, or whether the answer was yes or no.
+  "share.code_made", "share.code_revoked", "share.received", "share.answered",
 ]);
 
 /**
