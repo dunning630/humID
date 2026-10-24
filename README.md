@@ -131,14 +131,15 @@ plugins/humid-nfc/   native chip reader transport (Core NFC, Android IsoDep, PC/
 services/            edge (Caddy) · gateway · identity · vault · ledger · recovery · access · keyshare
 deploy/              docker compose + setup.sh for a real server; windows/ = HumID Server for Windows
 tests/               unit, protocol, end-to-end and smoke tests
-tools/               dev server (with demo passports), change detection for CI, public-log cosigner
+tools/               dev server (with demo passports), public-log cosigner, release helpers
 ```
 
 ## Builds and releases
 
-- **Every push:** tests, then only the apps and service images the change
-  touches (`node tools/affected.mjs` shows what it decided). CI also boots the
-  full stack with docker compose and runs the smoke test over TLS.
+- **Every push:** tests and Rust checks; the iPhone and Android apps compile
+  when app or plugin code changed, and the service images are rebuilt and the
+  full stack booted with docker compose (smoke test over TLS) when server code
+  changed (`changes` job in `.github/workflows/ci.yml`).
 - **Server images:** published to `ghcr.io/dunning630/humid-<service>` on merge
   to `main`, again only the ones that changed.
 - **Apps:** Actions → *Release apps* → choose platforms. Set

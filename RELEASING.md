@@ -21,27 +21,16 @@ conversion.
 ## 2. Day-to-day flow
 
 1. Change the package, service or app that owns the behaviour.
-2. `npx changeset`: tick only what you changed; choose patch / minor / major.
-3. Open a PR. CI runs every test, then builds only the affected app platforms
-   and service images, boots the stack with docker compose and runs the smoke
-   test (`node tools/affected.mjs origin/main` shows what it will build).
-4. Merge. Changed service images are published to
+2. Open a PR. CI runs every test and the Rust checks, compiles the iPhone and
+   Android apps (Rust, Swift and Kotlin) when app or plugin code changed, and
+   rebuilds the service images and boots the stack when server code changed
+   (`changes` job in ci.yml, plain path patterns).
+3. Merge. Service images are published to
    `ghcr.io/dunning630/humid-<service>:latest` and `:<commit>`.
-   `npm run version-modules` bumps the changed packages and writes their
-   CHANGELOG entries.
 
-### What a change costs
-
-| You changed | Images rebuilt | Apps rebuilt |
-|---|---|---|
-| `services/vault/**` | vault | none |
-| `services/recovery/**` | recovery | none |
-| `packages/recovery/**` | recovery, edge | all |
-| `packages/htp/**` | every Node service, edge | all |
-| `apps/mobile/src/**` | edge (web app) | all |
-| `plugins/humid-gate/src/desktop/windows.rs` | none | Windows |
-| `plugins/humid-gate/android/**` | none | Android |
-| docs, tests | none | none |
+HumID 5.0 has one version for the app and one for the server, tagged on main.
+The 4.x per-package changesets were never turned into versions; their notes
+are archived in [docs/CHANGELOG-4.x.md](docs/CHANGELOG-4.x.md).
 
 ## 3. Shipping apps
 
