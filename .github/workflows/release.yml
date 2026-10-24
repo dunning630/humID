@@ -270,8 +270,7 @@ jobs:
              || matrix.platform == 'android' && 'aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android'
              || '' }}
       # No rust-cache here (see setup-node above). Cargo builds exactly what Cargo.lock names.
-      - name: Cargo.lock is complete (cargo --locked)
-        working-directory: apps/mobile/src-tauri
+      - name: Cargo.lock is complete (cargo --locked; one workspace lockfile at the root)
         run: cargo fetch --locked
 
       # ---------------- Linux ----------------
@@ -528,7 +527,7 @@ jobs:
         shell: pwsh
         run: Remove-Item -LiteralPath "$env:RUNNER_TEMP\sign.pfx" -Force -ErrorAction SilentlyContinue
       - name: Cargo.lock unchanged by the build
-        run: git diff --exit-code -- apps/mobile/src-tauri/Cargo.lock
+        run: git diff --exit-code -- Cargo.lock
 
       # ---------------- collect ----------------
       - name: Collect artifacts
@@ -537,7 +536,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p out
-          find apps/mobile/src-tauri/target apps/mobile/src-tauri/gen -type f \
+          find target apps/mobile/src-tauri/gen -type f \
             \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' \
                -o -name '*.dmg' -o -name '*.ipa' \) \
             -not -path '*/deps/*' -exec cp {} out/ \; 2>/dev/null || true
@@ -547,7 +546,7 @@ jobs:
             while read -r f; do cp "$f" out/; done < android-release-files.txt
           fi
           if [ -z "$(ls -A out)" ] && [ "$PLATFORM" = "macos" ]; then
-            ( cd apps/mobile/src-tauri/target && find . -maxdepth 6 \( -name 'HumID.app' -o -name 'HumID Sim.app' \) -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
+            ( cd target && find . -maxdepth 6 \( -name 'HumID.app' -o -name 'HumID Sim.app' \) -type d | head -1 | xargs -I{} zip -qry "$GITHUB_WORKSPACE/out/HumID-macos-unsigned.zip" {} ) || true
           fi
           ls -la out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

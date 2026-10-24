@@ -85,7 +85,7 @@ struct SidAndAttributes {
 }
 
 #[link(name = "winbio")]
-extern "system" {
+unsafe extern "system" {
     fn WinBioOpenSession(
         factor: u32,
         pool: u32,
@@ -110,21 +110,21 @@ extern "system" {
 }
 
 #[link(name = "advapi32")]
-extern "system" {
+unsafe extern "system" {
     fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
     fn GetTokenInformation(token: *mut c_void, class: u32, info: *mut c_void, len: u32, returned: *mut u32) -> i32;
     fn GetLengthSid(sid: *mut c_void) -> u32;
 }
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
     fn LocalFree(mem: *mut c_void) -> *mut c_void;
 }
 
 #[link(name = "crypt32")]
-extern "system" {
+unsafe extern "system" {
     fn CryptProtectData(
         input: *const DataBlob,
         description: *const u16,

@@ -2,11 +2,11 @@
 name = "tauri-plugin-humid-docscan"
 version = "1.0.1"
 description = "HumID document capture on Android: opens the phone's on-device document scanner (Google Play services, ML Kit) for one page and hands back the flattened photo. Holds nothing and reads nothing; the picture never leaves the phone."
-edition = "2021"
-rust-version = "1.77"
+edition.workspace = true
+rust-version.workspace = true
 links = "tauri-plugin-humid-docscan"
-license = "UNLICENSED"
-publish = false
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
 tauri = "2.12"
@@ -15,3 +15,6 @@ serde_json = "1"
 
 [build-dependencies]
 tauri-plugin = { version = "2.7", features = ["build"] }
+
+[lints]
+workspace = true

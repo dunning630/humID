@@ -114,10 +114,10 @@ pub(crate) mod pcsc_reader {
 
     pub fn end(req: EndRequest) -> Result<()> {
         let mut guard = SESSION.lock().unwrap();
-        if guard.as_ref().map(|o| o.id == req.session).unwrap_or(false) {
-            if let Some(open) = guard.take() {
-                let _ = open.card.disconnect(pcsc::Disposition::ResetCard);
-            }
+        if guard.as_ref().is_some_and(|o| o.id == req.session)
+            && let Some(open) = guard.take()
+        {
+            let _ = open.card.disconnect(pcsc::Disposition::ResetCard);
         }
         Ok(())
     }

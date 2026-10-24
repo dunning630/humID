@@ -24,7 +24,7 @@ const SERVICE: &str = "app.humid.gate";
 
 // Not exported by security-framework-sys; declared here from Security.framework.
 #[link(name = "Security", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kSecUseOperationPrompt: CFStringRef;
 }
 

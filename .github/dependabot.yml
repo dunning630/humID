@@ -26,8 +26,10 @@ updates:
       - dependency-name: "*"
         update-types: [version-update:semver-major]
 
+  # One Cargo workspace at the root (Cargo.toml, Cargo.lock): every crate's update lands in
+  # the one lockfile the builds use.
   - package-ecosystem: cargo
-    directories: [/apps/mobile/src-tauri, /plugins/humid-gate, /plugins/humid-nfc, /plugins/humid-docscan]
+    directory: /
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 3
     groups:

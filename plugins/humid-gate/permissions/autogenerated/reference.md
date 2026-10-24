@@ -8,6 +8,7 @@ Lets the HumID UI probe for, enrol and use the device biometric gate.
 - `allow-enroll`
 - `allow-release`
 - `allow-forget`
+- `allow-enabled-accessibility-services`
 
 ## Permission Table
 
@@ -17,6 +18,32 @@ Lets the HumID UI probe for, enrol and use the device biometric gate.
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`humid-gate:allow-enabled-accessibility-services`
+
+</td>
+<td>
+
+Enables the enabled_accessibility_services command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`humid-gate:deny-enabled-accessibility-services`
+
+</td>
+<td>
+
+Denies the enabled_accessibility_services command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>

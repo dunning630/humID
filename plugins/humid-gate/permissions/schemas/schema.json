@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the enabled_accessibility_services command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-enabled-accessibility-services",
+          "markdownDescription": "Enables the enabled_accessibility_services command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the enabled_accessibility_services command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-enabled-accessibility-services",
+          "markdownDescription": "Denies the enabled_accessibility_services command without any pre-configured scope."
+        },
+        {
           "description": "Enables the enroll command without any pre-configured scope.",
           "type": "string",
           "const": "allow-enroll",
@@ -343,10 +355,10 @@
           "markdownDescription": "Denies the release command without any pre-configured scope."
         },
         {
-          "description": "Lets the HumID UI probe for, enrol and use the device biometric gate.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-enroll`\n- `allow-release`\n- `allow-forget`",
+          "description": "Lets the HumID UI probe for, enrol and use the device biometric gate.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-enroll`\n- `allow-release`\n- `allow-forget`\n- `allow-enabled-accessibility-services`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Lets the HumID UI probe for, enrol and use the device biometric gate.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-enroll`\n- `allow-release`\n- `allow-forget`"
+          "markdownDescription": "Lets the HumID UI probe for, enrol and use the device biometric gate.\n#### This default permission set includes:\n\n- `allow-probe`\n- `allow-enroll`\n- `allow-release`\n- `allow-forget`\n- `allow-enabled-accessibility-services`"
         }
       ]
     }

@@ -1,0 +1,45 @@
+# One Cargo workspace for all of HumID's Rust: the app shell, its native plugins, the
+# 5.0 core crates (crates/*) and the 5.0 servers (server/*). One Cargo.lock at the root,
+# one target/ directory, one Dependabot entry.
+#
+# crates/ and server/ each hold a .gitkeep: Cargo treats a glob that matches nothing as a
+# literal path and refuses the workspace, and a hidden file keeps the glob matching while
+# not being a member itself. Every directory under them must be a crate.
+[workspace]
+resolver = "3"
+members = [
+  "apps/mobile/src-tauri",
+  "plugins/*",
+  "crates/*",
+  "server/*",
+]
+
+[workspace.package]
+edition = "2024"
+# Builds use rust-toolchain.toml (1.99.1). rust-version is the floor the workspace is
+# checked against and what the MSRV-aware resolver (resolver 3) picks dependencies for;
+# 1.97 is the newest stable that could be verified when the workspace was set up. Raise it
+# to the toolchain when convenient.
+rust-version = "1.97"
+license = "UNLICENSED"
+publish = false
+
+# Every member opts in with `[lints] workspace = true`. CI runs clippy with -D warnings,
+# so a warning here fails the build there.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# The app's release profile (moved here from apps/mobile/src-tauri: profiles only take
+# effect at the workspace root).
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
