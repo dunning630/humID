@@ -27,17 +27,30 @@ async fn save_bytes(app: AppHandle, request: Request<'_>) -> Result<Option<Strin
         .map(|v| percent_decode_str(v).decode_utf8_lossy().into_owned())
         .unwrap_or_else(|| "humid-export".into());
     // Keep only the file name; never let a stored name pick a directory.
-    let name = name.rsplit(['/', '\\']).next().unwrap_or("humid-export").to_owned();
+    let name = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("humid-export")
+        .to_owned();
 
-    let Some(target) = app.dialog().file().set_file_name(&name).blocking_save_file() else {
+    let Some(target) = app
+        .dialog()
+        .file()
+        .set_file_name(&name)
+        .blocking_save_file()
+    else {
         return Ok(None);
     };
     let shown = target.to_string();
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     // FsExt handles Android content:// URIs and iOS security-scoped paths.
-    let mut file = app.fs().open(target, opts).map_err(|e| format!("could not write {name}: {e}"))?;
-    file.write_all(data).map_err(|e| format!("could not write {name}: {e}"))?;
+    let mut file = app
+        .fs()
+        .open(target, opts)
+        .map_err(|e| format!("could not write {name}: {e}"))?;
+    file.write_all(data)
+        .map_err(|e| format!("could not write {name}: {e}"))?;
     Ok(Some(shown))
 }
 

@@ -16,8 +16,8 @@
 //! Versioned on its own (`humid-nfc@1`).
 
 use tauri::{
-    plugin::{Builder, TauriPlugin},
     Manager, Runtime,
+    plugin::{Builder, TauriPlugin},
 };
 
 mod commands;
