@@ -1,10 +1,10 @@
 [package]
 name = "humid-server"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-publish = false
-license = "UNLICENSED"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 description = "HumID 5.0 server: the front, core, keys and anon units (docs/v5/SERVER.md)."
 
 [features]
@@ -71,16 +71,5 @@ humid-server = { path = ".", features = ["testkit"] }
 # cross-checks: the server parses exactly what the phone's core emits (share requests)
 humid-core = { path = "../../crates/humid-core" }
 
-[lints.rust]
-unsafe_code = "forbid"
-
-# ML-DSA-87 and SLH-DSA-SHA2-256s are slow unoptimised; build dependencies at -O3 even in dev.
-# (When the root workspace lands, these profile tables move to the root Cargo.toml.)
-[profile.dev.package."*"]
-opt-level = 3
-[profile.dev]
-opt-level = 1
-
-# Temporary: builds standalone until the root workspace (members crates/*, server/*) is merged;
-# drop this table then.
-[workspace]
+[lints]
+workspace = true
