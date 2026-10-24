@@ -64,9 +64,10 @@ impl Handshake {
     /// [`crate::cert::Bundle::verified`]). Returns the call to send.
     ///
     /// # Errors
-    /// `bad_cert` for a certificate of another unit; `internal` for a generator failure.
+    /// `bad_cert` for a certificate of another unit or outside its dates (± the clock slack,
+    /// [`crate::cert::CERT_SKEW_MS`]); `internal` for a generator failure.
     pub fn full(unit: Unit, cert: &Cert, now: u64) -> Result<(Self, Vec<u8>)> {
-        if cert.unit != unit {
+        if cert.unit != unit || !cert.valid_at(now) {
             return Err(Code::BadCert);
         }
         let eph = KemSecretKey::generate().map_err(|_| Code::Internal)?;
@@ -207,6 +208,7 @@ impl Handshake {
             rx,
             next_rid: 1,
             reserved: std::collections::BTreeSet::new(),
+            spent_ticket: None,
             ticket: Some(Ticket {
                 unit: self.unit,
                 ticket,
@@ -269,6 +271,13 @@ pub enum Event {
         /// Why.
         code: Code,
     },
+    /// An unauthenticated error frame came back in this call (anyone on the path could have
+    /// sent it). It changes nothing here; the caller may prove the session with an
+    /// authenticated [`Session::pull`] before believing it (review #97 M-5).
+    Unauthenticated {
+        /// What it said.
+        code: Code,
+    },
     /// Part of a response is still missing (the call was cut): [`Session::pull`] it.
     Partial {
         /// Request.
@@ -289,13 +298,17 @@ pub struct Session {
     next_rid: u32,
     reserved: std::collections::BTreeSet<u32>,
     ticket: Option<Ticket>,
+    /// The resumption secret of a ticket already taken (a re-minted ticket reuses it).
+    spent_ticket: Option<Secret32>,
     outgoing: BTreeMap<u32, Outgoing>,
     incoming: BTreeMap<u32, Incoming>,
     min_class: u8,
 }
 
-/// Most bytes one call carries (the client splits bigger bodies over several calls).
-pub const MAX_CALL: usize = 8 << 20;
+/// Most body bytes one call carries (the client splits bigger bodies over several calls);
+/// with the head and small messages this stays within [`frame::MAX_FRAMES_PER_CALL`] frames
+/// and the server's call limit.
+pub const MAX_CALL: usize = 7 << 20;
 
 impl Session {
     /// The session id.
@@ -329,14 +342,20 @@ impl Session {
         self.next_rid
     }
 
-    /// Take the resumption ticket (once): keep it for the next unlock.
+    /// Take the resumption ticket (once): keep it for the next unlock. A newer one may
+    /// arrive later in the session (after a sign-in); take it again then.
     pub fn take_ticket(&mut self) -> Option<Ticket> {
-        self.ticket.take()
+        let t = self.ticket.take();
+        if let Some(t) = &t {
+            self.spent_ticket = Some(t.secret.duplicate());
+        }
+        t
     }
 
-    /// Pad every record to at least this class (cover for small requests).
+    /// Pad every record to at least this class (cover for small requests), at most
+    /// [`frame::COVER_MAX_CLASS`].
     pub fn set_min_class(&mut self, c: u8) {
-        self.min_class = c.min(u8::try_from(frame::CLASSES.len() - 1).unwrap_or(0));
+        self.min_class = c.min(frame::COVER_MAX_CLASS);
     }
 
     fn seal(&mut self, m: &Msg, class: u8) -> Result<Vec<u8>> {
@@ -347,6 +366,35 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn raw(&mut self, m: &Msg) -> Result<Vec<u8>> {
         self.seal(m, 0)
+    }
+
+    /// Seal arbitrary message bytes under this session's keys (fuzzing the server past its
+    /// AEAD: assembly, pulls, answers).
+    ///
+    /// # Errors
+    /// `too_large`.
+    #[cfg(feature = "fuzz-hooks")]
+    pub fn seal_raw(&mut self, msg: &[u8], class: u8) -> Result<Vec<u8>> {
+        frame::seal_record(&mut self.tx, self.unit, self.sid, msg, class)
+    }
+
+    /// A request under an id the caller picks, used or not: what a modified client (or a
+    /// test of the server's request-id rules) sends.
+    ///
+    /// # Errors
+    /// `too_large`.
+    #[doc(hidden)]
+    pub fn request_with_id(
+        &mut self,
+        rid: u32,
+        method: Method,
+        path: &str,
+        enc: Encoding,
+        headers: &[(HeaderName, &[u8])],
+        body: &[u8],
+    ) -> Result<(u32, Vec<u8>)> {
+        self.reserved.insert(rid);
+        self.request_reserved(rid, method, path, enc, headers, body)
     }
 
     /// A request: its head and as many chunks as fit [`MAX_CALL`]. Returns the request id and
@@ -377,6 +425,12 @@ impl Session {
         self.next_rid = rid.checked_add(1).ok_or(Code::Internal)?;
         self.reserved.insert(rid);
         Ok(rid)
+    }
+
+    /// Whether request `rid` was sent and has had no answer (or refusal) yet.
+    #[must_use]
+    pub fn is_outstanding(&self, rid: u32) -> bool {
+        self.outgoing.contains_key(&rid) || self.incoming.contains_key(&rid)
     }
 
     /// Whether `rid` is reserved and not yet sent.
@@ -521,7 +575,11 @@ impl Session {
         }
         match unauth {
             Some(c) if events.is_empty() => Err(c),
-            _ => Ok(events),
+            Some(c) => {
+                events.push(Event::Unauthenticated { code: c });
+                Ok(events)
+            }
+            None => Ok(events),
         }
     }
 
@@ -568,7 +626,23 @@ impl Session {
                 ev.push(Event::Refused { rid, code });
                 Ok(())
             }
-            Msg::Ticket { .. } => Ok(()),
+            Msg::Ticket { expires_at, ticket } => {
+                // a new ticket for the same chain (the server re-mints it after a sign-in so
+                // the next session starts signed in): keep it in place of the old one
+                if let Some(t) = self.ticket.as_mut() {
+                    t.ticket = ticket;
+                    t.expires_at = expires_at;
+                } else if let Some(t) = self.spent_ticket.as_ref() {
+                    self.ticket = Some(Ticket {
+                        unit: self.unit,
+                        ticket,
+                        expires_at,
+                        secret: t.duplicate(),
+                        chain_th: self.chain_th,
+                    });
+                }
+                Ok(())
+            }
             _ => Err(Code::BadFrame),
         }
     }

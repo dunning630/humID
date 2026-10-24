@@ -337,6 +337,7 @@ impl Ticket2 {
 fn large_bodies_travel_in_1_mib_chunks_and_resume_after_a_cut() {
     let mut w = world();
     let mut s = connect(&mut w);
+    let _ = w.server.mark_signed_in(&s.sid(), NOW).unwrap(); // large bodies: a signed-in session
     let body: Vec<u8> = (0..(5 * CHUNK / 2)).map(|i| (i % 251) as u8).collect();
     let (rid, call) = s
         .request(Method::Post, "/v1/objects", Encoding::Raw, &[], &body)
@@ -425,6 +426,7 @@ fn the_server_bounds_what_it_buffers() {
         srv
     };
     let mut s = connect(&mut w);
+    let _ = w.server.mark_signed_in(&s.sid(), NOW).unwrap();
     let big = vec![0u8; CHUNK + 1];
     for _ in 0..2 {
         let (_, call) = s

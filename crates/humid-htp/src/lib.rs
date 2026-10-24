@@ -7,7 +7,7 @@
 //!
 //! | Piece | Module |
 //! | --- | --- |
-//! | Frames: the cleartext 28-byte header front routes on, size classes, padding | [`frame`] |
+//! | Frames: the cleartext 32-byte header front routes on, size classes, padding | [`frame`] |
 //! | Handshake: hybrid KEM to a certified server key + an ephemeral client key; resumption | [`handshake`], [`client`], [`server`] |
 //! | Server KEM certificates and the key bundle the app pins through the identity root | [`cert`] |
 //! | Messages inside records: requests, 1 MiB chunks, responses, pulls, typed errors | [`msg`] |

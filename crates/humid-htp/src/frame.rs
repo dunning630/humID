@@ -29,6 +29,12 @@ pub const CLASSES: [usize; 6] = [
 ];
 /// AEAD tag bytes in a record.
 pub const TAG_LEN: usize = 16;
+/// The highest class cover padding may raise a frame to (16 KiB). Bigger frames are only
+/// ever as big as their content needs: a 1 MiB chunk is a top-class frame because it fills one.
+pub const COVER_MAX_CLASS: u8 = 2;
+/// Most frames one call may carry (an 8 MiB upload batch is 8 top-class frames; the rest is
+/// room for small requests, pulls and acks).
+pub const MAX_FRAMES_PER_CALL: usize = 64;
 
 /// What a frame is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,7 +303,7 @@ pub fn split(mut b: &[u8]) -> Result<Vec<Frame<'_>>> {
             bytes: &b[..n],
         });
         b = &b[n..];
-        if out.len() > 4096 {
+        if out.len() > MAX_FRAMES_PER_CALL {
             return Err(Code::TooLarge);
         }
     }

@@ -2,10 +2,14 @@
 //! one call and gets back frames to answer with plus the requests that are complete; it
 //! dispatches those to its own router and hands each answer back to [`Server::respond`].
 //!
-//! Bounded everywhere: sessions, remembered hello nonces and used tickets, requests being
-//! assembled per session, bytes buffered in all, answers kept for pulls.
+//! Bounded everywhere (review #97): sessions in all and per client network (a hello never
+//! evicts a session that has authenticated a record), remembered hello nonces and used
+//! tickets (expired in time order, never by a full scan), requests dispatched per call,
+//! requests being assembled per session and their bytes (per session, before sign-in, in
+//! all), stalled assemblies, answers kept for pulls, and what one call makes the server
+//! emit. Answers are sealed in the class that fits them; cover padding is capped.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use humid_pq2::encoding::Reader;
 use humid_pq2::{
@@ -23,8 +27,12 @@ use crate::{CHUNK, Code, Result, SID_LEN, TH_LEN, Unit, label, n_chunks, types};
 pub struct Config {
     /// The unit this endpoint is.
     pub unit: Unit,
-    /// Live sessions at most; past that the least recently used goes.
+    /// Live sessions at most. Past that a hello replaces a session that never authenticated
+    /// a record, or is refused `busy`; it never evicts one that did.
     pub max_sessions: usize,
+    /// Live sessions per client network (the embedding unit says which network a call came
+    /// from, [`Server::receive_from`]).
+    pub max_sessions_per_net: usize,
     /// A session ends this long after its last record (ms).
     pub idle_ms: u64,
     /// A chain of sessions (a full handshake and its resumptions) ends this long after the
@@ -36,6 +44,14 @@ pub struct Config {
     pub max_in_flight: usize,
     /// Request bytes buffered across all sessions.
     pub max_buffered: usize,
+    /// Request bytes one signed-in session may have buffered (one largest body).
+    pub max_session_buffered: usize,
+    /// Request bytes a session that hasn't signed in may have buffered.
+    pub max_unauth_buffered: usize,
+    /// Request bytes buffered for all sessions of one client network.
+    pub max_net_buffered: usize,
+    /// An assembly that gets no new chunk for this long is dropped (ms).
+    pub assembly_idle_ms: u64,
     /// Answers a session keeps for pulls.
     pub keep_answers: usize,
     /// How long an answer is kept (ms).
@@ -49,16 +65,49 @@ impl Config {
         Self {
             unit,
             max_sessions: 50_000,
+            max_sessions_per_net: 64,
             idle_ms: 15 * 60_000,
             max_age_ms: 8 * 3_600_000,
             ticket_ms: 8 * 3_600_000,
             max_in_flight: 4,
             max_buffered: 512 << 20,
+            max_session_buffered: usize::try_from(crate::MAX_BODY).unwrap_or(usize::MAX),
+            // anon's sessions never sign in, and a relay deposit is up to 4 MiB of ciphertext
+            max_unauth_buffered: match unit {
+                Unit::Core => 1 << 20,
+                Unit::Anon => 8 << 20,
+            },
+            max_net_buffered: 2 * usize::try_from(crate::MAX_BODY).unwrap_or(usize::MAX),
+            assembly_idle_ms: 2 * 60_000,
             keep_answers: 8,
             answer_ms: 60_000,
         }
     }
 }
+
+/// An assembly must complete within this long of its first chunk (ms), however it trickles.
+pub const MAX_ASSEMBLY_MS: u64 = 10 * 60_000;
+/// Requests one call may complete; the rest are refused `too_many_in_flight`.
+pub const MAX_READY_PER_CALL: usize = 16;
+/// Answer bytes (kept answers re-sent by pulls or repeated heads) one call may draw out;
+/// past it the server answers `in_progress` and the client pulls again in its next call.
+pub const ANSWER_BUDGET: usize = 8 << 20;
+pub use crate::frame::COVER_MAX_CLASS;
+/// Most answer bytes one session keeps for pulls (four full chunks).
+pub const MAX_KEPT_BYTES: usize = 4 << 20;
+/// Most remembered hello nonces and used tickets (each).
+pub const MAX_REMEMBERED: usize = 200_000;
+/// Hello nonces and used tickets remembered per client network at once.
+pub const MAX_REMEMBERED_PER_NET: usize = 4096;
+/// A new session that hasn't sent an authenticated record may be replaced (when the
+/// endpoint is full) only after this long (ms): time enough to send its first request.
+pub const UNPROVEN_GRACE_MS: u64 = 30_000;
+
+/// Decides, from a request's head alone, whether a request may be assembled at all and how
+/// big its body may be: `Ok(max body bytes)`, or the code to refuse it with. The second
+/// argument says whether the session has signed in (the embedding unit says so with
+/// [`Server::mark_signed_in`]). Runs before any of the body is buffered (review #97 M-2).
+pub type Admission = Box<dyn Fn(&RequestHead, bool) -> Result<u64> + Send + Sync>;
 
 /// A complete request, authenticated and assembled, for the unit to act on.
 pub struct Ready {
@@ -67,6 +116,7 @@ pub struct Ready {
     /// The transcript sign-ins and live proofs name (the chain's full handshake).
     pub th: [u8; TH_LEN],
     /// The sequence number a live proof for this request names: `u64(generation) << 32 | rid`.
+    /// The embedding unit hands it to the code that checks the proof.
     pub seq: u64,
     /// The head.
     pub head: RequestHead,
@@ -79,7 +129,7 @@ pub struct Received {
     /// Frames to send back now (handshake reply, ticket, acks, errors). Answers to `ready`
     /// follow them, from [`Server::respond`].
     pub frames: Vec<u8>,
-    /// Requests to dispatch, in order.
+    /// Requests to dispatch, in order (at most [`MAX_READY_PER_CALL`]).
     pub ready: Vec<Ready>,
     /// The session the call was in (zero for a refused hello).
     pub sid: [u8; SID_LEN],
@@ -89,6 +139,8 @@ struct Assembly {
     head: RequestHead,
     chunks: BTreeMap<u32, Vec<u8>>,
     bytes: usize,
+    first: u64,
+    last: u64,
 }
 
 impl Drop for Assembly {
@@ -101,31 +153,58 @@ impl Drop for Assembly {
 }
 
 struct Answer {
+    /// SHA3-512 of the request's head: only the same request gets this answer again.
+    req: [u8; 64],
     head: ResponseHead,
     body: Zeroizing<Vec<u8>>,
     class: u8,
     at: u64,
 }
 
-/// Request ids a session has used: everything at or below `floor`, and `seen` above it.
+/// Request ids a session has used: everything at or below `floor`, and a bitmap of the
+/// [`Rids::WINDOW`] ids above it (2 KiB, allocated on first use). The window moves only when
+/// an id beyond it arrives, so an id reserved before a burst of up to `WINDOW` newer requests
+/// (a long biometric prompt during a background sync) still works (review #97 L-5).
 #[derive(Default)]
 struct Rids {
     floor: u32,
-    seen: BTreeSet<u32>,
+    bits: Vec<u64>,
 }
 
 impl Rids {
-    const KEEP: usize = 1024;
+    const WINDOW: u32 = 16_384;
+
+    fn bit(rid: u32) -> (usize, u64) {
+        let i = (rid % Self::WINDOW) as usize;
+        (i / 64, 1u64 << (i % 64))
+    }
 
     fn take(&mut self, rid: u32) -> bool {
-        if rid == 0 || rid <= self.floor || !self.seen.insert(rid) {
+        if rid == 0 || rid <= self.floor {
             return false;
         }
-        while self.seen.len() > Self::KEEP {
-            if let Some(low) = self.seen.pop_first() {
-                self.floor = low;
-            }
+        if self.bits.is_empty() {
+            self.bits = vec![0; (Self::WINDOW / 64) as usize];
         }
+        let top = self.floor.saturating_add(Self::WINDOW);
+        if rid > top {
+            // slide: everything up to the new floor counts as used, its bits are recycled
+            let new_floor = rid - Self::WINDOW;
+            if new_floor - self.floor >= Self::WINDOW {
+                self.bits.iter_mut().for_each(|w| *w = 0);
+            } else {
+                for r in self.floor + 1..=new_floor {
+                    let (w, m) = Self::bit(r);
+                    self.bits[w] &= !m;
+                }
+            }
+            self.floor = new_floor;
+        }
+        let (w, m) = Self::bit(rid);
+        if self.bits[w] & m != 0 {
+            return false;
+        }
+        self.bits[w] |= m;
         true
     }
 }
@@ -135,12 +214,28 @@ struct Sess {
     generation: u32,
     chain_start: u64,
     last_used: u64,
+    net: String,
+    /// It has authenticated at least one record (it is someone's working session).
+    proven: bool,
+    /// The embedding unit says a sign-in happened in it (or in an earlier session of its
+    /// chain, as the ticket it resumed from says).
+    signed_in: bool,
+    /// The secret the next ticket carries (kept to re-mint the ticket on sign-in).
+    resumption: Secret32,
     tx: humid_pq2::TransitSealer,
     rx: humid_pq2::TransitOpener,
     rids: Rids,
     assembling: BTreeMap<u32, Assembly>,
-    dispatched: BTreeMap<u32, u8>,
+    /// Requests handed to the unit and not yet answered: the class to answer in, and their
+    /// head's hash.
+    dispatched: BTreeMap<u32, (u8, [u8; 64])>,
     answers: BTreeMap<u32, Answer>,
+}
+
+impl Sess {
+    fn buffered(&self) -> usize {
+        self.assembling.values().map(|a| a.bytes).sum()
+    }
 }
 
 /// A KEM key waiting for its certificate signature.
@@ -170,15 +265,76 @@ struct Installed {
     not_after: u64,
 }
 
+/// A table of single-use ids that expire, bounded in all and per network, expired in time
+/// order (entries go in with a constant lifetime, so arrival order is expiry order).
+#[derive(Default)]
+struct Remembered {
+    ids: HashMap<[u8; 32], String>,
+    order: VecDeque<(u64, [u8; 32])>,
+    per_net: HashMap<String, usize>,
+}
+
+impl Remembered {
+    fn expire(&mut self, now: u64) {
+        while let Some((exp, id)) = self.order.front().copied() {
+            if exp > now {
+                break;
+            }
+            self.order.pop_front();
+            if let Some(net) = self.ids.remove(&id)
+                && let Some(n) = self.per_net.get_mut(&net)
+            {
+                *n -= 1;
+                if *n == 0 {
+                    self.per_net.remove(&net);
+                }
+            }
+        }
+    }
+
+    fn insert(&mut self, id: [u8; 32], net: &str, exp: u64, now: u64) -> Result<()> {
+        self.expire(now);
+        if self.ids.contains_key(&id) {
+            return Err(Code::Replay);
+        }
+        if self.ids.len() >= MAX_REMEMBERED
+            || (!net.is_empty()
+                && self
+                    .per_net
+                    .get(net)
+                    .is_some_and(|n| *n >= MAX_REMEMBERED_PER_NET))
+        {
+            return Err(Code::Busy);
+        }
+        self.ids.insert(id, net.to_string());
+        *self.per_net.entry(net.to_string()).or_default() += 1;
+        self.order.push_back((exp, id));
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
 /// One unit's HTP/2 endpoint.
 pub struct Server {
     cfg: Config,
     keys: Vec<Installed>,
     ticket_key: Secret32,
     sessions: HashMap<[u8; SID_LEN], Sess>,
-    hello_nonces: HashMap<[u8; 32], u64>,
-    used_tickets: HashMap<[u8; 32], u64>,
+    per_net: HashMap<String, usize>,
+    /// Session ids by when they were last used (expiry and replacement without full scans).
+    by_use: BTreeSet<(u64, [u8; SID_LEN])>,
+    hello_nonces: Remembered,
+    used_tickets: Remembered,
+    admission: Option<Admission>,
     buffered: usize,
+    /// Request bytes buffered per client network.
+    net_buffered: HashMap<String, usize>,
+    /// Sessions with an assembly in progress (each holds at least one full chunk, so there
+    /// are at most `max_buffered / CHUNK` of them: sweeping them is cheap).
+    assembling: BTreeSet<[u8; SID_LEN]>,
     kept: usize,
 }
 
@@ -188,11 +344,19 @@ fn rand<const N: usize>() -> Result<[u8; N]> {
     Ok(b)
 }
 
-const TICKET_PLAIN: usize = 1 + 4 + 8 + 8 + TH_LEN + 32;
-/// Most answer bytes one session keeps for pulls (four full chunks).
-pub const MAX_KEPT_BYTES: usize = 4 << 20;
-/// Most remembered hello nonces and used tickets (each).
-pub const MAX_REMEMBERED: usize = 200_000;
+const TICKET_PLAIN: usize = 1 + 1 + 4 + 8 + 8 + TH_LEN + 32;
+/// The network a call is from when the embedding unit doesn't say.
+const NO_NET: &str = "";
+
+fn head_hash(h: &RequestHead) -> [u8; 64] {
+    sha3_512(&Msg::Request(h.clone(), vec![]).encode())
+}
+
+/// The class a message is sealed in: the smallest that fits it, raised to the request's
+/// cover class, which is capped at [`COVER_MAX_CLASS`].
+fn cover(class: u8) -> u8 {
+    class.min(COVER_MAX_CLASS)
+}
 
 impl Server {
     /// An endpoint with no KEM key yet (install one with [`Server::prepare_key`] and
@@ -206,9 +370,14 @@ impl Server {
             keys: vec![],
             ticket_key: Secret32::random().map_err(|_| Code::Internal)?,
             sessions: HashMap::new(),
-            hello_nonces: HashMap::new(),
-            used_tickets: HashMap::new(),
+            per_net: HashMap::new(),
+            by_use: BTreeSet::new(),
+            hello_nonces: Remembered::default(),
+            used_tickets: Remembered::default(),
+            admission: None,
             buffered: 0,
+            net_buffered: HashMap::new(),
+            assembling: BTreeSet::new(),
             kept: 0,
         })
     }
@@ -217,6 +386,50 @@ impl Server {
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// Set the head-time admission check (the unit's route allow-list and body limits).
+    /// Without one, every head is admitted up to [`crate::MAX_BODY`].
+    pub fn set_admission(&mut self, a: Admission) {
+        self.admission = Some(a);
+    }
+
+    /// The unit saw a sign-in (or a request its session token authorised) in session `sid`:
+    /// its requests may now carry large bodies. The first time, this returns a record with a
+    /// new resumption ticket that says so, for the client to keep instead of the one it has,
+    /// so the next session of the chain starts signed in too (empty otherwise).
+    ///
+    /// # Errors
+    /// `session_unknown`.
+    pub fn mark_signed_in(&mut self, sid: &[u8; SID_LEN], now: u64) -> Result<Vec<u8>> {
+        let s = self.sessions.get(sid).ok_or(Code::SessionUnknown)?;
+        if s.signed_in {
+            return Ok(vec![]);
+        }
+        let expires = (s.chain_start + self.cfg.max_age_ms).min(now + self.cfg.ticket_ms);
+        let next = s.generation.checked_add(1).ok_or(Code::TicketUnknown)?;
+        let ticket = self.seal_ticket(
+            &s.chain_th,
+            s.chain_start,
+            next,
+            true,
+            &s.resumption,
+            expires,
+        )?;
+        let unit = self.cfg.unit;
+        let s = self.sessions.get_mut(sid).ok_or(Code::SessionUnknown)?;
+        s.signed_in = true;
+        frame::seal_record(
+            &mut s.tx,
+            unit,
+            *sid,
+            &Msg::Ticket {
+                expires_at: expires,
+                ticket,
+            }
+            .encode(),
+            0,
+        )
     }
 
     /// A fresh KEM key valid `[not_before, not_after]`, to be certified.
@@ -270,6 +483,12 @@ impl Server {
         self.sessions.len()
     }
 
+    /// Remembered hello nonces (tests, metrics).
+    #[must_use]
+    pub fn remembered_hellos(&self) -> usize {
+        self.hello_nonces.len()
+    }
+
     /// Bytes buffered for requests being assembled.
     #[must_use]
     pub fn buffered(&self) -> usize {
@@ -279,14 +498,32 @@ impl Server {
     /// End a session at once (its keys are wiped).
     pub fn close(&mut self, sid: &[u8; SID_LEN]) {
         if let Some(s) = self.sessions.remove(sid) {
-            self.release(&s);
+            self.unbuffer(&s.net, s.buffered());
+            self.assembling.remove(sid);
+            self.kept = self.kept.saturating_sub(kept_bytes(&s));
+            self.by_use.remove(&(s.last_used, *sid));
+            if let Some(n) = self.per_net.get_mut(&s.net) {
+                *n -= 1;
+                if *n == 0 {
+                    self.per_net.remove(&s.net);
+                }
+            }
         }
     }
 
-    fn release(&mut self, s: &Sess) {
-        let b: usize = s.assembling.values().map(|a| a.bytes).sum();
-        self.buffered = self.buffered.saturating_sub(b);
-        self.kept = self.kept.saturating_sub(kept_bytes(s));
+    fn unbuffer(&mut self, net: &str, n: usize) {
+        self.buffered = self.buffered.saturating_sub(n);
+        if let Some(b) = self.net_buffered.get_mut(net) {
+            *b = b.saturating_sub(n);
+            if *b == 0 {
+                self.net_buffered.remove(net);
+            }
+        }
+    }
+
+    fn rebuffer(&mut self, net: &str, n: usize) {
+        self.buffered += n;
+        *self.net_buffered.entry(net.to_string()).or_default() += n;
     }
 
     /// Answer bytes kept for pulls, across all sessions.
@@ -295,25 +532,44 @@ impl Server {
         self.kept
     }
 
-    /// Drop expired sessions, hello nonces and used tickets.
-    pub fn tick(&mut self, now: u64) {
-        let (idle, age) = (self.cfg.idle_ms, self.cfg.max_age_ms);
-        let dead: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| now > s.last_used + idle || now > s.chain_start + age)
-            .map(|(k, _)| *k)
-            .collect();
-        for k in dead {
-            self.close(&k);
+    fn touch(&mut self, sid: &[u8; SID_LEN], now: u64) {
+        if let Some(s) = self.sessions.get_mut(sid)
+            && s.last_used != now
+        {
+            self.by_use.remove(&(s.last_used, *sid));
+            s.last_used = now;
+            self.by_use.insert((now, *sid));
         }
-        self.hello_nonces.retain(|_, exp| *exp > now);
-        self.used_tickets.retain(|_, exp| *exp > now);
     }
 
-    /// Take the bytes of one call.
+    /// Drop idle sessions (oldest first, stopping at the first live one), sessions past their
+    /// chain's age as they are met, and expired nonces and tickets.
+    pub fn tick(&mut self, now: u64) {
+        let idle = self.cfg.idle_ms;
+        while let Some(&(used, sid)) = self.by_use.first() {
+            if now <= used.saturating_add(idle) {
+                break;
+            }
+            self.close(&sid);
+        }
+        let busy: Vec<[u8; SID_LEN]> = self.assembling.iter().copied().collect();
+        for sid in busy {
+            self.drop_stalled(&sid, now);
+        }
+        self.hello_nonces.expire(now);
+        self.used_tickets.expire(now);
+    }
+
+    /// Take the bytes of one call, from an unknown network.
     #[must_use]
     pub fn receive(&mut self, call: &[u8], now: u64) -> Received {
+        self.receive_from(call, NO_NET, now)
+    }
+
+    /// Take the bytes of one call that came from client network `net` (front's report; used
+    /// only for per-network caps on sessions and remembered hellos).
+    #[must_use]
+    pub fn receive_from(&mut self, call: &[u8], net: &str, now: u64) -> Received {
         let unit = self.cfg.unit;
         let refuse = |sid: [u8; SID_LEN], c: Code| Received {
             frames: frame::error(unit, sid, c),
@@ -331,7 +587,7 @@ impl Server {
         match first.header.kind {
             Kind::Hello | Kind::Resume if frames.len() == 1 => {
                 self.tick(now);
-                match self.handshake(&first, now) {
+                match self.handshake(&first, net, now) {
                     Ok((sid, out)) => Received {
                         frames: out,
                         ready: vec![],
@@ -351,20 +607,47 @@ impl Server {
         }
     }
 
-    fn remember(map: &mut HashMap<[u8; 32], u64>, k: [u8; 32], exp: u64) -> Result<()> {
-        if map.contains_key(&k) {
-            return Err(Code::Replay);
-        }
-        if map.len() >= MAX_REMEMBERED {
+    /// Room for one more session from `net`: refuse past the network's cap; past the global
+    /// cap, replace the least recently used session that never authenticated a record and
+    /// has had [`UNPROVEN_GRACE_MS`] to do so (a hello that went nowhere), or refuse `busy`.
+    /// A session in use, or one just made, is never evicted (review #97 M-3).
+    fn admit_session(&mut self, net: &str, now: u64) -> Result<()> {
+        if !net.is_empty()
+            && self
+                .per_net
+                .get(net)
+                .is_some_and(|n| *n >= self.cfg.max_sessions_per_net)
+        {
             return Err(Code::Busy);
         }
-        map.insert(k, exp);
-        Ok(())
+        if self.sessions.len() < self.cfg.max_sessions {
+            return Ok(());
+        }
+        let idle = self
+            .by_use
+            .iter()
+            .take_while(|(used, _)| now > used.saturating_add(UNPROVEN_GRACE_MS))
+            .take(1024)
+            .find(|(_, sid)| self.sessions.get(sid).is_some_and(|s| !s.proven))
+            .map(|(_, sid)| *sid);
+        match idle {
+            Some(sid) => {
+                self.close(&sid);
+                Ok(())
+            }
+            None => Err(Code::Busy),
+        }
     }
 
-    fn handshake(&mut self, f: &Frame<'_>, now: u64) -> Result<([u8; SID_LEN], Vec<u8>)> {
+    fn handshake(
+        &mut self,
+        f: &Frame<'_>,
+        net: &str,
+        now: u64,
+    ) -> Result<([u8; SID_LEN], Vec<u8>)> {
         let unit = self.cfg.unit;
         let body = f.clear_body()?;
+        self.admit_session(net, now)?;
         let sid = rand::<SID_LEN>()?;
         let nonce_s = rand::<32>()?;
         let (keys, reply, chain) = match f.header.kind {
@@ -381,10 +664,11 @@ impl Server {
                 }
                 let ct_s = handshake::kem_ct(&h.ct_s)?;
                 let ek_c = handshake::kem_pk(&h.ek_c)?;
-                Self::remember(
-                    &mut self.hello_nonces,
+                self.hello_nonces.insert(
                     h.nonce_c,
+                    net,
                     now + 2 * u64::try_from(HELLO_SKEW_MS).unwrap_or(0),
+                    now,
                 )?;
                 let ss_s = k
                     .key
@@ -409,13 +693,14 @@ impl Server {
                     Role::Responder,
                 )?;
                 reply.confirm = keys.confirm;
-                (keys, reply, (th, now, 0))
+                (keys, reply, (th, now, 0, false))
             }
             Kind::Resume => {
                 let r = Resume::decode(body)?;
                 check_time(r.time_c, now)?;
-                let (chain_th, chain_start, generation, res) = self.open_ticket(&r.ticket, now)?;
                 let ek_c = handshake::kem_pk(&r.ek_c)?;
+                let (chain_th, chain_start, generation, signed_in, res) =
+                    self.open_ticket(&r.ticket, net, now)?;
                 let (ct_c, ss_e) = ek_c.encapsulate().map_err(|_| Code::HandshakeFailed)?;
                 let mut reply = Reply {
                     mode: 1,
@@ -435,7 +720,7 @@ impl Server {
                     Role::Responder,
                 )?;
                 reply.confirm = keys.confirm;
-                (keys, reply, (chain_th, chain_start, generation))
+                (keys, reply, (chain_th, chain_start, generation, signed_in))
             }
             _ => return Err(Code::BadFrame),
         };
@@ -445,7 +730,7 @@ impl Server {
             resumption,
             ..
         } = keys;
-        let (chain_th, chain_start, generation) = chain;
+        let (chain_th, chain_start, generation, signed_in) = chain;
         let next_generation = generation.checked_add(1).ok_or(Code::TicketUnknown)?;
         let mut out = frame::clear(Kind::Reply, unit, sid, &reply.encode(), 0)?;
         let expires = (chain_start + self.cfg.max_age_ms).min(now + self.cfg.ticket_ms);
@@ -453,6 +738,7 @@ impl Server {
             &chain_th,
             chain_start,
             next_generation,
+            signed_in,
             &resumption,
             expires,
         )?;
@@ -467,15 +753,8 @@ impl Server {
             .encode(),
             0,
         )?);
-        if self.sessions.len() >= self.cfg.max_sessions
-            && let Some(lru) = self
-                .sessions
-                .iter()
-                .min_by_key(|(_, s)| s.last_used)
-                .map(|(k, _)| *k)
-        {
-            self.close(&lru);
-        }
+        *self.per_net.entry(net.to_string()).or_default() += 1;
+        self.by_use.insert((now, sid));
         self.sessions.insert(
             sid,
             Sess {
@@ -483,6 +762,10 @@ impl Server {
                 generation,
                 chain_start,
                 last_used: now,
+                net: net.to_string(),
+                proven: false,
+                signed_in,
+                resumption,
                 tx,
                 rx,
                 rids: Rids::default(),
@@ -503,11 +786,13 @@ impl Server {
         chain_th: &[u8; TH_LEN],
         chain_start: u64,
         generation: u32,
+        signed_in: bool,
         res: &Secret32,
         expires: u64,
     ) -> Result<Vec<u8>> {
         let mut pt = Zeroizing::new(Vec::with_capacity(TICKET_PLAIN));
         pt.push(self.cfg.unit.to_u8());
+        pt.push(u8::from(signed_in));
         pt.extend_from_slice(&generation.to_be_bytes());
         pt.extend_from_slice(&chain_start.to_be_bytes());
         pt.extend_from_slice(&expires.to_be_bytes());
@@ -522,7 +807,12 @@ impl Server {
         .map_err(|_| Code::Internal)
     }
 
-    fn open_ticket(&mut self, t: &[u8], now: u64) -> Result<([u8; TH_LEN], u64, u32, Secret32)> {
+    fn open_ticket(
+        &mut self,
+        t: &[u8],
+        net: &str,
+        now: u64,
+    ) -> Result<([u8; TH_LEN], u64, u32, bool, Secret32)> {
         let pt = open_at_rest(
             &self.ticket_key,
             ObjectType(types::TICKET.0),
@@ -533,6 +823,7 @@ impl Server {
         let mut r = Reader::new(&pt);
         let bad = |_| Code::TicketUnknown;
         let unit = r.array::<1>().map_err(bad)?[0];
+        let flags = r.array::<1>().map_err(bad)?[0];
         let generation = r.u32().map_err(bad)?;
         let start = r.u64().map_err(bad)?;
         let expires = r.u64().map_err(bad)?;
@@ -540,19 +831,27 @@ impl Server {
         let res =
             Secret32::from_slice(r.take(32).map_err(bad)?).map_err(|_| Code::TicketUnknown)?;
         r.finish().map_err(bad)?;
-        if unit != self.cfg.unit.to_u8() || now > expires || now > start + self.cfg.max_age_ms {
+        if unit != self.cfg.unit.to_u8()
+            || flags > 1
+            || now > expires
+            || now > start + self.cfg.max_age_ms
+        {
             return Err(Code::TicketUnknown);
         }
         let mut id = [0u8; 32];
         id.copy_from_slice(&sha3_512(t)[..32]);
-        Self::remember(&mut self.used_tickets, id, expires + 1).map_err(|c| {
+        // tickets live at most ticket_ms: remember a used one that long, in arrival order
+        let keep = now
+            .saturating_add(self.cfg.ticket_ms.min(self.cfg.max_age_ms))
+            .saturating_add(1);
+        self.used_tickets.insert(id, net, keep, now).map_err(|c| {
             if c == Code::Replay {
                 Code::TicketUnknown
             } else {
                 c
             }
         })?;
-        Ok((th, start, generation, res))
+        Ok((th, start, generation, flags == 1, res))
     }
 
     fn records(&mut self, frames: &[Frame<'_>], now: u64) -> Received {
@@ -577,7 +876,7 @@ impl Server {
             for f in frames {
                 match frame::open_record(&mut s.rx, f) {
                     Ok(m) => {
-                        s.last_used = now;
+                        s.proven = true;
                         msgs.push((f.header.class, m));
                     }
                     Err(c) => {
@@ -586,36 +885,45 @@ impl Server {
                 }
             }
         }
+        if !msgs.is_empty() {
+            self.touch(&sid, now);
+        }
+        self.drop_stalled(&sid, now);
         if let Some(c) = first_err {
             // unauthenticated: a forged or replayed record says nothing about the session
             out.extend_from_slice(&frame::error(unit, sid, c));
         }
-        let mut touched = BTreeSet::new();
+        let mut call = CallState::default();
         for (class, m) in msgs {
             let reply = match Msg::decode(&m, Dir::Up) {
-                Ok(msg) => self.on_msg(&sid, class, msg, &mut ready, &mut touched, now),
-                Err(c) => vec![(Msg::Error { rid: 0, code: c }, 0)],
+                Ok(msg) => self.on_msg(&sid, class, msg, &mut ready, &mut call, now),
+                Err(c) => vec![(Msg::Error { rid: 0, code: c }, cover(class))],
             };
             for (r, c) in reply {
-                if let Ok(b) = self.seal(&sid, &r.encode(), class_of(&r, c)) {
+                if let Ok(b) = self.seal(&sid, &r.encode(), c) {
                     out.extend_from_slice(&b);
                 }
             }
         }
         // acknowledge every request still being assembled that this call added to
-        let acks: Vec<Msg> = self.sessions.get(&sid).map_or(vec![], |s| {
-            touched
+        let acks: Vec<(Msg, u8)> = self.sessions.get(&sid).map_or(vec![], |s| {
+            call.touched
                 .iter()
-                .filter_map(|rid| {
-                    s.assembling.get(rid).map(|a| Msg::Ack {
-                        rid: *rid,
-                        next: first_missing(a),
+                .filter_map(|(rid, class)| {
+                    s.assembling.get(rid).map(|a| {
+                        (
+                            Msg::Ack {
+                                rid: *rid,
+                                next: first_missing(a),
+                            },
+                            *class,
+                        )
                     })
                 })
                 .collect()
         });
-        for a in acks {
-            if let Ok(b) = self.seal(&sid, &a.encode(), 0) {
+        for (a, c) in acks {
+            if let Ok(b) = self.seal(&sid, &a.encode(), c) {
                 out.extend_from_slice(&b);
             }
         }
@@ -626,10 +934,89 @@ impl Server {
         }
     }
 
+    /// Drop assemblies of `sid` that got no chunk for `assembly_idle_ms`, or that began more
+    /// than [`MAX_ASSEMBLY_MS`] ago.
+    fn drop_stalled(&mut self, sid: &[u8; SID_LEN], now: u64) {
+        let idle = self.cfg.assembly_idle_ms;
+        let mut freed = 0;
+        let mut net = String::new();
+        let mut empty = true;
+        if let Some(s) = self.sessions.get_mut(sid) {
+            let stale: Vec<u32> = s
+                .assembling
+                .iter()
+                .filter(|(_, a)| {
+                    now > a.last.saturating_add(idle)
+                        || now > a.first.saturating_add(MAX_ASSEMBLY_MS)
+                })
+                .map(|(r, _)| *r)
+                .collect();
+            for r in stale {
+                if let Some(a) = s.assembling.remove(&r) {
+                    freed += a.bytes;
+                    s.dispatched.remove(&r);
+                }
+            }
+            net.clone_from(&s.net);
+            empty = s.assembling.is_empty();
+        }
+        self.unbuffer(&net, freed);
+        if empty {
+            self.assembling.remove(sid);
+        }
+    }
+
     fn seal(&mut self, sid: &[u8; SID_LEN], msg: &[u8], class: u8) -> Result<Vec<u8>> {
         let unit = self.cfg.unit;
         let s = self.sessions.get_mut(sid).ok_or(Code::SessionUnknown)?;
         frame::seal_record(&mut s.tx, unit, *sid, msg, class)
+    }
+
+    /// May `extra` more bytes be buffered for session `s` (signed in or not)?
+    fn room(&self, s: &Sess, extra: usize) -> bool {
+        let cap = if s.signed_in {
+            self.cfg.max_session_buffered
+        } else {
+            self.cfg.max_unauth_buffered
+        };
+        let net = self.net_buffered.get(&s.net).copied().unwrap_or(0);
+        self.buffered + extra <= self.cfg.max_buffered
+            && s.buffered() + extra <= cap
+            && (s.net.is_empty() || net + extra <= self.cfg.max_net_buffered)
+    }
+
+    /// A kept answer, re-sent at most once per call and within the call's budget.
+    fn replay_answer(
+        call: &mut CallState,
+        s: &Sess,
+        rid: u32,
+        from: u32,
+    ) -> Option<Vec<(Msg, u8)>> {
+        let a = s.answers.get(&rid)?;
+        if !call.replayed.insert(rid) {
+            return Some(vec![]); // pulled twice in one call: once is enough
+        }
+        let size = a
+            .body
+            .len()
+            .saturating_sub(from as usize * CHUNK)
+            .max(frame::CLASSES[usize::from(a.class)]);
+        if call.budget < size {
+            return Some(vec![(
+                Msg::Error {
+                    rid,
+                    code: Code::InProgress,
+                },
+                cover(a.class),
+            )]);
+        }
+        call.budget -= size;
+        Some(
+            answer_msgs(&a.head, &a.body, from)
+                .into_iter()
+                .map(|m| (m, a.class))
+                .collect(),
+        )
     }
 
     fn on_msg(
@@ -638,99 +1025,145 @@ impl Server {
         class: u8,
         m: Msg,
         ready: &mut Vec<Ready>,
-        touched: &mut BTreeSet<u32>,
+        call: &mut CallState,
         now: u64,
     ) -> Vec<(Msg, u8)> {
         let max_in_flight = self.cfg.max_in_flight;
         let answer_ms = self.cfg.answer_ms;
-        let max_buffered = self.cfg.max_buffered;
-        let Some(s) = self.sessions.get_mut(sid) else {
+        let cls = cover(class);
+        let err = |rid, code| vec![(Msg::Error { rid, code }, cls)];
+        if !self.sessions.contains_key(sid) {
             return vec![];
-        };
-        let err = |rid, code| vec![(Msg::Error { rid, code }, 0)];
+        }
+        self.expire_answers(sid, now, answer_ms);
         match m {
             Msg::Request(head, c0) => {
                 let rid = head.rid;
+                let hh = head_hash(&head);
+                let Some(s) = self.sessions.get(sid) else {
+                    return vec![];
+                };
                 // a head sent again after a cut call: the first copy stands, nothing runs twice
                 if let Some(a) = s.assembling.get(&rid) {
                     if a.head == head {
-                        touched.insert(rid);
+                        call.touched.insert(rid, cls);
                         return vec![];
                     }
                     return err(rid, Code::RidReused);
                 }
-                let before = kept_bytes(s);
-                s.answers.retain(|_, a| now <= a.at + answer_ms);
-                self.kept = self.kept.saturating_sub(before - kept_bytes(s));
                 if let Some(a) = s.answers.get(&rid) {
-                    let c = a.class;
-                    return answer_msgs(&a.head, &a.body, 0)
-                        .into_iter()
-                        .map(|m| (m, c))
-                        .collect();
+                    if !humid_pq2::ct_eq(&a.req, &hh) {
+                        return err(rid, Code::RidReused);
+                    }
+                    return Self::replay_answer(call, s, rid, 0).unwrap_or_default();
                 }
-                if s.dispatched.contains_key(&rid) {
+                if let Some((_, h)) = s.dispatched.get(&rid) {
+                    if !humid_pq2::ct_eq(h, &hh) {
+                        return err(rid, Code::RidReused);
+                    }
                     return err(rid, Code::InProgress);
                 }
-                if !s.rids.take(rid) {
+                let signed_in = s.signed_in;
+                let Some(sm) = self.sessions.get_mut(sid) else {
+                    return vec![];
+                };
+                if !sm.rids.take(rid) {
                     return err(rid, Code::RidReused);
+                }
+                let Some(s) = self.sessions.get(sid) else {
+                    return vec![];
+                };
+                if ready.len() >= MAX_READY_PER_CALL {
+                    return err(rid, Code::TooManyInFlight);
+                }
+                let limit = match &self.admission {
+                    Some(a) => match a(&head, signed_in) {
+                        Ok(l) => l,
+                        Err(c) => return err(rid, c),
+                    },
+                    None => crate::MAX_BODY,
+                };
+                if head.body_len > limit {
+                    return err(rid, Code::TooLarge);
                 }
                 if s.assembling.len() >= max_in_flight {
                     return err(rid, Code::TooManyInFlight);
                 }
-                if self.buffered + c0.len() > max_buffered {
+                if !self.room(s, c0.len()) {
                     return err(rid, Code::Busy);
                 }
-                self.buffered += c0.len();
+                let net = s.net.clone();
+                self.rebuffer(&net, c0.len());
+                let Some(s) = self.sessions.get_mut(sid) else {
+                    return vec![];
+                };
                 let mut a = Assembly {
                     bytes: c0.len(),
                     head,
                     chunks: BTreeMap::new(),
+                    first: now,
+                    last: now,
                 };
                 a.chunks.insert(0, c0);
                 s.assembling.insert(rid, a);
-                s.dispatched.insert(rid, class);
-                touched.insert(rid);
-                Self::complete(s, rid, &mut self.buffered, ready, sid)
+                s.dispatched.insert(rid, (cls, hh));
+                call.touched.insert(rid, cls);
+                self.assembling.insert(*sid);
+                self.finish_assembly(sid, rid, ready)
             }
             Msg::Body { rid, index, data } => {
-                let Some(a) = s.assembling.get_mut(&rid) else {
+                let Some(s) = self.sessions.get(sid) else {
+                    return vec![];
+                };
+                let Some(a) = s.assembling.get(&rid) else {
                     return err(rid, Code::RidUnknown);
                 };
                 if !chunk_fits(a.head.body_len, index, &data) {
                     return err(rid, Code::BadFrame);
                 }
-                touched.insert(rid);
+                let acls = s.dispatched.get(&rid).map_or(cls, |d| d.0);
+                call.touched.insert(rid, acls);
                 if a.chunks.contains_key(&index) {
                     return vec![]; // a resent chunk: the first copy stands
                 }
-                if self.buffered + data.len() > max_buffered {
-                    return err(rid, Code::Busy);
+                if !self.room(s, data.len()) {
+                    return vec![(
+                        Msg::Error {
+                            rid,
+                            code: Code::Busy,
+                        },
+                        acls,
+                    )];
                 }
-                self.buffered += data.len();
+                let net = s.net.clone();
+                self.rebuffer(&net, data.len());
+                let Some(s) = self.sessions.get_mut(sid) else {
+                    return vec![];
+                };
+                let Some(a) = s.assembling.get_mut(&rid) else {
+                    return vec![];
+                };
                 a.bytes += data.len();
+                a.last = now;
                 a.chunks.insert(index, data);
-                Self::complete(s, rid, &mut self.buffered, ready, sid)
+                self.finish_assembly(sid, rid, ready)
             }
             Msg::Pull { rid, from } => {
+                let Some(s) = self.sessions.get(sid) else {
+                    return vec![];
+                };
                 if let Some(a) = s.assembling.get(&rid) {
+                    let acls = s.dispatched.get(&rid).map_or(cls, |d| d.0);
                     return vec![(
                         Msg::Ack {
                             rid,
                             next: first_missing(a),
                         },
-                        0,
+                        acls,
                     )];
                 }
-                let before = kept_bytes(s);
-                s.answers.retain(|_, a| now <= a.at + answer_ms);
-                self.kept = self.kept.saturating_sub(before - kept_bytes(s));
-                if let Some(a) = s.answers.get(&rid) {
-                    let c = a.class;
-                    return answer_msgs(&a.head, &a.body, from)
-                        .into_iter()
-                        .map(|m| (m, c))
-                        .collect();
+                if let Some(r) = Self::replay_answer(call, s, rid, from) {
+                    return r;
                 }
                 if s.dispatched.contains_key(&rid) {
                     return err(rid, Code::InProgress);
@@ -741,24 +1174,52 @@ impl Server {
         }
     }
 
+    fn expire_answers(&mut self, sid: &[u8; SID_LEN], now: u64, answer_ms: u64) {
+        if let Some(s) = self.sessions.get_mut(sid) {
+            let before = kept_bytes(s);
+            s.answers
+                .retain(|_, a| now <= a.at.saturating_add(answer_ms));
+            self.kept = self.kept.saturating_sub(before - kept_bytes(s));
+        }
+    }
+
+    /// If request `rid` of `sid` has all its chunks: release its bytes and hand it on.
+    fn finish_assembly(
+        &mut self,
+        sid: &[u8; SID_LEN],
+        rid: u32,
+        ready: &mut Vec<Ready>,
+    ) -> Vec<(Msg, u8)> {
+        let Some(s) = self.sessions.get_mut(sid) else {
+            return vec![];
+        };
+        let (out, freed) = Self::complete(s, rid, ready, sid);
+        let net = s.net.clone();
+        let empty = s.assembling.is_empty();
+        self.unbuffer(&net, freed);
+        if empty {
+            self.assembling.remove(sid);
+        }
+        out
+    }
+
     fn complete(
         s: &mut Sess,
         rid: u32,
-        buffered: &mut usize,
         ready: &mut Vec<Ready>,
         sid: &[u8; SID_LEN],
-    ) -> Vec<(Msg, u8)> {
+    ) -> (Vec<(Msg, u8)>, usize) {
         let done = s
             .assembling
             .get(&rid)
             .is_some_and(|a| a.chunks.len() == n_chunks(a.head.body_len) as usize);
         if !done {
-            return vec![];
+            return (vec![], 0);
         }
         let Some(mut a) = s.assembling.remove(&rid) else {
-            return vec![];
+            return (vec![], 0);
         };
-        *buffered = buffered.saturating_sub(a.bytes);
+        let freed = a.bytes;
         let mut body = Zeroizing::new(Vec::with_capacity(a.bytes));
         for c in a.chunks.values() {
             body.extend_from_slice(c);
@@ -775,20 +1236,24 @@ impl Server {
                 body_hash: [0; 64],
             },
         );
+        let cls = s.dispatched.get(&rid).map_or(0, |d| d.0);
         let seq = (u64::from(s.generation) << 32) | u64::from(rid);
         if !humid_pq2::ct_eq(&sha3_512(&body), &head.body_hash) {
             s.dispatched.remove(&rid);
-            return vec![(
-                Msg::Error {
-                    rid,
-                    code: Code::BodyMismatch,
-                },
-                0,
-            )];
+            return (
+                vec![(
+                    Msg::Error {
+                        rid,
+                        code: Code::BodyMismatch,
+                    },
+                    cls,
+                )],
+                freed,
+            );
         }
         if let Err(code) = check_proof(&head, &body, &s.chain_th, seq) {
             s.dispatched.remove(&rid);
-            return vec![(Msg::Error { rid, code }, 0)];
+            return (vec![(Msg::Error { rid, code }, cls)], freed);
         }
         ready.push(Ready {
             sid: *sid,
@@ -797,11 +1262,12 @@ impl Server {
             head,
             body,
         });
-        vec![]
+        (vec![], freed)
     }
 
-    /// The unit's answer to request `rid`: response frames (head and chunks), padded to at
-    /// least the class the request came in. The answer is kept for pulls.
+    /// The unit's answer to request `rid`: response frames (head and chunks), each in the
+    /// class that fits it, raised to the request's cover class (capped at
+    /// [`COVER_MAX_CLASS`]). The answer is kept for pulls.
     ///
     /// # Errors
     /// `session_unknown` if the session ended meanwhile; `too_large` over the response cap.
@@ -822,7 +1288,7 @@ impl Server {
         let total = self.kept;
         let s = self.sessions.get_mut(sid).ok_or(Code::SessionUnknown)?;
         let before = kept_bytes(s);
-        let class = s.dispatched.remove(&rid).unwrap_or(0);
+        let (class, req) = s.dispatched.remove(&rid).unwrap_or((0, [0; 64]));
         let head = ResponseHead {
             rid,
             status,
@@ -838,6 +1304,7 @@ impl Server {
             s.answers.insert(
                 rid,
                 Answer {
+                    req,
                     head,
                     body: Zeroizing::new(body.to_vec()),
                     class,
@@ -853,7 +1320,7 @@ impl Server {
         let mut out = vec![];
         let mut sealed = Ok(());
         for m in msgs {
-            match frame::seal_record(&mut s.tx, unit, *sid, &m.encode(), class_of(&m, class)) {
+            match frame::seal_record(&mut s.tx, unit, *sid, &m.encode(), class) {
                 Ok(b) => out.extend_from_slice(&b),
                 Err(c) => {
                     sealed = Err(c);
@@ -865,14 +1332,15 @@ impl Server {
         sealed.map(|()| out)
     }
 
-    /// Refuse request `rid` with an authenticated error (the unit was unreachable, say).
+    /// Refuse request `rid` with an authenticated error (the unit was unreachable, say), in
+    /// the request's class.
     ///
     /// # Errors
     /// `session_unknown`.
     pub fn refuse(&mut self, sid: &[u8; SID_LEN], rid: u32, code: Code) -> Result<Vec<u8>> {
         let unit = self.cfg.unit;
         let s = self.sessions.get_mut(sid).ok_or(Code::SessionUnknown)?;
-        let class = s.dispatched.remove(&rid).unwrap_or(0);
+        let class = s.dispatched.remove(&rid).map_or(0, |d| d.0);
         frame::seal_record(
             &mut s.tx,
             unit,
@@ -880,6 +1348,16 @@ impl Server {
             &Msg::Error { rid, code }.encode(),
             class,
         )
+    }
+
+    /// Seal arbitrary message bytes as a record of session `sid` (fuzzing the client's
+    /// handling of what a genuine server could send).
+    ///
+    /// # Errors
+    /// `session_unknown`, `too_large`.
+    #[cfg(feature = "fuzz-hooks")]
+    pub fn seal_raw(&mut self, sid: &[u8; SID_LEN], msg: &[u8]) -> Result<Vec<u8>> {
+        self.seal(sid, msg, 0)
     }
 
     /// Whether `sid` names a live session (for tests and metrics).
@@ -896,9 +1374,30 @@ impl Server {
     }
 }
 
-/// A typed body must parse; a proof made in this session must name this request's `seq`
-/// (method, path, freshness, nonce and signatures are the unit's to check, and a proof made
-/// in another session is the unit's to refuse with its own code).
+/// What one call has used so far.
+struct CallState {
+    /// Requests the call added to that are still being assembled, with their class.
+    touched: BTreeMap<u32, u8>,
+    /// Kept answers already re-sent in this call.
+    replayed: BTreeSet<u32>,
+    /// Answer bytes the call may still draw out of kept answers.
+    budget: usize,
+}
+
+impl Default for CallState {
+    fn default() -> Self {
+        Self {
+            touched: BTreeMap::new(),
+            replayed: BTreeSet::new(),
+            budget: ANSWER_BUDGET,
+        }
+    }
+}
+
+/// A typed body must parse; a proof made in this session must name this request's `seq`.
+/// (A proof made in another session names another transcript, and core refuses it with
+/// `session_changed`; the unit also checks `seq` against [`Ready::seq`] itself, so a proof
+/// can't be routed around this check in another body shape.)
 fn check_proof(head: &RequestHead, body: &[u8], th: &[u8; TH_LEN], seq: u64) -> Result<()> {
     if head.enc != crate::msg::Encoding::Parts {
         return Ok(());
@@ -956,13 +1455,6 @@ fn answer_msgs(head: &ResponseHead, body: &[u8], from: u32) -> Vec<Msg> {
         });
     }
     out
-}
-
-fn class_of(m: &Msg, min: u8) -> u8 {
-    match m {
-        Msg::Response(..) | Msg::Body { .. } => min,
-        _ => 0,
-    }
 }
 
 #[cfg(test)]
@@ -1075,12 +1567,19 @@ mod tests {
     fn request_ids_are_single_use_and_only_grow_past_the_window() {
         let mut r = Rids::default();
         assert!(!r.take(0));
-        for i in 1..=2000 {
+        // 10_000 is reserved (a long prompt) while 15_000 newer requests go by
+        for i in (1..=25_000).filter(|i| *i != 10_000) {
             assert!(r.take(i));
         }
         assert!(!r.take(5), "old ids stay used after the window moves");
-        assert!(!r.take(2000));
-        assert!(r.take(5000));
+        assert!(!r.take(25_000));
+        assert!(
+            r.take(10_000),
+            "a reserved id inside the window still works"
+        );
+        assert!(!r.take(10_000));
+        assert!(r.take(60_000));
+        assert!(!r.take(30_000), "below the floor once the window passed it");
     }
 
     #[test]
