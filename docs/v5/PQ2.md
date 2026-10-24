@@ -66,8 +66,9 @@ humid-core records (CORE.md).
 | `0x000A` | generic sealed box | `0x0114` | message store |
 | `0x0010` | share, phone → key service | `0x0105` | pending device slot (joining device) |
 | `0x0011` | share, key service → phone | `0x0106` | account seed sealed to a joining device |
-| `0x0012` | share request (phone → key service) | | |
+| `0x0012` | share request (phone → key service) | `0x0108` | join request (self-signed by the joining device) |
 | `0x0020` | transit record (AAD only) | `0x0107` | document metadata box |
+| | | `0x0109` | per-join KEM key, until pending slots are adopted |
 
 ## 3. Labels
 

@@ -524,12 +524,13 @@ impl DeviceSlot {
 
 /* ------------------------- pending slots (joining) ------------------------ */
 
-/// A document's `r_doc` sealed in software to a joining device's hybrid KEM key, until that
-/// device turns it into its own hardware [`DeviceSlot`] on first open (CORE.md §6.4):
+/// A document's `r_doc` sealed in software to a joining device's one-time join KEM key,
+/// until that device turns it into its own hardware [`DeviceSlot`] on first open
+/// (CORE.md §5.3, §6.4):
 ///
 /// ```text
 /// pending = header(0x0105) ‖ doc_id (32) ‖ device_id (32) ‖ manifest_hash (64)
-///           ‖ seal_to(device_kem, 0x0105, [doc_id, device_id, manifest_hash], r_doc)
+///           ‖ seal_to(join KEM key, 0x0105, [doc_id, device_id, manifest_hash], r_doc)
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingSlot {
@@ -564,9 +565,9 @@ impl PendingSlot {
         })
     }
 
-    pub(crate) fn open(&self, device_kem: &KemSecretKey) -> Result<Secret32> {
+    pub(crate) fn open(&self, join_kem: &KemSecretKey) -> Result<Secret32> {
         let pt = humid_pq2::open_sealed(
-            device_kem,
+            join_kem,
             ObjectType::PENDING_SLOT,
             &[&self.doc_id, &self.device_id, &self.manifest_hash],
             &self.sealed,

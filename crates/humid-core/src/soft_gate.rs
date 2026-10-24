@@ -32,7 +32,8 @@ pub enum SoftMode {
 /// The software gate.
 pub struct SoftGate {
     mode: SoftMode,
-    max_ops: usize,
+    /// Most ops per prompt (tests change it to model a platform limit).
+    pub max_ops: usize,
     /// input id → key. "Hardware" keys; removing one models deleting the hardware key.
     keys: BTreeMap<Vec<u8>, Secret32>,
     fixed: Secret32,
@@ -132,7 +133,11 @@ impl HardwareGate for SoftGate {
         }
         ops.iter()
             .map(|op| match op {
-                HwOp::Derive(input) => self.hw(input).map(HwOutput::Derived),
+                HwOp::Derive(input) => match self.hw(input) {
+                    Ok(v) => Ok(HwOutput::Derived(v)),
+                    Err(GateError::UnknownInput) => Ok(HwOutput::Unavailable),
+                    Err(e) => Err(e),
+                },
                 HwOp::SignLive(challenge) => {
                     // A stand-in "signature": a MAC the test can recompute. Real adapters
                     // return ECDSA P-256 (+ ML-DSA-87) signatures.

@@ -1,6 +1,8 @@
 # humid-core — design
 
-Status: **draft for review, 24 October 2026.** Skeleton implemented in
+Status: **draft for review, 24 October 2026; revised after the independent review of PR #94
+(findings H1–H3, M1–M7, L1–L8, each with a regression test in `crates/humid-core/tests/review94.rs`
+or the crate's unit tests).** Skeleton implemented in
 [`crates/humid-core`](../../crates/humid-core) against a software stand-in for the hardware; no
 platform code yet. Built on [HUMID-PQ2](PQ2.md). Requirements: [V5.md](../V5.md) ("The device
 key", "Opening a document", "App architecture"); findings: audit area 1 (crypto) and its
@@ -38,16 +40,23 @@ streamed into a viewer sink that renders and forgets them).
 | `seal_document(prompt, meta, input, out, key_service_pk, challenge)` | a byte source (file picker / camera), an upload sink | receipt: doc id, manifest hash, envelope hash, size, this device's slot, sealed share, live proof | 1 |
 | `begin_open(prompt, slot, challenge)` | the slot the vault listed | open handle, share request, live proof, adopted slot (if any) | 1 |
 | `finish_open(handle, sealed_share, envelope, viewer)` | what the servers returned, a viewer sink | name, type, size | 0 |
-| `begin_join()` (new device) | | join request (public keys) | 0 |
-| `grant_device(prompt, join_request, slots, challenge)` (old device) | the request, the slots | join seed and pending slots (sealed), live proof | 1 (see §5.3) |
-| `finish_join(prompt, join_seed, expected_account, challenge)` (new device) | what the old device sent, the account id from the key code | public identity, live proof | 1 |
-| `seal_index_entry(id, entry)` / `open_index_entry(id, blob)` | entry text / blob | blob / entry text | 0 |
-| `set_setting(name, value)` / `setting(name)` | | | 0 |
+| `begin_join(account_id)` (new device) | the account to join | self-signed join request, the **code to show** | 0 |
+| `grant_device(prompt, request, typed_code, slots, challenge)` (old device) | the request, the code the person typed, the slots | grant (sealed) and pending slots, binding, live proof | 1 (see §5.3) |
+| `finish_join(prompt, grant, challenge)` (new device) | what the old device sent | public identity, live proof | 1 |
+| `pending_adoptions()` | | how many granted documents still wait for a first open | 0 |
+| `seal_index_entry(id, current, entry)` / `open_index_entry(id, blob)` | the vault's current blob (if any), entry text / blob | blob / entry text | 0 |
+| `reset_records()` | after telling the person | | 0 |
+| `set_setting(name, value)` / `setting(name)` | names `[a-z0-9-]{1,64}` | | 0 |
 
 Rules the bridge keeps:
 
 - Every secret-holding type in the core has no `Debug`, `Serialize` or `Clone`; the Tauri command
-  layer can only return the result structs above, which hold public bytes.
+  layer can only return the result structs above, which hold public bytes (plaintext the screen
+  shows comes back in `Zeroizing` buffers).
+- The core owns the `HardwareGate` and the `DeviceStore` and hands neither out: whoever can call
+  `authorize` or read the wrap files can compute `HW_n` and the seeds (review M1). The accessors
+  the tests use exist only under `cfg(test)` or the `software-gate` feature, which no release
+  build enables.
 - A handle is a random 64-bit id, single use, and dies at `lock()`.
 - The `viewer` and `out` sinks are Rust objects the plugin layer owns (a file in the app's
   protected container, or the native viewer); the web view gets a URL to view, not the bytes,
@@ -67,9 +76,9 @@ when needed:
 | account hybrid KEM | `KemSecretKey::from_seed(KDF("HUMID-PQ2 account-kem", [account], [], 96))` | documents are encapsulated to it (`ss_acct`) |
 | account ML-DSA-87 | `ξ = KDF("HUMID-PQ2 account-dsa", [account], [], 32)` | signs every document; pinned; its key id is the account id |
 | device ML-DSA-87 | `ξ = KDF("HUMID-PQ2 device-dsa", [device], [], 32)` | sign-in, step-ups; its key id is the device id |
-| device hybrid KEM | `KDF("HUMID-PQ2 device-kem", [device], [], 96)` | a joining device receives the account seed and pending slots under it |
 | index key | `KDF("HUMID-PQ2 index", [account], [], 32)` | vault index entries (synced) |
-| device records key | `KDF("HUMID-PQ2 device-records", [device], [], 32)` | settings, revisions, offline copy (this device only) |
+| device records key | `KDF("HUMID-PQ2 device-records", [device], [], 32)` | settings, revisions, the join key, offline copy (this device only) |
+| join KEM key | random, per join (§5.3) | the grant and pending slots are sealed to it; destroyed once every granted document is adopted |
 
 The 5.0 hardware liveness keys (P-256, and ML-DSA-87 where the platform has it) stay in the
 secure hardware and sign inside the same prompt (§3).
@@ -88,9 +97,17 @@ pub struct HwTarget { pub input: Vec<u8>, pub value: Option<Secret32> }
 ```
 
 Contract: `authorize` shows **exactly one** live-biometric prompt (no passcode fallback, no reuse
-window) and runs every op inside it, or none; `target` never prompts; outputs are bytes, wiped by
-the adapter; a liveness signature that was asked for and is missing fails the whole call (fixes
-audit L1).
+window) and runs every op inside it, or none; a `Derive` on an input the hardware doesn't know
+(retired, or another device's) returns `HwOutput::Unavailable` without failing the other ops, so
+the core can try fallback wraps in the same prompt; `target` never prompts; outputs are bytes,
+wiped by the adapter; a liveness signature that was asked for and is missing fails the whole call
+(fixes audit L1).
+
+`GateInfo::max_ops` is how many ops one prompt can carry. The core plans for it (review M3):
+enrolment refuses a gate that couldn't unlock in one prompt (an unlock needs `HW_n` and the live
+signature, plus `HW_{n+1}` when the platform can't know it in advance), and a grant puts the live
+signature in the first prompt and spreads the documents' derives over as many prompts as needed,
+even with `max_ops = 1`.
 
 `HW(input)` is the 32-byte hardware output for an opaque input. Per platform:
 
@@ -119,23 +136,36 @@ formula are here, plus the account id and the hardware input.
 
 **One unlock** (`Core::unlock`, one prompt):
 
-1. Read the two slots `wrap-0`, `wrap-1` (`W_n` lives in slot `n mod 2`) and the store's
-   **rollback floor**; pick the highest wrap with `n ≥ floor` (`ratchet::plan`). A wrap below the
-   floor is a restored backup or image: refused (`Rollback`).
+1. Read the two slots `wrap-0`, `wrap-1` (`W_n` lives in slot `n mod 2`; an undecodable slot is
+   ignored) and the store's **rollback floor**. The candidates are the wraps with `n ≥ floor`,
+   highest first (`ratchet::plan`). A wrap below the floor is a restored backup or image: refused
+   (`Rollback`).
 2. `t = gate.target(Wrap)`: the input for `n+1`, made without a prompt.
-3. One `authorize`: `Derive(hw_input_n)`, `Derive(t.input)` only if `t.value` is unknown, and
+3. One `authorize`: `Derive` for each candidate (as many as fit), `Derive(t.input)` only if
+   `t.value` is unknown, and
    `SignLive(H("HUMID-PQ2 live-unlock", [challenge, account_id, device_id, u64 n]))`.
-4. Open `W_n`; derive the session keys; check they match the wrap's account and device ids.
-5. Seal the same seeds as `W_{n+1}` under `HW_{n+1}`, write it (atomically) to the other slot.
-6. Raise the floor to `n+1` (stored where a file restore can't reach: iOS `ThisDeviceOnly`
-   Keychain item, Android Keystore-bound record).
-7. Retire `W_n`'s hardware input and delete its slot.
+4. Open the highest candidate that opens and whose keys match its account and device ids: that is
+   `W_n`. A planted or damaged higher wrap is skipped (review H2).
+5. Seal the same seeds as `W_{n+1}` under `HW_{n+1}`, write it to the other slot, **read it back
+   and open it in software**. Only a `W_{n+1}` that is on disk and opens counts as written: a
+   write may report an error and still have landed, or report success and not have.
+6. Retire the inputs of wraps lower than `W_n`, raise the floor to `n+1` (stored where a file
+   restore can't reach: iOS `ThisDeviceOnly` Keychain item, Android Keystore-bound record), then
+   retire `W_n`'s hardware input and delete its slot.
 
-Crash safety: a crash before 5 leaves `W_n` (the unused target is retired at the next start); a
-crash between 5 and 6 leaves both wraps with floor `n`, and the next unlock opens `W_{n+1}` (the
-higher one) and finishes the step, retiring both old inputs; a crash after 6 leaves `W_{n+1}`. A
-failed write keeps `W_n` working (`Unlocked::advanced = false`); the next unlock retries.
-`tests/lifecycle.rs` and `tests/props.rs` cover each case.
+Crash and storage-failure cases (each has a test in `tests/lifecycle.rs` or `tests/review94.rs`):
+
+| What happened | State left | Next unlock |
+| --- | --- | --- |
+| prompt cancelled, `W_n` didn't open | `W_n`; the fresh target is retired | opens `W_n` |
+| write failed and `W_{n+1}` isn't on disk | `W_n`; target retired | opens `W_n`, steps again |
+| write reported an error but landed | read back: treated as written, step completes | opens `W_{n+1}` |
+| outcome unknown (read-back failed) | `W_n`; target **kept** | opens whichever is there |
+| crash between 5 and the floor raise | `W_n` and `W_{n+1}`, floor `n` | opens `W_{n+1}`, finishes the step, retires both old inputs |
+| a junk or planted wrap with a higher `n` | it, and `W_n` | skips it, opens `W_n` |
+
+Nothing is retired until a higher wrap has actually opened or been verified on disk, so a storage
+fault can't strand the seeds behind a retired key.
 
 What the ratchet buys: a copy of the wrap file, taken at any time, opens nothing once the phone
 has unlocked again. On iOS and on Android with proposal A (§5) the hardware key behind the old
@@ -190,18 +220,49 @@ prompt sets `max_ops` and the core plans for it.
 
 ### 5.3 Adding a device (risk 2)
 
-`HW_doc` is device-bound, so a new device can't reuse the old one's slots. In this design each
-document has a random `r_doc` (32 bytes) reached through one slot per device:
+**Authenticating the new device (review H1).** The old device seals the account seed to whatever
+key the join request names, so that key must be the new device's and no one else's. V5.md: a
+device joins only with "a live approval on an existing device (attested model + a code bound to
+both devices' keys)". In the core:
+
+```
+request = header(0x0108) ‖ account_id ‖ device ML-DSA-87 pk ‖ join KEM pk ‖ nonce (32)
+          ‖ ML-DSA-87(device key, ctx SUITE ‖ 0x0108 ‖ "HUMID-PQ2 join-request", body)
+code    = Crockford-base32(first 100 bits of H("HUMID-PQ2 join-code", [body]))   e.g. 7K2Q-…
+binding = H("HUMID-PQ2 join-binding", [body])
+```
+
+1. The new device (`begin_join(account_id)`) makes its device seed and a **one-time join KEM
+   key**, signs the request with its device key, and **shows the code**.
+2. The person types the code on the approving device. `grant_device` refuses unless the request's
+   signature verifies, it names this account, and the typed code matches (`CodeMismatch`). The
+   live proof covers `H("HUMID-PQ2 live-grant", [challenge, account_id, binding])`, so the server
+   records which request the person approved. The server also checks the new device's attestation
+   against the request's device key (the "attested model" half).
+3. The grant (the account seed and the list of granted document ids) is sealed to the join key,
+   bound to `[account_id, device_id, binding]`; the new device opens it only for its own request.
+
+A relay that swaps the join key has to re-sign with a device key of its own, which changes the
+code. To match the code the person reads on the real screen, it would need a second preimage of
+100 bits. The account side is bound too: a grant from another account's device doesn't open
+(`finish_join` checks that the account seed derives the account id the request named).
+
+**Moving documents.** `HW_doc` is device-bound, so a new device can't reuse the old one's slots.
+In this design each document has a random `r_doc` (32 bytes) reached through one slot per device:
 
 - **Old device** (`grant_device`, unlocked): one authorization derives `HW_doc` for each of its
-  slots, opens `r_doc`, and seals it **in software** to the new device's hybrid KEM key as a
-  *pending slot* (type `0x0105`, §6.4). It also seals the account seed to that key (`0x0106`).
+  slots, opens `r_doc`, and seals it **in software** to the request's join key as a *pending
+  slot* (type `0x0105`, §6.4). It also seals the grant to that key (`0x0106`).
   N documents need N derives: with `max_ops` per prompt that is `ceil((N+1)/max_ops)` prompts.
   `Grant::prompts` reports it; the UI must say so before starting ("Approving 240 documents
   takes 2 checks").
-- **New device** (`finish_join`, one prompt): writes its first wrap. On the **first open** of each
-  document it opens the pending slot with its device KEM key and, in the same prompt, seals
-  `r_doc` under its own hardware, returning the new slot to upload in place of the pending one.
+- **New device** (`finish_join`, one prompt): writes its first wrap, and keeps the join key (in
+  a `0x0109` record under its device records key) with the list of granted documents. On the
+  **first open** of each document it opens the pending slot with the join key and, in the same
+  prompt, seals `r_doc` under its own hardware, returning the new slot to upload in place of the
+  pending one. When the last granted document is adopted, the **join key is deleted** (review L5).
+  From then on a captured pending slot opens with nothing on the device. Before that, a pending
+  slot is protected by the join key, which sits under the hardware-wrapped seeds.
 
 So the new device's prompts are the ones it was going to show anyway. The old device's cost
 depends on how many `Derive` ops one prompt can carry:
@@ -219,9 +280,13 @@ On Android with proposal A or C the old device would show many prompts. Two ways
 
 Recommend (a) where the key count holds. **Decide before the format freezes.**
 
-Pending slots are the one place a document's per-device secret sits under a software key (the new
-device's KEM key, itself inside the hardware-wrapped seeds). They live only until first open; the
-new device converts them, and the server deletes a pending slot once its replacement is uploaded.
+Pending slots are the one place a document's per-device secret sits under a software key (the join
+key, which is reachable only through the hardware-wrapped seeds). They live only until first open:
+the new device converts them, the server deletes a pending slot once its replacement is uploaded,
+and the join key goes when the last one is adopted. The residual risk is a document that is
+never opened on the new device. Its pending slot stays openable by the join key until it is
+adopted. The UI should offer "make all documents ready on this phone", which adopts them in
+batches.
 
 ## 6. Documents: three keys, one streaming layer
 
@@ -292,7 +357,7 @@ device slot  = header(0x0104) ‖ doc_id ‖ device_id ‖ manifest_hash ‖ lp(
                ‖ GCM-SIV(k, 0¹², A, r_doc) ‖ tag        k = KDF("HUMID-PQ2 doc-slot", [HW(hw_input)],
                                                              [doc_id, device_id, manifest_hash, hw_input], 32)
 pending slot = header(0x0105) ‖ doc_id ‖ device_id ‖ manifest_hash
-               ‖ seal_to(new device KEM, 0x0105, [doc_id, device_id, manifest_hash], r_doc)
+               ‖ seal_to(join KEM key, 0x0105, [doc_id, device_id, manifest_hash], r_doc)
 ```
 
 The vault stores one slot per (document, device). It can withhold slots but can't open or move
@@ -306,13 +371,29 @@ no-backup directory. IndexedDB keeps only non-secret UI cache.
 
 | Record | Format | Key |
 | --- | --- | --- |
-| index entry (synced) | `u64 rev ‖ box(0x0110, [account_id, item_id, u64 rev], pad64(lp(entry)))` | index key |
-| revisions | `box(0x0113, [device_id], (lp(id) ‖ u64 rev)*)` | device records key |
-| setting | `box(0x0111, [device_id, name], lp(value))` | device records key |
+| index entry (synced) | `u64 rev ‖ writer (32) ‖ box(0x0110, [account_id, item_id, u64 rev, writer], pad64(lp(entry)))` | index key |
+| revisions | `u64 c ‖ box(0x0113, [device_id, u64 c], (lp(id) ‖ u64 rev ‖ writer)*)` | device records key |
+| setting | `box(0x0111, [device_id, name], lp(value))`, file `setting-<name>`, name `[a-z0-9-]{1,64}` | device records key |
+| join key | `box(0x0109, [device_id], seed (96) ‖ u32 n ‖ n × doc_id)` | device records key |
 | offline copy (next) | `box(0x0112, [device_id, u64 rev], …)` | device records key |
 | message store key (next) | per V5.md Messaging: hardware-derived per conversation, rotated per save | through a slot, as documents |
 
 One AAD shape per type, no fallback, so a server can't move an entry onto another item (audit M2).
+
+**Synced versions (review M7).** The index is shared by every device of the account, so an entry's
+version is `(rev, writer device id)`, compared lexicographically. A device writing an entry passes
+the blob the vault holds now (`seal_index_entry(id, current, entry)`); the new `rev` is one more
+than the highest of that and anything this device has seen. Two devices writing at the same time
+get the same `rev`, but the writer id still orders them, so every device converges on the same
+"newest" and refuses the other as older.
+
+**Rollback of the revisions themselves (review M2).** The revisions record carries a counter `c`
+that the store also keeps outside the files (with the wrap floor). A copy whose `c` is below the
+store's, a missing file once `c > 0`, or a damaged one, means synced records can't be checked.
+The unlock still succeeds (`Unlocked::records_ok = false`), but index entries refuse to open
+(`RecordsUnavailable`) until the UI has told the person and called `reset_records()`. Then the
+device starts its history afresh from what the vault serves next. A copy whose `c` is above the
+store's (the counter write was lost) is accepted and the counter catches up.
 `rev` only grows. The device keeps the highest it has seen per id, sealed in the revisions record
 and checked on every open. An older entry the vault serves back is refused (`Rollback`), across
 lock and restart.
@@ -322,9 +403,16 @@ lock and restart.
 - **Session**: after `unlock` the core holds the derived keys (§2) and the revisions. Open handles
   hold one document's `r_doc` and one-time key until `finish_open`. A join in progress holds the
   new device's seed.
-- **Decoy** (`enter_decoy`, one way until lock): every write, seal, grant and send returns
-  `Decoy` and touches no storage. Reads still work and leave no trace, so the decoy behaves like a
-  normal session from the outside.
+- **Decoy** (`enter_decoy`, one way until lock): every write, seal and grant returns `Decoy` and
+  touches no storage or hardware key. A pending slot is opened without being adopted (no new
+  hardware key, no slot to upload; review M4). Every live proof made in the session carries the
+  session mode (`0x00` normal, `0x01` duress) inside the signed message (§9). The person and the
+  coercer can't tell, but the key-share service can: it decides whether to release real shares,
+  refuse ("this document isn't available right now"), or serve decoy content.
+
+  **Owner decision needed:** which of these the key service does under duress. The core's part is
+  done either way. Reading local decoy-marked items and index entries still works and leaves no
+  trace.
 - **Lock means gone**: `lock()` drops the session, every open handle and any join in progress.
   Every secret type zeroizes on drop: `Secret<N>` boxes, the RustCrypto keys' `ZeroizeOnDrop`, and
   plaintext in `Zeroizing<Vec<u8>>`. `held_secrets()` is 0 afterwards, which the tests assert.
@@ -337,13 +425,18 @@ lock and restart.
 ## 9. Live proofs
 
 Each prompt's liveness signature covers `H(label, [challenge, …])` with a label per action:
-`live-enroll`, `live-unlock`, `live-seal` (doc id, manifest hash, envelope hash), `live-open`
-(share-request binding), `live-grant` (account id, joiner device id, joiner KEM key id). The
+`live-enroll` (account id, device id), `live-unlock` (account id, device id, `n`), `live-seal`
+(doc id, manifest hash, envelope hash, mode), `live-open` (share-request binding, mode),
+`live-grant` (account id, join-request binding). `mode` is one byte: `0x00` normal, `0x01` duress
+(§8). The
 server's own challenge (HTP's ticket) is the first part, so a proof stands for one request only.
 P-256 plus ML-DSA-87 where the platform has it (`LiveAlg`). App Attest assertions per check
 (iOS) ride alongside the signature.
 
 ## 10. Open questions
+
+0. **Duress policy at the key service** (§8): release, refuse or serve decoy shares when a live
+   proof carries `mode = 0x01`.
 
 1. **Android one prompt** (§5): which of B, A + C or D works on Android 17 StrongBox and TEE.
    Prove it on three phones before the wrap format freezes.
@@ -361,3 +454,25 @@ P-256 plus ML-DSA-87 where the platform has it (`LiveAlg`). App Attest assertion
    moves behind the ratchet as well (audit M6), is still to be decided.
 8. **FFI shape**: Tauri commands over a global `Core` behind a mutex, or a dedicated thread owning
    it (V5.md: "one owner and a stop on every exit path"). The latter is recommended.
+
+## 11. Tracked: crypto backends (review L8)
+
+The suite runs today on pure-Rust RustCrypto and dalek crates. Several are pre-1.0 or release
+candidates and haven't been independently audited: `ml-kem 0.3.3`, `ml-dsa =0.1.1` and
+`slh-dsa =0.2.0-rc.5`. V5.md wants native constant-time backends wherever available (CryptoKit on
+iOS 26, BoringSSL/Conscrypt on Android, AWS-LC or OpenSSL 3.5 on servers), with others only as
+checked fallbacks.
+
+The plan:
+
+- **A backend table in the core.** One `Backend` per primitive, chosen at start. Every backend
+  passes `self_test()` and is cross-checked against the RustCrypto one on the same inputs before
+  it is used.
+- **Server first.** `aws-lc-rs` already has ML-KEM, AES-GCM(-SIV) and SHA-3 and builds for
+  Linux. It replaces the RustCrypto backends for those primitives once it passes the same KATs.
+  ML-DSA and SLH-DSA stay RustCrypto until aws-lc's are stable.
+- **Phones next.** CryptoKit (iOS 26 has ML-KEM and ML-DSA) and Conscrypt behind the same table,
+  through the gate plugins.
+- **Until then.** Pin exact versions of the pre-1.0 crates. CI runs cargo-deny (advisories,
+  licences, sources) on every PR, and the external crypto review (V5.md roadmap) covers these
+  crates explicitly.
