@@ -186,7 +186,7 @@ jobs:
   server-windows:
     needs: [plan, guard]
     if: needs.plan.outputs.server == 'true'
-    uses: ./.github/workflows/server-windows.yml
+    uses: ./.github/workflows/server-windows.yml # zizmor: ignore[self-repository]
     with:
       publish: ${{ inputs.publish_server == true }}
     permissions:
@@ -195,7 +195,7 @@ jobs:
   server-linux:
     needs: [plan, guard]
     if: needs.plan.outputs.linuxServer == 'true'
-    uses: ./.github/workflows/server-linux.yml
+    uses: ./.github/workflows/server-linux.yml # zizmor: ignore[self-repository]
     with:
       publish: ${{ inputs.publish_server == true }}
     permissions:
@@ -226,7 +226,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       # No caches in a signing job: nothing a CI run left behind flows into a signed build.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      # setup-node v4 has no automatic cache, and none is configured (zizmor assumes v5's default)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0  # zizmor: ignore[cache-poisoning]
         with: { node-version: 22 }
       - run: npm ci --ignore-scripts # no dependency install scripts in the job that holds the signing keys
       - run: npm test

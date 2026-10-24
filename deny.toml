@@ -1,0 +1,52 @@
+# cargo-deny for the whole workspace (CI `rust` job: cargo deny --all-features check).
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Advisories (RustSec), licences, banned or duplicate crates, and where crates may come from.
+
+[graph]
+# The app ships to iPhone and Android only (desktop apps are paused for 5.0); the Linux
+# targets are where CI builds and tests the workspace. Crates only other platforms pull in
+# are not checked.
+targets = [
+  "aarch64-apple-ios",
+  "aarch64-linux-android",
+  "x86_64-linux-android",
+  "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+# Every vulnerability fails; unmaintained and unsound notices too, for crates we use directly
+# or that sit in the app's process. Exceptions go here, each with the reason and an issue.
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# What the dependency tree uses today, all permissive. A new licence fails CI until it is
+# reviewed and added here. Our own crates are UNLICENSED and unpublished (private).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+# Two versions of one crate are common in the Tauri tree and not an error; wildcards are.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
