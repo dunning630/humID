@@ -1,6 +1,7 @@
 node_modules/
 apps/mobile/dist/
-/target/
+# Cargo build output at any depth: the root workspace builds into /target/, but a crate or plugin built on its own still writes its own target/
+target/
 apps/mobile/src-tauri/gen/
 services/*/dist/
 plugins/humid-gate/ios/.build/
